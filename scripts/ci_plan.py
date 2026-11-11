@@ -206,6 +206,8 @@ CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests:
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
+    "src/editor/native_automation_recording.rs": ("editor::native_automation_recording::unit_tests::",),
+    "src/editor/native_automation_recording/editor_input.rs": ("editor::native_automation_recording::editor_input::tests::",),
     "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
@@ -438,7 +440,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
-    "editor::device_automation::host_tests::": ("editor::device_automation::unit_tests::",),
+    "editor::device_automation::host_tests::": ("editor::device_automation::unit_tests::",
+        "editor::native_automation_recording::unit_tests::",
+        "editor::native_automation_recording::editor_input::tests::"),
     "editor::device_automation::tests::": ("editor::device_automation::unit_tests::",),
     "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
@@ -972,6 +976,17 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 names.update((
                     "editor::device_automation::host_tests::host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners",
                     "editor::device_automation::host_tests::utility_toggle_and_choice_offer_their_exact_recording_targets",
+                ))
+            native_recording_units = (
+                "editor::native_automation_recording::unit_tests::",
+                "editor::native_automation_recording::editor_input::tests::",
+            )
+            if any(unit.startswith(name) for unit in native_recording_units for name in names):
+                names.update((
+                    *native_recording_units,
+                    "editor::native_automation_recording::tests::refused_and_lost_submissions_keep_delivered_receipts_until_recovery",
+                    "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
+                    "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
                 ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
