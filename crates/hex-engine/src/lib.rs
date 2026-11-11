@@ -1912,6 +1912,15 @@ impl Track {
         output: &mut [Frame],
         pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        self.render_raw_audio_excluding(start, output, pages, [None; 2])
+    }
+    pub(crate) fn render_raw_audio_excluding<P: MediaPages + ?Sized>(
+        &self,
+        start: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        excluded: [Option<u64>; 2],
+    ) -> Result<(), Invalid> {
         let end = start
             .checked_add(output.len() as u64)
             .ok_or(Invalid("raw source range overflow"))?;
@@ -1922,6 +1931,7 @@ impl Track {
             pages,
             None,
             PreparedTrackMix::identity(),
+            excluded,
         );
         Ok(())
     }
@@ -2030,9 +2040,11 @@ impl Track {
             pages,
             capture,
             self.source_mix,
+            [None; 2],
         );
     }
 
+    #[allow(clippy::too_many_arguments)] // Existing mix/capture sinks with one fixed occurrence exclusion.
     fn render_audio_range_captured_with_mix<P: MediaPages + ?Sized>(
         &self,
         start_frame: u64,
@@ -2041,6 +2053,7 @@ impl Track {
         pages: Option<&mut P>,
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
+        excluded: [Option<u64>; 2],
     ) {
         if let Some(pages) = pages {
             self.render_audio_range_with_pages_captured_with_mix(
@@ -2050,6 +2063,7 @@ impl Track {
                 pages,
                 capture,
                 source_mix,
+                excluded,
             );
             return;
         }
@@ -2059,7 +2073,7 @@ impl Track {
             start_frame,
             end_frame,
             |clip| {
-                if !clip.is_streamed() {
+                if !clip.is_streamed() && !excluded.contains(&Some(clip.start)) {
                     self.render_resident_clip(
                         clip,
                         start_frame,
@@ -2118,9 +2132,11 @@ impl Track {
             pages,
             capture,
             self.source_mix,
+            [None; 2],
         );
     }
 
+    #[allow(clippy::too_many_arguments)] // Same track audio mix plus the borrowed page provider.
     fn render_audio_range_with_pages_captured_with_mix(
         &self,
         start_frame: u64,
@@ -2129,6 +2145,7 @@ impl Track {
         pages: &mut (impl MediaPages + ?Sized),
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
+        excluded: [Option<u64>; 2],
     ) {
         clip_index::visit(
             &self.clip_index,
@@ -2136,6 +2153,9 @@ impl Track {
             start_frame,
             end_frame,
             |clip| {
+                if excluded.contains(&Some(clip.start)) {
+                    return;
+                }
                 if !clip.is_streamed() {
                     self.render_resident_clip(
                         clip,
@@ -3817,6 +3837,7 @@ pub(crate) fn render_track_audio_raw<P: MediaPages + ?Sized>(
         pages,
         None,
         PreparedTrackMix::identity(),
+        [None; 2],
     );
 }
 

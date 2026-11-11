@@ -563,7 +563,8 @@ impl SessionPlayback {
             suppressions: self.suppressions.capacity(),
             suppression_scratch: self.suppression_scratch.capacity(),
         }
-        .bytes()
+        .bytes()?
+        .checked_add(self.browser_audition.retained_bytes()?)
     }
 }
 
