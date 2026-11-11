@@ -4870,6 +4870,29 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn(witness, feature)
         self.assertNotIn("editor::", feature)
 
+    def test_timeline_strip_geometry_keeps_rendered_consumer_surfaces(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::timeline_strip::tests::"
+        witnesses = ('editor::timeline_strip_ui_tests::arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces', 'editor::timeline_strip_ui_tests::loop_endpoints_exactly_at_viewport_edges_remain_painted')
+        for path in ('crates/hex-ui/src/editor/timeline_strip.rs', 'crates/hex-ui/src/editor/timeline_strip_ui_tests.rs'):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertEqual(default.argv[default.argv.index("--") + 1:], (unit,))
+                feature = steps["ui-feature-tests"].argv
+                for witness in witnesses:
+                    self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+                self.assertNotIn("editor::", feature)
+
     def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
