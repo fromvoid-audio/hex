@@ -506,6 +506,9 @@ impl ForeignArrangement {
         // A fresh generator can first appear at a running Arrangement cursor.
         // Chase its current span without changing any retained generator's gate.
         let first_route = ledger.route.is_none();
+        // A same-clock audio restart can keep this ledger. Only chase an
+        // interactive start if this generator also cut its authored gates.
+        let chase = context.chase && ledger.cut;
         let wrapped = session.route.owner == RouteOwner::Arrangement
             && !route_changed
             && !ledger.cut
@@ -537,7 +540,7 @@ impl ForeignArrangement {
                     track
                         .for_each_mutable_midi_span(context.arrangement, end, |span| {
                             if span.start < context.arrangement
-                                && !(context.chase || wrapped || first_route)
+                                && !(chase || wrapped || first_route)
                             {
                                 return;
                             }
