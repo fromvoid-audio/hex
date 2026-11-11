@@ -649,6 +649,32 @@ pub(crate) fn arrangement_clip_body_fill(header: u32, selected: bool) -> u32 {
     }
 }
 
+/// A restrained loop accent that moves away from the title foreground.
+#[derive(Clone, Copy)]
+pub(crate) struct ClipHeaderRamp {
+    start: u32,
+    end: u32,
+}
+
+impl ClipHeaderRamp {
+    pub(crate) fn new(fill: u32) -> Self {
+        let text = readable_text(fill, color(PaletteRole::Text));
+        let toward = if contrast_ratio(text, 0xffffff) >= contrast_ratio(text, 0) {
+            0xffffff
+        } else {
+            0
+        };
+        Self {
+            start: mix(fill, toward, 0.16),
+            end: fill,
+        }
+    }
+
+    pub(crate) fn color(self, phase: f32) -> u32 {
+        mix(self.start, self.end, phase)
+    }
+}
+
 /// Shared clip palette for Console cells, drag previews and unselected titles.
 /// The persisted `Muted` flavor is darker and more saturated; Accent keeps the track hue.
 /// Track strips, sections and browser marker palettes retain their own surfaces.

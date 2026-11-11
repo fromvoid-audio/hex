@@ -390,6 +390,22 @@ impl EditorView {
         let changed = gesture.preview;
         self.commit_midi_clip_loop(gesture.context.clip, changed);
     }
+    pub(super) fn midi_header_loop_values(
+        &self,
+        clip: ClipId,
+        revision: u64,
+    ) -> Option<SourceValues> {
+        self.midi_ruler
+            .gesture
+            .filter(|g| {
+                g.context.clip == clip
+                    && g.context.generation == self.project_generation
+                    && g.context.revision == revision
+                    && g.preview != g.context.values
+            })
+            .map(|g| g.preview)
+            .or_else(|| self.pending_clip_loop_midi(clip))
+    }
     pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
         let start = self.piano_beat_start;
         let span = self.piano_beat_span.raw().max(1);

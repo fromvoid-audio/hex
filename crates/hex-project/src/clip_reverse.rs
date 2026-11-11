@@ -151,6 +151,53 @@ mod tests {
     use super::*;
     use crate::{AudioDomainClock, Command, Editor, WarpResampler};
     #[test]
+    fn musical_unwarped_reverse_projects_the_retained_source_cycle_edges() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "loop".into(),
+                path: "loop.wav".into(),
+                sample_rate: 48_000,
+                frames: 8_000,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        for command in [
+            Command::SetClipLooping {
+                clip,
+                looping: true,
+            },
+            Command::SetClipSourcePhase { clip, phase: 2_000 },
+            Command::TrimClipEdge {
+                clip,
+                edge: crate::TrimEdge::Right,
+                frame: 18_000,
+            },
+            Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            },
+            Command::ReverseClips(vec![clip]),
+        ] {
+            editor.execute(command).unwrap();
+        }
+        let project = editor.project();
+        let clip = project.clip(clip).unwrap();
+        assert_eq!((clip.start(), clip.duration()), (0, 18_000));
+        let projection = clip.repeat_cycles(project.tempo_map()).unwrap().unwrap();
+        let plan = projection.cycles();
+        let frame = |elapsed| projection.frame_at_elapsed(elapsed).unwrap();
+        let seams = plan.seams().unwrap();
+        assert_eq!(plan.count(), 3);
+        assert_eq!(frame(i128::from(seams.boundary(0).unwrap())), 4_000);
+        assert_eq!(frame(i128::from(seams.boundary(1).unwrap())), 12_000);
+        let (first, last) = plan.full_bounds(0).unwrap();
+        assert_eq!((frame(first), frame(last)), (-4_000, 4_000));
+    }
+
+    #[test]
     fn reverse_twice_preserves_exact_plain_and_edited_audio_snapshots_and_undo() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
         let Created::Imported { clip, .. } = editor
