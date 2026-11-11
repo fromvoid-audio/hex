@@ -1312,6 +1312,15 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
         assert_ne!(wet[63], [0.0; 2]);
         assert!(endpoint.notes.is_empty());
 
+        if !on_main {
+            editor.execute(Command::RemoveDevice(device)).unwrap();
+            let mut without_active_effect = prepare_effect_edit(&editor);
+            assert!(matches!(
+                without_active_effect.try_inherit_state_live_from(&mut inserted),
+                Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+            ));
+            assert!(editor.undo());
+        }
         editor
             .execute(Command::ToggleDeviceBypass { device })
             .unwrap();
