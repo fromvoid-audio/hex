@@ -206,7 +206,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
-    "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::",),
+    "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
@@ -428,6 +428,7 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
     "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
     "editor::edit_cursor_ui_test::": ("editor::arrangement_seek::unit_tests::",),
@@ -899,6 +900,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
                     "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
                     "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+                ))
+            if any("editor::device_panel::header_style_unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::device_panel::tests::header_style_tests::retained_source_path_indicator_is_rendered_with_the_existing_chain",
+                    "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
+                    "editor::device_panel::tests::sine_and_effect_place_their_shared_header_to_the_left_of_the_body",
                 ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
