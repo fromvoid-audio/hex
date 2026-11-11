@@ -4670,6 +4670,38 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     (consumer, feature_args))
 
+    def test_eq_creation_spectrum_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::eq_panel::tests::"
+        consumers = (
+            "editor::device_panel::tests::eq_ui_tests::eq_notch_hover_matches_creation_and_node_priority_at_narrow_and_wide_sizes",
+            "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio",
+            "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+            "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+            "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                expected = consumers[1:] if path.endswith("/eq_graph_layout_tests.rs") else consumers
+                for consumer in expected:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -5054,12 +5086,15 @@ class ModuleScopeTests(unittest.TestCase):
         graph = "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::"
         names = plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([axes, response, graph])})
+        creation_spectrum = "editor::device_panel::eq_panel::tests::"
+        self.assertEqual(names, {owner: sorted([axes, response, graph, creation_spectrum])})
         boundary["module_filters"] = names
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(axes in step.argv and response in step.argv
                             for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(creation_spectrum in step.argv and step.requires_tests
+                            for step in steps if step.step_id == "ui-default-lib-unit-tests"))
         self.assertTrue(any(graph in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_overview_waveform_unit_cohort_keeps_real_consumers(self):
