@@ -66,6 +66,8 @@ pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod publication_wait;
 mod resident_audio;
 mod resident_preview;
+mod stretch_audition;
+pub use stretch_audition::ArrangementStretchAudition;
 mod resident_seek;
 mod stopped_arrangement;
 mod truncated_import;
@@ -1211,6 +1213,7 @@ pub struct Service {
     export_test_hook: ExportTestHook,
     /// `None` after shutdown, which disconnects an idle blocking worker.
     requests: Option<request_cancellation::Sender>,
+    stretch_audition: Arc<stretch_audition::Mailbox>,
     events: diagnostics::EventReceiver,
     solo_views: Receiver<SoloViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
@@ -1558,6 +1561,8 @@ impl Service {
         let worker_shutdown = Arc::clone(&shutdown);
         let startup_failure = Arc::new(std::sync::OnceLock::new());
         let worker_startup_failure = Arc::clone(&startup_failure);
+        let stretch_audition = Arc::new(stretch_audition::Mailbox::default());
+        let worker_stretch_audition = Arc::clone(&stretch_audition);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             // Structural stopped publications reuse the bounded preroll constructor.
@@ -1649,6 +1654,7 @@ impl Service {
                     recovery,
                     resident_seek,
                     solo_view_tx,
+                    worker_stretch_audition,
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -1659,6 +1665,7 @@ impl Service {
                 request_tx,
                 document_intent,
             )),
+            stretch_audition,
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             solo_views,
@@ -1686,11 +1693,39 @@ impl Service {
         self.solo_views.try_recv()
     }
 
+    /// Replace the one held stretch audition target. This never enters the
+    /// canonical FIFO and never takes playback or media custody from the worker.
+    pub fn audition_arrangement_stretch(&self, target: Option<ArrangementStretchAudition>) {
+        self.stretch_audition.set(target);
+    }
+
+    /// Stop preparing held targets and retain the audible preview through the
+    /// ordinary edit's exact terminal.
+    pub fn finish_arrangement_stretch_audition(&self) {
+        self.stretch_audition.release();
+    }
+
+    #[cfg(feature = "source-overview-test-support")]
+    pub fn held_arrangement_stretch_audition_for_test(&self) -> Option<ArrangementStretchAudition> {
+        self.stretch_audition.held()
+    }
+
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        let replaces_audition_source = matches!(
+            &request,
+            Request::NewWithAudioMode { .. }
+                | Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }
+                | Request::RestartAudio { .. }
+        );
         let diagnostic = self.diagnostics.begin(&request);
         let result = self.submit_traced(request, diagnostic);
+        if result.is_ok() && replaces_audition_source {
+            self.stretch_audition.set(None);
+        }
         self.diagnostics.returned(diagnostic, &result);
         result
     }
@@ -2360,6 +2395,7 @@ fn run_worker(
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
     solo_views: SyncSender<SoloViewObservation>,
+    stretch_audition: Arc<stretch_audition::Mailbox>,
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
@@ -2404,6 +2440,7 @@ fn run_worker(
         None;
     let mut resident_snapshot: Option<resident_audio::Snapshot> = None;
     let mut resident_preview: Option<resident_preview::Preview> = None;
+    let mut stretch_lane = stretch_audition::Lane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -2626,7 +2663,46 @@ fn run_worker(
             project_generation,
             editor_revision: revision,
         },
-        |mut audio| {
+        |mut audio, audition| {
+            if audition {
+                let pending = audio.is_some_and(|sink| {
+                    stretch_lane.drive(
+                        &stretch_audition,
+                        &session,
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        &mut resident_snapshot,
+                        &mut resident_preview,
+                        sink,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            None,
+                        ),
+                        !resident_seek
+                            .as_ref()
+                            .is_some_and(resident_seek::Lane::pending)
+                            && device_gesture.snapshot().is_none()
+                            && tuning_gesture.snapshot().is_none()
+                            && pending_plugin_effect.is_none()
+                            && pending_sampler_parameter.is_none()
+                            && pending_stopped_restore.is_none()
+                            && !plugin_recording.editor_active()
+                            && !plugin_recording.pending(),
+                    )
+                });
+                return audio_sink::ControlPoll {
+                    pending,
+                    ..Default::default()
+                };
+            }
             if let Some(seek) = resident_seek.as_mut() {
                 seek.drive(
                     &session,
@@ -2736,26 +2812,34 @@ fn run_worker(
             },
             document_intent.load(Ordering::Acquire),
         );
-        let queued = if events.resident_publication_enabled()
-            && session.audio_mode() == DocumentAudioMode::Resident
+        let stretch_release = resident_preview
+            .as_ref()
+            .is_some_and(|preview| preview.stretch_target().is_some())
             && matches!(
                 &queued.request,
-                Request::Edit(
-                    Command::ToggleDeviceBypass { .. }
-                        | Command::SetDeviceBypass { .. }
-                        | Command::ReplaceDeviceState { .. }
-                ) | Request::DeviceGesture(
-                    GestureRequest::Change { .. }
-                        | GestureRequest::ChangePair { .. }
-                        | GestureRequest::ChangeSnapshot { .. }
-                        | GestureRequest::ChangeEqCreation { .. }
-                        | GestureRequest::Commit { .. }
-                        | GestureRequest::CommitPair { .. }
-                        | GestureRequest::CommitSnapshot { .. }
-                        | GestureRequest::CommitEqCreation { .. }
-                        | GestureRequest::Cancel { .. }
-                ) | Request::SetDeviceParameter { .. }
-            ) {
+                Request::Edit(Command::StretchAudioClipEdge { .. } | Command::TrimClipEdge { .. })
+            );
+        let queued = if events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && (stretch_release
+                || matches!(
+                    &queued.request,
+                    Request::Edit(
+                        Command::ToggleDeviceBypass { .. }
+                            | Command::SetDeviceBypass { .. }
+                            | Command::ReplaceDeviceState { .. }
+                    ) | Request::DeviceGesture(
+                        GestureRequest::Change { .. }
+                            | GestureRequest::ChangePair { .. }
+                            | GestureRequest::ChangeSnapshot { .. }
+                            | GestureRequest::ChangeEqCreation { .. }
+                            | GestureRequest::Commit { .. }
+                            | GestureRequest::CommitPair { .. }
+                            | GestureRequest::CommitSnapshot { .. }
+                            | GestureRequest::CommitEqCreation { .. }
+                            | GestureRequest::Cancel { .. }
+                    ) | Request::SetDeviceParameter { .. }
+                )) {
             match events.defer_publication(queued) {
                 Some(queued) => queued,
                 None => continue,
@@ -8410,6 +8494,15 @@ fn run_worker(
         }
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
+            if resident_preview
+                .as_ref()
+                .is_some_and(|overlay| overlay.stretch_target().is_some())
+                && resident_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| Arc::ptr_eq(&snapshot.prepared, &prepared))
+            {
+                resident_preview = None;
+            }
             if let Some(sources) = replacement_sources {
                 current_sources = sources;
             } else if !prepared.requires_control_sampler_sources() {
@@ -13148,6 +13241,7 @@ mod service_tests {
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
+            stretch_audition: Arc::new(stretch_audition::Mailbox::default()),
             requests: Some(request_cancellation::Sender::new(
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),

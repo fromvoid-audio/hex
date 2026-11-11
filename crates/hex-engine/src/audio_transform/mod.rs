@@ -190,6 +190,7 @@ pub struct AudioTransformPreparation {
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
     shutdown: Arc<AtomicBool>,
+    preview_cancel: RefCell<Option<Arc<AtomicBool>>>,
     budget: Arc<budget::Budget>,
     cache_limit: usize,
     source_limit: usize,
@@ -224,6 +225,7 @@ impl AudioTransformPreparation {
             pending: RefCell::new(None),
             tempo: RefCell::new(None),
             shutdown,
+            preview_cancel: RefCell::new(None),
             budget: budget::production_budget(),
             cache_limit: MAX_CACHED_DERIVED_BYTES,
             source_limit: MAX_CACHED_SOURCE_BYTES,
@@ -242,6 +244,23 @@ impl AudioTransformPreparation {
             self.cancel_after_polls.set(Some(remaining - 1));
         }
         self.shutdown.load(Ordering::Acquire)
+            || self
+                .preview_cancel
+                .borrow()
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+    }
+    /// Cooperatively abandon a superseded control-side preview without
+    /// cancelling the document's canonical preparation.
+    pub fn with_preview_cancellation<T>(
+        &self,
+        cancel: &Arc<AtomicBool>,
+        prepare: impl FnOnce() -> T,
+    ) -> T {
+        let previous = self.preview_cancel.replace(Some(Arc::clone(cancel)));
+        let result = prepare();
+        self.preview_cancel.replace(previous);
+        result
     }
     pub fn retained_pcm_bytes(&self) -> usize {
         self.budget.used()

@@ -372,6 +372,7 @@ impl EditorView {
         let pending = self.pending_trim.as_mut()?;
         if event.project_replaced || pending.generation != self.project_generation {
             self.pending_trim = None;
+            self.service.audition_arrangement_stretch(None);
             return None;
         }
         if event.request_complete
@@ -379,6 +380,7 @@ impl EditorView {
         {
             *remaining = remaining.saturating_sub(1);
             if *remaining == 0 {
+                self.service.audition_arrangement_stretch(None);
                 return self.pending_trim.take().map(PendingTrim::into_viewport);
             }
         }
@@ -395,6 +397,9 @@ impl EditorView {
     pub(super) fn retire_pending_trim(&mut self) -> bool {
         let terminal = self.pending_trim.take().map(PendingTrim::into_viewport);
         let retired = terminal.is_some();
+        if retired {
+            self.service.audition_arrangement_stretch(None);
+        }
         self.normalize_completed_trim_viewport(terminal);
         retired
     }
@@ -1180,6 +1185,9 @@ impl EditorView {
         let midi = self.active_midi_trim_drag.take();
         let canceled = audio.is_some() || midi.is_some();
         if let Some(drag) = audio {
+            if canceled_view {
+                self.service.audition_arrangement_stretch(None);
+            }
             drag.canceled.set(true);
             drag.preview.borrow_mut().take();
             *drag.resolution.borrow_mut() = Default::default();
@@ -1270,10 +1278,43 @@ impl EditorView {
         }
         let changed = replace_audio_trim_preview(&drag.preview, next);
         self.active_trim_drag = Some(drag.clone());
+        self.sync_held_stretch_audition();
         if changed {
             cx.notify();
         }
         changed
+    }
+
+    pub(super) fn sync_held_stretch_audition(&self) {
+        let Some(drag) = self.active_trim_drag.as_ref() else {
+            return;
+        };
+        let playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
+        let preview = drag.preview.borrow();
+        let target = preview
+            .as_ref()
+            .filter(|preview| {
+                playing
+                    && self.mode == super::EditorMode::Arrangement
+                    && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                    && drag.stretch_modifier.get()
+                    && effective_loop_kind(drag).is_none()
+                    && preview.stretch
+                    && self.trim_drag_current(drag)
+                    && !preview_is_noop(&drag.clip, &preview.clip)
+            })
+            .map(|preview| hex_session::service::ArrangementStretchAudition {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: drag.project_generation,
+                    editor_revision: drag.revision,
+                },
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame: preview.command_frame,
+            });
+        self.service.audition_arrangement_stretch(target);
     }
 
     pub(super) fn refresh_trim_snap_modifier(
@@ -1764,6 +1805,7 @@ impl EditorView {
                 asset_frames: drag.asset_playback_frames,
             },
         });
+        self.service.finish_arrangement_stretch_audition();
         let accepted = self.enqueue(request);
         if !accepted {
             self.pending_trim = None;

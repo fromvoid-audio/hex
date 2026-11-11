@@ -2641,6 +2641,11 @@ fn shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one
     check_shift_edge(cx, hex_project::TrimEdge::Left);
 }
 fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
+    use super::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use std::sync::atomic::Ordering::Release;
+    let _output_guard = status_fixture_guard();
     let direction = if edge == hex_project::TrimEdge::Right {
         -1.0
     } else {
@@ -2655,6 +2660,18 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let (mut output, _callback) = headless_status_output();
+    let control = output.take_client().unwrap();
+    control.status().unwrap().playing.store(true, Release);
+    editor.update(cx, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control,
+            sample_rate: 48_000,
+            label: "held stretch fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+    });
     let selector = Box::leak(format!("clip-trim-{name}-{}", clip.value()).into_boxed_str());
     let down = visual.debug_bounds(selector).unwrap().center();
     let shift = Modifiers {
@@ -2680,6 +2697,19 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
         assert_eq!(preview.source_length(), 96_000);
         assert!(preview.duration() < 96_000);
         assert!(view.last_enqueued_edit.is_none());
+        let target = view
+            .service
+            .held_arrangement_stretch_audition_for_test()
+            .unwrap();
+        assert_eq!((target.clip, target.edge), (clip, edge));
+        assert_eq!(
+            target.frame,
+            if edge == hex_project::TrimEdge::Right {
+                preview.start() + preview.duration()
+            } else {
+                preview.start()
+            }
+        );
         preview.clone()
     });
     let first_bounds = visual.debug_bounds("trim-live-preview").unwrap();
@@ -2703,6 +2733,11 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
             preview.as_ref().unwrap().clip.audio_edit().is_none(),
             "releasing Shift restores ordinary trim at same pointer"
         );
+        assert!(
+            view.service
+                .held_arrangement_stretch_audition_for_test()
+                .is_none()
+        );
     });
     visual.simulate_modifiers_change(shift);
     visual.run_until_parked();
@@ -2723,8 +2758,10 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::StretchAudioClipEdge { clip: id, edge: requested_edge, frame }) if id == clip && requested_edge == edge && frame == if edge == hex_project::TrimEdge::Right { stretched.start() + stretched.duration() } else { stretched.start() }));
         assert!(view.active_trim_drag.is_none());
+        assert!(view.service.held_arrangement_stretch_audition_for_test().is_none());
         assert_eq!(view.state.as_ref().unwrap().project.clip(clip).unwrap().duration(), 96_000, "UI preview has not changed canonical state");
     });
+    editor.update(cx, |view, _| view.audio = None);
 }
 
 #[gpui::test]
