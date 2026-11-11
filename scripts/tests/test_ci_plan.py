@@ -2234,14 +2234,19 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
                                   "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
                                   "editor::audio_import_settings::admission::",
+                                  "editor::browser::audition_geometry::",
                                   "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                                   "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
                                   "editor::browser::geometry::",
+                                  "editor::browser::random_rank::",
                                   "editor::browser::samples::state::",
                                   "editor::browser::scan::",
+                                  "editor::browser::scrollbar_geometry::",
                                   "editor::browser::tree::state::",
                                   "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
                                   "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
+                                  "editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport",
+                                  "editor::browser::ui_test::browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes",
                                   "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
                                   "editor::browser::ui_test::browser_history_ui_test::review_history_waits_for_the_used_catalog_not_an_unrelated_scan",
                                   "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
@@ -2252,9 +2257,14 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
                                   "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
                                   "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                                  "editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus",
                                   "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
                                   "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+                                  "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
+                                  "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged",
                                   "editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
+                                  "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture",
+                                  "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
                                   "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop",
                                   "editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack",
                                   "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
@@ -2653,6 +2663,7 @@ class ModuleScopeTests(unittest.TestCase):
             "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
             "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
             "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+            "editor::browser::ui_test::browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes",
             "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
             "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
         ]
@@ -2699,9 +2710,14 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::browser::tree::state::"
         scan_unit = "editor::browser::scan::"
+        folder_position = (
+            "editor::browser::ui_test::"
+            "browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes"
+        )
         consumers = ["editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                      "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
                      "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                     folder_position,
                      "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
                      "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
                      "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
@@ -2724,6 +2740,7 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
             self.assertTrue(any(scan_unit.startswith(name) for name in selected[owner]))
+            self.assertTrue(any(folder_position.startswith(name) for name in selected[owner]))
 
     def test_project_tempo_value_keeps_unit_and_focused_commit_coverage(self):
         root = SCRIPTS.parent
