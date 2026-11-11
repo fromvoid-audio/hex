@@ -588,15 +588,15 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
     /// Capture every active hosted instance required by this exact canonical
-    /// save input. The existing worker retains request order while the adapter
+    /// capture input. The existing worker retains request order while the adapter
     /// drains each admitted native token to its matching terminal, including
     /// failure/cancellation. No stop, canonical edit or source owner transfer.
     /// An output without native hosting has no runtime states to capture and
     /// preserves the project's opaque unavailable state. Native hosts must
     /// override this method; failed capture must never fall back to empty data.
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        _input: PluginStateSaveInput<'_>,
+        _input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
         Ok(Vec::new())
     }
