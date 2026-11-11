@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use super::test_fixture::plugin_scope;
 use super::*;
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId};
 use hex_project::{Command, Created};
@@ -5,8 +7,7 @@ use hex_session::{
     Session,
     service::{
         DeviceAutomationSource, NativeRecoveryContinuation, NativeRecoveryTerminal,
-        automation_draft::{DeviceDraftInput, Vst3CaptureTarget},
-        copy_native_recovery_on_control,
+        automation_draft::DeviceDraftInput, copy_native_recovery_on_control,
     },
 };
 use hex_storage::automation_draft::{CaptureClock, DraftReadLimits};
@@ -254,65 +255,6 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     );
     assert!(flow.saved.is_none());
     assert!(!flow.unresolved());
-}
-
-#[test]
-fn only_the_ordered_plugin_query_selects_the_original_scope() {
-    let scope = plugin_scope();
-    let mut flow = Recovery {
-        phase: Phase::Discover {
-            until: Instant::now() + Duration::from_secs(1),
-        },
-        request: Some(1),
-        saved: None,
-    };
-    let found = Progress::FailedPluginCustody {
-        scope: Box::new(scope),
-        path: "original".into(),
-    };
-    assert_eq!(flow.settle(0, &found), None);
-    assert!(!flow.unresolved());
-    assert_eq!(flow.settle(1, &found), None);
-    assert!(flow.unresolved());
-    assert!(matches!(flow.phase, Phase::NeedsCopy(selected) if selected == scope));
-}
-
-fn plugin_scope() -> Scope {
-    let mut session = Session::new(48_000, 4, 4096).unwrap();
-    let Created::Device(device) = session
-        .command(Command::InsertMainDevice {
-            before: None,
-            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
-                "hex.utility",
-            ))
-            .unwrap(),
-        })
-        .unwrap()
-    else {
-        panic!("fixture did not create a device");
-    };
-    Scope {
-        target: hex_session::service::DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
-            device,
-            class: [9; 16],
-            parameter: 0,
-            binding: hex_lattice_contract::ForeignProcessorBinding {
-                root: 7,
-                instance: 2,
-                graph: 3,
-                epoch: 4,
-            },
-        }),
-        stamp: DraftProvenance {
-            sample_rate: 48_000,
-            output_identity: 7,
-            project_generation: 0,
-            editor_revision: 1,
-            audio_revision: 2,
-            transport_epoch: 3,
-            gesture_serial: 4,
-        },
-    }
 }
 
 #[cfg(all(

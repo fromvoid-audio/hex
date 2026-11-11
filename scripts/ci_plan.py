@@ -205,6 +205,7 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
     "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
     "src/editor/native_automation_recording.rs": ("editor::native_automation_recording::unit_tests::",),
     "src/editor/native_automation_recording/editor_input.rs": ("editor::native_automation_recording::editor_input::tests::",),
@@ -688,7 +689,8 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
                     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
-UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
+UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "editor::automation_take_recovery::tests::",
+                        "editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
                         "output_meter::logic::": "output_meter::tests::",
                         "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                         "editor::waveform_columns::": "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
