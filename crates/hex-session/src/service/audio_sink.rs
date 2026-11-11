@@ -716,6 +716,7 @@ pub trait WorkerAudioSink: Send {
     fn prepare_offline_bounce(
         &mut self,
         input: ResidentEffectPreparation<'_>,
+        _control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
         if input.requires_plugin_profile() {
             return Err("offline vst3 bounce unavailable for this host".into());

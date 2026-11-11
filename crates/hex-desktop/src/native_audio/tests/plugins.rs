@@ -4,6 +4,7 @@ mod editor_recording;
 mod first_effect_take;
 mod installed_edits;
 mod instruments;
+mod offline_bounce;
 mod performance_profile;
 mod state;
 mod ui;

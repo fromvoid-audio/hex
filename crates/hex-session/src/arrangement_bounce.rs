@@ -672,6 +672,7 @@ impl Session {
                     tails,
                     control,
                     streamed,
+                    None,
                 )
             },
             |session, prepared, files| {
