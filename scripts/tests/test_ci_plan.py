@@ -3472,6 +3472,8 @@ class ModuleScopeTests(unittest.TestCase):
                     "scope": "rust", "affected_packages": [owner], "boundary": boundary,
                     "cargo_inventory": inventory, "paths": [path]})}
                 self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                if name == "controller_input.rs":
+                    self.assertIn("editor::controller_input::tests::", steps["ui-default-lib-unit-tests"].argv)
                 self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
