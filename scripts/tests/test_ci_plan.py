@@ -4562,6 +4562,26 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertIn("editor::device_panel::eq_panel::group_move::", steps["ui-unit-unit_device"].argv)
                 self.assertIn(witness, steps["ui-feature-tests"].argv)
 
+    def test_modulation_cycle_unit_keeps_rendered_audio_rate_mapping(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::modulators::tests::"
+        witness = "editor::device_panel::tests::modulation_panel_adds_and_maps_an_audio_rate_modulator"
+        path = "crates/hex-ui/src/editor/device_panel/modulators.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        self.assertIn(witness, steps["ui-feature-tests"].argv)
+        self.assertNotIn("editor::device_panel::", steps["ui-feature-tests"].argv)
+
     def test_vst3_filesystem_cache_selects_support_without_default_or_projection_units(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
