@@ -1,4 +1,4 @@
-//! Private instrument processing for one resident Arrangement bounce.
+//! Private VST3 processors for one isolated Arrangement bounce item.
 use super::*;
 use hex_audio::plugin_effects::{NativeEffect, NativeEffectCallbacks, NativeEffectDefinition};
 use hex_audio::plugin_worker::NativeWorker;
@@ -10,36 +10,61 @@ impl Plugins {
     pub(in crate::native_audio) fn prepare_offline_bounce(
         &self,
         input: ResidentEffectPreparation<'_>,
+        control: &ExportControl,
     ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
         if !input.requires_plugin_profile() {
             return Ok(None);
         }
-        let mut selected = None;
-        input.visit_plugin_devices(|destination, device, state| {
-            if !destination.is_instrument() || selected.is_some() {
-                return Err(
-                    "offline bounce requires one vst3 instrument without vst3 effects".into(),
-                );
+        let mut count = 0;
+        input.visit_plugin_devices(|_, _, _| {
+            count += 1;
+            if count > Hosting::MAX_OFFLINE_PROCESSORS {
+                return Err("offline vst3 processor limit reached".into());
             }
-            selected = Some((destination, device, state));
             Ok(())
         })?;
-        let (destination, device, state) = selected.ok_or("offline vst3 instrument unavailable")?;
-        let identity = Hosting::saved_identity_on_control(state)?;
-        let source = hex_plugin_catalog::Catalog::load(
+        if count == 0 {
+            return Err("offline vst3 processor unavailable".into());
+        }
+        let catalog = hex_plugin_catalog::Catalog::load(
             self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
-        )?
-        .resolve_plugin(
-            identity.class.bytes(),
-            identity.binary.executable_sha256,
-            identity.binary.info_sha256,
-            hex_plugin_catalog::PluginRole::Instrument,
         )?;
-        let effect = self
+        let host = self
             .host
             .as_ref()
-            .ok_or("qualified vst3 helper unavailable")?
-            .prepare_offline_instrument_on_control(
+            .ok_or("qualified vst3 helper unavailable")?;
+        let mut effects = Vec::new();
+        effects
+            .try_reserve_exact(count)
+            .map_err(|_| "offline vst3 processor storage unavailable")?;
+        let mut bytes = 0_usize;
+        // Serial processors may extend one another's tails. Sum the known
+        // lengths conservatively, including when a group contains branches.
+        let mut tail = Some(0_u64);
+        input.visit_plugin_devices(|destination, device, state| {
+            if control.is_cancelled() {
+                return Err("bounce cancelled".into());
+            }
+            let (profile, role) = if destination.is_instrument() {
+                (
+                    PluginProfile::Instrument,
+                    hex_plugin_catalog::PluginRole::Instrument,
+                )
+            } else {
+                (
+                    PluginProfile::Effect,
+                    hex_plugin_catalog::PluginRole::Effect,
+                )
+            };
+            let identity = Hosting::saved_identity_on_control(state)?;
+            let source = catalog.resolve_plugin(
+                identity.class.bytes(),
+                identity.binary.executable_sha256,
+                identity.binary.info_sha256,
+                role,
+            )?;
+            let authored = super::edits::requested_selection(&input, device)?;
+            let effect = host.prepare_offline_processor_on_control(
                 EffectSelection {
                     module: &source.module,
                     executable: &source.executable_relative_path,
@@ -50,16 +75,30 @@ impl Plugins {
                 destination.owner(),
                 device,
                 input.sample_rate(),
+                profile,
                 state,
+                authored.as_ref(),
             )?;
-        let bytes = effect
-            .constructor_storage_on_control()
-            .and_then(|s| s.data_bytes())
-            .ok_or("offline vst3 worker storage unavailable")?;
-        let quantum = usize::from(effect.prepared().quantum_frames());
-        let tail = effect.finite_tail_frames();
-        Ok(Some(Box::new(PrivateInstrument {
-            effect: Some(effect),
+            bytes = effect
+                .constructor_storage_on_control()
+                .and_then(|storage| storage.data_bytes())
+                .and_then(|size| bytes.checked_add(size))
+                .ok_or("offline vst3 worker storage unavailable")?;
+            tail = tail
+                .zip(effect.finite_tail_frames())
+                .and_then(|(sum, frames)| sum.checked_add(frames));
+            effects.push(effect);
+            Ok(())
+        })?;
+        if control.is_cancelled() {
+            return Err("bounce cancelled".into());
+        }
+        let quantum = effects
+            .first()
+            .map(|effect| usize::from(effect.prepared().quantum_frames()))
+            .ok_or("offline vst3 processor unavailable")?;
+        Ok(Some(Box::new(PrivateProcessors {
+            effects: Some(effects),
             running: None,
             bytes,
             quantum,
@@ -68,15 +107,15 @@ impl Plugins {
     }
 }
 
-struct PrivateInstrument {
-    effect: Option<NativeEffect>,
+struct PrivateProcessors {
+    effects: Option<Vec<NativeEffect>>,
     running: Option<(Vec<NativeWorker>, NativeEffectCallbacks)>,
     bytes: usize,
     quantum: usize,
     tail: Option<u64>,
 }
 
-impl OfflineBounceSource for PrivateInstrument {
+impl OfflineBounceSource for PrivateProcessors {
     fn retained_data_bytes(&self) -> usize {
         self.bytes
     }
@@ -87,18 +126,17 @@ impl OfflineBounceSource for PrivateInstrument {
             &AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<PreparedRevision, String> {
-        let effect = self
-            .effect
-            .as_ref()
+        let effects = self
+            .effects
+            .as_deref()
             .ok_or("offline vst3 source already rendering")?;
-        let definition =
-            NativeEffectDefinition::new(std::slice::from_ref(effect)).map_err(|e| e.to_string())?;
+        let definition = NativeEffectDefinition::new(effects).map_err(|e| e.to_string())?;
         AudioCandidateEffects::with_host_definitions(&[&definition], compile)
             .map_err(|e| e.to_string())
     }
 }
 
-impl ForeignBounceRenderer for PrivateInstrument {
+impl ForeignBounceRenderer for PrivateProcessors {
     fn max_block_frames(&self) -> usize {
         self.quantum
     }
@@ -113,9 +151,9 @@ impl ForeignBounceRenderer for PrivateInstrument {
         pages: Option<&mut dyn hex_engine::MediaPages>,
         control: &ExportControl,
     ) -> Result<(), ExportError> {
-        if let Some(effect) = self.effect.take() {
+        if let Some(effects) = self.effects.take() {
             self.running = Some(
-                NativeEffectCallbacks::from_effects_on_control(vec![effect])
+                NativeEffectCallbacks::from_effects_on_control(effects)
                     .map_err(|_| ExportError::Invalid("offline vst3 endpoint unavailable"))?,
             );
         }
@@ -150,15 +188,16 @@ impl ForeignBounceRenderer for PrivateInstrument {
         let (mut workers, _callbacks) = self.running.take().ok_or(ExportError::Invalid(
             "offline vst3 render produced no blocks",
         ))?;
+        let mut failed = false;
         for worker in &mut workers {
-            let retired = worker
-                .retire_on_control()
-                .map_err(|_| ExportError::Invalid("offline vst3 worker retirement failed"))?;
-            if retired.failure.is_some() || !retired.native.status.success() {
-                return Err(ExportError::Invalid(
-                    "offline vst3 worker retirement failed",
-                ));
-            }
+            failed |= worker.retire_on_control().map_or(true, |retired| {
+                retired.failure.is_some() || !retired.native.status.success()
+            });
+        }
+        if failed {
+            return Err(ExportError::Invalid(
+                "offline vst3 worker retirement failed",
+            ));
         }
         Ok(())
     }

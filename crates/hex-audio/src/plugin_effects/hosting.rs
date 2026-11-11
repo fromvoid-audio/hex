@@ -63,15 +63,21 @@ pub struct Hosting {
     grouped_editor_callbacks: bool,
 }
 impl Hosting {
+    /// The compiler and endpoint set share this processor limit.
+    pub const MAX_OFFLINE_PROCESSORS: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
+
     /// Prepare a private offline source. Its reserved root is never admitted
     /// by the live output. The owner must join the instance before publishing.
-    pub fn prepare_offline_instrument_on_control(
+    #[allow(clippy::too_many_arguments)] // Exact offline source, destination, and authored program.
+    pub fn prepare_offline_processor_on_control(
         &self,
         selection: EffectSelection<'_>,
         owner: ProcessorChainOwner,
         device_id: u64,
         sample_rate: u32,
+        profile: PluginProfile,
         state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
     ) -> Result<NativeEffect, String> {
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|e| e.to_string())?;
@@ -87,7 +93,10 @@ impl Hosting {
                 },
                 sample_rate: f64::from(sample_rate),
                 quantum: MAX_FRAMES as u16,
-                input_channels: 0,
+                input_channels: match profile {
+                    PluginProfile::Effect => 2,
+                    PluginProfile::Instrument => 0,
+                },
                 output_channels: 2,
                 limits: self.limits,
             },
@@ -102,8 +111,15 @@ impl Hosting {
             .complete_with_plan_on_control(PresentationPlan::AllowUnknown)
             .map_err(|e| e.to_string())?;
         let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
-        NativeEffect::prepare_retained_with_data_limit_on_control(identity, instance, data_limit)
-            .map_err(|e| e.finish_on_control().to_string())
+        NativeEffect::prepare_with_renewal_on_control(
+            identity,
+            instance,
+            data_limit,
+            authored.map(AuthoredSelection::parameters),
+            None,
+            authored.and_then(AuthoredSelection::dense_parameter),
+        )
+        .map_err(|e| e.finish_on_control().to_string())
     }
     /// Maximum payload for the single pending native capture response.
     pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
