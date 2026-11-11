@@ -233,6 +233,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/musical_audio_controls/sample_bpm.rs": ("editor::musical_audio_controls::sample_bpm::tests::",),
     "src/editor/tuning/mod.rs": ("editor::tuning::snap_tests::", "editor::tuning::audition_level_unit_tests::"),
     "src/editor/tuning/plots.rs": ("editor::tuning::plots::tests::",),
+    "src/editor/session_grid.rs": ("editor::session_grid::tests::",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
