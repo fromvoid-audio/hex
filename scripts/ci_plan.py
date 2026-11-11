@@ -265,6 +265,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
+    "src/editor/device_panel/modulators.rs": ("editor::device_panel::modulators::tests::",),
     "src/editor/device_panel/eq_panel/gestures.rs": ("editor::device_panel::eq_panel::gestures::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
@@ -547,6 +548,9 @@ UI_MODULE_TEST_DEPENDENCIES = {
         "editor::drag::group_drag_ui_test::group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit",
     ),
     "editor::clip_content_cache::tests::": ("editor::clip_content_cache::unit_tests::",),
+    "editor::device_panel::modulators::": (
+        "editor::device_panel::tests::modulation_panel_adds_and_maps_an_audio_rate_modulator",
+    ),
     "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
     "editor::drag::": ("editor::drag_autoscroll::tests::",),
