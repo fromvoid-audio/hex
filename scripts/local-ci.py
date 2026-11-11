@@ -396,6 +396,16 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for package in tested:
             if package in module_filters and package not in single:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
+        if "hex-ui" in single:
+            unit_prefixes = set(ci_plan.UI_DEFAULT_LIB_UNIT_MODULES.values())
+            if "hex-ui" in module_filters:
+                unit_prefixes = {max(prefix, name, key=len)
+                                 for prefix in unit_prefixes for name in module_filters["hex-ui"]
+                                 if prefix.startswith(name) or name.startswith(prefix)}
+            if unit_prefixes:
+                steps.append(Step("ui-default-lib-unit-tests",
+                                  ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--",
+                                   *sorted(unit_prefixes)), requires_tests=True))
         if single:
             for package in (p for p in tested if p in single):
                 # Module-scoped doctests run only when the changed files carry doc examples.
