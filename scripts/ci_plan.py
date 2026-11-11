@@ -202,25 +202,25 @@ ADDITIVE_TEST_FEATURES = {
 
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
-UI_DEFAULT_LIB_UNIT_MODULES = {
-    "src/editor/arrangement_seek.rs": "editor::arrangement_seek::unit_tests::",
-    "src/editor/device_panel/eq8_panel/graph.rs": "editor::device_panel::eq8_panel::graph::tests::",
-    "src/editor/device_panel/eq8_panel/group.rs": "editor::device_panel::eq8_panel::group::tests::",
-    "src/editor/device_panel/eq8_panel/selection.rs": "editor::device_panel::eq8_panel::selection::tests::",
-    "src/editor/loop_rail.rs": "editor::loop_rail::tests::",
-    "src/editor/controller.rs": CONTROLLER_PUBLICATION_UNIT,
-    "src/editor/arrangement_audio_panel.rs": "editor::arrangement_audio_panel::tests::",
-    "src/editor/arrangement_audio_panel/controls.rs": "editor::arrangement_audio_panel::controls::tests::",
-    "src/editor/device_gesture.rs": "editor::device_gesture::unit_tests::",
-    "src/editor/device_panel/operator_panel.rs": "editor::device_panel::operator_panel::tests::",
-    "src/editor/device_panel/operator_panel/envelope.rs": "editor::device_panel::operator_panel::envelope::tests::",
-    "src/editor/device_panel/operator_panel/filter_response.rs": "editor::device_panel::operator_panel::filter_response::tests::",
-    "src/editor/device_panel/operator_panel/harmonics.rs": "editor::device_panel::operator_panel::harmonics::tests::",
-    "src/editor/drag.rs": "editor::drag::tests::",
-    "src/editor/midi_loop.rs": "editor::midi_ruler::loop_brace::tests::",
-    "src/editor/midi_loop_notes.rs": "editor::midi_loop_notes::tests::",
-    "src/editor/midi_ruler.rs": "editor::midi_ruler::geometry_tests::",
-    "src/editor/waveform_geometry.rs": "editor::waveform_geometry::tests::",
+UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
+    "src/editor/device_panel/eq8_panel/graph.rs": ("editor::device_panel::eq8_panel::graph::tests::",),
+    "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
+    "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
+    "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
+    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT,),
+    "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
+    "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
+    "src/editor/device_gesture.rs": ("editor::device_gesture::unit_tests::",),
+    "src/editor/device_panel/operator_panel.rs": ("editor::device_panel::operator_panel::tests::",),
+    "src/editor/device_panel/operator_panel/envelope.rs": ("editor::device_panel::operator_panel::envelope::tests::",),
+    "src/editor/device_panel/operator_panel/filter_response.rs": ("editor::device_panel::operator_panel::filter_response::tests::",),
+    "src/editor/device_panel/operator_panel/harmonics.rs": ("editor::device_panel::operator_panel::harmonics::tests::",),
+    "src/editor/drag.rs": ("editor::drag::tests::",),
+    "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
+    "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
+    "src/editor/midi_ruler.rs": ("editor::midi_ruler::geometry_tests::",),
+    "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
