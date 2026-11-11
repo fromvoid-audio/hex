@@ -4,7 +4,7 @@
 //! existing instrument or precede effects. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
-    drag::{NativeDeviceDrag, NativeDeviceDragSource},
+    drag::{BrowserAudioDrag, NativeDeviceDrag, NativeDeviceDragSource},
 };
 use crate::theme;
 use gpui::{App, Context, Div, Stateful, prelude::*, rgb};
@@ -81,7 +81,7 @@ impl EditorView {
         }))
     }
 
-    fn check_device_append_target(
+    pub(super) fn check_device_append_target(
         &self,
         track: TrackId,
         cx: &App,
@@ -150,7 +150,27 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = self.state.as_ref().map(|state| state.revision);
         let owner = cx.entity();
+        let sample_owner = owner.clone();
         header
+            .drag_over::<BrowserAudioDrag>(move |style, drag, _, cx| {
+                if sample_owner
+                    .read(cx)
+                    .browser_sampler_drop_track(drag, Some(track), cx)
+                    .is_ok()
+                {
+                    let color = rgb(theme::color(theme::PaletteRole::Secondary));
+                    style
+                        .bg(gpui::Hsla::from(color).alpha(0.18))
+                        .border_color(color)
+                } else {
+                    style
+                }
+            })
+            .on_drop(super::sampler_load::track_drop_listener(
+                cx,
+                Some(track),
+                hex_project::InstrumentLoadPlacement::First,
+            ))
             .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
                 let valid = owner
                     .read(cx)

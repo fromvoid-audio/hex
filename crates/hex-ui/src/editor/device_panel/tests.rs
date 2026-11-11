@@ -6293,14 +6293,17 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
     assert!(visual.debug_bounds("device-modulator-scroll").is_none());
     click_modulator_control(&mut visual, toggle(), false);
     let empty_slot = empty.project.track(track).unwrap().instrument().unwrap();
-    let empty_sampler = Some((empty_slot.id(), empty_slot.state().clone()));
+    let slot = hex_session::service::SamplerLoadSlot::Existing {
+        device: empty_slot.id(),
+        expected_state: empty_slot.state().clone(),
+    };
     editor.update(cx, |view, _| {
         assert!(view.enqueue(Request::LoadFirstSampler {
             request_id: 1,
             project_generation: view.project_generation,
             revision: empty.revision,
             track,
-            empty_sampler,
+            slot,
             path: file.0.clone(),
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }));

@@ -221,7 +221,9 @@ pub use session::{
     SessionMidiClip, SessionSceneTarget, session_audio_source_frame,
 };
 pub mod timebase;
-pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
+pub use edit::{
+    Command, Created, InstrumentLoadPlacement, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+};
 pub use history::{Editor, SampleRateHistoryAction};
 mod import_existing;
 pub use import_existing::ExistingAudioPlacement;

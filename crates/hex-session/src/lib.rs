@@ -272,7 +272,7 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
         command,
         Command::AddAsset { .. }
             | Command::ImportDeviceAsset { .. }
-            | Command::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Command::ImportDeviceAssetIntoNewInstrument { .. }
             | Command::ImportAudioTrack { .. }
             | Command::ImportPreparedAudioTrack { .. }
             | Command::ImportPreparedAudioTrackAt { .. }

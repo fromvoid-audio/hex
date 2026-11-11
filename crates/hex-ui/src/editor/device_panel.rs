@@ -781,18 +781,14 @@ pub(super) fn view(
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
-        Some(DevicePanelOwner::Main) => {
-            return_view::render(view, window, cx, &state, EffectBusOwner::Main)
-        }
-        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
-        Some(DevicePanelOwner::Return(return_track)) => return_view::render(
-            view,
-            window,
-            cx,
-            &state,
-            EffectBusOwner::Return(return_track),
+        Some(owner) => render_owner(view, window, cx, &state, owner),
+        None => empty_panel("select a track or return to view devices").on_drop(
+            super::sampler_load::track_drop_listener(
+                cx,
+                None,
+                hex_project::InstrumentLoadPlacement::First,
+            ),
         ),
-        None => empty_panel("select a track or return to view devices"),
     }
 }
 
@@ -828,7 +824,13 @@ fn render_owner(
 ) -> Stateful<Div> {
     match owner {
         DevicePanelOwner::Main => {
-            return_view::render(view, window, cx, state, EffectBusOwner::Main)
+            return_view::render(view, window, cx, state, EffectBusOwner::Main).on_drop(
+                super::sampler_load::track_drop_listener(
+                    cx,
+                    None,
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            )
         }
         DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
         DevicePanelOwner::Return(return_track) => return_view::render(
@@ -837,7 +839,12 @@ fn render_owner(
             cx,
             state,
             EffectBusOwner::Return(return_track),
-        ),
+        )
+        .on_drop(super::sampler_load::track_drop_listener(
+            cx,
+            None,
+            hex_project::InstrumentLoadPlacement::First,
+        )),
     }
 }
 
@@ -1132,6 +1139,12 @@ fn render_track(
         .flex()
         .flex_col()
         .relative()
+        .group("sampler-drop-panel")
+        .on_drop(super::sampler_load::track_drop_listener(
+            cx,
+            Some(track_id),
+            hex_project::InstrumentLoadPlacement::Append,
+        ))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_t_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
@@ -1221,6 +1234,10 @@ fn render_track(
         .collect();
     eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let first_device = device_ids.first().copied();
+    let sample_drop = view.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+        view.browser_sampler_drop_track(drag, Some(track_id), cx)
+            .is_ok()
+    });
     let mut local_index = 0;
     for node in nodes {
         let (device, class) = match node {
@@ -1274,10 +1291,14 @@ fn render_track(
         let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
         let card =
             super::device_comparison::card(view, cx, device.id(), class, focus.clone(), card);
-        let card = super::device_preset::card(view, cx, device.id(), class, focus, card);
+        let mut card = super::device_preset::card(view, cx, device.id(), class, focus, card);
+        if sample_drop && class == NativeDeviceClass::Instrument {
+            let line = sample_insertion_marker();
+            card = card.child(line);
+        }
         chain = chain.child(card);
     }
-    chain = chain.child(render_device_end_target(
+    let mut panel = render_device_end_target(
         view,
         cx,
         drag::NativeDeviceDropTarget {
@@ -1287,7 +1308,12 @@ fn render_track(
         },
         first_device,
         visible_chain_bounds,
-    ));
+    );
+    if sample_drop && track.instrument().is_none() {
+        let line = sample_insertion_marker();
+        panel = panel.child(line);
+    }
+    chain = chain.child(panel);
 
     let add_open = view.device_panel.add_menu_open;
     let add_button = div()
@@ -1345,6 +1371,21 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+// The panel appends at the tail or replaces the existing instrument in place.
+fn sample_insertion_marker() -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .top(px(DEVICE_CHAIN_PADDING))
+        .w(px(2.0))
+        .h(px(DEVICE_FRAME_HEIGHT - DEVICE_CHAIN_PADDING))
+        // GPUI applies drag styles only to elements with a hitbox.
+        .group("sampler-drop-insertion")
+        .group_drag_over::<drag::BrowserAudioDrag>("sampler-drop-panel", |style| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+        })
 }
 
 #[derive(Clone)]

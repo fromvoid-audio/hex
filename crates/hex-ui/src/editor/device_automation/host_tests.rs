@@ -111,7 +111,9 @@ pub(in crate::editor) fn window_with_gain(
                 project_generation: 0,
                 revision,
                 track,
-                empty_sampler: None,
+                slot: hex_session::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
                 path: path.to_path_buf(),
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             })

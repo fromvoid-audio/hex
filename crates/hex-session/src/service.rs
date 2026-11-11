@@ -229,6 +229,17 @@ pub struct SamplerLoadCompletion {
     pub project_generation: u64,
     pub track: hex_project::TrackId,
 }
+/// The captured instrument slot for a prepared first sample load.
+#[derive(Clone, Debug)]
+pub enum SamplerLoadSlot {
+    /// A new sampler replaces the exact current instrument, if any.
+    New(hex_project::InstrumentLoadPlacement),
+    /// Preserve the identity and settings of an exact empty sampler.
+    Existing {
+        device: hex_project::DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+    },
+}
 /// One completed sampler parameter gesture, bound to its captured canonical target.
 #[derive(Clone, Debug)]
 pub struct SamplerParameterEdit {
@@ -829,16 +840,13 @@ pub enum Request {
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
-    /// One captured first load into an absent or exact empty sampler slot.
+    /// Prepare and publish a loaded new sampler or fill an exact empty sampler.
     LoadFirstSampler {
         request_id: u64,
         project_generation: u64,
         revision: u64,
         track: hex_project::TrackId,
-        empty_sampler: Option<(
-            hex_project::DeviceId,
-            hex_lattice_contract::NativeDeviceState,
-        )>,
+        slot: SamplerLoadSlot,
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
@@ -5223,7 +5231,7 @@ fn run_worker(
                     project_generation: target_generation,
                     revision: target_revision,
                     track,
-                    empty_sampler,
+                    slot,
                     path,
                     cancel,
                 } => {
@@ -5236,19 +5244,27 @@ fn run_worker(
                             .project()
                             .track(track)
                             .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
-                        let target_current = match (&empty_sampler, target.instrument()) {
-                            (None, None) => true,
-                            (Some((id, expected)), Some(device)) => {
-                                device.id() == *id
-                                    && device.state() == expected
-                                    && !device.bypassed()
-                                    && hex_engine::is_empty_sampler_state_on_control(expected)
+                        let target_current = match &slot {
+                            SamplerLoadSlot::New(placement) => {
+                                target.instrument().map(hex_project::Device::id)
+                                    == placement.replacement()
                             }
-                            _ => false,
+                            SamplerLoadSlot::Existing {
+                                device,
+                                expected_state,
+                            } => target.instrument().is_some_and(|instrument| {
+                                instrument.id() == *device
+                                    && instrument.state() == expected_state
+                                    && !instrument.bypassed()
+                                    && hex_engine::is_empty_sampler_state_on_control(expected_state)
+                            }),
                         };
-                        if !target_current {
+                        if !target_current
+                            || target.is_group()
+                            || (target.instrument().is_some() && !target.receives_source_audio())
+                        {
                             return Err(SessionError::Invalid(
-                                "sampler load target changed or slot is occupied",
+                                "sampler load target changed or is ineligible",
                             ));
                         }
                         if private_sampler && !events.resident_publication_enabled() {
@@ -5279,15 +5295,36 @@ fn run_worker(
                                 prepared: Some(p),
                             }
                         });
+                        let frames = decoded.audio().frames().len();
+                        let destination = match slot {
+                            SamplerLoadSlot::New(placement) => {
+                                let (state, source_slot) = hex_engine::native_device_resources::sampler_import_template_on_control(frames)?;
+                                crate::native_assets::NativeAssetDestination::NewInstrument {
+                                    track,
+                                    placement,
+                                    state,
+                                    source_slot,
+                                }
+                            }
+                            SamplerLoadSlot::Existing {
+                                device,
+                                expected_state,
+                            } => {
+                                let (state, source_slot) =
+                                    hex_engine::sampler_replacement_template_on_control(
+                                        &expected_state,
+                                        frames,
+                                    )?;
+                                crate::native_assets::NativeAssetDestination::ExistingInstrument {
+                                    track,
+                                    device,
+                                    expected_state,
+                                    state,
+                                    source_slot,
+                                }
+                            }
+                        };
                         if let Some(sink) = events.resident_audio() {
-                            let (state, source_slot) = match empty_sampler.as_ref() {
-                                Some((_, expected)) => hex_engine::sampler_replacement_template_on_control(expected, decoded.audio().frames().len())?,
-                                None => hex_engine::native_device_resources::sampler_import_template_on_control(decoded.audio().frames().len())?,
-                            };
-                            let destination = match empty_sampler {
-                                Some((device, expected_state)) => crate::native_assets::NativeAssetDestination::ExistingInstrument { track, device, expected_state, state, source_slot },
-                                None => crate::native_assets::NativeAssetDestination::EmptyInstrument { track, state, source_slot },
-                            };
                             let (created, snapshot) = session.import_resident_sampler(
                                 decoded,
                                 &cancel,
@@ -5314,7 +5351,7 @@ fn run_worker(
                                 },
                             ));
                         }
-                        session.import_service_snapshot_to_sampler(
+                        session.import_service_snapshot_destination(
                             decoded,
                             &cancel,
                             export_lane.admission_with_resident_owners(
@@ -5322,8 +5359,8 @@ fn run_worker(
                                 resident_seek.as_ref(),
                                 resident_preview.as_ref(),
                             ),
-                            track,
-                            empty_sampler,
+                            destination,
+                            None,
                         )
                     })();
                     match result {
@@ -5339,7 +5376,11 @@ fn run_worker(
                                 "sample loaded into sampler · preparing audio"
                             } else { "sample loaded into sampler · offline export supported · native playback unavailable" }.into());
                         }
-                        Err(reason) => error = Some(reason.to_string()),
+                        Err(reason) => {
+                            error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                &reason.to_string(),
+                            ))
+                        }
                     }
                 }
                 Request::AssignSampler { track, asset } => {

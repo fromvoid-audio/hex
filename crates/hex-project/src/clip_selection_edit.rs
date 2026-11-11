@@ -649,7 +649,7 @@ impl Command {
             | Self::ClearLoopRegion
             | Self::AddAsset { .. }
             | Self::ImportDeviceAsset { .. }
-            | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Self::ImportDeviceAssetIntoNewInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
             | Self::RelinkAssets(..)
