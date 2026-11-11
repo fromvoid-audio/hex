@@ -2259,6 +2259,7 @@ impl EditorView {
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
             };
+            let active = self.displayed_clip_active(clip.id(), clip.active());
             let (start, end) = (preview.frame_start, preview.frame_end);
             if end <= start {
                 continue;
@@ -2283,12 +2284,7 @@ impl EditorView {
                             .get(&track_id)
                             .map_or(0.0, |lane| lane.width),
                         scale_factor,
-                        theme::clip_activity_fill(
-                            track.color(),
-                            clip.flavor(),
-                            false,
-                            clip.active(),
-                        ),
+                        theme::clip_activity_fill(track.color(), clip.flavor(), false, active),
                         clip.id(),
                         clip.name(),
                         clip.looping(),
@@ -2344,7 +2340,7 @@ impl EditorView {
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
             let header_fill =
-                theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active());
+                theme::clip_activity_fill(track.color(), clip.flavor(), false, active);
             let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
@@ -2764,7 +2760,10 @@ impl EditorView {
                     .child(theme::text("missing media")),
             }
         };
-        super::waveform::clip_waveform_activity(body, clip.active())
+        super::waveform::clip_waveform_activity(
+            body,
+            self.displayed_clip_active(clip.id(), clip.active()),
+        )
     }
 
     fn waveform_grid(
@@ -2882,14 +2881,15 @@ impl EditorView {
             .project
             .track(track)
             .map_or(hex_project::ElementColor::default(), |t| t.color());
-        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, clip.active());
+        let active = self.displayed_clip_active(clip.id(), clip.active());
+        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, active);
         let waveform_ink = theme::clip_waveform_ink(
             identity,
             theme::ClipWaveformBackground::Arrangement {
                 flavor: clip.flavor(),
                 selected,
             },
-            clip.active(),
+            active,
         );
         let fill = theme::arrangement_clip_body_fill(header_fill, selected);
         let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
