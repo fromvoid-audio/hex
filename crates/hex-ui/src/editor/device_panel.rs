@@ -139,6 +139,7 @@ pub(super) struct DevicePanelState {
     /// View-only chain gap chosen for paste; exclusive with device selection.
     insertion: Option<InsertionPoint>,
     pub(super) drag_copy: Option<DeviceDragCopy>,
+    pub(super) pending_duplicate: Option<keyboard::PendingDuplicate>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, device_meter::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -223,6 +224,7 @@ pub(super) enum DevicePanelOwner {
 
 impl DevicePanelState {
     pub(super) fn select_only(&mut self, device: Option<DeviceId>) {
+        self.cancel_duplicate_selection_update();
         self.selected_device = device;
         self.selected_others.clear();
         self.selection_anchor = device;
@@ -297,6 +299,7 @@ impl DevicePanelState {
         if !order.contains(&device) {
             return;
         }
+        self.cancel_duplicate_selection_update();
         self.insertion = None;
         if modifiers.shift {
             let anchor = self
@@ -1800,7 +1803,11 @@ fn device_drag_title(
         return_destination: std::rc::Rc::new(std::cell::Cell::new(None)),
     };
     let entity = cx.entity();
-    let help = theme::text(format!("{title} · drag to reorder device"));
+    let help = theme::text(if class == NativeDeviceClass::Effect {
+        format!("{title} · drag to reorder device · duplicate · d")
+    } else {
+        format!("{title} · drag to reorder device")
+    });
     div()
         .id(("device-drag-title", id.value()))
         .debug_selector(move || format!("device-drag-title-{}", id.value()))
@@ -1930,6 +1937,7 @@ fn device_selection_listener(
                     selected,
                 });
         if event.modifiers.alt && view.device_panel.is_selected(device) {
+            view.device_panel.cancel_duplicate_selection_update();
             if let Some(previous) = view.device_panel.selected_device {
                 view.device_panel.selected_others.insert(previous);
             }
@@ -2199,6 +2207,38 @@ fn render_effect(
         .child(device_meter::render(view, device, cx))
 }
 
+fn duplicate_device_action(
+    project: &hex_project::Project,
+    owner: DevicePanelOwner,
+    selected: hex_project::DeviceSelectionIds,
+    destination: hex_project::DeviceChainOwner,
+    before: Option<DeviceId>,
+) -> Result<hex_session::service::DeviceClipboardAction, &'static str> {
+    let copies_instrument = match owner {
+        DevicePanelOwner::Track(id) => project
+            .track(id)
+            .and_then(|track| track.instrument())
+            .is_some_and(|device| selected.ids().contains(&device.id())),
+        _ => false,
+    };
+    if copies_instrument
+        && !matches!(
+            destination,
+            hex_project::DeviceChainOwner::Track(id)
+                if project.track(id).is_some_and(|track|
+                    !track.is_group() && track.instrument().is_none())
+        )
+    {
+        return Err("destination cannot accept another instrument");
+    }
+    Ok(hex_session::service::DeviceClipboardAction::Duplicate {
+        source: project_owner(owner),
+        selected,
+        destination,
+        before,
+    })
+}
+
 impl EditorView {
     pub(super) fn duplicate_device_drag_request(
         &self,
@@ -2225,32 +2265,16 @@ impl EditorView {
             .as_ref()
             .ok_or("device copy canceled · project changed")?
             .project;
-        let copies_instrument = match snapshot.owner {
-            DevicePanelOwner::Track(id) => project
-                .track(id)
-                .and_then(|track| track.instrument())
-                .is_some_and(|device| snapshot.selected.ids().contains(&device.id())),
-            _ => false,
-        };
-        if copies_instrument {
-            match destination {
-                hex_project::DeviceChainOwner::Track(id)
-                    if project
-                        .track(id)
-                        .is_some_and(|track| !track.is_group() && track.instrument().is_none()) => {
-                }
-                _ => return Err("destination cannot accept another instrument"),
-            }
-        }
         Ok(Request::DeviceClipboard {
             project_generation: drag.project_generation,
             revision: drag.revision,
-            action: hex_session::service::DeviceClipboardAction::Duplicate {
-                source: project_owner(snapshot.owner),
-                selected: snapshot.selected.clone(),
+            action: duplicate_device_action(
+                project,
+                snapshot.owner,
+                snapshot.selected.clone(),
                 destination,
                 before,
-            },
+            )?,
         })
     }
 

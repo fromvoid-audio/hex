@@ -837,6 +837,10 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+select one or more effects in a device chain and press **d** to duplicate them
+after the selection. the copies keep their settings and become the selection.
+press **cmd-z** to undo the duplication.
+
 during playback, track gain, eq edits and supported device bypass changes apply
 to the running audio. supported latency-bearing effects keep the dry signal
 aligned when you bypass them. reverb and delay tails may shorten or stop.
