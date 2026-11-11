@@ -135,6 +135,7 @@ impl EditorView {
         let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
+            self.refresh_locators(&state, empty_viewport);
             let grid = super::musical_time::grid_lines(
                 &state.project,
                 empty_viewport,
@@ -154,6 +155,7 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+                .children(self.locator_strip(&state, empty_viewport, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
                     &state,
@@ -199,7 +201,13 @@ impl EditorView {
                                 self,
                                 empty_viewport,
                                 self.track_header_width(),
-                            )]),
+                            )])
+                            .children([self.locator_lines(
+                                empty_viewport,
+                                self.track_header_width(),
+                                "locator-line",
+                            )])
+                            .children(self.edit_cursor_layer(empty_viewport, clip_move_guide, cx)),
                     ),
                     cx,
                 )]);
@@ -216,6 +224,7 @@ impl EditorView {
         }
 
         let viewport = self.visible_viewport(state.timeline_frames);
+        self.refresh_locators(&state, viewport);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
         let bands = super::musical_time::adaptive_grid_bands_for_grid(
@@ -282,6 +291,11 @@ impl EditorView {
             viewport,
             self.track_header_width(),
         )]);
+        content = content.children([self.locator_lines(
+            viewport,
+            self.track_header_width(),
+            "locator-line",
+        )]);
         content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
@@ -290,6 +304,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+            .children(self.locator_strip(&state, viewport, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
             .children(super::gain_lane::view(
@@ -304,7 +319,7 @@ impl EditorView {
         self.arrangement_surface(upper, returns, main, cx)
     }
 
-    fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> Div {
+    fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         if self
             .time_range_move_gesture
             .as_ref()
@@ -312,8 +327,16 @@ impl EditorView {
         {
             body = body.cursor(gpui::CursorStyle::DragCopy);
         }
-        body = body
+        let mut body = body
+            .id("arrangement-content")
             .debug_selector(|| "arrangement-content".to_owned())
+            .when(self.context_menu.is_none(), |body| {
+                body.on_click(cx.listener(|view, event: &gpui::ClickEvent, window, cx| {
+                    if let gpui::ClickEvent::Mouse(event) = event {
+                        view.place_empty_arrangement_cursor(event, window, cx);
+                    }
+                }))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
@@ -448,6 +471,11 @@ impl EditorView {
                             if view.context_menu.is_some()
                                 || super::device_panel::picker_is_open(view)
                             {
+                                return (false, false);
+                            }
+                            // The body click owns a point in the trailing space.
+                            // Lane gesture probes must leave click suppression intact there.
+                            if view.painted_arrangement_tail(x, y).is_some() {
                                 return (false, false);
                             }
                             if view.pointer_hits_section_launch(x, y) {
@@ -878,7 +906,8 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             )
-            .children(self.time_selection_cursor_layer());
+            .children(self.time_selection_cursor_layer())
+            .children([self.locator_lines(viewport, 0.0, "locator-main-line")]);
         let row = div()
             .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
                 view.resize_row_wheel(None, event, cx);

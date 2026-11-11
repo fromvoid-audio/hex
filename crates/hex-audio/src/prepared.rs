@@ -5519,6 +5519,7 @@ mod tests {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
                     modulation: Default::default(),
@@ -5705,6 +5706,7 @@ mod tests {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -5848,6 +5850,7 @@ mod tests {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -6010,6 +6013,7 @@ mod tests {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -6413,7 +6417,11 @@ mod tests {
             .with_shape(4, 4, 700, -700)
             .unwrap()
             .with_curve_positions(250, 750)
-            .unwrap();
+            .unwrap()
+            .with_curve_laws([
+                hex_project::ClipFade::DEFAULT_S_CURVE,
+                hex_project::FadeCurveLaw::Linear,
+            ]);
         editor
             .execute(hex_project::Command::SetClipFadeEnvelope { clip, fade })
             .unwrap();
@@ -10808,6 +10816,7 @@ mod tests {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -11531,6 +11540,7 @@ mod tests {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),

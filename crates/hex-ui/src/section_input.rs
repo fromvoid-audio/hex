@@ -45,7 +45,7 @@ pub(crate) fn routes_to_time_range(
         .then_some(!edge && !paint_empty && y >= boundary)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 

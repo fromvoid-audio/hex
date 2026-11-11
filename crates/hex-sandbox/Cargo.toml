@@ -7,6 +7,8 @@ publish.workspace = true
 
 [features]
 ui-test-support = ["gpui/test-support"]
+# Shared source files use this test-only gate; it has no runtime effect.
+ui-unit-tier = []
 
 [dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }

@@ -623,7 +623,7 @@ fn alias_and_independent_intentions_keep_order_through_delayed_terminals(cx: &mu
     let header = visual.debug_bounds(header).unwrap();
     assert!(icon.origin.x >= header.origin.x && icon.right() <= header.right());
     assert!(icon.origin.y >= header.origin.y && icon.bottom() <= header.bottom());
-    visual.simulate_keystrokes("i");
+    visual.simulate_keystrokes("shift-i");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);

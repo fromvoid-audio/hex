@@ -9,12 +9,15 @@ import sys
 import tempfile
 import unittest
 from test_ci_target_storage import reuse_fixed_scratch_observations
+from test_local_ci import install_delivery_source_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("identity_ci", ROOT / "scripts/local-ci.py")
 ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ci
-SPEC.loader.exec_module(ci)
+source = (ROOT / "scripts/local-ci.py").read_bytes()
+ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+exec(compile(source, str(ROOT / "scripts/local-ci.py"), "exec", dont_inherit=True), ci.__dict__)
 DELIVERY_SPEC = importlib.util.spec_from_file_location("identity_delivery", ROOT / "scripts/hex-test-build.py")
 delivery = importlib.util.module_from_spec(DELIVERY_SPEC)
 sys.modules[DELIVERY_SPEC.name] = delivery
@@ -29,6 +32,7 @@ class UiBuildIdentityTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = self.root = Path(temporary.name).resolve()
+        install_delivery_source_fixture(root)
         package = root / "crates/ui"
         (package / "src").mkdir(parents=True)
         (root / "changelog").mkdir()

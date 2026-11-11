@@ -13,7 +13,7 @@ use hex_project::TrackId;
 use hex_session::service::{NativeDeviceDropSource, Request};
 
 impl EditorView {
-    // A validated plugin effect uses the separate asynchronous insertion path;
+    // A validated plugin uses the separate asynchronous insertion path;
     // native devices return their existing typed request.
     fn header_device_request(
         &self,
@@ -40,12 +40,15 @@ impl EditorView {
             return Err("device drop canceled · project or source changed");
         }
         if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
-            self.check_device_append_target(track, cx)?;
+            let target = self.check_device_append_target(track, cx)?;
             if self.pending_plugin_effect.is_some() {
                 return Err("wait for the pending vst3 insertion");
             }
-            if selection.role != hex_plugin_catalog::PluginRole::Effect {
-                return Err("drop a vst3 effect on the track header");
+            if selection.role == hex_plugin_catalog::PluginRole::Instrument
+                && (target.is_group()
+                    || (target.instrument().is_some() && !target.receives_source_audio()))
+            {
+                return Err("select an ordinary receiving track for the vst3 instrument");
             }
             return Ok(None);
         }
@@ -192,12 +195,24 @@ impl EditorView {
                         }
                         Ok(None) => {
                             if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
-                                view.insert_plugin_effect(
-                                    selection,
-                                    hex_session::service::PluginEffectDestination::Track(track),
-                                    None,
-                                    cx,
-                                );
+                                use hex_session::service::PluginEffectDestination;
+                                let instrument = view
+                                    .state
+                                    .as_ref()
+                                    .and_then(|state| state.project.track(track))
+                                    .and_then(hex_project::Track::instrument)
+                                    .map(hex_project::Device::id);
+                                let destination = match (selection.role, instrument) {
+                                    (
+                                        hex_plugin_catalog::PluginRole::Instrument,
+                                        Some(instrument),
+                                    ) => PluginEffectDestination::ReplaceInstrument {
+                                        track,
+                                        instrument,
+                                    },
+                                    _ => PluginEffectDestination::Track(track),
+                                };
+                                view.insert_plugin_effect(selection, destination, None, cx);
                             } else {
                                 view.error = Some("device drop source changed".into());
                             }

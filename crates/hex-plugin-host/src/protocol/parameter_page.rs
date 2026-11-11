@@ -197,10 +197,10 @@ pub enum ControllerRequest {
     },
     ToggleEditor,
     CloseEditor,
-    /// Close the predecessor and acknowledge whether it had an open editor.
+    /// Detach the predecessor and capture the latest AppKit placement.
     DetachEditor,
-    /// Open the successor's editor without activating its helper application.
-    ReopenEditor,
+    /// Reopen on the successor without activating its helper application.
+    ReopenEditor(Option<PluginEditorPosition>),
 }
 impl Default for ControllerRequest {
     fn default() -> Self {
@@ -222,10 +222,29 @@ impl ControllerRequest {
                 }
                 Ok(())
             }
-            Self::ToggleEditor | Self::CloseEditor | Self::DetachEditor | Self::ReopenEditor => {
+            Self::ToggleEditor | Self::CloseEditor | Self::DetachEditor | Self::ReopenEditor(_) => {
                 Ok(())
             }
         }
+    }
+}
+
+/// Top-left of the live AppKit frame in global screen points. This transient
+/// snapshot owns no window or SDK object and is scoped to a single handoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginEditorPosition {
+    x: u64,
+    y: u64,
+}
+
+impl PluginEditorPosition {
+    pub fn new(x: f64, y: f64) -> Option<Self> {
+        // Wide enough for any supported desktop, while bounding foreign input.
+        const LIMIT: f64 = 1_000_000.0;
+        (x.abs() <= LIMIT && y.abs() <= LIMIT).then_some(Self {
+            x: x.to_bits(),
+            y: y.to_bits(),
+        })
     }
 }
 
@@ -234,6 +253,7 @@ pub enum PluginEditorState {
     Closed,
     Open,
     Unavailable,
+    Detached(PluginEditorPosition),
 }
 
 pub fn parameter_page_request(
@@ -258,8 +278,17 @@ pub fn parameter_page_request(
         }
         ControllerRequest::ToggleEditor => out[82] = 6,
         ControllerRequest::CloseEditor => out[82] = 7,
-        ControllerRequest::DetachEditor => out[82] = 9,
-        ControllerRequest::ReopenEditor => out[82] = 10,
+        // New kinds prevent a pre-placement helper from closing the old
+        // window and returning a positionless legacy acknowledgement.
+        ControllerRequest::DetachEditor => out[82] = 11,
+        ControllerRequest::ReopenEditor(position) => {
+            out[82] = 12;
+            if let Some(position) = position {
+                out[74..82].copy_from_slice(&position.x.to_le_bytes());
+                out[83..87].copy_from_slice(&1_u32.to_le_bytes());
+                out[87..95].copy_from_slice(&position.y.to_le_bytes());
+            }
+        }
         ControllerRequest::SelectedParameters { first } => {
             out[72..74].copy_from_slice(&first.to_le_bytes());
             out[82] = 8;
@@ -305,7 +334,7 @@ pub fn parameter_page(
         ControllerRequest::ToggleEditor
         | ControllerRequest::CloseEditor
         | ControllerRequest::DetachEditor
-        | ControllerRequest::ReopenEditor => None,
+        | ControllerRequest::ReopenEditor(_) => None,
     };
     let Some(query) = query else {
         if status != 4 {
@@ -315,12 +344,19 @@ pub fn parameter_page(
             0 => PluginEditorState::Closed,
             1 => PluginEditorState::Open,
             2 => PluginEditorState::Unavailable,
+            3 if request == ControllerRequest::DetachEditor => {
+                let x = f64::from_le_bytes(reader.array()?);
+                let y = f64::from_le_bytes(reader.array()?);
+                let position = PluginEditorPosition::new(x, y)
+                    .ok_or(Error::Protocol("invalid native editor placement"))?;
+                PluginEditorState::Detached(position)
+            }
             _ => return Err(Error::Protocol("invalid native editor state")),
         };
         let valid = match request {
             ControllerRequest::CloseEditor => state == PluginEditorState::Closed,
             ControllerRequest::DetachEditor => state != PluginEditorState::Unavailable,
-            ControllerRequest::ReopenEditor => state != PluginEditorState::Closed,
+            ControllerRequest::ReopenEditor(_) => state != PluginEditorState::Closed,
             _ => true,
         };
         if !valid {

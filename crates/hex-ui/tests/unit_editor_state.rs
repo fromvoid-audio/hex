@@ -14,8 +14,14 @@ mod disk_overload_state;
 mod midi_thumbnail_state;
 #[path = "../src/editor/navigation_profile/selection.rs"]
 mod navigation_selection_state;
+#[path = "../src/editor/play_intent.rs"]
+mod play_intent_state;
 #[path = "../src/editor/pending_edit.rs"]
 mod receipt;
+// Runtime-only methods remain in the library consumer.
+#[allow(dead_code)]
+#[path = "../src/editor/recovery_state.rs"]
+mod recovery_state;
 #[path = "../src/editor/track_meters/scale.rs"]
 mod track_meter_scale_state;
 #[path = "../src/editor/viewport.rs"]
@@ -804,6 +810,247 @@ mod editor {
                         }
                     }
                 }
+            }
+        }
+    }
+    mod recovery_state {
+        use crate::recovery_state::*;
+        mod tests {
+            use super::RecoveryState;
+
+            #[test]
+            fn recovery_requires_exact_success_not_a_later_terminal() {
+                use hex_audio::prepared::{ActionOutcome, ActionOutcomeReceipt};
+                let mut state = RecoveryState::default();
+                let generation = state.begin(64).unwrap();
+                assert!(state.opened(generation));
+                assert!(state.restored(generation));
+                state.seeking(3);
+                state.observe_receipt(ActionOutcomeReceipt {
+                    ticket: 4,
+                    outcome: ActionOutcome::Applied,
+                });
+                assert!(!state.complete_exact(true, 64, false));
+                state.observe_receipt(ActionOutcomeReceipt {
+                    ticket: 3,
+                    outcome: ActionOutcome::Rejected(
+                        hex_engine::PlaybackActionRejection::OutputFailed,
+                    ),
+                });
+                assert!(state.seek_failed());
+                assert!(!state.complete_exact(true, 64, false));
+            }
+
+            #[test]
+            fn prepared_recovery_requires_exact_attempt_request_and_actual_stopped_ack() {
+                let mut state = RecoveryState::default();
+                let generation = state.begin(129).unwrap();
+                assert!(!state.permits_seek(None));
+                assert!(!state.permits_seek(Some(generation)));
+                state.opened(generation);
+                state.restored(generation);
+                assert!(state.permits_seek(Some(generation)));
+                assert!(!state.permits_seek(Some(generation + 1)));
+                assert!(!state.prepared_seeking(generation + 1, 7));
+                assert!(state.prepared_seeking(generation, 7));
+                assert!(!state.prepared_seeking(generation, 8));
+                assert_eq!(state.seek_needed(true), None);
+                assert!(
+                    !state.complete(true, u64::MAX, 129, false),
+                    "command tickets cannot apply prepared recovery"
+                );
+                assert!(!state.complete_prepared(true, None, 9, 129, false));
+                assert!(!state.complete_prepared(true, Some((8, 9)), 9, 129, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 8, 129, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 10, 129, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 9, 128, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 9, 129, true));
+                assert!(!state.complete_prepared(false, Some((7, 9)), 9, 129, false));
+                state.prepared_published(8, 10);
+                assert_eq!(state.prepared_revision(), None);
+                state.prepared_published(7, 9);
+                assert_eq!(state.prepared_revision(), Some(9));
+                assert!(state.complete_prepared(true, Some((7, 9)), 9, 129, false));
+                assert!(state.permits_seek(None));
+                assert!(!state.permits_seek(Some(generation)));
+
+                let next = state.begin(129).unwrap();
+                state.opened(next);
+                state.restored(next);
+                state.prepared_seeking(next, 11);
+                state.prepared_published(11, 12);
+                state.stop();
+                assert_eq!(state.prepared_request(), None);
+                assert_eq!(state.prepared_revision(), None);
+                assert_eq!(state.seek_needed(true), Some(0));
+                assert!(!state.complete_prepared(true, Some((11, 12)), 12, 129, false));
+                state.seeking(13);
+                assert!(state.complete(true, 13, 0, false));
+            }
+
+            #[test]
+            fn obsolete_completion_and_old_acknowledgments_do_not_enable_play() {
+                let mut state = RecoveryState::default();
+                let first = state.begin(640).expect("first recovery");
+                assert!(state.begin(640).is_err());
+                state.fail();
+                let current = state.begin(640).expect("retry");
+                assert!(!state.opened(first));
+                assert!(!state.restored(first));
+                assert!(state.opened(current));
+                assert!(state.restored(current));
+                // A huge prior stream acknowledgment is insufficient without a new seek.
+                assert!(!state.complete(true, 1000, 640, false));
+                assert_eq!(state.seek_needed(true), Some(640));
+                state.seeking(1);
+                assert!(!state.complete(false, 1, 640, false));
+                assert!(!state.complete(true, 0, 640, false));
+                assert!(!state.complete(true, 1, 0, false));
+                assert!(!state.complete(true, 1, 640, true));
+                assert!(state.complete(true, 1, 640, false));
+                assert!(state.generation().is_none());
+            }
+
+            #[test]
+            fn stop_supersedes_saved_cursor_and_requires_a_fresh_seek() {
+                let mut state = RecoveryState::default();
+                let generation = state.begin(960).expect("recovery");
+                state.opened(generation);
+                state.restored(generation);
+                state.seeking(1);
+                state.stop();
+                assert_eq!(state.position(), Some(0));
+                assert!(!state.complete(true, 1, 960, false));
+                assert_eq!(state.seek_needed(true), Some(0));
+                state.seeking(2);
+                assert!(!state.complete(true, 1, 0, false));
+                assert!(state.complete(true, 2, 0, false));
+            }
+        }
+    }
+    mod play_intent {
+        use crate::play_intent_state::*;
+        mod tests {
+            use super::{AdmissionError, TokenExhausted, Tracker, prepare_admission};
+
+            #[test]
+            fn launch_then_space_tracks_pause_then_play() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                assert!(tracker.desired_playing(false));
+
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                assert!(!tracker.desired_playing(false));
+
+                let play = tracker.reserve_token().expect("play token");
+                tracker.admit(play, true);
+                assert!(tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn direct_play_pause_order_is_latest_intent_wins() {
+                let mut tracker = Tracker::default();
+                let play = tracker.reserve_token().expect("play token");
+                tracker.admit(play, true);
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                assert!(!tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn stale_launch_clear_cannot_erase_a_newer_pause() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                tracker.clear_if_current(launch);
+                assert!(!tracker.desired_playing(true));
+            }
+
+            #[test]
+            fn earlier_ticket_does_not_resolve_a_newer_unsent_intent() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                tracker.attach_ticket(launch, 8);
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                tracker.attach_ticket(launch, 8);
+                tracker.reconcile(8, true, None);
+                assert!(!tracker.desired_playing(true));
+            }
+
+            #[test]
+            fn later_receipt_does_not_resolve_an_earlier_pending_intent() {
+                let mut tracker = Tracker::default();
+                let token = tracker.reserve_token().unwrap();
+                tracker.admit(token, true);
+                tracker.attach_ticket(token, 4);
+                tracker.reconcile_receipt(5, false);
+                assert!(tracker.desired_playing(false));
+                tracker.reconcile_receipt(4, false);
+                assert!(!tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn consumed_or_failed_latest_ticket_resolves_to_actual_state() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                tracker.attach_ticket(launch, 11);
+                tracker.reconcile(0, false, Some(11));
+                assert!(!tracker.desired_playing(false));
+
+                let next = tracker.reserve_token().expect("next token");
+                tracker.admit(next, true);
+                assert!(tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn full_ui_queue_keeps_existing_intent_unchanged() {
+                let mut tracker = Tracker::default();
+                let play = prepare_admission(&mut tracker, Some(true), 0, 32)
+                    .expect("play admission")
+                    .expect("play token");
+                tracker.admit(play, true);
+                assert_eq!(
+                    prepare_admission(&mut tracker, Some(false), 32, 32),
+                    Err(AdmissionError::QueueFull)
+                );
+                assert!(tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn priority_stop_and_lifecycle_clear_do_not_depend_on_tokens() {
+                let mut tracker = Tracker::default();
+                let play = tracker.reserve_token().expect("play token");
+                tracker.admit(play, true);
+                tracker.priority_stop();
+                assert!(!tracker.desired_playing(true));
+                tracker.reconcile(0, false, None);
+                assert!(!tracker.desired_playing(false));
+
+                let next = tracker.reserve_token().expect("next token");
+                tracker.admit(next, true);
+                tracker.clear();
+                assert!(!tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn token_exhaustion_is_checked_without_aliasing() {
+                let mut tracker = Tracker::starting_at(u64::MAX);
+                assert_eq!(tracker.reserve_token(), Err(TokenExhausted));
+                assert_eq!(tracker.reserve_token(), Err(TokenExhausted));
+                assert!(!tracker.desired_playing(false));
+                assert!(tracker.desired_playing(true));
+                tracker.priority_stop();
+                assert!(!tracker.desired_playing(true));
+                let first = Tracker::default().reserve_token().unwrap();
+                let last = Tracker::starting_at(u64::MAX - 1).reserve_token().unwrap();
+                assert_ne!(first, last);
             }
         }
     }

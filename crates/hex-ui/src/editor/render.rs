@@ -660,7 +660,10 @@ impl Render for EditorView {
                 "hex_changelog"
             } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
-            } else if self.clip_name_edit.is_some() || self.sections.naming() {
+            } else if self.clip_name_edit.is_some()
+                || self.sections.naming()
+                || self.locators.naming()
+            {
                 "hex_clip_name hex_text_editing"
             } else if self.tuning.open {
                 "hex_tuning"
@@ -955,17 +958,24 @@ impl Render for EditorView {
                 view.finish_track_name(false, window, cx);
             }))
             .on_action(cx.trace(|view, _: &super::RenameClip, window, cx| {
-                if !view.section_name_begin(window, cx) && !view.track_header_focused(window) {
+                if !view.rename_selected_locator(window, cx)
+                    && !view.section_name_begin(window, cx)
+                    && !view.track_header_focused(window)
+                {
                     view.begin_clip_name(window, cx);
                 }
             }))
             .on_action(cx.trace(|view, _: &super::CommitClipName, window, cx| {
-                if !view.section_name_finish(true, window, cx) {
+                if !view.finish_locator_name(true, window, cx)
+                    && !view.section_name_finish(true, window, cx)
+                {
                     view.finish_clip_name(true, window, cx);
                 }
             }))
             .on_action(cx.trace(|view, _: &super::CancelClipName, window, cx| {
-                if !view.section_name_finish(false, window, cx) {
+                if !view.finish_locator_name(false, window, cx)
+                    && !view.section_name_finish(false, window, cx)
+                {
                     view.finish_clip_name(false, window, cx);
                 }
             }))
@@ -1116,6 +1126,7 @@ impl Render for EditorView {
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_audio_loop_gesture()
                     | view.cancel_loop_rail_gesture()
+                    | view.locators.cancel_drag()
                     | view.project_spectrum_splitter_event(
                         hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
                         window,
@@ -1456,6 +1467,10 @@ impl Render for EditorView {
                 if view.selection_delete_blocked() {
                     return;
                 }
+                if view.delete_locator(window) {
+                    cx.notify();
+                    return;
+                }
                 if view.delete_automation_point(window, cx) {
                     return;
                 }
@@ -1536,6 +1551,10 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, _: &super::DuplicateAliasClip, window, cx| {
                 view.duplicate_key(super::duplicate::DuplicateKind::Alias, window, cx);
+            }))
+            .on_action(cx.trace(|view, _: &super::AddLocator, window, cx| {
+                view.add_locator(window);
+                cx.notify();
             }))
             .on_action(cx.trace(|view, _: &super::MakeClipUnique, window, cx| {
                 if view.focus.is_focused(window)

@@ -944,13 +944,22 @@ fn lane_plain_blank_drag_adds_a_point_and_drags_it_without_a_marquee(cx: &mut Te
     // Unsnapped (Cmd) so the dragged point lands exactly under the pointer.
     let from = lane_point(&mut visual, device, target, [0.6, 0.5]);
     let to = lane_point(&mut visual, device, target, [0.6, 0.2]);
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    let assert_draft_only = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            assert!(view.automation_view.devices.marquee.is_none());
+            assert!(view.automation_view.devices.draft.is_some());
+            assert!(view.automation_view.devices.pending.is_none());
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    };
     visual.simulate_mouse_down(from, MouseButton::Left, CMD);
-    editor.read_with(&visual, |view, _| {
-        assert!(view.automation_view.devices.marquee.is_none());
-        assert!(view.automation_view.devices.draft.is_some());
-    });
+    assert_draft_only(&visual);
     // Shift arriving after the press must not turn the gesture into a band.
     visual.simulate_mouse_move(to, Some(MouseButton::Left), SHIFT_CMD);
+    visual.run_until_parked();
+    assert_draft_only(&visual);
     visual.simulate_mouse_up(to, MouseButton::Left, SHIFT_CMD);
     visual.run_until_parked();
     pump(&mut visual, &editor);

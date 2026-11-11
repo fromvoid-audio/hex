@@ -466,7 +466,7 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             end_frame: range.end(),
         });
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track: track_ids[0],
+            track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
@@ -505,7 +505,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
         });
         view.time_selection_project_scope = true;
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track: track_ids[0],
+            track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,

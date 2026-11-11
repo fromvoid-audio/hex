@@ -224,6 +224,13 @@ impl OrderedKeys {
     pub(crate) fn active(&self, token: MidiKeyActivation) -> bool {
         self.exact(token, ACTIVE)
     }
+    pub(super) fn has_recording_prefix(&self) -> bool {
+        matches!(
+            Self::phase(self.state.load(Acquire)),
+            PENDING | ACTIVE | SEALED
+        )
+    }
+
     pub(super) fn baseline(&self) -> Option<[u64; COMPUTER_KEY_COUNT]> {
         let raw = self.state.load(Acquire);
         if Self::phase(raw) != PENDING {
@@ -325,6 +332,9 @@ impl ComputerKeyboardInput {
                     self.output_epoch_on_control().unwrap_or(0),
                 )
             });
+        if result.is_ok() {
+            self.cancel_live_note_audition_on_control();
+        }
         self.sequence.store(after, SeqCst);
         result
     }

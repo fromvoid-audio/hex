@@ -419,7 +419,7 @@ pub(super) fn marquee_hits(
     Ok(hits)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{MidiSelection, marquee_hits};
     use crate::editor::midi_scene::NoteGeometry;
