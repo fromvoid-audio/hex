@@ -1,5 +1,6 @@
 //! Borrow an already admitted graph program in the original PCM transaction.
 use hex_lattice::ForeignAutomation;
+use hex_lattice_contract::MAX_FOREIGN_AUTOMATION_TARGETS;
 use hex_plugin_host::transport::{
     AuthoredParameterProgram, Fault, MAX_PARAMETER_POINTS, MAX_TIMING_CHANGES, ParameterPoint,
     Parameters, TimingChanges,
@@ -53,7 +54,7 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredSelection {
     class: hex_plugin_state::ClassId,
-    ids: [u32; MAX_PARAMETER_POINTS],
+    ids: [u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     len: usize,
     dense_parameter: Option<u32>,
 }
@@ -69,7 +70,7 @@ impl AuthoredSelection {
             .map_err(|_| "authored vst3 class is invalid")?;
         let mut selected = Self {
             class,
-            ids: [0; MAX_PARAMETER_POINTS],
+            ids: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
             len: 0,
             dense_parameter: None,
         };
@@ -112,7 +113,7 @@ impl AuthoredSelection {
             return Err("dense vst3 parameter identity differs");
         }
         if let Err(index) = selected.ids[..selected.len].binary_search(&id) {
-            if selected.len == MAX_PARAMETER_POINTS {
+            if selected.len == MAX_FOREIGN_AUTOMATION_TARGETS {
                 return Err("dense vst3 target count exceeds its point budget");
             }
             selected.ids.copy_within(index..selected.len, index + 1);
@@ -151,7 +152,7 @@ impl AuthoredSelection {
 #[derive(Clone)]
 pub(super) struct SourceCapabilities {
     class: Option<hex_plugin_state::ClassId>,
-    parameters: [hex_lattice::ForeignParameterCapability; MAX_PARAMETER_POINTS],
+    parameters: [hex_lattice::ForeignParameterCapability; MAX_FOREIGN_AUTOMATION_TARGETS],
     len: usize,
 }
 
@@ -163,13 +164,13 @@ impl Default for SourceCapabilities {
                 id: 0,
                 steps: 0,
                 normalized_base_bits: 0,
-            }; MAX_PARAMETER_POINTS],
+            }; MAX_FOREIGN_AUTOMATION_TARGETS],
             len: 0,
         }
     }
 }
 
-pub(super) type CanonicalParameterBases = [Option<(u32, u64)>; MAX_PARAMETER_POINTS];
+pub(super) type CanonicalParameterBases = [Option<(u32, u64)>; MAX_FOREIGN_AUTOMATION_TARGETS];
 
 impl SourceCapabilities {
     /// The original source reserved its native metadata container. An empty
@@ -189,7 +190,7 @@ impl SourceCapabilities {
     ) -> Result<(Self, CanonicalParameterBases), hex_plugin_host::Error> {
         use hex_plugin_host::Error;
 
-        if ids.len() > MAX_PARAMETER_POINTS {
+        if ids.len() > MAX_FOREIGN_AUTOMATION_TARGETS {
             return Err(Error::Protocol(
                 "authored parameter selection exceeds the PCM point budget",
             ));
@@ -200,7 +201,7 @@ impl SourceCapabilities {
             len: ids.len(),
             ..Self::default()
         };
-        let mut bases = [None; MAX_PARAMETER_POINTS];
+        let mut bases = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
         for ((entry, base), &id) in source.parameters.iter_mut().zip(&mut bases).zip(ids) {
             let previous = retained.and_then(|old| {
                 (old.class == Some(class))
@@ -234,7 +235,7 @@ impl SourceCapabilities {
     pub(super) fn from_canonical(
         class: hex_plugin_state::ClassId,
         values: &CanonicalParameterBases,
-        steps: &[u32; MAX_PARAMETER_POINTS],
+        steps: &[u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     ) -> Result<Self, &'static str> {
         let mut result = Self {
             class: Some(class),
@@ -341,8 +342,8 @@ mod tests {
         );
         assert!(
             AuthoredSelection::from_targets_and_dense(
-                (0..MAX_PARAMETER_POINTS as u32).map(|id| (id, Some(class))),
-                Some((MAX_PARAMETER_POINTS as u32, class)),
+                (0..MAX_FOREIGN_AUTOMATION_TARGETS as u32).map(|id| (id, Some(class))),
+                Some((MAX_FOREIGN_AUTOMATION_TARGETS as u32, class)),
             )
             .is_err()
         );
@@ -351,8 +352,8 @@ mod tests {
     #[test]
     fn canonical_metadata_keeps_exact_bases_and_requires_complete_ordered_values() {
         let class = hex_plugin_state::ClassId::new([3; 16]).unwrap();
-        let mut values = [None; MAX_PARAMETER_POINTS];
-        let steps = [0; MAX_PARAMETER_POINTS];
+        let mut values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
         let precise = f64::from_bits(0x3fe0000000000001);
         values[0] = Some((0, precise.to_bits()));
         values[1] = Some((7, 0.25f64.to_bits()));
@@ -411,7 +412,7 @@ mod tests {
         assert!(AuthoredSelection::from_targets([(u32::MAX, class)]).is_err());
         assert!(
             AuthoredSelection::from_targets(
-                (0..=MAX_PARAMETER_POINTS as u32).map(|id| (id, class))
+                (0..=MAX_FOREIGN_AUTOMATION_TARGETS as u32).map(|id| (id, class))
             )
             .is_err()
         );
@@ -499,11 +500,12 @@ mod retained_tests {
     #[test]
     fn full_constant_base_program_stages_without_callback_allocation_or_drop() {
         let project = hex_project::Project::new(8000).unwrap();
-        let capabilities = (0..MAX_PARAMETER_POINTS as u32)
+        let capabilities = (0..MAX_FOREIGN_AUTOMATION_TARGETS as u32)
             .map(|id| hex_engine::foreign_automation::ParameterCapability {
                 id,
                 steps: 0,
-                normalized_base_bits: (f64::from(id) / MAX_PARAMETER_POINTS as f64).to_bits(),
+                normalized_base_bits: (f64::from(id) / MAX_FOREIGN_AUTOMATION_TARGETS as f64)
+                    .to_bits(),
             })
             .collect::<Vec<_>>();
         let program = hex_engine::foreign_automation::Program::prepare(
@@ -528,10 +530,13 @@ mod retained_tests {
         let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
         stage(&mut callback, 8, 0, &program);
         let request = worker.receive_request().unwrap().unwrap();
-        assert_eq!(request.parameter_capacity, 0);
+        assert_eq!(
+            request.parameter_capacity,
+            MAX_PARAMETER_POINTS - MAX_FOREIGN_AUTOMATION_TARGETS
+        );
         assert_eq!(
             request.block.parameters.as_slice().len(),
-            MAX_PARAMETER_POINTS
+            MAX_FOREIGN_AUTOMATION_TARGETS
         );
         for (point, expected) in request
             .block
@@ -630,21 +635,23 @@ mod retained_tests {
         let tempo = project.tempo_map();
         let beat = |frame| tempo.frame_to_beat(frame).unwrap();
         let class = [1; 16];
-        let lanes = [(0, 0.75), (11, 0.5)].map(|(parameter, value)| DeviceAutomation {
-            target: DeviceAutomationTarget::Vst3 { parameter },
-            vst3_class: Some(class),
-            read_selection: AutomationReadSelection::Authored,
-            points: Vec::new(),
-            touch: vec![DeviceAutomationTouchSpan {
-                start: beat(4100),
-                end: beat(4600),
-                steps: vec![DeviceAutomationTouchStep {
-                    beat: beat(4100),
-                    value: AutomationValue::new(value).unwrap(),
+        let lanes = [(0, 0.75), (11, 0.5), (23, 0.625), (34, 0.375)].map(|(parameter, value)| {
+            DeviceAutomation {
+                target: DeviceAutomationTarget::Vst3 { parameter },
+                vst3_class: Some(class),
+                read_selection: AutomationReadSelection::Authored,
+                points: Vec::new(),
+                touch: vec![DeviceAutomationTouchSpan {
+                    start: beat(4100),
+                    end: beat(4600),
+                    steps: vec![DeviceAutomationTouchStep {
+                        beat: beat(4100),
+                        value: AutomationValue::new(value).unwrap(),
+                    }],
                 }],
-            }],
+            }
         });
-        let capabilities = [0, 11, 23].map(|id| ParameterCapability {
+        let capabilities = [0, 11, 23, 34, 45].map(|id| ParameterCapability {
             id,
             steps: 0,
             normalized_base_bits: 0.25f64.to_bits(),
@@ -675,23 +682,25 @@ mod retained_tests {
 
         let request = worker.receive_request().unwrap().unwrap();
         let points = request.block.parameters.as_slice();
-        assert_eq!(points.len(), 57);
+        assert_eq!(points.len(), 113);
         assert_eq!(
             request.parameter_capacity,
             MAX_PARAMETER_POINTS - points.len()
         );
-        assert_eq!(points.iter().filter(|point| point.id == 23).count(), 1);
+        assert_eq!(points.iter().filter(|point| point.id == 45).count(), 1);
         for point in points {
             let expected = match (point.id, point.frame % 38 >= 4) {
                 (0, true) => 0.75,
                 (11, true) => 0.5,
+                (23, true) => 0.625,
+                (34, true) => 0.375,
                 _ => 0.25,
             };
             assert_eq!(point.normalized, expected);
         }
         worker.complete(request.block).unwrap();
 
-        // Eight repeated ranges actually need 65 points. The original
+        // Eight repeated ranges actually need 129 points. The
         // transport refuses the whole quantum instead of sending a prefix.
         let transport = TransportProgram(program.borrow());
         callback.begin_physical_callback(256).unwrap();
@@ -739,7 +748,7 @@ mod retained_tests {
         for expected in [0.25, 0.75] {
             let request = worker.receive_request().unwrap().unwrap();
             assert!(request.authored_program.is_some());
-            assert_eq!(request.parameter_capacity, 62);
+            assert_eq!(request.parameter_capacity, MAX_PARAMETER_POINTS - 2);
             assert_eq!(
                 request.block.parameters.as_slice(),
                 &[

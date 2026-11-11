@@ -64,7 +64,7 @@ fn validate_capabilities(
 pub(super) fn bases(
     capabilities: &automation::SourceCapabilities,
 ) -> automation::CanonicalParameterBases {
-    let mut bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+    let mut bases = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
     for (slot, parameter) in bases.iter_mut().zip(capabilities.parameters()) {
         *slot = Some((parameter.id, parameter.normalized_base_bits));
     }
@@ -110,14 +110,14 @@ mod tests {
     fn only_the_acknowledged_target_can_extend_exact_constructor_capabilities() {
         let class = hex_plugin_state::ClassId::new([1; 16]).unwrap();
         let caps = |class, values: &[(u32, f64)], step| {
-            let mut bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+            let mut bases = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
             for (slot, &(id, value)) in bases.iter_mut().zip(values) {
                 *slot = Some((id, value.to_bits()));
             }
             automation::SourceCapabilities::from_canonical(
                 class,
                 &bases,
-                &[step; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+                &[step; MAX_FOREIGN_AUTOMATION_TARGETS],
             )
             .unwrap()
         };
