@@ -2820,6 +2820,47 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
+    def test_operator_panel_units_keep_their_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        source = "crates/hex-ui/src/editor/device_panel/"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        cases = (
+            ("operator_panel.rs", "editor::device_panel::operator_panel::tests::", (
+                "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
+                "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo",
+            )),
+            ("operator_panel/envelope.rs", "editor::device_panel::operator_panel::envelope::tests::", (
+                "editor::device_panel::tests::operator_envelope_reference_ui_tests::other_envelopes_refresh_without_stealing_selection_and_reuse_repaint_geometry",
+            )),
+            ("operator_panel/filter_response.rs", "editor::device_panel::operator_panel::filter_response::tests::", (
+                "editor::device_panel::tests::operator_filter_response_tests::native_filter_display_fits_reuses_cache_and_follows_real_control_history",
+                "editor::device_panel::tests::operator_filter_response_tests::filter_curve_keeps_released_parameter_preview_across_completed_repaints",
+            )),
+            ("operator_panel/harmonics.rs", "editor::device_panel::operator_panel::harmonics::tests::", (
+                "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo",
+            )),
+        )
+        for path, unit, consumers in cases:
+            with self.subTest(path=path):
+                names = plan.module_test_filters(root, [source + path], inventory, [owner])
+                self.assertTrue(any(unit.startswith(prefix) for prefix in names[owner]))
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source + path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in steps["ui-feature-tests"].argv))
+                    module = consumer.split("::")[-2]
+                    reverse = plan.module_test_filters(
+                        root, [source + "tests/" + module + ".rs"], inventory, [owner])
+                    self.assertTrue(any(unit.startswith(prefix) for prefix in reverse[owner]))
+
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
