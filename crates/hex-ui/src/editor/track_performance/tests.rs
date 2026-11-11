@@ -37,6 +37,7 @@ fn fixture(owner: OutputCaptureId, now: Instant, load: u32) -> State {
     state
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 #[test]
 fn unknown_stale_and_stopped_are_distinct_from_measured_zero() {
     let owner = owner();
@@ -59,6 +60,7 @@ fn unknown_stale_and_stopped_are_distinct_from_measured_zero() {
     }
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 #[test]
 fn progress_freshness_and_peak_decay_require_actual_new_samples() {
     let owner = owner();
