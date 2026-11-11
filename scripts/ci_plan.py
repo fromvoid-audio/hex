@@ -256,6 +256,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/recovery.rs": ("editor::recovery::cursor_tests::",),
     "src/editor/project_recovery.rs": ("editor::project_recovery::tests::",),
     "src/editor/dialogs.rs": ("editor::dialogs::tests::",),
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),

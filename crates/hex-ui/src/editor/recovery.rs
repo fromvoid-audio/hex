@@ -351,7 +351,7 @@ fn cursor_frame(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod cursor_tests {
     use super::{Cursor, cursor_frame};
     use std::sync::atomic::Ordering::Relaxed;
