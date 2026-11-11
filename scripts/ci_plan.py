@@ -109,12 +109,20 @@ def cargo_inventory(metadata: dict, root: Path) -> list[dict]:
     for package in metadata["packages"]:
         if package["id"] not in members:
             continue
-        manifest = Path(package["manifest_path"]).resolve().relative_to(root.resolve()).as_posix()
+        manifest_path = Path(package["manifest_path"]).resolve()
+        manifest = manifest_path.relative_to(root.resolve()).as_posix()
+        targets = []
+        for target in package["targets"]:
+            entry = {key: target[key] for key in ("name", "kind", "required-features") if key in target}
+            if package["name"] == "hex-ui" and target.get("kind") == ["test"] and target.get("src_path"):
+                source = Path(target["src_path"]).resolve()
+                if source.is_relative_to(manifest_path.parent):
+                    entry["src_path"] = source.relative_to(manifest_path.parent).as_posix()
+            targets.append(entry)
         inventory.append({
             "name": package["name"], "manifest": manifest,
             "features": package["features"],
-            "targets": [{k: t[k] for k in ("name", "kind", "required-features") if k in t}
-                        for t in package["targets"]],
+            "targets": targets,
             # Include dev, build, optional and target-dependent declarations:
             # default resolve.nodes alone omits some required configurations.
             "dependencies": [{k: d.get(k) for k in
@@ -1147,9 +1155,10 @@ def ui_standalone_unit_targets(root: Path, paths: list[str], package: dict) -> d
         matches = [entry for entry in package["targets"] if entry.get("name") == target and entry["kind"] == ["test"]]
         feature = UI_UNIT_FEATURES.get(target)
         expected_features = {feature} if feature else set()
-        if len(matches) != 1 or set(matches[0].get("required-features", ())) != expected_features:
+        if len(matches) != 1 or matches[0].get("src_path") != f"tests/{target}.rs":
             return {}
-        if expected_features - package["features"].keys():
+        if (set(matches[0].get("required-features", ())) != expected_features
+                or expected_features - package["features"].keys()):
             return {}
     return {target: sorted(filters) for target, filters in sorted(selected.items())}
 

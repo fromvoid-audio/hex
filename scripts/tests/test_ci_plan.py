@@ -1446,13 +1446,16 @@ class SingleRunFeatureTests(unittest.TestCase):
                 else:
                     self.assertNotIn("--", feature)
 
-        # A stale target name or feature requirement cannot narrow the plan.
-        wrong_target = [{**package, "targets": [
-            {**target, "required-features": ["ui-test-support"]} if target.get("name") == "unit_editor_state" else target
-            for target in package["targets"]]}
-            if package["name"] == "hex-ui" else package for package in inventory]
-        boundary = plan.boundary_selection(root, [unit], wrong_target, ["hex-ui"])
-        self.assertNotIn("ui_standalone_unit_targets", boundary)
+        # An unexpected Cargo target source or feature cannot narrow the plan.
+        for override in ({"src_path": "tests/renamed_editor_state.rs"},
+                         {"required-features": ["ui-test-support"]}):
+            with self.subTest(override=override):
+                wrong_target = [{**package, "targets": [
+                    {**target, **override} if target.get("name") == "unit_editor_state" else target
+                    for target in package["targets"]]}
+                    if package["name"] == "hex-ui" else package for package in inventory]
+                boundary = plan.boundary_selection(root, [unit], wrong_target, ["hex-ui"])
+                self.assertNotIn("ui_standalone_unit_targets", boundary)
 
     def test_ui_default_lib_units_keep_scope_and_feature_consumers(self):
         root = SCRIPTS.parent
