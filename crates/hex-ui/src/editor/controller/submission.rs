@@ -40,6 +40,7 @@ pub(super) struct PendingKinds {
     track_clipboard: bool,
     midi_drag: bool,
     fade: bool,
+    locator_move: bool,
     clip_gain: bool,
     gain: bool,
     gain_take: bool,
@@ -103,6 +104,7 @@ impl EditorView {
                 track_clipboard: self.pending_track_clipboard_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
+                locator_move: self.locators.matches(request),
                 clip_gain: self.clip_gain_matches(request),
                 gain: self.pending_gain_matches(request),
                 gain_take: self.pending_gain_take_matches(request),
@@ -204,6 +206,9 @@ impl EditorView {
         }
         if kinds.midi_drag {
             self.midi_drag_submitted();
+        }
+        if kinds.locator_move {
+            self.locators.submitted(self.worker_requests_pending);
         }
         if kinds.fade {
             self.fade_submitted();
@@ -315,6 +320,9 @@ impl EditorView {
         }
         if kinds.fade {
             visible |= self.retire_pending_fade();
+        }
+        if kinds.locator_move {
+            visible |= self.locators.refuse();
         }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();

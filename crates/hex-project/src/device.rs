@@ -180,6 +180,27 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             project.bind_track_source(track, None)?;
             Ok(crate::Created::None)
         }
+        Command::ReplaceTrackInstrument {
+            track,
+            replacing,
+            state,
+        } => {
+            let target = project
+                .track(track)
+                .ok_or(Invalid("instrument destination no longer exists"))?;
+            if !target.receives_source_audio()
+                || target.instrument().map(Device::id) != Some(replacing)
+            {
+                return Err(Invalid("instrument replacement target changed"));
+            }
+            let source = target
+                .source_id()
+                .ok_or(Invalid("instrument source missing"))?;
+            let id = DeviceId(project.allocate_id()?);
+            project.replace_source_instrument(source, id, state)?;
+            project.track_mut(track)?.instrument_position = Some(0);
+            Ok(crate::Created::Device(id))
+        }
         Command::RemoveDevice(id) => {
             if let Some(source) = project.source_owning_device(id) {
                 project.remove_source_device(source, id)?;
@@ -1355,6 +1376,52 @@ mod tests {
                 .is_err()
         );
         assert_eq!(*exhausted.project(), before);
+    }
+
+    #[test]
+    fn replace_track_instrument_preserves_source_effects_and_exact_history() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "keys");
+        let first = device_id(&mut editor, track);
+        let _second = device_id(&mut editor, track);
+        let original = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        editor
+            .execute(Command::MoveTrackDevice {
+                device: original,
+                track,
+                before: None,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+        let replace = |replacing| Command::ReplaceTrackInstrument {
+            track,
+            replacing,
+            state: state(vec![3]),
+        };
+        assert!(editor.execute(replace(first)).is_err());
+        assert_eq!(editor.project(), &before);
+        let crate::Created::Device(new) = editor.execute(replace(original)).unwrap() else {
+            panic!("replacement identity")
+        };
+        assert_eq!(new.value(), before.next_identity());
+        let changed = editor.project().track(track).unwrap();
+        let previous = before.track(track).unwrap();
+        assert_eq!(changed.source_id(), previous.source_id());
+        assert_eq!(changed.devices(), previous.devices());
+        assert_eq!(changed.instrument_position(), Some(0));
+        assert_eq!(changed.instrument().unwrap().id(), new);
+        assert!(editor.project().device(original).is_none());
+        let after = editor.project().clone();
+        assert!(editor.undo());
+        assert_eq!(editor.project().track(track), Some(previous));
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
     }
 
     #[test]

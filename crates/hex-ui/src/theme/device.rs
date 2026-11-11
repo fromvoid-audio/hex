@@ -88,7 +88,7 @@ pub(crate) fn oscillator_identity_color(index: usize) -> Option<u32> {
     [0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428].get(index).copied()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -229,7 +229,7 @@ pub(crate) fn device_identity_style(index: usize, enabled: bool, selected: bool)
     style
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod action_tests {
     use super::*;
 

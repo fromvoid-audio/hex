@@ -1,6 +1,6 @@
 //! Control-side authored response sampling; no live/audio ownership.
 pub(super) use super::sampling::Curves;
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 use super::sampling::frequencies;
 use super::*;
 
@@ -10,7 +10,7 @@ pub(super) fn curves(authored: &NativeDeviceState, state: &EqState, rate: u32) -
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 

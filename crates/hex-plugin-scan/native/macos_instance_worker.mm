@@ -388,6 +388,7 @@ int main(int argc,char** argv) {
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
+            std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
             std::thread worker([&] {
                 bool started=false;
@@ -641,7 +642,13 @@ int main(int argc,char** argv) {
                         wire::number(body,page_operation,8);
                         if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
-                            wire::number(body,static_cast<uint8_t>(editor_state),1);
+                            if(detached_editor_position) {
+                                wire::number(body,3,1);
+                                uint64_t x=0,y=0;
+                                std::memcpy(&x,&detached_editor_position->x,8);
+                                std::memcpy(&y,&detached_editor_position->y,8);
+                                wire::number(body,x,8);wire::number(body,y,8);
+                            } else wire::number(body,static_cast<uint8_t>(editor_state),1);
                         } else if(complete) {
                             wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
                             wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
@@ -1121,6 +1128,10 @@ int main(int argc,char** argv) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
                                     const auto kind=page_query.kind;
+                                    detached_editor_position=kind==hex_instance::DETACH_EDITOR?editor.position():std::nullopt;
+                                    const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
+                                        std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
+                                        std::nullopt;
                                     if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
@@ -1128,7 +1139,8 @@ int main(int argc,char** argv) {
                                         editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(was_open || kind==hex_instance::CLOSE_EDITOR)
                                         editor_state=hex_instance::EditorState::Closed;
-                                    else if(const auto result=editor.open(instance.create_editor_on_control(),kind!=hex_instance::REOPEN_EDITOR))
+                                    else if(const auto result=editor.open(instance.create_editor_on_control(),
+                                        kind!=hex_instance::REOPEN_EDITOR,placement))
                                         editor_state=*result;
                                     else page_failure=Teardown;
                                 }

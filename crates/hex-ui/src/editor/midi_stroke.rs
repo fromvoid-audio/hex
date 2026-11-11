@@ -157,7 +157,7 @@ pub(super) struct MidiStroke {
 }
 
 impl MidiStroke {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     pub(super) fn begin(
         context: StrokeContext,
         clip_length: u64,
@@ -713,7 +713,7 @@ fn interpolate_u8(start: u8, end: u8, step: u128, total: u128) -> Result<u8, Str
         .and_then(|value| u8::try_from(value).map_err(|_| StrokeError::InvalidPoint))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_project::{BeatTime, Created, Editor, Project};

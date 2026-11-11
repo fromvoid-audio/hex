@@ -589,6 +589,22 @@ fn apply_transform(
         track.content.midi_clips = midi;
         tracks.push(track);
     }
+    project.arrangement_locators =
+        crate::arrangement_locators::remap(project, &new_tempo, &mut next_id, |frame| {
+            let original = transform.frame_map(frame, start_frame, end_frame)?;
+            let copy = if matches!(transform, Transform::Duplicate { .. })
+                && (start_frame..end_frame).contains(&frame)
+            {
+                Some(
+                    frame
+                        .checked_add(frame_length)
+                        .ok_or(Invalid("section duplication frame overflow"))?,
+                )
+            } else {
+                None
+            };
+            Ok((original, copy))
+        })?;
     project.next_id = next_id;
     project.tracks = tracks;
     project.tempo_map = new_tempo;

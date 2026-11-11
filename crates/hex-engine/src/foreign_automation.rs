@@ -7,7 +7,10 @@ use hex_lattice::{
     ForeignModulationSamples, ForeignNote, ForeignProcessorNode, ForeignProcessors,
     NativeInstrumentClock,
 };
-use hex_lattice_contract::{DeviceAutomationTarget, ForeignParameterPoint};
+use hex_lattice_contract::{
+    DeviceAutomationTarget, ForeignParameterPoint, MAX_FOREIGN_AUTOMATION_TARGETS as MAX_TARGETS,
+    MAX_FOREIGN_PARAMETER_POINTS as MAX_POINTS,
+};
 use hex_lattice_contract::{DeviceContractError, ForeignProcessorBinding};
 use hex_project::{AutomationInterpolation, AutomationPoint, DeviceAutomation, TempoMap};
 
@@ -15,7 +18,6 @@ pub(crate) mod candidate;
 mod touch;
 
 const MAX_QUANTUM_FRAMES: u16 = 256;
-const MAX_POINTS: usize = 64;
 
 pub use hex_lattice::ForeignParameterCapability as ParameterCapability;
 
@@ -385,7 +387,7 @@ impl Program {
         let Some(raw_id) = source.dense_parameter else {
             return Self::prepare(lanes, source.class, source.parameters, tempo, profile);
         };
-        if source.parameters.len() > MAX_POINTS
+        if source.parameters.len() > MAX_TARGETS
             || source
                 .parameters
                 .windows(2)
@@ -409,7 +411,7 @@ impl Program {
             id: 0,
             steps: 0,
             normalized_base_bits: 0,
-        }; MAX_POINTS];
+        }; MAX_TARGETS];
         let mut count = 0;
         for &parameter in source
             .parameters
@@ -469,10 +471,8 @@ impl Program {
         if capabilities.is_empty() {
             return Ok(None);
         }
-        if capabilities.len() > MAX_POINTS {
-            return Err(Invalid(
-                "foreign automation exceeds the quantum point budget",
-            ));
+        if capabilities.len() > MAX_TARGETS {
+            return Err(Invalid("vst3 automation exceeds the armed parameter limit"));
         }
         let mut prepared = Vec::new();
         prepared
@@ -515,7 +515,7 @@ impl Program {
             physical_budget += physical_points;
             if arrangement_budget > MAX_POINTS {
                 return Err(Invalid(
-                    "foreign automation exceeds the quantum point budget",
+                    "vst3 automation exceeds the per-quantum point limit",
                 ));
             }
             prepared.push(Lane { id, knots, overlay });

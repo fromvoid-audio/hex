@@ -127,7 +127,7 @@ impl EditorView {
         self.duplicate_selected_with_kind(DuplicateKind::Independent);
     }
     pub(super) fn duplicate_selected_with_kind(&mut self, kind: DuplicateKind) {
-        if self.close_prompt_open {
+        if self.close_prompt_open || self.automation_close_preflight.frozen() {
             self.error = Some("finish the close action before editing".into());
             return;
         }

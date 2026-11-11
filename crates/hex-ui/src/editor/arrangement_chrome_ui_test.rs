@@ -5,7 +5,7 @@ use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::sync::Arc;
 
 #[gpui::test]
-fn ruler_touches_spectrum_and_only_the_bottom_map_remains(cx: &mut TestAppContext) {
+fn ruler_respects_workspace_frame_and_only_the_bottom_map_remains(cx: &mut TestAppContext) {
     for populated in [false, true] {
         let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         if populated {
@@ -43,8 +43,9 @@ fn ruler_touches_spectrum_and_only_the_bottom_map_remains(cx: &mut TestAppContex
             let ruler = visual.debug_bounds("timeline-ruler").unwrap();
             assert_eq!(
                 ruler.top(),
-                spectrum.bottom(),
-                "the removed 24px strip is reclaimed"
+                spectrum.bottom()
+                    + px(super::workspace_view::PANEL_GUTTER + hex_widgets::PANEL_FRAME_INSET),
+                "the workspace gutter and frame inset separate the ruler from the spectrum"
             );
             let map = visual.debug_bounds("main-arrangement-map").unwrap();
             let main = visual.debug_bounds("main-track-lane").unwrap();

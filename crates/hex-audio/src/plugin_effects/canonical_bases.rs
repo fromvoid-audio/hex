@@ -71,7 +71,7 @@ pub struct CanonicalBasesCapture {
     presentation: hex_plugin_host::protocol::PresentationPlan,
     prepared: PreparedForeignProcessor,
     sample_rate: u32,
-    steps: [u32; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+    steps: [u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     values: automation::CanonicalParameterBases,
     phase: Phase,
 }
@@ -157,8 +157,8 @@ impl Hosting {
             presentation: original.presentation,
             prepared: original.prepared,
             sample_rate: rate,
-            steps: [0; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
-            values: [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+            steps: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
+            values: [None; MAX_FOREIGN_AUTOMATION_TARGETS],
             phase: Phase::Prepare,
         })
     }
@@ -346,7 +346,7 @@ impl CanonicalBasesCapture {
                 {
                     return Err("native canonical capabilities differ".into());
                 }
-                let mut steps = [0; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+                let mut steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
                 for ((slot, parameter), &expected) in steps
                     .iter_mut()
                     .zip(source.parameters)
@@ -384,7 +384,7 @@ fn copy_values(
     expected: &[u32],
     mut values: impl Iterator<Item = (u32, f64)>,
 ) -> Result<automation::CanonicalParameterBases, &'static str> {
-    let mut result = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+    let mut result = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
     if expected.len() > result.len() {
         return Err("native canonical base selection exceeds capacity");
     }

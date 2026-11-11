@@ -1111,6 +1111,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             ),
             destination: PluginEffectDestination::Instrument(track),
             before: None,
+            track_device_name: None,
             control: Arc::new(PluginEffectControl::default()),
         }
     } else {
@@ -1278,6 +1279,49 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         );
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
         println!("instrument hardware tap rate={rate} frames={audible_frames}");
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOn {
+                    channel: 0,
+                    pitch,
+                    velocity: 93,
+                },
+            )
+            .unwrap();
+        let held_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(held_peak > 0.001);
+        keys.trigger_live_note_audition_on_control(&[(pitch, 37)], 256)
+            .unwrap();
+        let combined_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            combined_peak > held_peak * 1.25,
+            "preview and controller sound together"
+        );
+        let after_preview = pcm_peak(render_completed_block(&harness));
+        assert!(
+            (after_preview - held_peak).abs() < 0.0001,
+            "only the preview expires"
+        );
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOff {
+                    channel: 0,
+                    pitch,
+                    velocity: 41,
+                },
+            )
+            .unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        assert!(queue.same_current_activation(activation));
     }
     // Stop advancing at frame 64 of the copied quantum. Play must carry its
     // new context inside that same worker block.

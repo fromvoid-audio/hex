@@ -17,6 +17,8 @@ pub mod preset;
 pub mod project_name;
 mod publication;
 pub mod text;
+#[cfg(test)]
+mod text_tests;
 pub mod tuning_library;
 pub use journal::{
     Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
@@ -78,7 +80,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = ARRANGEMENT_LOCATOR_SCHEMA_VERSION;
+/// Schema114 persists frame-anchored arrangement locators.
+pub const ARRANGEMENT_LOCATOR_SCHEMA_VERSION: u32 = 114;
+/// Schema113 stores the explicit S-curve laws over a complete prior project.
+pub const S_CURVE_FADE_SCHEMA_VERSION: u32 = 113;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -240,6 +246,12 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
 pub fn schema_version_for(project: &Project) -> u32 {
+    if !project.arrangement_locators().is_empty() {
+        return ARRANGEMENT_LOCATOR_SCHEMA_VERSION;
+    }
+    if schema::s_curve_fades::contains(project) {
+        return S_CURVE_FADE_SCHEMA_VERSION;
+    }
     if schema::device_automation_touch::contains_native_source_effect(project) {
         schema::device_automation_touch::source_effect_schema_version(project)
     } else if schema::device_modulation::contains_operator_modulation(project) {
@@ -500,6 +512,16 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if !project.arrangement_locators().is_empty() {
+        return schema::arrangement_locators::encode(project);
+    }
+    if schema::s_curve_fades::contains(project) {
+        return schema::s_curve_fades::encode(project);
+    }
+    encode_prior(project)
+}
+
+fn encode_prior(project: &Project) -> Result<Vec<u8>, StorageError> {
     if schema::device_automation_touch::contains_native_source_effect(project) {
         return encode_document(
             &schema::device_automation_touch::encode_native_source_effect(project)?,
@@ -600,6 +622,16 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if !project.arrangement_locators().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save arrangement locators",
+        ));
+    }
+    if schema::s_curve_fades::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save s-curve fades",
+        ));
+    }
     if schema::bound_source_effects::contains(project) {
         return Err(StorageError::Invalid(
             "older schema cannot save bound source effects",
@@ -811,6 +843,12 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
+    }
+    if header.version == ARRANGEMENT_LOCATOR_SCHEMA_VERSION && !inside_envelope {
+        return schema::arrangement_locators::decode(bytes);
+    }
+    if header.version == S_CURVE_FADE_SCHEMA_VERSION && !inside_envelope {
+        return schema::s_curve_fades::decode(bytes);
     }
     let project = match header.version {
         NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
