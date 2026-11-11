@@ -2344,6 +2344,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
                                   "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                                   "editor::controller::session_feedback::",
+                                  "editor::controller::source_binding_unit_tests::",
                                   "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
                                   "editor::delete_ui_tests::",
                                   "editor::device_panel::eq_panel::axes::",
@@ -3920,7 +3921,8 @@ class ModuleScopeTests(unittest.TestCase):
         window = "editor::controller::sampler_native_ui_protocol_tests::"
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller/audio_event_correlation.rs"],
                                          inventory, [owner])
-        self.assertEqual(names, {owner: [unit, window]})
+        source_unit = "editor::controller::source_binding_unit_tests::"
+        self.assertEqual(names, {owner: [unit, window, source_unit]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -4357,6 +4359,40 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_controller_source_binding_unit_keeps_preview_protocol_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::source_binding_unit_tests::"
+        publication = "editor::controller::publication_unit_tests::"
+        session_action = "editor::controller::session_action_unit_tests::"
+        preview = ("editor::controller::sampler_native_ui_protocol_tests::"
+                   "worker_preview_ack_waits_for_exact_submission_metadata")
+        native = ("editor::controller::sampler_native_ui_protocol_tests::"
+                  "native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion")
+        comparison = ("editor::controller::comparison_source_binding_tests::"
+                     "comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion")
+        for path in ("crates/hex-ui/src/editor/controller.rs",
+                     "crates/hex-ui/src/editor/controller/audio_event_correlation.rs"):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                if path.endswith("controller.rs"):
+                    self.assertIn(publication, unit_args)
+                    self.assertIn(session_action, unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                consumers = (preview, native, comparison) if path.endswith("controller.rs") else (preview, native)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
 
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
