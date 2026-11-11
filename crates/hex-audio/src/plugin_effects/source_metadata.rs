@@ -62,7 +62,7 @@ impl EffectSourceMetadata {
             cid: config.identity.class.bytes(),
             executable_sha256: digest_text(config.identity.binary.executable_sha256)?,
             info_sha256: digest_text(config.identity.binary.info_sha256)?,
-            authored_bases: [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+            authored_bases: [None; MAX_FOREIGN_AUTOMATION_TARGETS],
             dense_parameter: None,
         };
         if source.data_bytes() != Some(expected) {

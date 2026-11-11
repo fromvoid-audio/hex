@@ -185,7 +185,8 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
 # excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
 # compilation stays proven by affected clippy. Reviewed 31 October 2026:
 # - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
-#   debug selectors only) and hex-session's overview hooks; no cfg(not) gates.
+#   debug selectors only) and hex-session's overview hooks. Complementary
+#   library unit tests are explicitly scheduled by their module prefixes.
 #   Its separately selected ui-unit-tier companion gates source-local tests only.
 # - hex-session source-overview-test-support: an optional observer hook, None by default.
 # - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
@@ -199,11 +200,64 @@ ADDITIVE_TEST_FEATURES = {
 }
 
 
-def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
-    """Affected packages whose non-companion feature is reviewed additive.
+# Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
+CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
+CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
+CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
+UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
+    "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
+    "src/editor/native_automation_recording.rs": ("editor::native_automation_recording::unit_tests::",),
+    "src/editor/native_automation_recording/editor_input.rs": ("editor::native_automation_recording::editor_input::tests::",),
+    "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
+    "src/editor/changelog.rs": ("editor::changelog::tests::",),
+    "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
+    "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
+    "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
+    "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
+    "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
+    "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/save.rs": ("editor::save::tests::",),
+    "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
+    "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
+    "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
+    "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
+    "src/editor/device_panel/eq8_panel/graph.rs": ("editor::device_panel::eq8_panel::graph::tests::",),
+    "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
+    "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
+    "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
+    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
+                                   CONTROLLER_SOURCE_BINDING_UNIT),
+    "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
+    "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
+    "src/editor/device_gesture.rs": ("editor::device_gesture::unit_tests::",),
+    "src/editor/device_panel/operator_panel.rs": ("editor::device_panel::operator_panel::tests::",),
+    "src/editor/device_panel/operator_panel/envelope.rs": ("editor::device_panel::operator_panel::envelope::tests::",),
+    "src/editor/device_panel/operator_panel/filter_response.rs": ("editor::device_panel::operator_panel::filter_response::tests::",),
+    "src/editor/device_panel/operator_panel/harmonics.rs": ("editor::device_panel::operator_panel::harmonics::tests::",),
+    "src/editor/drag.rs": ("editor::drag::tests::",),
+    "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
+    "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
+    "src/editor/midi_ruler.rs": ("editor::midi_ruler::geometry_tests::",),
+    "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
+}
+UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
-    Any line combining `not(` with that feature in the package's Rust sources is a
-    tripwire: the package keeps both default and feature test runs.
+# Both library test configurations compile the clip-edge debug witnesses.
+UI_FEATURE_EQUIVALENT_TEST_CFGS = {
+    "src/editor/clip_boundary.rs": '#[cfg(not(any(test, feature = "ui-test-support")))]',
+}
+UI_UNIT_TIER_TEST_CFGS = frozenset({
+    '#[cfg(all(test, feature = "ui-unit-tier"))]',
+    '#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]',
+})
+
+
+def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
+    """Affected packages with a reviewed feature test configuration.
+
+    A negative gate in Rust source keeps both default and feature runs. The
+    exact test-only cfg in known hex-ui modules has its own default lib step.
     """
     selected = {}
     for package in inventory:
@@ -215,14 +269,19 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
             continue
         directory = root / Path(package["manifest"]).parent
         needle = f'feature = "{feature}"'
+        unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package["name"] == "hex-ui" else {}
+        equivalent_tests = UI_FEATURE_EQUIVALENT_TEST_CFGS if package["name"] == "hex-ui" else {}
         gated = any("not(" in line and needle in line
+                    and (line.strip() != UI_DEFAULT_LIB_UNIT_CFG
+                         or source.relative_to(directory).as_posix() not in unit_sources)
+                    and line.strip() != equivalent_tests.get(source.relative_to(directory).as_posix())
                     for source in directory.rglob("*.rs") if source.is_file()
                     for line in source.read_text(errors="replace").splitlines())
         if package["name"] == "hex-ui" and "ui-unit-tier" in package["features"]:
             # Fail closed if the reviewed test-only companion ever gates
             # production code or gains an unreviewed expression.
             companion = 'feature = "ui-unit-tier"'
-            gated |= any(companion in line and line.strip() != '#[cfg(all(test, feature = "ui-unit-tier"))]'
+            gated |= any(companion in line and line.strip() not in UI_UNIT_TIER_TEST_CFGS
                          for source in directory.joinpath("src").rglob("*.rs") if source.is_file()
                          for line in source.read_text(errors="replace").splitlines())
         if not gated:
@@ -278,6 +337,9 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::console_track_page::": "unit_editor_logic",
                    "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
                    "editor::browser::geometry::": "unit_editor_logic",
+                   "editor::browser::audition_geometry::": "unit_editor_logic",
+                   "editor::browser::random_rank::": "unit_editor_logic",
+                   "editor::browser::scrollbar_geometry::": "unit_editor_logic",
                    "editor::browser::samples::state::": "unit_editor_logic",
                    "editor::browser::scan::": "unit_editor_logic",
                    "editor::group_overview::model::": "unit_editor_logic",
@@ -330,6 +392,7 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::musical_time::": "unit_timeline",
                    "editor::pending_edit::": "unit_editor_state",
                    "editor::play_intent::": "unit_editor_state",
+                   "editor::recent_projects::labels::": "unit_editor_logic",
                    "editor::recovery_state::": "unit_editor_state",
                    "editor::refresh_state::": "unit_editor_logic",
                    "editor::seek::": "unit_timeline",
@@ -363,17 +426,53 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
 UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
                          "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
 UI_UNIT_HARNESS_MODULES = {
+    "tests/editor_logic_unit/recent_projects.rs": {"editor::recent_projects::labels::"},
+    "tests/editor_logic_unit/session_grid.rs": {"editor::session_grid::actions::"},
     "tests/editor_logic_unit/tracks.rs": {
         "editor::tracks::clone_source_window::", "editor::tracks::group_overlap::",
     },
 }
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
-# These integration consumers are not included in a module-scoped library run.
+# These standalone targets run separately from a module-scoped library run.
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
                          "editor::track_reorder::subtree::": "track_group_focus",
                          "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
+# Reviewed tests for owners whose direct coverage lives in sibling modules.
+UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::device_automation::host_tests::": ("editor::device_automation::unit_tests::",
+        "editor::native_automation_recording::unit_tests::",
+        "editor::native_automation_recording::editor_input::tests::"),
+    "editor::device_automation::tests::": ("editor::device_automation::unit_tests::",),
+    "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag::group_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
+    "editor::trim::midi_left_extension_ui_tests::": ("editor::drag_autoscroll::tests::",),
+    "editor::trim::": ("editor::drag_autoscroll::tests::",),
+    "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
+    "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
+    "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
+    "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::edit_cursor_ui_test::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::browser::audition::": ("editor::browser::audition_geometry::",),
+    "editor::browser::random::": ("editor::browser::random_rank::",),
+    "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
+    "editor::controller::project_replacement_tests::": (CONTROLLER_PUBLICATION_UNIT,),
+    "editor::controller::verified_gain_tests::": (CONTROLLER_PUBLICATION_UNIT,),
+    "editor::arrangement_focus::visibility::": (
+        "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
+        "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
+        "editor::track_tags::tests::folded_matches_stay_selected_and_filter_applies_to_console_headers",
+    ),
+    "editor::track_hierarchy_indent::": (
+        "editor::track_clipboard_ui_test::nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends",
+        "editor::track_clipboard_ui_test::group_track_header_menu_arrangement",
+        "editor::track_clipboard_ui_test::group_track_header_menu_session",
+    ),
+}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
@@ -388,6 +487,23 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
                     {"editor::midi_canvas::geometry::",
                      "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
+                    {"editor::save::tests::",
+                     "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success",
+                     "editor::save::ui_tests::older_format_explicit_overwrite_warns_once_and_save_as_keeps_original"},
+                    {"editor::gain_lane::tests::unit_tests::",
+                     "editor::automation_view::tests::foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal",
+                     "editor::automation_view::tests::earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does",
+                     "editor::gain_lane::tests::native::occupied_pointer_move_refuses_before_actor_and_keeps_visible_draft"},
+                    {"editor::midi_loop_notes::tests::",
+                     "editor::midi_ruler::geometry_tests::",
+                     "editor::midi_ruler::loop_brace::tests::",
+                     "editor::midi_loop_notes::tests::rendered_long_loop_paints_every_repeat_without_a_sample_badge",
+                     "editor::midi_loop_notes::tests::rendered_tiled_loop_paints_one_sprite_per_visible_tile",
+                     "editor::midi_loop_notes::tests::rendered_long_loop_trim_preview_paints_every_visible_repeat",
+                     "editor::midi_ruler::tests::marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_state",
+                     "editor::midi_ruler::tests::marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement",
+                     "editor::midi_ruler::loop_tests::loop_capture_cancel_and_stale_frame_preserve_source_and_transport",
+                     "editor::midi_ruler::loop_tests::console_loop_resize_enable_and_roundtrip_leave_arrangement_source_unchanged"},
                      {"editor::time_move_preview::intervals::tests::",
                       "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
                       "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
@@ -405,7 +521,17 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                       "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
                       "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                      "editor::browser::ui_test::browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes",
                       "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root"},
+                    {"editor::browser::audition_geometry::",
+                     "editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus",
+                     "editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport"},
+                    {"editor::browser::random_rank::",
+                     "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
+                     "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged"},
+                    {"editor::browser::scrollbar_geometry::",
+                     "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+                     "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture"},
                     {"editor::browser::geometry::",
                      "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
                      "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
@@ -416,7 +542,47 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
                      "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                      "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget"},
-                     {"editor::arrangement_map::model::",
+                    {"editor::loop_rail::tests::",
+                     "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end",
+                     "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
+                     "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
+                     "editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs"},
+                    {"editor::device_panel::eq8_panel::graph::tests::",
+                     "editor::device_panel::eq8_panel::group::tests::",
+                     "editor::device_panel::eq8_panel::selection::tests::",
+                     "editor::device_panel::tests::eq8_marquee_tests::eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device",
+                     "editor::device_panel::tests::eq8_marquee_tests::eq8_marquee_group_move_and_disable_each_commit_one_undo"},
+                    {"editor::device_panel::chain_layout_unit_tests::",
+                     "editor::device_panel::chain_window::tests::",
+                     "editor::device_panel::parameter_rows::tests::",
+                     "editor::device_panel::tests::chain_window_tests::short_chain_window_does_not_add_scroll_extent",
+                     "editor::device_panel::tests::clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail",
+                     "editor::device_panel::tests::keyboard_navigation_tests::arrows_step_devices_and_paste_lands_in_the_clicked_gap",
+                     "editor::device_panel::tests::parameter_rows_tests::generic_track_effect_rows_preserve_extent_identity_and_pins"},
+                    {"editor::device_panel::operator_panel::tests::",
+                     "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
+                     "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
+                    {"editor::device_panel::operator_panel::envelope::tests::",
+                     "editor::device_panel::tests::operator_envelope_reference_ui_tests::other_envelopes_refresh_without_stealing_selection_and_reuse_repaint_geometry"},
+                    {"editor::device_panel::operator_panel::filter_response::tests::",
+                     "editor::device_panel::tests::operator_filter_response_tests::native_filter_display_fits_reuses_cache_and_follows_real_control_history",
+                     "editor::device_panel::tests::operator_filter_response_tests::filter_curve_keeps_released_parameter_preview_across_completed_repaints"},
+                    {"editor::device_panel::operator_panel::harmonics::tests::",
+                     "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
+                    {"editor::arrangement_audio_panel::tests::controls_map_to_typed_clip_edits_and_loop_toggle",
+                     "editor::arrangement_audio_panel::tests::gain_steps_use_db_units_and_refuse_the_bounds",
+                     "editor::arrangement_audio_panel::tests::invalid_edges_and_overflow_refuse_without_partial_command",
+                     "editor::arrangement_audio_panel::tests::review_play_start_uses_retained_source_looping_independent_of_placement_mode",
+                     "editor::arrangement_audio_panel::controls::tests::",
+                     "editor::arrangement_audio_panel::controls::pitch_ui_tests::pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen",
+                     "editor::arrangement_audio_panel::controls::pitch_ui_tests::pitch_release_keeps_its_draft_until_accepted_or_refused_ack",
+                     "editor::arrangement_audio_panel::controls::ui_tests::clip_slider_cancel_and_frozen_release_wait_for_own_terminal",
+                     "editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_ordinary_trim_real_worker_control",
+                     "editor::arrangement_audio_panel::tests::review_placed_mode_only_change_invalidates_captured_control"},
+                    {"editor::recent_projects::labels::",
+                     "editor::recent_projects::tests::",
+                     "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"},
+                    {"editor::arrangement_map::model::",
                       "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
                       "editor::arrangement_focus::visibility::",
                       "editor::group_overview::model::",
@@ -469,7 +635,8 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                       "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
-                      "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                      "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                      "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
                       "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                       "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"},
@@ -522,7 +689,8 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
                     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
-UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
+UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "editor::automation_take_recovery::tests::",
+                        "editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
                         "output_meter::logic::": "output_meter::tests::",
                         "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                         "editor::waveform_columns::": "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
@@ -531,6 +699,7 @@ UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_g
                         "editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
                         "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
+                        "editor::controller::source_binding_unit_tests::": "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
                         "editor::fade_calculation::": "editor::fades::",
                         "editor::fade_handle_geometry::": "editor::fade_handles::",
                         "editor::midi_wheel_mapping::": "editor::midi_wheel::",
@@ -612,6 +781,14 @@ WAVEFORM_PAINT_GEOMETRY_TESTS = {
     "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
     "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
 }
+CONTROLLER_PUBLICATION_TESTS = {
+    "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+    "editor::controller::comparison_source_binding_tests::comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion",
+    "editor::controller::project_replacement_tests::receive_preserves_fresh_installation_through_edits_and_failed_open",
+    "editor::controller::project_replacement_tests::stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_later_edits",
+    "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
+    "editor::controller::verified_gain_tests::verified_preview_submission_waits_for_exact_view_without_canonical_promotion",
+}
 WAVEFORM_PAINT_GEOMETRY_CONSUMERS = {
     "crates/hex-ui/src/editor/audio_event_editor/waveform_preview.rs",
     "crates/hex-ui/src/editor/audio_event_editor/free_placement_tests.rs",
@@ -680,8 +857,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             whole.add(owner)
             continue
         def has_tests(candidate: str) -> bool:
-            if owner == "hex-ui" and any(name.startswith(candidate + "::")
-                                         for name in UI_UNIT_TARGETS):
+            prefix = candidate + "::"
+            if owner == "hex-ui" and (prefix in UI_MODULE_TEST_DEPENDENCIES
+                                      or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
                 return True
             return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
                        for f, name in modules.items()
@@ -691,7 +869,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         if not module:
             whole.add(owner)
         else:
-            filters.setdefault(owner, set()).add(module + "::")
+            prefix = module + "::"
+            owner_filters = filters.setdefault(owner, set())
+            owner_filters.add(prefix)
+            if owner == "hex-ui":
+                owner_filters.update(UI_MODULE_TEST_DEPENDENCIES.get(prefix, ()))
     # The real viewport is an input to the waveform grid. Select its owner
     # when that source changes, including the grid's geometry consumers.
     if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
@@ -733,10 +915,81 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         names.update(cohort)
                 if len(names) == before:
                     break
-            # These exact consumer checks exercise the projection owner. They
-            # do not seed unrelated fade and waveform dependency cohorts.
-            if any(WAVEFORM_PAINT_GEOMETRY_UNIT.startswith(name) for name in names):
-                names.update(WAVEFORM_PAINT_GEOMETRY_TESTS)
+            # These exact consumers cover their owners without expanding shared cohorts.
+            for unit, consumers in (
+                (WAVEFORM_PAINT_GEOMETRY_UNIT, WAVEFORM_PAINT_GEOMETRY_TESTS),
+                (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_PUBLICATION_TESTS),
+            ):
+                if any(unit.startswith(name) for name in names):
+                    names.update(consumers)
+            if any("editor::arrangement_seek::unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
+                    "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+                    "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+                ))
+            if any("editor::device_panel::header_style_unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::device_panel::tests::header_style_tests::retained_source_path_indicator_is_rendered_with_the_existing_chain",
+                    "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
+                    "editor::device_panel::tests::sine_and_effect_place_their_shared_header_to_the_left_of_the_body",
+                ))
+            if "crates/hex-ui/src/theme.rs" in executable:
+                names.update(("output_meter::tests::unit_tests::", "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps"))
+            if "crates/hex-ui/src/editor/time_selection.rs" in executable:
+                names.update(("editor::clip_range_fit::tests::", "editor::clip_range_fit::ui_tests::"))
+            if any("editor::controller_input::monitoring::unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::controller_input::monitoring::tests::actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect",
+                    "editor::controller_input::hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history",
+                    "editor::controller_input::hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest",
+                    "editor::midi_canvas::audition_tests::configured_controller_keeps_its_root_during_note_and_marquee_audition",
+                ))
+            if any("editor::device_panel::device_meter::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
+                ))
+            if {
+                "crates/hex-ui/src/editor/session_navigation.rs",
+                "crates/hex-ui/src/editor/session_navigation_ui_test.rs",
+            }.intersection(executable):
+                names.update((
+                    "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+                    "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
+                ))
+            if any(CONTROLLER_SESSION_ACTION_UNIT.startswith(name) for name in names):
+                names.update((
+                    "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+                    "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+                    "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+                    "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
+                ))
+            if any("editor::drag_autoscroll::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+                    "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+                    "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+                    "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+                    "editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint",
+                    "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
+                ))
+            if any(unit.startswith(name) for unit in ('editor::device_automation::unit_tests::',)
+                   for name in names):
+                names.update((
+                    "editor::device_automation::host_tests::host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners",
+                    "editor::device_automation::host_tests::utility_toggle_and_choice_offer_their_exact_recording_targets",
+                ))
+            native_recording_units = (
+                "editor::native_automation_recording::unit_tests::",
+                "editor::native_automation_recording::editor_input::tests::",
+            )
+            if any(unit.startswith(name) for unit in native_recording_units for name in names):
+                names.update((
+                    *native_recording_units,
+                    "editor::native_automation_recording::tests::refused_and_lost_submissions_keep_delivered_receipts_until_recovery",
+                    "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
+                    "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
+                ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected

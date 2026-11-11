@@ -495,7 +495,7 @@ impl EditorView {
                 ),
             ];
             if linked {
-                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push(("make unique · shift+i", ClipAliasOperation::MakeUnique));
                 entries.push((
                     "apply settings to aliases",
                     ClipAliasOperation::ApplySettings,
@@ -2103,7 +2103,7 @@ mod tests {
             for label in [
                 "duplicate · d",
                 "duplicate alias · cmd+d",
-                "make unique · i",
+                "make unique · shift+i",
                 "apply settings to aliases",
             ] {
                 assert!(menu.items.iter().any(|item| item.label == label));
@@ -2146,7 +2146,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .find(|item| item.label == "make unique · i")
+                .find(|item| item.label == "make unique · shift+i")
                 .unwrap()
                 .action
                 .clone()

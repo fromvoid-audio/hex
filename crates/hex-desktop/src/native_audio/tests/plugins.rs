@@ -4,6 +4,7 @@ mod editor_recording;
 mod first_effect_take;
 mod installed_edits;
 mod instruments;
+mod offline_bounce;
 mod performance_profile;
 mod state;
 mod ui;
@@ -85,6 +86,7 @@ fn request(
         selection: selection(),
         destination,
         before: None,
+        track_device_name: None,
         control: Arc::new(PluginEffectControl::default()),
     }
 }
@@ -150,6 +152,69 @@ fn same_source_edit(h: &mut ResidentHarness, request: Request) -> Event {
         );
         std::thread::yield_now();
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let original = h
+        .run(Request::Edit(Command::AddTrack {
+            name: "anchor".into(),
+        }))
+        .state;
+    let (applied, _) = h.applied(applied);
+    let anchor = &original.project.tracks()[0];
+    let identity = original.project.next_identity();
+    let destination = PluginEffectDestination::NewTrack {
+        before_track: Some(anchor.id()),
+        slot: hex_project::TrackDeviceSlot::Effect,
+        gain: 0.25,
+        track_identity: identity,
+    };
+    let mut invalid = request(&original, destination);
+    invalid.selection.executable_sha256 = "0".repeat(64);
+    h.service
+        .submit(Request::InsertPluginEffect(invalid))
+        .unwrap();
+    let refused = terminal(&mut h);
+    assert!(refused.error.is_some());
+    assert!(!refused.plugin_effect_complete[0].accepted);
+    assert_eq!(refused.state.revision, original.revision);
+    assert_eq!(refused.state.project, original.project);
+
+    h.service
+        .submit(Request::InsertPluginEffect(request(&original, destination)))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    let (applied, _) = h.applied(applied);
+    let [new, previous] = accepted.state.project.tracks() else {
+        panic!("one added track");
+    };
+    assert_eq!(previous, anchor);
+    assert_eq!(new.id().value(), identity);
+    assert_eq!(new.gain(), 0.25);
+    assert!(new.instrument().is_none());
+    assert_eq!(new.devices().len(), 1);
+    assert_eq!(new.devices()[0].id().value(), identity + 1);
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.tracks(), original.project.tracks());
+    let (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, accepted.state.project);
+    h.applied(applied);
 }
 
 #[test]
@@ -772,7 +837,9 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: sampler_files.wav(48_000, 4096),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1449,7 +1516,8 @@ fn installed_vst3_effect_inserts_and_renders_in_desktop_audio_graph() {
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(rate, 8192)));
     let (applied, _) = h.applied(applied);
-    let mut insertion = request(&imported.state, PluginEffectDestination::Main);
+    let track = imported.state.project.tracks()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
     insertion.selection =
         installed_selection(&catalog, &bundle, hex_plugin_catalog::PluginRole::Effect);
     h.service
@@ -1458,7 +1526,11 @@ fn installed_vst3_effect_inserts_and_renders_in_desktop_audio_graph() {
     let accepted = terminal(&mut h);
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
     assert!(accepted.plugin_effect_complete[0].accepted);
-    let device = &accepted.state.project.main_devices()[0];
+    let target = &accepted.state.project.tracks()[0];
+    assert_eq!(target.id(), track);
+    assert!(accepted.state.project.main_devices().is_empty());
+    assert_eq!(target.devices().len(), 1);
+    let device = &target.devices()[0];
     let state = hex_plugin_state::decode(device.state()).unwrap();
     assert!(state.component.is_some());
     h.applied(applied);

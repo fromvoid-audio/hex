@@ -139,6 +139,7 @@ pub(super) struct DevicePanelState {
     /// View-only chain gap chosen for paste; exclusive with device selection.
     insertion: Option<InsertionPoint>,
     pub(super) drag_copy: Option<DeviceDragCopy>,
+    pub(super) pending_duplicate: Option<keyboard::PendingDuplicate>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, device_meter::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -223,6 +224,7 @@ pub(super) enum DevicePanelOwner {
 
 impl DevicePanelState {
     pub(super) fn select_only(&mut self, device: Option<DeviceId>) {
+        self.cancel_duplicate_selection_update();
         self.selected_device = device;
         self.selected_others.clear();
         self.selection_anchor = device;
@@ -297,6 +299,7 @@ impl DevicePanelState {
         if !order.contains(&device) {
             return;
         }
+        self.cancel_duplicate_selection_update();
         self.insertion = None;
         if modifiers.shift {
             let anchor = self
@@ -781,18 +784,14 @@ pub(super) fn view(
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
-        Some(DevicePanelOwner::Main) => {
-            return_view::render(view, window, cx, &state, EffectBusOwner::Main)
-        }
-        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
-        Some(DevicePanelOwner::Return(return_track)) => return_view::render(
-            view,
-            window,
-            cx,
-            &state,
-            EffectBusOwner::Return(return_track),
+        Some(owner) => render_owner(view, window, cx, &state, owner),
+        None => empty_panel("select a track or return to view devices").on_drop(
+            super::sampler_load::track_drop_listener(
+                cx,
+                None,
+                hex_project::InstrumentLoadPlacement::First,
+            ),
         ),
-        None => empty_panel("select a track or return to view devices"),
     }
 }
 
@@ -828,7 +827,13 @@ fn render_owner(
 ) -> Stateful<Div> {
     match owner {
         DevicePanelOwner::Main => {
-            return_view::render(view, window, cx, state, EffectBusOwner::Main)
+            return_view::render(view, window, cx, state, EffectBusOwner::Main).on_drop(
+                super::sampler_load::track_drop_listener(
+                    cx,
+                    None,
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            )
         }
         DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
         DevicePanelOwner::Return(return_track) => return_view::render(
@@ -837,7 +842,12 @@ fn render_owner(
             cx,
             state,
             EffectBusOwner::Return(return_track),
-        ),
+        )
+        .on_drop(super::sampler_load::track_drop_listener(
+            cx,
+            None,
+            hex_project::InstrumentLoadPlacement::First,
+        )),
     }
 }
 
@@ -1132,6 +1142,12 @@ fn render_track(
         .flex()
         .flex_col()
         .relative()
+        .group("sampler-drop-panel")
+        .on_drop(super::sampler_load::track_drop_listener(
+            cx,
+            Some(track_id),
+            hex_project::InstrumentLoadPlacement::Append,
+        ))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_t_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
@@ -1221,6 +1237,10 @@ fn render_track(
         .collect();
     eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let first_device = device_ids.first().copied();
+    let sample_drop = view.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+        view.browser_sampler_drop_track(drag, Some(track_id), cx)
+            .is_ok()
+    });
     let mut local_index = 0;
     for node in nodes {
         let (device, class) = match node {
@@ -1274,10 +1294,14 @@ fn render_track(
         let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
         let card =
             super::device_comparison::card(view, cx, device.id(), class, focus.clone(), card);
-        let card = super::device_preset::card(view, cx, device.id(), class, focus, card);
+        let mut card = super::device_preset::card(view, cx, device.id(), class, focus, card);
+        if sample_drop && class == NativeDeviceClass::Instrument {
+            let line = sample_insertion_marker();
+            card = card.child(line);
+        }
         chain = chain.child(card);
     }
-    chain = chain.child(render_device_end_target(
+    let mut panel = render_device_end_target(
         view,
         cx,
         drag::NativeDeviceDropTarget {
@@ -1287,7 +1311,12 @@ fn render_track(
         },
         first_device,
         visible_chain_bounds,
-    ));
+    );
+    if sample_drop && track.instrument().is_none() {
+        let line = sample_insertion_marker();
+        panel = panel.child(line);
+    }
+    chain = chain.child(panel);
 
     let add_open = view.device_panel.add_menu_open;
     let add_button = div()
@@ -1345,6 +1374,21 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+// The panel appends at the tail or replaces the existing instrument in place.
+fn sample_insertion_marker() -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .top(px(DEVICE_CHAIN_PADDING))
+        .w(px(2.0))
+        .h(px(DEVICE_FRAME_HEIGHT - DEVICE_CHAIN_PADDING))
+        // GPUI applies drag styles only to elements with a hitbox.
+        .group("sampler-drop-insertion")
+        .group_drag_over::<drag::BrowserAudioDrag>("sampler-drop-panel", |style| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+        })
 }
 
 #[derive(Clone)]
@@ -1759,7 +1803,11 @@ fn device_drag_title(
         return_destination: std::rc::Rc::new(std::cell::Cell::new(None)),
     };
     let entity = cx.entity();
-    let help = theme::text(format!("{title} · drag to reorder device"));
+    let help = theme::text(if class == NativeDeviceClass::Effect {
+        format!("{title} · drag to reorder device · duplicate · d")
+    } else {
+        format!("{title} · drag to reorder device")
+    });
     div()
         .id(("device-drag-title", id.value()))
         .debug_selector(move || format!("device-drag-title-{}", id.value()))
@@ -1889,6 +1937,7 @@ fn device_selection_listener(
                     selected,
                 });
         if event.modifiers.alt && view.device_panel.is_selected(device) {
+            view.device_panel.cancel_duplicate_selection_update();
             if let Some(previous) = view.device_panel.selected_device {
                 view.device_panel.selected_others.insert(previous);
             }
@@ -2158,6 +2207,38 @@ fn render_effect(
         .child(device_meter::render(view, device, cx))
 }
 
+fn duplicate_device_action(
+    project: &hex_project::Project,
+    owner: DevicePanelOwner,
+    selected: hex_project::DeviceSelectionIds,
+    destination: hex_project::DeviceChainOwner,
+    before: Option<DeviceId>,
+) -> Result<hex_session::service::DeviceClipboardAction, &'static str> {
+    let copies_instrument = match owner {
+        DevicePanelOwner::Track(id) => project
+            .track(id)
+            .and_then(|track| track.instrument())
+            .is_some_and(|device| selected.ids().contains(&device.id())),
+        _ => false,
+    };
+    if copies_instrument
+        && !matches!(
+            destination,
+            hex_project::DeviceChainOwner::Track(id)
+                if project.track(id).is_some_and(|track|
+                    !track.is_group() && track.instrument().is_none())
+        )
+    {
+        return Err("destination cannot accept another instrument");
+    }
+    Ok(hex_session::service::DeviceClipboardAction::Duplicate {
+        source: project_owner(owner),
+        selected,
+        destination,
+        before,
+    })
+}
+
 impl EditorView {
     pub(super) fn duplicate_device_drag_request(
         &self,
@@ -2184,32 +2265,16 @@ impl EditorView {
             .as_ref()
             .ok_or("device copy canceled · project changed")?
             .project;
-        let copies_instrument = match snapshot.owner {
-            DevicePanelOwner::Track(id) => project
-                .track(id)
-                .and_then(|track| track.instrument())
-                .is_some_and(|device| snapshot.selected.ids().contains(&device.id())),
-            _ => false,
-        };
-        if copies_instrument {
-            match destination {
-                hex_project::DeviceChainOwner::Track(id)
-                    if project
-                        .track(id)
-                        .is_some_and(|track| !track.is_group() && track.instrument().is_none()) => {
-                }
-                _ => return Err("destination cannot accept another instrument"),
-            }
-        }
         Ok(Request::DeviceClipboard {
             project_generation: drag.project_generation,
             revision: drag.revision,
-            action: hex_session::service::DeviceClipboardAction::Duplicate {
-                source: project_owner(snapshot.owner),
-                selected: snapshot.selected.clone(),
+            action: duplicate_device_action(
+                project,
+                snapshot.owner,
+                snapshot.selected.clone(),
                 destination,
                 before,
-            },
+            )?,
         })
     }
 
@@ -3301,6 +3366,274 @@ fn empty_panel(message: &str) -> Stateful<Div> {
 }
 
 mod return_view;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod chain_layout_unit_tests {
+    use super::*;
+
+    #[test]
+    fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
+        let viewport = gpui::Bounds::new(
+            gpui::point(px(200.0), px(300.0)),
+            gpui::size(px(400.0), px(100.0)),
+        );
+        let clipped_card = gpui::Bounds::new(
+            gpui::point(px(100.0), px(300.0)),
+            gpui::size(px(286.0), px(100.0)),
+        );
+        let inside_both = gpui::point(px(250.0), px(330.0));
+        let offscreen_card_area = gpui::point(px(150.0), px(330.0));
+        let outside_rail = gpui::point(px(250.0), px(420.0));
+
+        assert!(super::pointer_within_visible_device_drop_bounds(
+            &inside_both,
+            &clipped_card,
+            Some(&viewport),
+        ));
+        assert!(!super::pointer_within_visible_device_drop_bounds(
+            &offscreen_card_area,
+            &clipped_card,
+            Some(&viewport),
+        ));
+        assert!(!super::pointer_within_visible_device_drop_bounds(
+            &outside_rail,
+            &clipped_card,
+            Some(&viewport),
+        ));
+    }
+
+    mod keyboard_navigation_tests {
+        use super::super::DevicePanelState;
+        use gpui::Modifiers;
+        use hex_project::{Command, Created, DeviceId};
+
+        fn ids(n: u64) -> Vec<DeviceId> {
+            let mut editor =
+                hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack { name: "ids".into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            for _ in 0..n {
+                editor
+                    .execute(Command::InsertDevice {
+                        track,
+                        before: None,
+                        state: hex_engine::default_native_device_state(
+                            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                        )
+                        .unwrap(),
+                    })
+                    .unwrap();
+            }
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .devices()
+                .iter()
+                .map(|device| device.id())
+                .collect()
+        }
+
+        #[test]
+        fn step_target_walks_selection_and_insertion_gaps() {
+            let order = ids(3);
+            let mut panel = DevicePanelState::default();
+            assert_eq!(panel.step_target(&order, true), Some(order[0]));
+            assert_eq!(panel.step_target(&order, false), Some(order[2]));
+            assert_eq!(panel.step_target(&[], true), None);
+
+            panel.select_only(Some(order[1]));
+            assert_eq!(panel.step_target(&order, true), Some(order[2]));
+            assert_eq!(panel.step_target(&order, false), Some(order[0]));
+            panel.select_only(Some(order[2]));
+            assert_eq!(panel.step_target(&order, true), None, "end does not wrap");
+
+            panel.select_insertion(Some(order[1]));
+            assert!(panel.selected_device.is_none(), "a gap replaces selection");
+            assert_eq!(panel.step_target(&order, false), Some(order[0]));
+            assert_eq!(panel.step_target(&order, true), Some(order[1]));
+            panel.select_insertion(Some(order[0]));
+            assert_eq!(panel.step_target(&order, false), None);
+            panel.select_insertion(None);
+            assert_eq!(panel.step_target(&order, false), Some(order[2]));
+            assert_eq!(panel.step_target(&order, true), None);
+
+            // A removed gap device leaves no stale paste target.
+            panel.select_insertion(Some(order[1]));
+            panel.reconcile_selection(&[order[0], order[2]].into_iter().collect());
+            assert_eq!(panel.insertion_before(&order), None);
+            panel.select_insertion(Some(order[1]));
+            panel.select_click(order[0], &order, Modifiers::default());
+            assert_eq!(
+                panel.insertion_before(&order),
+                None,
+                "selection replaces a gap"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_support {
+    pub(super) struct RestoreTheme(pub(super) hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod header_style_unit_tests {
+    use super::test_support::RestoreTheme;
+    use super::*;
+    use hex_project::{Created, Editor, Project};
+
+    fn luminance(color: gpui::Rgba) -> f32 {
+        let linear = |c: f32| {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    #[test]
+    fn device_panel_title_render_style_meets_text_contrast_without_changing_palette() {
+        let _restore = RestoreTheme(theme::preferences());
+        let colors = hex_preferences::ThemePreferences {
+            background: hex_preferences::RgbColor::new(48, 48, 48),
+            primary: hex_preferences::RgbColor::new(121, 121, 121),
+            text: hex_preferences::RgbColor::new(255, 255, 255),
+            secondary: hex_preferences::RgbColor::new(255, 255, 255),
+        };
+        assert!(
+            theme::colors_are_legible(colors),
+            "valid existing palette policy"
+        );
+        theme::apply_preferences(colors);
+        for warning in [false, true] {
+            // Inspect the actual Div style supplied to both rendered owner headers.
+            let mut label = title_label("finish the active device value first".into(), warning);
+            let foreground = label.text_style().as_ref().unwrap().color.unwrap().to_rgb();
+            let background = rgb(theme::color(theme::PaletteRole::Surface));
+            let first = luminance(foreground);
+            let second = luminance(background);
+            let contrast = (first.max(second) + 0.05) / (first.min(second) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "warning={warning}, actual rendered title contrast={contrast}"
+            );
+            assert_eq!(theme::preferences(), colors);
+        }
+    }
+
+    #[test]
+    fn retained_receiver_labels_the_existing_source_path_and_printed_audio_bypass() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        let ordinary = editor.project().track(receiver).unwrap();
+        assert_eq!(retained_source_path_label(ordinary), None);
+        let instrument = ordinary.instrument().unwrap().id();
+        let source = ordinary.source_id();
+        let mut snapshot = editor.project().snapshot();
+        snapshot.retained_source_paths.push(receiver.value());
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let retained = project.track(receiver).unwrap();
+        let label = retained_source_path_label(retained).unwrap();
+        assert_eq!(label, "source path · printed audio bypasses");
+        assert_eq!(retained.instrument().unwrap().id(), instrument);
+        assert_eq!(retained.source_id(), source);
+        let mut badge = retained_source_path_badge(label);
+        let foreground = badge.text_style().as_ref().unwrap().color.unwrap().to_rgb();
+        let background = rgb(theme::color(theme::PaletteRole::Surface));
+        let first = luminance(foreground);
+        let second = luminance(background);
+        assert!((first.max(second) + 0.05) / (first.min(second) + 0.05) >= 4.5);
+    }
+
+    #[test]
+    fn full_metadata_cache_keeps_unavailable_parameters_and_unsupported_errors_without_entities() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "metadata".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        for type_id in ["hex.utility", "hex.test.unsupported"] {
+            let state = if type_id == "hex.utility" {
+                hex_engine::default_native_device_state(
+                    hex_lattice_contract::DeviceTypeId::from_static(type_id),
+                )
+                .unwrap()
+            } else {
+                NativeDeviceState::new(
+                    hex_lattice_contract::DeviceTypeId::from_static(type_id),
+                    1,
+                    Vec::new(),
+                )
+                .unwrap()
+            };
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        let devices = editor.project().track(track).unwrap().devices();
+        let mut panel = DevicePanelState::default();
+        for device in devices {
+            cache_device_metadata(&mut panel, device, NativeDeviceClass::Effect);
+        }
+        assert_eq!(panel.views.len(), 2);
+        assert!(panel.controls.is_empty());
+        assert!(panel.views[&devices[1].id()].2.is_err());
+        let expected =
+            hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, devices[0].state())
+                .unwrap();
+        let cached = panel.views[&devices[0].id()].2.as_ref().unwrap();
+        assert_eq!(cached.parameters.len(), expected.parameters.len());
+        for (first, second) in cached.parameters.iter().zip(&expected.parameters) {
+            assert_eq!(first.descriptor, second.descriptor);
+            assert_eq!(first.value, second.value);
+            assert_eq!(first.enabled, second.enabled);
+        }
+        // Availability is metadata, not a reason to discard a descriptor.
+        panel
+            .views
+            .get_mut(&devices[0].id())
+            .unwrap()
+            .2
+            .as_mut()
+            .unwrap()
+            .parameters[0]
+            .enabled = false;
+        cache_device_metadata(&mut panel, &devices[0], NativeDeviceClass::Effect);
+        assert!(!panel.views[&devices[0].id()].2.as_ref().unwrap().parameters[0].enabled);
+        assert!(panel.controls.is_empty());
+    }
+}
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor) mod tests;

@@ -91,13 +91,13 @@ pub use audio_edit::{
     AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioFade,
-    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler, WarpSettings,
-    audio_projection_beat, audio_projection_frame, audio_projection_frame_q32, default_audio_warp,
-    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioCycles,
+    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler,
+    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
+    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
-pub use content_window::{ContentWindow, RepeatBoundaryPlan};
+pub use content_window::{ContentWindow, RepeatBoundaryPlan, RepeatCycles};
 mod appearance;
 mod bounce;
 mod clip_conversion;
@@ -221,7 +221,9 @@ pub use session::{
     SessionMidiClip, SessionSceneTarget, session_audio_source_frame,
 };
 pub mod timebase;
-pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
+pub use edit::{
+    Command, Created, InstrumentLoadPlacement, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+};
 pub use history::{Editor, SampleRateHistoryAction};
 mod import_existing;
 pub use import_existing::ExistingAudioPlacement;

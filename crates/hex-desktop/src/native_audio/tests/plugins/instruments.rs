@@ -5,7 +5,7 @@ use hex_project::BeatTime;
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
-fn native_vst3_instrument_bounces_to_new_track() {
+fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_BOUNCE_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
     if std::env::var_os(CHILD).is_none() {
@@ -46,15 +46,18 @@ fn native_vst3_instrument_bounces_to_new_track() {
         )
     };
     let rate = if installed.is_some() { 44_100 } else { 48_000 };
-    let mut harness = ResidentHarness::with_plugins_at_rate_and_catalog(
+    let recovery = files.0.join("recovery");
+    std::fs::create_dir(&recovery).unwrap();
+    let mut harness = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
         host(),
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
         }),
         rate,
-        catalog,
         2_000_000,
+        catalog,
+        recovery.join("bounce.hex-journal"),
     );
     assert!(harness.next().error.is_none());
     let (applied, _) = harness.applied(0);
@@ -156,11 +159,56 @@ fn native_vst3_instrument_bounces_to_new_track() {
             "offline bridge latency must be trimmed: {sample}"
         );
     }
-    harness.applied(applied);
+    let (applied, _) = harness.applied(applied);
     assert_eq!(
         harness.plugin_progress.lock().unwrap().binding,
         Some(binding)
     );
+
+    let before = Arc::clone(&bounced.state.project);
+    let baked = super::super::resident_sections::run_callback(
+        &mut harness,
+        Request::BounceArrangement {
+            project_generation: 0,
+            revision: bounced.state.revision,
+            target: hex_project::BounceTarget::Track(track),
+            in_place: true,
+            adoption: hex_project::BounceAdoption::NewTracks,
+            control: hex_export::ExportControl::default(),
+        },
+    );
+    assert!(baked.error.is_none(), "{:?}", baked.error);
+    let (applied, _) = harness.applied(applied);
+    assert_eq!(baked.state.revision, bounced.state.revision + 1);
+    let project = &baked.state.project;
+    let baked_track = project.track(track).unwrap();
+    assert!(baked_track.instrument().is_none());
+    assert!(baked_track.midi_clips().is_empty());
+    assert_eq!(baked_track.clips().len(), 1);
+    let asset = project.asset(baked_track.clips()[0].asset()).unwrap();
+    let actual = std::fs::read(asset.path()).unwrap();
+    let header = hex_export::FLOAT32_WAV_HEADER_BYTES as usize;
+    if installed.is_none() {
+        assert_eq!(
+            &actual[header..header + 256 * 8],
+            &wav[header..header + 256 * 8],
+            "both bounce commands preserve the same compensated onset"
+        );
+    } else {
+        assert!(
+            actual[header..]
+                .chunks_exact(4)
+                .any(|sample| { f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.001 })
+        );
+    }
+    let undo = super::super::resident_sections::run_callback(&mut harness, Request::Undo);
+    assert!(undo.error.is_none(), "{:?}", undo.error);
+    let (applied, _) = harness.applied(applied);
+    super::offline_bounce::assert_undone(&undo.state.project, &before);
+    let redo = super::super::resident_sections::run_callback(&mut harness, Request::Redo);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    harness.applied(applied);
+    assert_eq!(redo.state.project, baked.state.project);
 }
 
 pub(super) fn replay_reopened_instrument(
@@ -1111,6 +1159,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             ),
             destination: PluginEffectDestination::Instrument(track),
             before: None,
+            track_device_name: None,
             control: Arc::new(PluginEffectControl::default()),
         }
     } else {
@@ -1278,6 +1327,49 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         );
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
         println!("instrument hardware tap rate={rate} frames={audible_frames}");
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOn {
+                    channel: 0,
+                    pitch,
+                    velocity: 93,
+                },
+            )
+            .unwrap();
+        let held_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(held_peak > 0.001);
+        keys.trigger_live_note_audition_on_control(&[(pitch, 37)], 256)
+            .unwrap();
+        let combined_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            combined_peak > held_peak * 1.25,
+            "preview and controller sound together"
+        );
+        let after_preview = pcm_peak(render_completed_block(&harness));
+        assert!(
+            (after_preview - held_peak).abs() < 0.0001,
+            "only the preview expires"
+        );
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOff {
+                    channel: 0,
+                    pitch,
+                    velocity: 41,
+                },
+            )
+            .unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        assert!(queue.same_current_activation(activation));
     }
     // Stop advancing at frame 64 of the copied quantum. Play must carry its
     // new context inside that same worker block.

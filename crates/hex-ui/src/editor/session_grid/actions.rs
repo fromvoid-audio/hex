@@ -1,7 +1,30 @@
 //! Session grid action projection and target validation against the current project.
-use super::super::EditorMode;
-use hex_engine::{LaunchQuantization, SessionPlaybackCommand};
+use super::super::{EditorMode, play_intent::IntentToken};
+use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
 use hex_project::{ClipId, Project, SceneId, SessionCellContent, TrackId};
+
+/// A queued playback command retains its project generation and optional revision.
+/// The controller owns intent-token reservation and admission.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingPlaybackAction {
+    pub action: PlaybackAction,
+    pub generation: u64,
+    pub revision: Option<u64>,
+    pub(crate) intent_token: Option<IntentToken>,
+}
+
+pub(in crate::editor) fn launch_action(
+    command: SessionPlaybackCommand,
+    revision: u64,
+    generation: u64,
+) -> PendingPlaybackAction {
+    PendingPlaybackAction {
+        action: PlaybackAction::LaunchAndPlay(command),
+        generation,
+        revision: Some(revision),
+        intent_token: None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::editor) enum DeleteTarget {
@@ -121,10 +144,10 @@ pub(super) fn with_quantization(
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
-        DeleteTarget, EditorMode, action_is_current, action_matches_project, resolve_delete_target,
-        with_quantization,
+        DeleteTarget, EditorMode, action_is_current, action_matches_project, launch_action,
+        resolve_delete_target, with_quantization,
     };
-    use hex_engine::{LaunchQuantization, SessionPlaybackCommand};
+    use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
     use hex_project::{Command, Created, Editor, Project, SessionCellContent};
 
     #[test]
@@ -201,6 +224,34 @@ mod tests {
         assert!(action_matches_project(Some(editor.project()), stop));
         editor.execute(Command::RemoveTrack(track)).unwrap();
         assert!(!action_matches_project(Some(editor.project()), stop));
+    }
+
+    #[test]
+    fn launch_and_play_is_one_revision_guarded_action() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let pending = launch_action(
+            SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            },
+            19,
+            3,
+        );
+        assert!(matches!(
+            pending.action,
+            PlaybackAction::LaunchAndPlay(SessionPlaybackCommand::LaunchScene { .. })
+        ));
+        assert_eq!(pending.revision, Some(19));
+        assert_eq!(pending.generation, 3);
+        assert_eq!(pending.intent_token, None);
     }
 
     #[test]

@@ -218,6 +218,15 @@ UI_UNIT_STEPS = tuple(
 )
 UI_UNIT_STEP_IDS = frozenset(step.step_id for step in UI_UNIT_STEPS)
 
+UI_FEATURE_TARGET_STEPS = (
+    Step("ui-midi-pressure-boundary-tests",
+         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
+          "--test", "midi_pressure_boundary", "--locked"), requires_tests=True),
+    Step("ui-feature-doctests",
+         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--doc", "--locked")),
+)
+UI_FEATURE_TARGET_STEP_IDS = frozenset(step.step_id for step in UI_FEATURE_TARGET_STEPS)
+
 # Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
     *QUICK_STEPS,
@@ -229,7 +238,8 @@ FULL_STEPS = (
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
-    Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
+    Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--lib", "--features", "ui-test-support", "--locked")),
+    *UI_FEATURE_TARGET_STEPS,
     *UI_UNIT_STEPS,
     Step("sandbox-unit-tests", ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-unit-tier", "--locked", "theme::"), requires_tests=True),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
@@ -396,6 +406,33 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for package in tested:
             if package in module_filters and package not in single:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
+        if "hex-ui" in single and "hex-ui" not in module_filters:
+            steps.append(Step(
+                "ui-default-standalone-tests",
+                (
+                    "cargo", "test", "-p", "hex-ui",
+                    "--test", "unit_editor_state",
+                    "--test", "track_group_focus",
+                    "--test", "browser_disclosure_assets",
+                    "--test", "browser_place_assets",
+                    "--test", "cursor_assets",
+                    "--test", "midi_audition_icon",
+                    "--test", "transport_icon_assets",
+                    "--locked",
+                ),
+                requires_tests=True,
+            ))
+        if "hex-ui" in single:
+            unit_prefixes = {prefix for modules in ci_plan.UI_DEFAULT_LIB_UNIT_MODULES.values()
+                             for prefix in modules}
+            if "hex-ui" in module_filters:
+                unit_prefixes = {max(prefix, name, key=len)
+                                 for prefix in unit_prefixes for name in module_filters["hex-ui"]
+                                 if prefix.startswith(name) or name.startswith(prefix)}
+            if unit_prefixes:
+                steps.append(Step("ui-default-lib-unit-tests",
+                                  ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--",
+                                   *sorted(unit_prefixes)), requires_tests=True))
         if single:
             for package in (p for p in tested if p in single):
                 # Module-scoped doctests run only when the changed files carry doc examples.
@@ -444,9 +481,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         selected = [p for p in owners if p in scope]
         if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
-        # Scoped UI changes select mapped unit targets below; a whole-package
-        # run retains this explicit feature-gated target from FULL_STEPS.
-        if step.step_id in UI_UNIT_STEP_IDS and "hex-ui" in module_filters:
+        # Scoped UI changes select mapped unit and standalone targets below.
+        # Whole-package runs retain the explicit feature targets and doctests.
+        if step.step_id in UI_UNIT_STEP_IDS | UI_FEATURE_TARGET_STEP_IDS and "hex-ui" in module_filters:
             continue
         # Example targets are separate crates: a src module filter cannot name
         # their tests. A module-scoped owner's own module tests cover the change.
@@ -571,6 +608,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
+                 *UI_FEATURE_TARGET_STEPS,
                  *UI_UNIT_STEPS,
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
                  Step("ui-default-clippy", ("cargo", "clippy", "-p", "hex-ui", "-p", "hex-widgets", "-p", "hex-desktop", "--all-targets", "--locked", "--", "-D", "warnings")),

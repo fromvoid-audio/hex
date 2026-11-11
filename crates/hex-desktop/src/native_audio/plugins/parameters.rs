@@ -344,6 +344,7 @@ impl Plugins {
                                 .filter(|_| parameter.supports_authored_automation()),
                             page_first: page.first,
                             metadata_revision: page.revision,
+                            editor_sequence: parameter.editor_sequence,
                         }
                     })
                     .collect();
@@ -465,6 +466,7 @@ mod tests {
             automation_class: None,
             page_first: 0,
             metadata_revision: revision,
+            editor_sequence: 0,
         }
     }
 

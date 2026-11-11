@@ -67,16 +67,11 @@ pub(super) fn view(
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
     let identity = state.project.track(track)?.color();
-    let waveform_ink = theme::clip_waveform_ink(
-        identity,
-        theme::ClipWaveformBackground::Source,
-        clip.active(),
-    );
-    let event_ink = theme::clip_waveform_ink(
-        identity,
-        theme::ClipWaveformBackground::Events,
-        clip.active(),
-    );
+    let active = view.displayed_clip_active(clip_id, clip.active());
+    let waveform_ink =
+        theme::clip_waveform_ink(identity, theme::ClipWaveformBackground::Source, active);
+    let event_ink =
+        theme::clip_waveform_ink(identity, theme::ClipWaveformBackground::Events, active);
     let retained_source_count = clip
         .audio_edit()
         .and_then(|edit| edit.domain.events.as_ref())
@@ -466,27 +461,6 @@ fn frame_step(sample_rate: u32, fine: bool) -> u64 {
         1
     } else {
         u64::from((sample_rate / 1_000).max(1))
-    }
-}
-
-#[cfg(test)]
-fn selection_command_for(
-    window: ClipWindow,
-    field: Field,
-    direction: i8,
-    step: u64,
-    multiple: bool,
-) -> Option<Command> {
-    if field == Field::Gain && multiple {
-        let millidb = i32::try_from(step)
-            .ok()?
-            .checked_mul(i32::from(direction))?;
-        Some(Command::EditClips {
-            clips: vec![window.clip],
-            edit: hex_project::ClipEdit::GainBy { millidb },
-        })
-    } else {
-        command_for(window, field, direction, step)
     }
 }
 
@@ -960,6 +934,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn review_play_start_uses_retained_source_looping_independent_of_placement_mode() {
         for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
             for raw in [false, true] {
@@ -1010,25 +985,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn gain_steps_use_db_units_and_refuse_the_bounds() {
         let mut captured = window();
         assert!(matches!(
             command_for(captured, Field::Gain, -1, 100),
             Some(Command::SetAudioClipGain { millidb: -100, .. })
         ));
-        for (direction, step, delta) in [(-1, 100, -100), (1, 1_000, 1_000)] {
-            assert!(
-                matches!(selection_command_for(captured, Field::Gain, direction, step, true),
-                Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb } })
-                if clips == vec![captured.clip] && millidb == delta)
-            );
-        }
         captured.gain = hex_project::ClipGain::new(24_000).unwrap();
         assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
         captured.gain = hex_project::ClipGain::new(-60_000).unwrap();
         assert!(command_for(captured, Field::Gain, -1, 100).is_none());
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     pub(super) fn window() -> ClipWindow {
         use hex_project::{Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
@@ -1090,6 +1060,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn controls_map_to_typed_clip_edits_and_loop_toggle() {
         let window = window();
         assert!(matches!(
@@ -1125,6 +1096,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn invalid_edges_and_overflow_refuse_without_partial_command() {
         let window = window();
         assert!(command_for(window, Field::Length, -1, 1_000).is_none());

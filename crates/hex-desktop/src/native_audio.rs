@@ -1433,8 +1433,14 @@ impl WorkerAudioSink for NativeAudioSink {
     fn prepare_offline_bounce(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
+        control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
-        self.plugins.prepare_offline_bounce(input)
+        let capacity = self
+            .policy
+            .as_ref()
+            .map_or(0, |policy| policy.plugins.capacity);
+        self.plugins
+            .prepare_offline_bounce(input, control, capacity)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         if !self.worker_owned_resident_graphs {

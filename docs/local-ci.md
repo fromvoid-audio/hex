@@ -140,12 +140,23 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 Editor logic tests, including Session route view state, EQ response sampling,
 overview-waveform, loop and stretch projections, waveform-grid, peak and fade paint geometry,
 clip-drag geometry,
-arrangement-map and group-overview projections, browser tree and sample state, session-receipt reconciliation,
+arrangement-map and group-overview projections, browser tree and sample state, recent-project labels, session-receipt reconciliation,
 output-meter logic, project tempo value conversion, and passive time-move interval splitting, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 ```
+
+The seven default standalone targets run with the default package tests.
+Whole-package plans that elide the default package run select those standalone
+targets directly. The windowed library and standalone MIDI pressure test use
+`ui-test-support` in separate invocations:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --lib --locked
+cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+```
+
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
@@ -228,9 +239,11 @@ Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
 example or bench, so building and linking those targets was pure overhead
 (hex-session has 28 test and 7 example targets, hex-storage 34). Explicit
-source-by-path consumers are exceptions: arrangement focus, track indentation
-and track-reorder subtree changes also select the separate `hex-ui`
-`track_group_focus` integration target.
+source-by-path targets are exceptions. Arrangement focus, track indentation and
+track-reorder subtree changes also select the standalone `hex-ui`
+`track_group_focus` unit target. It owns the in-memory visibility and indentation
+assertions. Changes to those sources also select the rendered consumers in the
+`ui-test-support` library.
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
@@ -269,6 +282,10 @@ prints its own `test result`; every listed test runs exactly once (70 s).
 Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
+The hex-ui gesture barrier and waveform geometry unit tests use the default
+library. Merge plans select the relevant modules,
+`editor::device_gesture::unit_tests::` and `editor::waveform_geometry::tests::`.
+Run either directly with `cargo test -p hex-ui --lib --locked MODULE`.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
 feature tests. Consumers lint in two invocations: default features

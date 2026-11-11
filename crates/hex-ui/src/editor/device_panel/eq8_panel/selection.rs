@@ -66,7 +66,7 @@ pub(super) fn release(panel: &mut Eq8PanelState, band: usize) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

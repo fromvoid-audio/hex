@@ -12,7 +12,8 @@ use super::waveform_geometry::{
 
 pub(super) use super::waveform_geometry::WaveformGrid;
 pub(super) use super::waveform_source::{
-    SourceRanges, aggregate_peaks, aggregate_ranges, push_source_range, timeline_source_ranges_at,
+    SourceRanges, aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail,
+    push_source_range, timeline_source_ranges_at,
 };
 
 mod paint_geometry;

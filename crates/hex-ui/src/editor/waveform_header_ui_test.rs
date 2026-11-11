@@ -1,5 +1,8 @@
 //! Observe actual waveform paint callbacks/masks, never a mock header property.
-use crate::editor::{EditorView, external_audio_drop_ui_test::BatchFiles, musical_time::SnapGrid};
+use crate::editor::{
+    EditorView, clip_header_loop::gradient_quads, external_audio_drop_ui_test::BatchFiles,
+    musical_time::SnapGrid,
+};
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::{Event, Request, Service};
@@ -154,6 +157,80 @@ fn waveform_body_painter_stays_below_ordinary_selected_and_looped_headers(cx: &m
             cx.notify();
         });
         visual.run_until_parked();
+        assert_body(&mut visual, &editor, clip);
+    }
+}
+
+#[gpui::test]
+fn looped_header_paints_canonical_visible_cycle_edges_at_two_zooms(cx: &mut TestAppContext) {
+    let (_files, handle, editor, track, clip) = fixture(cx, false);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let header = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+    assert!(gradient_quads(&mut visual, header).is_empty());
+    for command in [
+        Command::SetClipLooping {
+            clip,
+            looping: true,
+        },
+        Command::SetClipSourcePhase {
+            clip,
+            phase: 24_000,
+        },
+        Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 312_000,
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    for (start, length) in [(48_000, 320_000), (120_000, 200_000)] {
+        editor.update(&mut visual, |v, cx| {
+            v.viewport = Some(crate::editor::viewport::Viewport { start, length });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let (edges, lane, viewport) = editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let clip = state.project.clip(clip).unwrap();
+            let cycles = clip
+                .repeat_cycles(state.project.tempo_map())
+                .unwrap()
+                .unwrap();
+            let plan = cycles.cycles().seams().unwrap();
+            let edges = (0..plan.count())
+                .map(|index| {
+                    cycles
+                        .frame_at_elapsed(i128::from(plan.boundary(index).unwrap()))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(edges, [168_000, 264_000]);
+            assert_eq!(clip.start() + clip.duration(), 312_000);
+            (
+                edges,
+                v.drag_lanes[&track],
+                v.visible_viewport(state.timeline_frames),
+            )
+        });
+        let scale = visual.update(|window, _| f64::from(window.scale_factor()));
+        let gradients = gradient_quads(&mut visual, header);
+        assert_eq!(gradients.len(), 3);
+        let x = |frame: i128| {
+            scale
+                * (f64::from(lane.left)
+                    + f64::from(lane.width)
+                        * ((frame - i128::from(viewport.start)) as f64 / viewport.length as f64))
+        };
+        for (pair, frame) in gradients.windows(2).zip(edges) {
+            assert!((f64::from(pair[0].0.right()) - x(frame)).abs() <= 1.0);
+            assert!((f64::from(pair[1].0.left()) - x(frame)).abs() <= 1.0);
+        }
+        assert!((f64::from(gradients[2].0.right()) - x(312_000)).abs() <= 1.0);
         assert_body(&mut visual, &editor, clip);
     }
 }

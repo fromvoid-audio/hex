@@ -1,5 +1,5 @@
 //! # Purpose
-//! Own strict canonical project metadata serialization, recoverable publication and independent
+//! Own strict canonical project metadata serialization, recoverable file and folder publication and independent
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
@@ -14,6 +14,7 @@ pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;
+pub mod project_folder;
 pub mod project_name;
 mod publication;
 pub mod text;

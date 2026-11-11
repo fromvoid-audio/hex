@@ -49,6 +49,10 @@ mod session_audio_panel;
 #[path = "session_grid.rs"]
 mod session_grid;
 
+#[allow(dead_code)]
+#[path = "../../src/editor/play_intent.rs"]
+mod play_intent;
+
 #[path = "eq_response.rs"]
 mod device_panel;
 
@@ -110,3 +114,6 @@ mod track_latency;
 
 #[path = "tracks.rs"]
 mod tracks;
+
+#[path = "recent_projects.rs"]
+mod recent_projects;

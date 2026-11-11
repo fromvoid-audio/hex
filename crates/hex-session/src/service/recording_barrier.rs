@@ -91,6 +91,7 @@ impl State {
             || !matches!(
                 queued.request,
                 Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrent
                     | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Undo

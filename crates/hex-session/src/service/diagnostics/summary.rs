@@ -533,6 +533,13 @@ pub(super) fn command(value: &Command) -> Description {
         Command::RemoveInstrument { track } => {
             describe!("remove_instrument"; ["track" => track.value()]; omitted="")
         }
+        Command::ReplaceTrackInstrument {
+            track,
+            replacing,
+            state,
+        } => {
+            describe!("replace_track_instrument"; ["track" => track.value(), "replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::RemoveDevice(value0) => {
             describe!("remove_device"; ["value0" => value0.value()]; omitted="")
         }
@@ -879,15 +886,16 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_device_asset"; ["path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames]; omitted="")
         }
-        Command::ImportDeviceAssetIntoEmptyInstrument {
+        Command::ImportDeviceAssetIntoNewInstrument {
             track,
+            placement,
             path,
             sample_rate,
             frames,
             state,
             ..
         } => {
-            describe!("import_device_asset_into_empty_instrument"; ["track" => track.value(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+            describe!("import_device_asset_into_new_instrument"; ["track" => track.value(), "placement" => placement, "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::ImportDeviceAssetReplacingInstrument {
             track,
@@ -1734,11 +1742,11 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             track,
-            empty_sampler,
+            slot,
             path,
             ..
         } => {
-            describe!("load_first_sampler"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "track" => track.value(), "empty_sampler_present" => empty_sampler.is_some(), "path_redacted_bytes" => path.as_os_str().len()]; omitted="cancel")
+            describe!("load_first_sampler"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "track" => track.value(), "existing_sampler" => matches!(slot, super::super::SamplerLoadSlot::Existing { .. }), "path_redacted_bytes" => path.as_os_str().len()]; omitted="cancel,slot")
         }
         Request::AssignSampler { track, asset } => {
             describe!("assign_sampler"; ["track" => track.value(), "asset" => asset.value()]; omitted="")
@@ -1828,6 +1836,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::Redo => describe!("redo"; []; omitted=""),
         Request::SaveNew(value0) => {
             describe!("save_new"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
+        }
+        Request::SaveProjectAs {
+            path,
+            replace_existing,
+        } => {
+            describe!("save_project_as"; ["path_redacted_bytes" => path.as_os_str().len(), "replace_existing" => replace_existing]; omitted="")
         }
         Request::SaveCurrent => describe!("save_current"; []; omitted=""),
         Request::SaveCurrentWithFormatUpgrade {

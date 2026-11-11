@@ -194,8 +194,7 @@ fn prepare_foreign_instrument(
         facts,
         arrangement.tempo_map(),
         arrangement.loop_region(),
-    )
-    .map_err(|_| Invalid("authored vst3 instrument program or source could not be prepared"))?
+    )?
     .map_or_else(
         hex_lattice::PreparedParameterAutomation::default,
         hex_lattice::PreparedParameterAutomation::for_foreign,
@@ -1404,9 +1403,7 @@ fn compile_effect_devices(
                 *facts,
                 arrangement.tempo_map(),
                 arrangement.loop_region(),
-            )
-            .map_err(|_| Invalid("authored vst3 program or source could not be prepared"))?
-            {
+            )? {
                 if !automation.is_empty() {
                     return Err(Invalid(
                         "vst3 playback does not support native parameter automation",

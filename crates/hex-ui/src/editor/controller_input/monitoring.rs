@@ -92,79 +92,11 @@ pub(super) fn sink(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
     use hex_engine::{PreparedRevision, SineTable, playback::Playback};
     use hex_project::{Command, Created, Editor, Project};
-
-    #[test]
-    fn notes_only_sink_tracks_the_selected_port_and_cancels_its_activation() {
-        let input = Arc::new(
-            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
-                .with_live_notes()
-                .unwrap(),
-        );
-        let token = input.begin_live_notes_activation_on_control().unwrap();
-        let held = Arc::new(hex_midi::HeldNoteInput::default());
-        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), token);
-        hex_midi::deliver_packets_with_notes(
-            &mut hex_midi::Decoder::default(),
-            2,
-            Default::default(),
-            [&[0x92, 60, 37][..]],
-            &held,
-            sink.publish.as_ref(),
-            sink.note.as_ref(),
-        );
-        let hex_midi::HeldNotesRead::Snapshot(notes) = held.read() else {
-            panic!("expected a published hardware note");
-        };
-        let note = notes.after(0).next().unwrap();
-        assert_eq!((note.pitch, note.velocity), (60, 37));
-        assert!(!(sink.is_cancelled)());
-        (sink.cancel)();
-        assert!((sink.is_cancelled)());
-        assert!(!input.live_notes().unwrap().same_current_activation(token));
-        assert!(
-            !input.is_cancelled(),
-            "physical computer keys keep their root"
-        );
-    }
-
-    #[test]
-    fn poly_pressure_reaches_the_bounded_note_queue_and_cancels_on_overflow() {
-        let input = Arc::new(
-            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
-                .with_live_notes()
-                .unwrap(),
-        );
-        let activation = input.begin_live_notes_activation_on_control().unwrap();
-        let held = Arc::new(hex_midi::HeldNoteInput::default());
-        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), activation);
-        // One pressure status plus 512 running-status messages remains inside
-        // the decoder's packet budget. The smaller host queue must reject it.
-        let mut packet = vec![0x92, 60, 91, 0xa2];
-        packet.extend(std::iter::repeat_n([60, 85], 512).flatten());
-        hex_midi::deliver_packets_with_notes(
-            &mut hex_midi::Decoder::default(),
-            2,
-            Default::default(),
-            [packet.as_slice()],
-            &held,
-            sink.publish.as_ref(),
-            sink.note.as_ref(),
-        );
-        assert!((sink.is_cancelled)());
-        assert!(held.is_cancelled());
-        assert!(
-            !input
-                .live_notes()
-                .unwrap()
-                .same_current_activation(activation)
-        );
-        assert!(!input.is_cancelled(), "computer keys keep their own root");
-    }
 
     #[test]
     fn actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect() {
@@ -258,5 +190,79 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::sink;
+    use std::sync::Arc;
+
+    #[test]
+    fn notes_only_sink_tracks_the_selected_port_and_cancels_its_activation() {
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let token = input.begin_live_notes_activation_on_control().unwrap();
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), token);
+        hex_midi::deliver_packets_with_notes(
+            &mut hex_midi::Decoder::default(),
+            2,
+            Default::default(),
+            [&[0x92, 60, 37][..]],
+            &held,
+            sink.publish.as_ref(),
+            sink.note.as_ref(),
+        );
+        let hex_midi::HeldNotesRead::Snapshot(notes) = held.read() else {
+            panic!("expected a published hardware note");
+        };
+        let note = notes.after(0).next().unwrap();
+        assert_eq!((note.pitch, note.velocity), (60, 37));
+        assert!(!(sink.is_cancelled)());
+        (sink.cancel)();
+        assert!((sink.is_cancelled)());
+        assert!(!input.live_notes().unwrap().same_current_activation(token));
+        assert!(
+            !input.is_cancelled(),
+            "physical computer keys keep their root"
+        );
+    }
+
+    #[test]
+    fn poly_pressure_reaches_the_bounded_note_queue_and_cancels_on_overflow() {
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let activation = input.begin_live_notes_activation_on_control().unwrap();
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), activation);
+        // One pressure status plus 512 running-status messages remains inside
+        // the decoder's packet budget. The smaller host queue must reject it.
+        let mut packet = vec![0x92, 60, 91, 0xa2];
+        packet.extend(std::iter::repeat_n([60, 85], 512).flatten());
+        hex_midi::deliver_packets_with_notes(
+            &mut hex_midi::Decoder::default(),
+            2,
+            Default::default(),
+            [packet.as_slice()],
+            &held,
+            sink.publish.as_ref(),
+            sink.note.as_ref(),
+        );
+        assert!((sink.is_cancelled)());
+        assert!(held.is_cancelled());
+        assert!(
+            !input
+                .live_notes()
+                .unwrap()
+                .same_current_activation(activation)
+        );
+        assert!(!input.is_cancelled(), "computer keys keep their own root");
     }
 }

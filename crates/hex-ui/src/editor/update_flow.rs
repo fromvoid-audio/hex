@@ -172,6 +172,7 @@ impl EditorView {
             request,
             Request::SaveCurrent
                 | Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
             return None;
@@ -204,6 +205,13 @@ impl EditorView {
         let request = match request {
             Request::SaveCurrent => Request::SaveCurrent,
             Request::SaveNew(path) => Request::SaveNew(path.clone()),
+            Request::SaveProjectAs {
+                path,
+                replace_existing,
+            } => Request::SaveProjectAs {
+                path: path.clone(),
+                replace_existing: *replace_existing,
+            },
             Request::SaveCurrentWithFormatUpgrade {
                 project_generation,
                 path,

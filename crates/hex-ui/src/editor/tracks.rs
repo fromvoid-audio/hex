@@ -138,6 +138,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             0.0
         },
         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+        header_gradient: None,
         notch: super::clip_boundary::Notch::new(has_border && notched),
     };
     let mut ghost = hex_widgets::rectangle_surface_pixels(left, top, width, height)
@@ -765,6 +766,13 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: super::clip_header_loop::midi(
+                                    &clip,
+                                    Some(preview),
+                                    state.project.tempo_map(),
+                                    visible_start..visible_end,
+                                    pixel_width * scale_factor,
+                                ),
                                 notch: super::clip_boundary::Notch::new(notched),
                             },
                             true,
@@ -912,6 +920,12 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: super::clip_header_loop::audio(
+                                    &preview_clip,
+                                    state.project.tempo_map(),
+                                    visible_start..visible_end,
+                                    pixel_width * scale_factor,
+                                ),
                                 notch: super::clip_boundary::Notch::new(notched),
                             },
                             true,
@@ -1059,6 +1073,7 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: None,
                                 notch: super::clip_boundary::Notch::new(end == bounds.end_frame),
                             },
                             true,
@@ -1297,6 +1312,7 @@ impl EditorView {
                                 0.0
                             },
                             header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                            header_gradient: None,
                             notch: super::clip_boundary::Notch::new(
                                 visible_end == preview.end_frame,
                             ),
@@ -1576,12 +1592,6 @@ impl EditorView {
                         .into()
                     })
                     .child(theme::text(if folded { ">" } else { "v" }))
-            }))
-            .children(track.is_group().then(|| {
-                div()
-                    .flex_shrink_0()
-                    .debug_selector(move || format!("group-track-marker-{}", track_id.value()))
-                    .child(theme::text("group · "))
             }))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
@@ -2249,6 +2259,7 @@ impl EditorView {
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
             };
+            let active = self.displayed_clip_active(clip.id(), clip.active());
             let (start, end) = (preview.frame_start, preview.frame_end);
             if end <= start {
                 continue;
@@ -2273,12 +2284,7 @@ impl EditorView {
                             .get(&track_id)
                             .map_or(0.0, |lane| lane.width),
                         scale_factor,
-                        theme::clip_activity_fill(
-                            track.color(),
-                            clip.flavor(),
-                            false,
-                            clip.active(),
-                        ),
+                        theme::clip_activity_fill(track.color(), clip.flavor(), false, active),
                         clip.id(),
                         clip.name(),
                         clip.looping(),
@@ -2334,7 +2340,7 @@ impl EditorView {
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
             let header_fill =
-                theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active());
+                theme::clip_activity_fill(track.color(), clip.flavor(), false, active);
             let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
@@ -2539,6 +2545,27 @@ impl EditorView {
                         stroke,
                         bottom_radius,
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        header_gradient: if trim_preview.is_some() {
+                            None
+                        } else if let Some(values) =
+                            self.midi_header_loop_values(clip.id(), state.revision)
+                        {
+                            super::clip_header_loop::midi_source(
+                                clip,
+                                values,
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                pixel_width * scale_factor,
+                            )
+                        } else {
+                            super::clip_header_loop::midi(
+                                clip,
+                                None,
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                pixel_width * scale_factor,
+                            )
+                        },
                         notch: notch.clone(),
                     },
                     trim_preview.is_none(),
@@ -2733,7 +2760,10 @@ impl EditorView {
                     .child(theme::text("missing media")),
             }
         };
-        super::waveform::clip_waveform_activity(body, clip.active())
+        super::waveform::clip_waveform_activity(
+            body,
+            self.displayed_clip_active(clip.id(), clip.active()),
+        )
     }
 
     fn waveform_grid(
@@ -2851,14 +2881,15 @@ impl EditorView {
             .project
             .track(track)
             .map_or(hex_project::ElementColor::default(), |t| t.color());
-        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, clip.active());
+        let active = self.displayed_clip_active(clip.id(), clip.active());
+        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, active);
         let waveform_ink = theme::clip_waveform_ink(
             identity,
             theme::ClipWaveformBackground::Arrangement {
                 flavor: clip.flavor(),
                 selected,
             },
-            clip.active(),
+            active,
         );
         let fill = theme::arrangement_clip_body_fill(header_fill, selected);
         let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
@@ -3132,6 +3163,16 @@ impl EditorView {
                             0.0
                         },
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        header_gradient: if !active_trim_preview {
+                            super::clip_header_loop::audio(
+                                &self.audio_header_loop_clip(clip, state),
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                clip_pixel_width * scale_factor,
+                            )
+                        } else {
+                            None
+                        },
                         notch: notch.clone(),
                     },
                     !active_trim_preview,
@@ -3176,6 +3217,7 @@ impl EditorView {
         if let Some(drag::ClipDropDestination::NewTrack {
             before_track: None,
             position,
+            ..
         }) = payload.destination.get()
         {
             let state = self.state.as_ref()?;

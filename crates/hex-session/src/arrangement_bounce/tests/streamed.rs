@@ -196,10 +196,18 @@ fn render_with(request: &StreamedBounceRequest<'_>, serve: bool) -> Result<Expor
     )
     .map_err(|e| e.to_string())
 }
-fn serving(request: &StreamedBounceRequest<'_>) -> Result<ExportReport, String> {
+fn serving(
+    request: &StreamedBounceRequest<'_>,
+    foreign: Option<&mut dyn hex_export::ForeignBounceRenderer>,
+) -> Result<ExportReport, String> {
+    assert!(foreign.is_none());
     render_with(request, true)
 }
-fn missing(request: &StreamedBounceRequest<'_>) -> Result<ExportReport, String> {
+fn missing(
+    request: &StreamedBounceRequest<'_>,
+    foreign: Option<&mut dyn hex_export::ForeignBounceRenderer>,
+) -> Result<ExportReport, String> {
+    assert!(foreign.is_none());
     render_with(request, false)
 }
 

@@ -96,6 +96,14 @@ impl EditorView {
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
     pub(super) fn advance_selection_intent(&mut self) {
+        self.play_start_at_beginning = false;
+        self.escape_stop_armed = false;
+        if self
+            .edit_cursor
+            .is_some_and(|cursor| cursor.track.is_none())
+        {
+            self.edit_cursor = None;
+        }
         self.selection_intent_epoch = self
             .selection_intent_epoch
             .and_then(|epoch| epoch.checked_add(1));
@@ -136,10 +144,11 @@ impl EditorView {
         }
         self.edit_cursor.filter(|cursor| {
             cursor.generation == self.project_generation
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+                && self.state.as_ref().is_some_and(|state| {
+                    cursor
+                        .track
+                        .is_some_and(|track| state.project.track(track).is_some())
+                })
         })
     }
 
@@ -207,7 +216,7 @@ impl EditorView {
         self.time_selection_project_scope = true;
         self.time_selection = Some(selection);
         self.edit_cursor = Some(EditCursor {
-            track: selection.anchor_track,
+            track: Some(selection.anchor_track),
             frame: start,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -268,7 +277,7 @@ impl EditorView {
         self.advance_selection_intent();
         self.time_selection_project_scope = true;
         self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
-            track: first_track,
+            track: Some(first_track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -427,14 +436,14 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = state.revision;
         let selection = TimeSelection {
-            anchor_track: anchor.map_or(track, |cursor| cursor.track),
+            anchor_track: anchor.and_then(|cursor| cursor.track).unwrap_or(track),
             end_track: track,
             anchor_frame: anchor.map_or(frame, |cursor| cursor.frame),
             end_frame: frame,
         };
         self.advance_selection_intent();
         self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
-            track,
+            track: Some(track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -890,7 +899,10 @@ impl EditorView {
                     .copied()
                     .map(|track| (track, range.start()))
             })
-            .or_else(|| self.edit_cursor.map(|cursor| (cursor.track, cursor.frame)))
+            .or_else(|| {
+                self.edit_cursor
+                    .and_then(|cursor| Some((cursor.track?, cursor.frame)))
+            })
     }
 
     pub(super) fn delete_time_selection(&mut self, window: &Window) -> bool {
@@ -964,7 +976,7 @@ impl EditorView {
             end_frame: pending.range.end(),
         });
         if let Some(cursor) = &mut self.edit_cursor {
-            cursor.track = last_track;
+            cursor.track = Some(last_track);
             cursor.frame = start_frame;
         }
         self.time_selection_project_scope = pending.project_scope;
@@ -1088,10 +1100,12 @@ impl EditorView {
         if had_gesture || had_range {
             self.advance_selection_intent();
         }
-        if let Some(cursor) = self.edit_cursor {
+        if let Some(cursor) = self.edit_cursor
+            && let Some(track) = cursor.track
+        {
             self.time_selection = Some(TimeSelection {
-                anchor_track: cursor.track,
-                end_track: cursor.track,
+                anchor_track: track,
+                end_track: track,
                 anchor_frame: cursor.frame,
                 end_frame: cursor.frame,
             });
@@ -1353,6 +1367,11 @@ impl EditorView {
         let viewport_end = viewport.end()?;
         let stroke = 1.0 / scale_factor.max(1.0);
         if raw_selection.anchor_frame == raw_selection.end_frame {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
+                return None;
+            }
             let frame = raw_selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;
@@ -1472,6 +1491,11 @@ impl EditorView {
         let selection = self.time_selection?;
         let viewport_end = viewport.end()?;
         if selection.anchor_frame == selection.end_frame {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
+                return None;
+            }
             let frame = selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;

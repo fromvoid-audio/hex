@@ -295,16 +295,13 @@ pub(crate) fn apply(
     let mut found = 0_usize;
     let mut audio = 0_usize;
     for track in project.tracks() {
-        audio += track
+        let audio_in_track = track
             .clips()
             .iter()
             .filter(|clip| selected.contains(&clip.id()))
             .count();
-        found += track
-            .clips()
-            .iter()
-            .filter(|clip| selected.contains(&clip.id()))
-            .count();
+        audio += audio_in_track;
+        found += audio_in_track;
         found += track
             .midi_clips()
             .iter()
@@ -316,6 +313,24 @@ pub(crate) fn apply(
     }
     if edit.audio_only() && audio == 0 {
         return Err(Invalid("clip property requires a selected audio clip"));
+    }
+
+    // The validated selection is complete. Activation is a placement flag,
+    // so it cannot change row geometry or shared source content.
+    if let ClipEdit::Active { active } = edit {
+        for track in &mut project.tracks {
+            for clip in &mut track.content.audio_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+            for clip in &mut track.content.midi_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+        }
+        return Ok(Created::None);
     }
 
     let mut candidate = project.clone();
@@ -578,6 +593,7 @@ impl Command {
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
             | Self::LoadInstrument { .. }
+            | Self::ReplaceTrackInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
@@ -648,7 +664,7 @@ impl Command {
             | Self::ClearLoopRegion
             | Self::AddAsset { .. }
             | Self::ImportDeviceAsset { .. }
-            | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Self::ImportDeviceAssetIntoNewInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
             | Self::RelinkAssets(..)
