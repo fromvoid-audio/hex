@@ -231,6 +231,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq8_panel/graph.rs": ("editor::device_panel::eq8_panel::graph::tests::",),
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
     "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
+    "src/editor/device_panel/eq_panel.rs": ("editor::device_panel::eq_panel::tests::",),
     "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
     "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
                                    CONTROLLER_SOURCE_BINDING_UNIT),
@@ -462,6 +463,8 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::trim::": ("editor::drag_autoscroll::tests::",),
     "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
+    "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::": ("editor::device_panel::eq_panel::tests::",),
+    "editor::device_panel::tests::eq_ui_tests::": ("editor::device_panel::eq_panel::tests::",),
     "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
     "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
@@ -934,6 +937,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             for unit, consumers in (
                 (WAVEFORM_PAINT_GEOMETRY_UNIT, WAVEFORM_PAINT_GEOMETRY_TESTS),
                 (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_PUBLICATION_TESTS),
+                ("editor::device_panel::eq_panel::", (
+                    "editor::device_panel::tests::eq_ui_tests::eq_notch_hover_matches_creation_and_node_priority_at_narrow_and_wide_sizes",
+                    "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio",
+                    "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing",
+                )),
                 ("editor::midi_draw::tests::", (
                     "editor::midi_canvas::pending_drag_tests::stroke_preview_tests::capture_tests::draw_and_erase_own_input_then_handoff_preview_without_holding_capture",
                     "editor::midi_canvas::created_selection_tests::committed_draw_selects_actual_authored_ids_with_last_primary_after_later_frames",
