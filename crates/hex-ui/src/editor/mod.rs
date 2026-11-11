@@ -475,6 +475,8 @@ actions!(
         LoopSelection,
         BounceToNewTracks,
         BounceAndMuteSources,
+        BounceMixedRange,
+        BounceMixedRangeAndMute,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -524,6 +526,8 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 
 // Text drafts own printable keys; modified commands retain their finalization paths.
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
+const ARRANGEMENT_BOUNCE_KEY_CONTEXT: &str =
+    "hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection";
 
 fn bind_editor_keys(cx: &mut App) {
     crate::tooltips::bind_keys(cx);
@@ -615,12 +619,18 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new(
             "b",
             BounceToNewTracks,
-            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection"),
+            Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT),
         ),
         KeyBinding::new(
             "cmd-b",
             BounceAndMuteSources,
             Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
+        KeyBinding::new("shift-b", BounceMixedRange, Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "cmd-shift-b",
+            BounceMixedRangeAndMute,
+            Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT),
         ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
