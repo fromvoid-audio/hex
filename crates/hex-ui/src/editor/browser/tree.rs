@@ -90,23 +90,40 @@ impl EditorView {
     ) {
         self.checkpoint_browser_history(cx);
         let selection = self.browser_selected_item(cx);
-        if self.browser.tree.expanded.contains(&path) {
+        let folder = BrowserItemKey::File(path.clone());
+        let previous_row = if self.browser.tree.expanded.contains(&path) {
             self.browser.tree.close(&path);
+            None
         } else if self.browser.tree.depth(&path) >= MAX_DEPTH {
             self.browser.tree.status = Some("folder tree depth limit reached".into());
+            None
         } else {
+            let row = self.browser_history_index(&folder, cx);
             self.browser.tree.open(path.clone(), keep_others);
-        }
+            row
+        };
         self.restore_browser_tree_selection(selection, cx);
-        // A collapsed selected descendant falls back to its visible ancestor.
-        if let Some(index) = self
-            .browser_visible_entries(cx)
-            .iter()
-            .position(|entry| entry.path == path)
-            && !self.browser.results_focused
-        {
-            self.browser.selected_index = self.browser_rows(cx).files.start + index;
-            self.browser.results_focused = true;
+        if let Some(index) = self.browser_history_index(&folder, cx) {
+            if let Some(previous_row) = previous_row
+                && self.browser.tree.expanded.contains(&path)
+            {
+                let mut scroll = self.browser.scroll.0.borrow_mut();
+                let mut offset = scroll.base_handle.offset();
+                let row_height = px(ROW_HEIGHT);
+                let top = offset.y + row_height * previous_row;
+                let height = scroll.base_handle.bounds().size.height;
+                if height > px(0.0) && top < height && top + row_height > px(0.0) {
+                    // Closing an earlier branch can shift the folder's row.
+                    // Preserve its viewport position before its children arrive below it.
+                    offset.y = (top - row_height * index).min(px(0.0));
+                    scroll.deferred_scroll_to_item = None;
+                    scroll.base_handle.set_offset(offset);
+                }
+            }
+            if !self.browser.results_focused {
+                self.browser.selected_index = index;
+                self.browser.results_focused = true;
+            }
         }
         self.start_browser_tree_worker(cx);
         cx.notify();
