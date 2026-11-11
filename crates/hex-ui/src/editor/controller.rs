@@ -5700,6 +5700,17 @@ mod comparison_source_binding_tests {
             status.current().unwrap().project.revision,
             audio.state.revision
         );
+        let audible = status
+            .last_audible()
+            .expect("the historical source remains audible");
+        assert_eq!(
+            audible.project,
+            ProjectRevision {
+                generation: actual.context.project_generation,
+                revision: actual.context.editor_revision,
+            }
+        );
+        assert_eq!(audible.audio_revision, actual.audio_revision);
     }
 }
 
