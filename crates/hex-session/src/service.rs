@@ -864,7 +864,7 @@ pub enum Request {
         control: Arc<AudioBatchControl>,
         options: crate::import_batch::AudioImportOptions,
         /// A single browser Enter import captured while Arrangement is playing.
-        audition_grid: Option<hex_project::ResolvedInputGrid>,
+        audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
     },
     ImportToTrack {
         path: PathBuf,
@@ -1114,7 +1114,7 @@ impl Request {
                 context,
                 control: Arc::clone(&control),
                 options: Default::default(),
-                audition_grid: None,
+                audition_timing: None,
             },
             control,
         ))
@@ -1127,7 +1127,7 @@ impl Request {
         track: hex_project::TrackId,
         start: u64,
         context: AudioBatchContext,
-        audition_grid: Option<hex_project::ResolvedInputGrid>,
+        audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
     ) -> Result<(Self, Arc<AudioBatchControl>), String> {
         let (mut request, control) = Self::audio_batch(
             vec![path],
@@ -1135,11 +1135,11 @@ impl Request {
             context,
         )?;
         if let Self::ImportAudioBatch {
-            audition_grid: captured,
+            audition_timing: captured,
             ..
         } = &mut request
         {
-            *captured = audition_grid;
+            *captured = audition_timing;
         }
         Ok((request, control))
     }
@@ -5264,15 +5264,15 @@ fn run_worker(
                     context,
                     control,
                     options,
-                    audition_grid,
+                    audition_timing,
                 } => {
                     audio_batch_complete = Some(Arc::clone(&control));
                     let audition = match destination {
                         AudioBatchDestination::Track { track, start } if paths.len() == 1 => {
-                            audition_grid.map(|grid| resident_audio::ImportPlayback::Browser {
+                            audition_timing.map(|timing| resident_audio::ImportPlayback::Browser {
                                 track,
                                 start,
-                                grid,
+                                timing,
                             })
                         }
                         _ => None,

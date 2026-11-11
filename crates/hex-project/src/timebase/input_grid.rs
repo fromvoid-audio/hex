@@ -198,20 +198,23 @@ impl ResolvedInputGrid {
         if self.is_off() {
             return Ok(frame);
         }
-        let mut threshold = frame;
-        if let Some(visible) = &self.visible
-            && frame < visible.end
-        {
-            if frame >= visible.start {
-                for &beat in &visible.beats {
-                    let candidate = tempo.beat_to_frame(beat)?;
-                    if (frame..visible.end).contains(&candidate) {
-                        return Ok(candidate);
-                    }
-                }
-                threshold = visible.end;
+        let candidate = self.next_segment_frame(tempo, frame)?;
+        let Some(visible) = &self.visible else {
+            return Ok(candidate);
+        };
+        if candidate < visible.start || frame >= visible.end {
+            return Ok(candidate);
+        }
+        for &beat in &visible.beats {
+            let candidate = tempo.beat_to_frame(beat)?;
+            if (frame.max(visible.start)..visible.end).contains(&candidate) {
+                return Ok(candidate);
             }
         }
+        self.next_segment_frame(tempo, visible.end)
+    }
+
+    fn next_segment_frame(&self, tempo: &TempoMap, threshold: u64) -> Result<u64, Invalid> {
         let beat = tempo.frame_to_beat(threshold)?;
         let current = self
             .segments
@@ -231,12 +234,6 @@ impl ResolvedInputGrid {
                 }
                 let candidate = tempo.beat_to_frame(BeatTime::from_raw(raw))?;
                 if candidate >= threshold {
-                    if let Some(visible) = &self.visible
-                        && (visible.start..visible.end).contains(&candidate)
-                        && threshold < visible.start
-                    {
-                        return self.next_frame(tempo, visible.start);
-                    }
                     return Ok(candidate);
                 }
             }

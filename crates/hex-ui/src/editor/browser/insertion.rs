@@ -1,9 +1,10 @@
 //! Enter captures one selected Arrangement target before bounded worker preparation.
 use super::{EditorMode, EditorView};
 use gpui::Context;
+use hex_engine::playback::BrowserAuditionTiming;
 use hex_session::import_batch_decode::AudioBatchContext;
 use hex_session::service::Request;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::atomic::Ordering::Acquire};
 
 impl EditorView {
     pub(super) fn insert_browser_audio(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -15,7 +16,7 @@ impl EditorView {
                 let routed_audition = matches!(
                     &request,
                     Request::ImportAudioBatch {
-                        audition_grid: Some(_),
+                        audition_timing: Some(_),
                         ..
                     }
                 );
@@ -77,13 +78,20 @@ impl EditorView {
             .filter(|id| state.project.track(*id).is_some())
             .ok_or("sample insertion refused · select an arrangement track")?;
         let grid = self.resolve_input_grid()?;
+        let status = self.audio_status();
+        let transport_epoch = status.map(|status| status.transport_epoch.load(Acquire));
         let start = grid
             .snap_frame(state.project.tempo_map(), self.cursor_position())
             .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
-        let audition_grid = self
-            .audio_status()
-            .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
-            .then_some(grid);
+        let audition_timing = status.zip(transport_epoch).and_then(|(status, epoch)| {
+            (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                && status.playing.load(Acquire)
+                && status.transport_epoch.load(Acquire) == epoch)
+                .then_some(BrowserAuditionTiming {
+                    grid,
+                    transport_epoch: epoch,
+                })
+        });
         Request::browser_audio_batch(
             path,
             track,
@@ -93,7 +101,7 @@ impl EditorView {
                 revision: state.revision,
                 active_gesture: false,
             },
-            audition_grid,
+            audition_timing,
         )
     }
 }

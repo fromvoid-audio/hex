@@ -31,6 +31,15 @@ pub enum PlaybackCommand {
     Seek(u64),
 }
 
+/// Browser Enter freezes the grid and the running output's transport epoch.
+/// The callback may install the authored edit after a seek or stop, but the
+/// older press has no authority to audition in the new transport.
+#[derive(Clone, Debug)]
+pub struct BrowserAuditionTiming {
+    pub grid: hex_project::ResolvedInputGrid,
+    pub transport_epoch: u64,
+}
+
 /// Fixed-size action passed through the native callback command ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackAction {
@@ -422,10 +431,15 @@ impl Playback {
         &mut self,
         track: hex_project::TrackId,
         start: u64,
-        grid: hex_project::ResolvedInputGrid,
+        timing: BrowserAuditionTiming,
     ) {
         if let Some(runtime) = &mut self.session_runtime {
-            runtime.arm_browser_audition(track, start, grid);
+            runtime.arm_browser_audition(track, start, timing);
+        }
+    }
+    pub fn bind_browser_audition_transport(&mut self, epoch: u64) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.bind_browser_audition_transport(epoch);
         }
     }
     pub fn browser_audition_retained_bytes_on_control(&self) -> Option<usize> {

@@ -2,13 +2,13 @@
 //! with the prepared revision. Only source timing moves onto the performance
 //! clock, so an Arrangement loop or late publication cannot shorten the read.
 use super::SessionPlayback;
-use crate::{Clip, Frame, Invalid, MediaPages, Project, Track};
-use hex_project::{ResolvedInputGrid, TrackId};
+use crate::{Clip, Frame, Invalid, MediaPages, Project, Track, playback::BrowserAuditionTiming};
+use hex_project::TrackId;
 
 struct Pending {
     track: TrackId,
     start: u64,
-    grid: ResolvedInputGrid,
+    timing: BrowserAuditionTiming,
 }
 
 #[derive(Clone, Copy)]
@@ -30,6 +30,7 @@ pub(super) struct Voices {
 #[derive(Default)]
 pub(super) struct BrowserAudition {
     pending: Option<Pending>,
+    output_epoch: u64,
     pub(super) voices: Voices,
 }
 
@@ -37,7 +38,7 @@ impl BrowserAudition {
     pub(super) fn retained_bytes(&self) -> Option<usize> {
         self.pending
             .as_ref()
-            .map_or(Some(0), |pending| pending.grid.retained_bytes())
+            .map_or(Some(0), |pending| pending.timing.grid.retained_bytes())
     }
 }
 
@@ -50,12 +51,19 @@ impl SessionPlayback {
         &mut self,
         track: TrackId,
         start: u64,
-        grid: ResolvedInputGrid,
+        timing: BrowserAuditionTiming,
     ) {
         let project = self.revision.arrangement();
         if audition_clip(project, track, start).is_some_and(|clip| !clip.is_streamed()) {
-            self.browser_audition.pending = Some(Pending { track, start, grid });
+            self.browser_audition.pending = Some(Pending {
+                track,
+                start,
+                timing,
+            });
         }
+    }
+    pub(crate) fn bind_browser_audition_transport(&mut self, epoch: u64) {
+        self.browser_audition.output_epoch = epoch;
     }
 
     /// Called once after the exact successor inherits transport. The frozen
@@ -84,10 +92,13 @@ impl SessionPlayback {
             retired: previous.browser_audition.voices.retired.and_then(retain),
         };
         if let Some(pending) = &self.browser_audition.pending
+            && pending.timing.transport_epoch != 0
+            && pending.timing.transport_epoch == self.browser_audition.output_epoch
             && let Some(clip) = audition_clip(project, pending.track, pending.start)
         {
             let delay = if let Some(tempo) = &project.tempo_map {
                 pending
+                    .timing
                     .grid
                     .next_frame(tempo, self.arrangement_frame)
                     .ok()
@@ -96,6 +107,7 @@ impl SessionPlayback {
                             && next >= region.end()
                         {
                             let wrapped = pending
+                                .timing
                                 .grid
                                 .next_frame(tempo, region.start())
                                 .ok()

@@ -789,7 +789,7 @@ fn ordinary_import_cannot_spend_frames_still_owned_by_captured_export() {
                         crate::import_batch_decode::AudioBatchControl::new(2).unwrap(),
                     ),
                     options: Default::default(),
-                    audition_grid: None,
+                    audition_timing: None,
                 },
             };
             service.submit(request).unwrap();

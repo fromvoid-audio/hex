@@ -1039,7 +1039,7 @@ pub(super) enum ImportPlayback {
     Browser {
         track: hex_project::TrackId,
         start: u64,
-        grid: hex_project::ResolvedInputGrid,
+        timing: hex_engine::playback::BrowserAuditionTiming,
     },
 }
 
@@ -1099,11 +1099,16 @@ pub(super) fn prepare_import_playback(
     admit()?;
     if let Some(position) = position {
         inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
-    } else if let ImportPlayback::Browser { track, start, grid } = mode {
+    } else if let ImportPlayback::Browser {
+        track,
+        start,
+        timing,
+    } = mode
+    {
         let (policy, section_loop) =
             inherited_runtime(sink, context, ResidentPublicationPolicy::InheritRuntime)?;
         let mut playback = playback_with_loop(&snapshot, section_loop)?;
-        playback.arm_browser_audition(track, start, grid);
+        playback.arm_browser_audition(track, start, timing);
         let metadata = canonical_metadata(&snapshot, context);
         inputs.publish_tagged_playback(
             &mut snapshot,

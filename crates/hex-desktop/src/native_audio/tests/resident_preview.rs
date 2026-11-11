@@ -184,12 +184,13 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
 
 #[test]
 fn browser_insert_audition_survives_publication_after_the_entire_clip() {
-    for quantized in [false, true] {
-        late_browser_audition(quantized);
+    for (quantized, looped) in [(false, false), (true, false), (false, true)] {
+        late_browser_audition(quantized, looped);
     }
 }
 
-fn late_browser_audition(quantized: bool) {
+fn late_browser_audition(quantized: bool, looped: bool) {
+    use hex_engine::playback::BrowserAuditionTiming;
     use hex_project::{BeatTime, Command, ResolvedInputGrid};
     use hex_session::import_batch_decode::AudioBatchContext;
 
@@ -205,6 +206,16 @@ fn late_browser_audition(quantized: bool) {
     let track = added.state.project.tracks()[0].id();
     let mixed = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
     let (applied, metadata) = h.applied(applied);
+    let (revision, applied) = if looped {
+        let looped = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 512,
+            enabled: true,
+        }));
+        (looped.state.revision, h.applied(applied).0)
+    } else {
+        (mixed.state.revision, applied)
+    };
     h.audio
         .as_mut()
         .unwrap()
@@ -237,10 +248,20 @@ fn late_browser_audition(quantized: bool) {
         start,
         AudioBatchContext {
             project_generation: metadata.context.project_generation,
-            revision: mixed.state.revision,
+            revision,
             active_gesture: false,
         },
-        Some(grid),
+        Some(BrowserAuditionTiming {
+            grid,
+            transport_epoch: h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .transport_epoch
+                .load(Acquire),
+        }),
     )
     .unwrap();
     h.service.submit(request).unwrap();
@@ -267,11 +288,26 @@ fn late_browser_audition(quantized: bool) {
     let mut audible = 0;
     let mut onset = None;
     loop {
-        let before = position(&h);
+        let before = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire);
         let pcm = h.render();
         let status = h.audio.as_ref().unwrap().status().unwrap();
         assert!(status.playing.load(Acquire));
-        assert_eq!(position(&h), before + 64);
+        assert_eq!(status.performance_frame.load(Acquire), before + 64);
+        assert_eq!(
+            position(&h),
+            if looped {
+                (before + 64) % 512
+            } else {
+                before + 64
+            }
+        );
         if status.applied_revision.load(Acquire) > applied {
             let expected = *onset.get_or_insert(if quantized { 24_000 } else { before });
             for (index, frame) in pcm.into_iter().enumerate() {
@@ -291,6 +327,18 @@ fn late_browser_audition(quantized: bool) {
         std::thread::yield_now();
     }
     assert_eq!(audible, 256, "monitor must hear the whole late sample");
+    if looped {
+        // The live read survives the first wrap, then the saved clip plays
+        // normally on a later pass from its authored onset.
+        assert!(onset.unwrap() < 512 && onset.unwrap() + 256 > 512);
+        let mut waits = 0;
+        while position(&h) != start {
+            assert!(waits < 8, "saved clip never reached");
+            assert_eq!(h.render(), [[0.0; 2]; 64]);
+            waits += 1;
+        }
+        assert_eq!(h.render(), [[0.125; 2]; 64]);
+    }
     let undone = h.run(Request::Undo);
     assert!(
         undone
@@ -301,6 +349,133 @@ fn late_browser_audition(quantized: bool) {
             .clips()
             .is_empty()
     );
+}
+
+#[test]
+fn browser_insert_audition_replaces_the_voice_and_does_not_restart_after_stop() {
+    use hex_engine::playback::BrowserAuditionTiming;
+    use hex_project::{Command, ResolvedInputGrid};
+    use hex_session::import_batch_decode::AudioBatchContext;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(16_384);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "audition".into(),
+    }));
+    let (applied, metadata) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let gain = added.state.project.track(track).unwrap().gain();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+
+    let request = |h: &ResidentHarness, path, revision| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let frame = status.position.load(Acquire);
+        let epoch = status.transport_epoch.load(Acquire);
+        let (request, _) = Request::browser_audio_batch(
+            path,
+            track,
+            frame,
+            AudioBatchContext {
+                project_generation: metadata.context.project_generation,
+                revision,
+                active_gesture: false,
+            },
+            Some(BrowserAuditionTiming {
+                grid: ResolvedInputGrid::off(),
+                transport_epoch: epoch,
+            }),
+        )
+        .unwrap();
+        (request, frame, epoch)
+    };
+    let first_block = |h: &mut ResidentHarness, after| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let pcm = h.render();
+            let revision = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if revision > after {
+                break (revision, pcm);
+            }
+            assert!(Instant::now() < deadline, "import did not apply");
+            std::thread::yield_now();
+        }
+    };
+
+    let (initial, _, _) = request(&h, files.wav(48_000, 1024), added.state.revision);
+    let first = h.run(initial);
+    let (applied, pcm) = first_block(&mut h, applied);
+    assert_eq!(pcm, [[0.25 * gain; 2]; 64]);
+
+    let (replacement, _, _) = request(
+        &h,
+        files.constant_wav("replacement.wav", 48_000, 128, &[16_384]),
+        first.state.revision,
+    );
+    let second = h.run(replacement);
+    let (applied, pcm) = first_block(&mut h, applied);
+    assert_eq!(pcm, [[0.5 * gain; 2]; 64]);
+    assert_eq!(h.render(), [[0.5 * gain; 2]; 64]);
+    // The previous authored sample may leave a right-hand overwrite fragment.
+    // The two blocks above must contain only the new voice.
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    let (pending, captured_frame, epoch) = request(
+        &h,
+        files.constant_wav("late.wav", 48_000, 512, &[8192]),
+        second.state.revision,
+    );
+    h.service.submit(pending).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.playing.load(Acquire));
+    assert_ne!(status.transport_epoch.load(Acquire), epoch);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(12_000))
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    resume.send(()).unwrap();
+    let committed = h.next();
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert!(
+        committed
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .any(|clip| clip.start() == captured_frame),
+        "the original placement remains a valid authored edit"
+    );
+    assert_eq!(first_block(&mut h, applied).1, [[0.0; 2]; 64]);
 }
 
 #[test]
