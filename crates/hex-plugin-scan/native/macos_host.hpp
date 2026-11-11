@@ -633,7 +633,15 @@ private:
             auto& parameter=staged.parameters[i];
             valid=controller->getParameterInfo(static_cast<int32>(i),parameter.info)==kResultOk;
             if (!valid) break;
-            const auto& info=parameter.info;
+            auto& info=parameter.info;
+            // Arturia Rev LX-24 exposes private MIDI helpers with this reserved
+            // flag and no normalized default. Keep their IDs and live values
+            // while publishing stable, non-editable descriptors to the host.
+            constexpr int32 private_midi_helper_flag=0x400;
+            if(info.flags==private_midi_helper_flag && info.stepCount==0 && info.defaultNormalizedValue==-1) {
+                info.defaultNormalizedValue=0;
+                info.flags|=ParameterInfo::kIsHidden|ParameterInfo::kIsReadOnly;
+            }
             valid=valid_text(info.title) && valid_text(info.shortTitle) && valid_text(info.units) &&
                   info.id<=0x7FFFFFFFu && info.stepCount>=0 && std::isfinite(info.defaultNormalizedValue) &&
                   info.defaultNormalizedValue>=0 && info.defaultNormalizedValue<=1;

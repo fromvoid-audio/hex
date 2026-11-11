@@ -413,10 +413,16 @@ public:
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
             info.flags=ParameterInfo::kIsReadOnly;
+            if(index==0 && shape && !std::strcmp(shape,"2593")) {
+                info.flags=0x400;
+                info.defaultNormalizedValue=-1;
+            }
             const char16_t name[]=u"observed";
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
+        const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+        if(shape && !std::strcmp(shape,"invalid-default")) info.defaultNormalizedValue=-1;
         if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==touched_automation_variant || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
