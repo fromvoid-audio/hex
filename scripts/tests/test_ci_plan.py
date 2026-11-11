@@ -2145,7 +2145,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "boundary": boundary, "cargo_inventory": inventory,
                                   "paths": ["crates/hex-ui/src/lib.rs"]})
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-        self.assertNotIn("--lib", feature.argv)
+        self.assertIn("--lib", feature.argv)
         self.assertNotIn("--test", feature.argv)
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in steps))
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in steps))
