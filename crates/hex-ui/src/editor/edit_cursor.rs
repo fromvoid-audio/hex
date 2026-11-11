@@ -11,6 +11,9 @@ use hex_session::service::Request;
 use std::time::{Duration, Instant};
 
 const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
+const LOCK_PULSE_PERIOD_MS: u128 = 2_400;
+// A slow marker pulse needs at most 20 repaints per second.
+const LOCK_PULSE_STEP_MS: u128 = 50;
 const POINT_CLICK_SLOP_PX: f64 = 2.0;
 
 #[derive(Clone, Copy)]
@@ -69,6 +72,19 @@ impl EditCursor {
     pub(super) fn color(&self) -> u32 {
         self.pulse_color
     }
+
+    fn pulse_locked_marker(&mut self, now: Instant) -> bool {
+        let elapsed = now
+            .saturating_duration_since(self.pulse_started)
+            .as_millis();
+        let step = (elapsed % LOCK_PULSE_PERIOD_MS) / LOCK_PULSE_STEP_MS;
+        let phase = (step * LOCK_PULSE_STEP_MS) as f32 / LOCK_PULSE_PERIOD_MS as f32;
+        let blend = (1.0 - (phase * std::f32::consts::TAU).cos()) * 0.5;
+        let color = theme::locked_time_position_marker_color(blend);
+        let changed = self.pulse_color != color;
+        self.pulse_color = color;
+        changed
+    }
 }
 
 impl EditorView {
@@ -89,8 +105,12 @@ impl EditorView {
     }
 
     pub(super) fn update_locked_play_start_from_point(&mut self) {
-        if self.locked_play_start.is_some() {
-            self.locked_play_start = self.edit_cursor;
+        if let Some(locked) = self.locked_play_start {
+            self.locked_play_start = self.edit_cursor.map(|point| EditCursor {
+                pulse_color: locked.pulse_color,
+                pulse_started: locked.pulse_started,
+                ..point
+            });
         }
     }
 
@@ -134,7 +154,12 @@ impl EditorView {
         } else if self.normalized_time_selection().is_none() {
             self.locked_play_start = self
                 .edit_cursor
-                .filter(|cursor| self.cursor_is_current(*cursor));
+                .filter(|cursor| self.cursor_is_current(*cursor))
+                .map(|point| EditCursor {
+                    pulse_color: theme::locked_time_position_marker_color(0.0),
+                    pulse_started: Instant::now(),
+                    ..point
+                });
         }
         cx.notify();
     }
@@ -353,6 +378,14 @@ impl EditorView {
         {
             return self.cancel_time_selection_gesture();
         }
+        // The locked triangles can outlive the point cursor or coexist with
+        // range endpoints. Update them together from one elapsed-time phase.
+        let lock_changed = self.mode == EditorMode::Arrangement
+            && !self.play_start_at_beginning
+            && self
+                .locked_play_start
+                .as_mut()
+                .is_some_and(|locked| locked.pulse_locked_marker(now));
         if self.time_selection_project_scope {
             let first_last = self.state.as_ref().and_then(|state| {
                 Some((
@@ -378,7 +411,7 @@ impl EditorView {
             }
         }
         let Some(cursor) = &mut self.edit_cursor else {
-            return self.cancel_time_selection_gesture();
+            return self.cancel_time_selection_gesture() || lock_changed;
         };
         if self
             .state
@@ -408,18 +441,19 @@ impl EditorView {
             .time_selection
             .is_some_and(|selection| selection.anchor_frame != selection.end_frame)
         {
-            return false;
+            return lock_changed;
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
         // A point cursor hidden behind a rectangle play start needs no pulse either.
-        self.mode == EditorMode::Arrangement
+        let point_changed = self.mode == EditorMode::Arrangement
             && !self.play_start_at_beginning
             && self.selected_arrangement_play_start().is_none()
             && self
                 .edit_cursor
                 .as_mut()
-                .is_some_and(|cursor| cursor.pulse(now))
+                .is_some_and(|cursor| cursor.pulse(now));
+        lock_changed || point_changed
     }
 
     /// Paint the same live range bounds above the loop rail and at the bottom
@@ -525,7 +559,7 @@ impl EditorView {
                     Endpoint::Point,
                     edge,
                     if locked.is_some() {
-                        theme::locked_time_position_marker_color()
+                        point.color()
                     } else {
                         theme::time_position_marker_color()
                     },
