@@ -201,7 +201,9 @@ ADDITIVE_TEST_FEATURES = {
 
 
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
+CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES = {
+    "src/editor/controller.rs": CONTROLLER_PUBLICATION_UNIT,
     "src/editor/arrangement_audio_panel.rs": "editor::arrangement_audio_panel::tests::",
     "src/editor/arrangement_audio_panel/controls.rs": "editor::arrangement_audio_panel::controls::tests::",
     "src/editor/device_gesture.rs": "editor::device_gesture::unit_tests::",
@@ -418,6 +420,8 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::browser::audition::": ("editor::browser::audition_geometry::",),
     "editor::browser::random::": ("editor::browser::random_rank::",),
     "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
+    "editor::controller::project_replacement_tests::": (CONTROLLER_PUBLICATION_UNIT,),
+    "editor::controller::verified_gain_tests::": (CONTROLLER_PUBLICATION_UNIT,),
     "editor::arrangement_focus::visibility::": (
         "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
         "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
@@ -711,6 +715,14 @@ WAVEFORM_PAINT_GEOMETRY_TESTS = {
     "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
     "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
 }
+CONTROLLER_PUBLICATION_TESTS = {
+    "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+    "editor::controller::comparison_source_binding_tests::comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion",
+    "editor::controller::project_replacement_tests::receive_preserves_fresh_installation_through_edits_and_failed_open",
+    "editor::controller::project_replacement_tests::stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_later_edits",
+    "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
+    "editor::controller::verified_gain_tests::verified_preview_submission_waits_for_exact_view_without_canonical_promotion",
+}
 WAVEFORM_PAINT_GEOMETRY_CONSUMERS = {
     "crates/hex-ui/src/editor/audio_event_editor/waveform_preview.rs",
     "crates/hex-ui/src/editor/audio_event_editor/free_placement_tests.rs",
@@ -837,10 +849,13 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         names.update(cohort)
                 if len(names) == before:
                     break
-            # These exact consumer checks exercise the projection owner. They
-            # do not seed unrelated fade and waveform dependency cohorts.
-            if any(WAVEFORM_PAINT_GEOMETRY_UNIT.startswith(name) for name in names):
-                names.update(WAVEFORM_PAINT_GEOMETRY_TESTS)
+            # These exact consumers cover their owners without expanding shared cohorts.
+            for unit, consumers in (
+                (WAVEFORM_PAINT_GEOMETRY_UNIT, WAVEFORM_PAINT_GEOMETRY_TESTS),
+                (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_PUBLICATION_TESTS),
+            ):
+                if any(unit.startswith(name) for name in names):
+                    names.update(consumers)
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
