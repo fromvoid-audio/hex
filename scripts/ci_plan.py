@@ -1019,12 +1019,14 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
                 ))
             if {
+                "crates/hex-ui/src/editor/waveform_geometry.rs",
+                "crates/hex-ui/src/editor/waveform_geometry/grid.rs",
+                "crates/hex-ui/src/editor/waveform_resize_ui_test.rs",
                 "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
                 "crates/hex-ui/src/editor/clip_loop_ui_tests.rs",
             }.intersection(executable):
-                names.add("editor::waveform_geometry::tests::")
-            if any("editor::waveform_geometry::tests::".startswith(name) for name in names):
                 names.update((
+                    "editor::waveform_geometry::tests::",
                     "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
                     "editor::waveform::resize_tests::plain_lower_fade_prefix_uses_the_same_raw_source_mapping",
                     "editor::trim::loop_ui_tests::clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body",
