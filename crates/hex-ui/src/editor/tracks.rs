@@ -138,6 +138,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             0.0
         },
         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+        header_gradient: None,
         notch: super::clip_boundary::Notch::new(has_border && notched),
     };
     let mut ghost = hex_widgets::rectangle_surface_pixels(left, top, width, height)
@@ -765,6 +766,13 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: super::clip_header_loop::midi(
+                                    &clip,
+                                    Some(preview),
+                                    state.project.tempo_map(),
+                                    visible_start..visible_end,
+                                    pixel_width * scale_factor,
+                                ),
                                 notch: super::clip_boundary::Notch::new(notched),
                             },
                             true,
@@ -912,6 +920,12 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: super::clip_header_loop::audio(
+                                    &preview_clip,
+                                    state.project.tempo_map(),
+                                    visible_start..visible_end,
+                                    pixel_width * scale_factor,
+                                ),
                                 notch: super::clip_boundary::Notch::new(notched),
                             },
                             true,
@@ -1059,6 +1073,7 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: None,
                                 notch: super::clip_boundary::Notch::new(end == bounds.end_frame),
                             },
                             true,
@@ -1297,6 +1312,7 @@ impl EditorView {
                                 0.0
                             },
                             header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                            header_gradient: None,
                             notch: super::clip_boundary::Notch::new(
                                 visible_end == preview.end_frame,
                             ),
@@ -2539,6 +2555,27 @@ impl EditorView {
                         stroke,
                         bottom_radius,
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        header_gradient: if trim_preview.is_some() {
+                            None
+                        } else if let Some(values) =
+                            self.midi_header_loop_values(clip.id(), state.revision)
+                        {
+                            super::clip_header_loop::midi_source(
+                                clip,
+                                values,
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                pixel_width * scale_factor,
+                            )
+                        } else {
+                            super::clip_header_loop::midi(
+                                clip,
+                                None,
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                pixel_width * scale_factor,
+                            )
+                        },
                         notch: notch.clone(),
                     },
                     trim_preview.is_none(),
@@ -3132,6 +3169,16 @@ impl EditorView {
                             0.0
                         },
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        header_gradient: if !active_trim_preview {
+                            super::clip_header_loop::audio(
+                                &self.audio_header_loop_clip(clip, state),
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                clip_pixel_width * scale_factor,
+                            )
+                        } else {
+                            None
+                        },
                         notch: notch.clone(),
                     },
                     !active_trim_preview,

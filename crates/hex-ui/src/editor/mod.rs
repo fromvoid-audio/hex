@@ -38,6 +38,7 @@ mod clip_drag_ui_test;
 mod clip_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_gain_ui_tests;
+mod clip_header_loop;
 mod clip_name;
 mod clip_range_fit;
 mod clip_selection;

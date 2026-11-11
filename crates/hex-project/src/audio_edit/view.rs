@@ -180,6 +180,190 @@ pub struct AudioViewProjection<'a> {
     content: Option<(crate::ContentWindow, i128, i128)>,
 }
 
+/// Finite audio cycle plan and its signed frame projection. Signed endpoints
+/// preserve partial gradients when a complete cycle would begin before zero.
+pub struct ProjectedAudioCycles<'a> {
+    cycles: crate::RepeatCycles,
+    clock: CycleClock<'a>,
+}
+
+enum CycleClock<'a> {
+    Direct(ElapsedFrameClock<'a>),
+    DirectedFrames {
+        tempo: &'a TempoMap,
+        source_frame: i128,
+        base_start: i128,
+        window: crate::ContentWindow,
+        destination: ElapsedFrameClock<'a>,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct ElapsedFrameClock<'a> {
+    tempo: Option<&'a TempoMap>,
+    start: i128,
+    displacement: i128,
+}
+
+impl ElapsedFrameClock<'_> {
+    fn frame(self, elapsed: i128) -> Result<i128, Invalid> {
+        let raw = self
+            .start
+            .checked_add(elapsed)
+            .ok_or(Invalid("audio content boundary overflow"))?;
+        let frame = self
+            .tempo
+            .map_or(Ok(raw), |tempo| audio_projection_frame(tempo, raw))?;
+        frame
+            .checked_add(self.displacement)
+            .ok_or(Invalid("audio content boundary overflow"))
+    }
+}
+
+impl ProjectedAudioCycles<'_> {
+    pub fn cycles(&self) -> crate::RepeatCycles {
+        self.cycles
+    }
+
+    pub fn frame_at_elapsed(&self, elapsed: i128) -> Result<i128, Invalid> {
+        match self.clock {
+            CycleClock::Direct(clock) => clock.frame(elapsed),
+            CycleClock::DirectedFrames {
+                tempo,
+                source_frame,
+                base_start,
+                window,
+                destination,
+            } => {
+                // Invert the same base beat clock that maps the retained
+                // source read, then apply the actual destination clock.
+                let read = if window.reversed {
+                    elapsed
+                        .checked_neg()
+                        .ok_or(Invalid("audio repeat read overflow"))?
+                } else {
+                    elapsed
+                };
+                let frame = source_frame
+                    .checked_add(read)
+                    .ok_or(Invalid("audio repeat read overflow"))?;
+                let beat = audio_projection_beat(tempo, frame)?;
+                let base = beat - base_start;
+                let local = if window.reversed {
+                    i128::from(window.end) - base
+                } else {
+                    base - i128::from(window.start)
+                };
+                destination.frame(local)
+            }
+        }
+    }
+}
+
+impl Clip {
+    /// Cycle geometry and the matching destination clock for Arrangement paint.
+    /// Retained placements use their saved projection. Source-level repeats
+    /// use the legacy frame law or the authored warp endpoint and phase.
+    pub fn repeat_cycles<'a>(
+        &'a self,
+        tempo: &'a TempoMap,
+    ) -> Result<Option<ProjectedAudioCycles<'a>>, Invalid> {
+        let edit = self.audio_edit();
+        if edit.is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some()) {
+            let projection = AudioViewProjection::new(self, tempo)?;
+            if let Some(cycles) = projection.retained_repeat_cycles()? {
+                return Ok(Some(ProjectedAudioCycles {
+                    cycles,
+                    clock: CycleClock::Direct(projection.elapsed_frame_clock()),
+                }));
+            }
+            if edit.is_some_and(|edit| edit.placement.is_some()) {
+                return Ok(None);
+            }
+            if let Some(edit) = edit.filter(|edit| {
+                edit.domain.looping
+                    && !edit.domain.warp_enabled
+                    && matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+            }) && let Some(content) = edit.content_view
+            {
+                return projection
+                    .directed_frame_cycles(
+                        content.window,
+                        self.source_length(),
+                        self.source_phase(),
+                    )
+                    .map(Some);
+            }
+        }
+        if !self.looping() {
+            return Ok(None);
+        }
+        let (period, phase, start, length, clock) = match edit {
+            Some(edit) if edit.domain.warp_enabled => {
+                let period = edit
+                    .domain
+                    .warp
+                    .as_ref()
+                    .and_then(|warp| warp.markers.last())
+                    .ok_or(Invalid("warp endpoint missing"))?
+                    .beat
+                    .raw();
+                let projection = AudioViewProjection::new(self, tempo)?;
+                (
+                    period,
+                    edit.domain.warp_phase_beat()?,
+                    edit.view_start,
+                    edit.view_end - edit.view_start,
+                    projection.elapsed_frame_clock(),
+                )
+            }
+            edit => {
+                let start = edit.map_or(Ok(0), |edit| {
+                    edit.projected_domain(tempo).map(|(_, _, start, _)| start)
+                })?;
+                (
+                    self.source_length(),
+                    self.source_phase(),
+                    start,
+                    self.duration(),
+                    ElapsedFrameClock {
+                        tempo: None,
+                        start: i128::from(self.start()),
+                        displacement: 0,
+                    },
+                )
+            }
+        };
+        let first = period
+            .checked_sub(phase)
+            .filter(|first| *first > 0)
+            .ok_or(Invalid("invalid audio repeat phase"))?;
+        let window = if let Some(content) = edit.and_then(|edit| edit.content_view) {
+            let edge = |offset| {
+                content
+                    .base_view_start
+                    .checked_add(offset)
+                    .ok_or(Invalid("audio repeat extent overflow"))
+            };
+            crate::ContentWindow::new(
+                edge(content.window.start)?,
+                edge(content.window.end)?,
+                content.window.reversed,
+            )?
+        } else {
+            let end = start
+                .checked_add(length)
+                .ok_or(Invalid("audio repeat extent overflow"))?;
+            crate::ContentWindow::new(start, end, false)?
+        };
+        let cycles = window.repeat_cycles(first, period)?;
+        Ok(Some(ProjectedAudioCycles {
+            cycles,
+            clock: CycleClock::Direct(clock),
+        }))
+    }
+}
+
 impl<'a> AudioViewProjection<'a> {
     pub fn new(clip: &'a Clip, tempo: &'a TempoMap) -> Result<Self, Invalid> {
         let value = Self::from_clip(clip, tempo)?;
@@ -546,30 +730,22 @@ impl<'a> AudioViewProjection<'a> {
     }
     /// Project an elapsed destination clock boundary with the same live/frozen law.
     pub fn frame_at_elapsed(&self, elapsed: u64) -> Result<u64, Invalid> {
-        let (_, start, displacement) = self.content.unwrap_or((
-            crate::ContentWindow {
-                start: 0,
-                end: 1,
-                reversed: false,
-            },
-            self.start,
-            self.displacement,
-        ));
-        let raw = start
-            .checked_add(i128::from(elapsed))
-            .ok_or(Invalid("audio content boundary overflow"))?;
-        let frame = if self.beat_clock {
-            audio_projection_frame(self.tempo, raw)?
-        } else {
-            raw
-        };
-        u64::try_from(
-            frame
-                .checked_add(displacement)
-                .ok_or(Invalid("audio content boundary overflow"))?,
-        )
-        .map_err(|_| Invalid("audio content boundary exceeds frames"))
+        u64::try_from(self.elapsed_frame_clock().frame(i128::from(elapsed))?)
+            .map_err(|_| Invalid("audio content boundary exceeds frames"))
     }
+
+    fn elapsed_frame_clock(&self) -> ElapsedFrameClock<'a> {
+        let (start, displacement) = self.content.map_or(
+            (self.start, self.displacement),
+            |(_, start, displacement)| (start, displacement),
+        );
+        ElapsedFrameClock {
+            tempo: self.beat_clock.then_some(self.tempo),
+            start,
+            displacement,
+        }
+    }
+
     /// Fractional actual destination for an elapsed clip-clock boundary.
     pub fn frame_q32_at_elapsed(&self, elapsed: u64) -> Result<i128, Invalid> {
         let (_, start, displacement) = self.content.unwrap_or((
@@ -606,6 +782,11 @@ impl<'a> AudioViewProjection<'a> {
     /// Internal repeat seams in audible elapsed order. Unlike base occurrence
     /// destinations, this includes finite read direction and retained trims.
     pub fn repeat_boundaries(&self) -> Result<Option<crate::RepeatBoundaryPlan>, Invalid> {
+        Ok(self
+            .retained_repeat_cycles()?
+            .and_then(crate::RepeatCycles::seams))
+    }
+    fn retained_repeat_cycles(&self) -> Result<Option<crate::RepeatCycles>, Invalid> {
         let edit = self.clip.audio_edit();
         let placement = edit.and_then(|edit| {
             edit.content_view
@@ -625,12 +806,55 @@ impl<'a> AudioViewProjection<'a> {
             },
             |(window, _, _)| Ok(window),
         )?;
-        window.repeat_boundaries(
-            self.cycle
-                .checked_sub(self.phase)
-                .ok_or(Invalid("audio repeat phase exceeds cycle"))?,
-            self.cycle,
-        )
+        window
+            .repeat_cycles(
+                self.cycle
+                    .checked_sub(self.phase)
+                    .ok_or(Invalid("audio repeat phase exceeds cycle"))?,
+                self.cycle,
+            )
+            .map(Some)
+    }
+    // An unwarped root loops in rendered source frames even when its retained
+    // directed read is beat-anchored. Keep the read and destination clocks
+    // distinct across tempo changes.
+    fn directed_frame_cycles(
+        &self,
+        window: crate::ContentWindow,
+        period: u64,
+        phase: u64,
+    ) -> Result<ProjectedAudioCycles<'a>, Invalid> {
+        let root = self.occurrence(0)?;
+        let origin = i128::from(self.base_frame_at_elapsed(0)?) - i128::from(root.root_start);
+        let root_frame = |elapsed| {
+            u64::try_from(i128::from(self.base_frame_at_elapsed(elapsed)?) - origin)
+                .map_err(|_| Invalid("audio repeat read exceeds its root"))
+        };
+        let source_window = crate::ContentWindow::new(
+            root_frame(window.start)?,
+            root_frame(window.end)?,
+            window.reversed,
+        )?;
+        let first = period
+            .checked_sub(phase)
+            .ok_or(Invalid("invalid audio repeat phase"))?;
+        let cycles = source_window.repeat_cycles(first, period)?;
+        let base_frame = origin
+            + i128::from(if window.reversed {
+                source_window.end
+            } else {
+                source_window.start
+            });
+        Ok(ProjectedAudioCycles {
+            cycles,
+            clock: CycleClock::DirectedFrames {
+                tempo: self.tempo,
+                source_frame: base_frame - self.displacement,
+                base_start: self.start,
+                window,
+                destination: self.elapsed_frame_clock(),
+            },
+        })
     }
     /// Whether the authored first partial cycle rounds to no samples. Current
     /// projections skip it without changing the cursor; storage uses this query

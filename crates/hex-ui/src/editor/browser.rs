@@ -474,6 +474,7 @@ fn browser_audio_drag_ghost(
             stroke,
             bottom_radius: 0.0,
             header_height: super::clip_name::CLIP_NAME_HEIGHT,
+            header_gradient: None,
             notch: super::clip_boundary::Notch::new(notched),
         },
         true,

@@ -156,6 +156,7 @@ pub(super) fn passive_audio_fragment(
                     0.0
                 },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                header_gradient: None,
                 notch: super::clip_boundary::Notch::new(stop == end),
             },
             true,
@@ -274,6 +275,7 @@ pub(super) fn passive_midi_fragment(
                     0.0
                 },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                header_gradient: None,
                 notch: super::clip_boundary::Notch::new(visible_end == timeline_interval.1),
             },
             true,
