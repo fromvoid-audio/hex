@@ -3202,6 +3202,35 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
+    def test_trim_payload_unit_tier_routes_owner_and_real_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim.rs"
+        consumers = (
+            "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
+            "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+            "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worker_refusal",
+        )
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [source]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn("editor::trim::tests::", default.argv)
+        self.assertIn("editor::drag_autoscroll::tests::", default.argv)
+        standalone = steps["ui-unit-unit_editor_logic"]
+        self.assertTrue(standalone.requires_tests)
+        self.assertTrue(any("editor::trim::geometry::".startswith(prefix) for prefix in standalone.argv))
+        feature = steps["ui-feature-tests"].argv
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
     def test_trim_geometry_keeps_rendered_audio_and_midi_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -3218,9 +3247,9 @@ class ModuleScopeTests(unittest.TestCase):
         ]
         names = plan.module_test_filters(root, [source], inventory, [owner])
         self.assertEqual(names, {owner: sorted([unit, *consumers])})
-        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
-                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
-                    "module_filters": names}
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertEqual(boundary["module_filters"], names)
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": [source]})
         self.assertTrue(any(unit in step.argv and step.requires_tests
@@ -3230,6 +3259,18 @@ class ModuleScopeTests(unittest.TestCase):
         for path in ("trim.rs", "clip_drag_ui_test.rs", "track_compact_ui_test.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+        geometry_path = "src/editor/trim/geometry.rs"
+        fixture_gate = plan.UI_FEATURE_EQUIVALENT_TEST_CFGS[geometry_path]
+        self.assertIn(f"{fixture_gate}\npub(super) fn clip_fixture(", (root / source).read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            geometry = root / source
+            geometry.parent.mkdir(parents=True)
+            geometry.write_text(f"{fixture_gate}\nfn clip_fixture() {{}}\n")
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {owner: "ui-test-support"})
+            geometry.rename(geometry.with_name("unreviewed.rs"))
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
 
     def test_operator_panel_units_keep_their_rendered_consumers(self):
         root = SCRIPTS.parent
