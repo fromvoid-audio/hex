@@ -588,6 +588,18 @@ fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut
                     Some(anchor),
                     copy,
                 );
+                let (old_cursor, drop_frame) = editor.read_with(&visual, |view, _| {
+                    (
+                        view.edit_cursor.map(|cursor| (cursor.track, cursor.frame)),
+                        view.pending_clip_move
+                            .as_ref()
+                            .unwrap()
+                            .drag
+                            .cursor_position()
+                            .unwrap()
+                            .1,
+                    )
+                });
                 editor.update(&mut visual, |view, _| {
                     view.track_defaults.set_test_state(0.25, false, true)
                 });
@@ -597,6 +609,10 @@ fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut
                         assert!(event.error.is_some());
                         view.receive(event);
                         assert!(view.pending_clip_move.is_none());
+                        assert_eq!(
+                            view.edit_cursor.map(|cursor| (cursor.track, cursor.frame)),
+                            old_cursor
+                        );
                         assert!(view.state.as_ref().unwrap().project.track(anchor).is_none());
                         cx.notify();
                     });
@@ -608,11 +624,18 @@ fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut
                             view.state.as_ref().unwrap().project.tracks().len(),
                             before.tracks().len() + 1
                         );
-                        assert_eq!(view.state.as_ref().unwrap().project.tracks()[1].gain(), 0.5);
+                        let destination = &view.state.as_ref().unwrap().project.tracks()[1];
+                        assert_eq!(destination.gain(), 0.5);
+                        let cursor = view.edit_cursor.unwrap();
+                        assert_eq!(
+                            (cursor.track, cursor.frame),
+                            (Some(destination.id()), drop_frame)
+                        );
                     });
                 }
                 visual.run_until_parked();
                 assert!(visual.debug_bounds("track-insert-preview").is_none());
+                assert!(visual.debug_bounds("clip-move-guide-line").is_none());
             }
         }
     }
@@ -4183,6 +4206,8 @@ fn drag_guides_preserve_locked_play_start_through_cancel_and_ack(cx: &mut TestAp
         });
         if cancel {
             visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("clip-move-guide-line").is_none());
         }
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         if !cancel {

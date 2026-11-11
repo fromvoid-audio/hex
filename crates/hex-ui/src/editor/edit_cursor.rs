@@ -251,8 +251,9 @@ impl EditorView {
             end_frame: cursor.frame,
         });
         self.time_selection_project_scope = false;
-        // For groups the grabbed clip's point supersedes the whole selection.
+        // The grabbed clip's point also supersedes whole-rectangle selection.
         self.edit_cursor_in_selected_clip = self.selected_clip;
+        self.clip_drop_cursor_epoch = self.selection_intent_epoch;
         self.loop_start_over_clip = None;
     }
 

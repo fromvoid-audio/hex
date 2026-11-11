@@ -2748,6 +2748,7 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.clip_drop_cursor_epoch = None;
             self.locked_play_start = None;
             self.play_start_at_beginning = false;
             self.escape_stop_armed = false;

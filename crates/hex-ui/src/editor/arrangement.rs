@@ -142,12 +142,12 @@ impl EditorView {
                     .bottom_0()
                     .left_0()
                     .right(px(self.track_header_width()))
-                    .child(vertical_timeline_guide(
+                    .children([vertical_timeline_guide(
                         "clip-move-guide-line",
                         position,
                         theme::time_position_marker_color(),
                         1.0 / window.scale_factor().max(1.0),
-                    ))
+                    )])
             });
         let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
@@ -1250,10 +1250,9 @@ fn loop_guides(state: &ViewState, view: &EditorView, viewport: Viewport, header_
         ] {
             if (viewport.start..=end).contains(&frame) {
                 let position = (frame - viewport.start) as f64 / viewport.length as f64;
-                layer = layer.child(
-                    vertical_timeline_guide(name, position as f32, color, 1.0)
-                        .opacity(if region.enabled() { 0.94 } else { 0.62 }),
-                );
+                layer =
+                    layer.children([vertical_timeline_guide(name, position as f32, color, 1.0)
+                        .opacity(if region.enabled() { 0.94 } else { 0.62 })]);
             }
         }
     }
