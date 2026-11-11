@@ -3521,6 +3521,27 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
         self.assertNotIn("editor::", feature)
 
+    def test_recovery_cursor_unit_keeps_real_callback_acknowledgement(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/recovery.rs"
+        unit = "editor::recovery::cursor_tests::"
+        witness = "editor::recovery::tests::recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        feature = steps["ui-feature-tests"].argv
+        self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
     def test_device_meter_units_keep_rendered_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
