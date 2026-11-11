@@ -198,41 +198,30 @@ impl WaveformGeometryCache {
         if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
             self.painted.pop_front();
         }
+        let observations: [(f32, f32, u64); 2] = std::array::from_fn(|channel| {
+            geometry.channels[channel].outline.iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY, 0xcbf29ce484222325_u64),
+                |(lo, hi, hash), point| {
+                    let y = f32::from(point.y);
+                    (
+                        lo.min(y),
+                        hi.max(y),
+                        (hash ^ u64::from(y.to_bits())).wrapping_mul(0x100000001b3),
+                    )
+                },
+            )
+        });
         self.painted.push_back(WaveformPaintSample {
             colors,
             bounds,
             mask,
-            ordinates: std::array::from_fn(|channel| {
-                geometry.channels[channel]
-                    .outline
-                    .iter()
-                    .map(|p| f32::from(p.y))
-                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
-                        (lo.min(y), hi.max(y))
-                    })
-            }),
+            ordinates: observations.map(|(lo, hi, _)| (lo, hi)),
             envelope_points: geometry
                 .channels
                 .iter()
                 .map(|channel| channel.outline.len())
                 .sum(),
-            outline_fingerprint: std::array::from_fn(|channel| {
-                let outline = &geometry.channels[channel].outline;
-                let upper = outline.len() / 2;
-                [
-                    0,
-                    upper / 4,
-                    upper / 2,
-                    upper * 3 / 4,
-                    upper * 7 / 8,
-                    upper.saturating_sub(1),
-                ]
-                .into_iter()
-                .filter_map(|index| outline.get(index))
-                .fold(0xcbf29ce484222325_u64, |hash, point| {
-                    (hash ^ u64::from(f32::from(point.y).to_bits())).wrapping_mul(0x100000001b3)
-                })
-            }),
+            outline_fingerprint: observations.map(|(_, _, fingerprint)| fingerprint),
         });
     }
 
