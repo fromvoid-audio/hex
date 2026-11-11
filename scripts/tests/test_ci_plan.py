@@ -3202,6 +3202,35 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
+    def test_trim_payload_unit_tier_routes_owner_and_real_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim.rs"
+        consumers = (
+            "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
+            "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+            "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worker_refusal",
+        )
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [source]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn("editor::trim::tests::", default.argv)
+        self.assertIn("editor::drag_autoscroll::tests::", default.argv)
+        standalone = steps["ui-unit-unit_editor_logic"]
+        self.assertTrue(standalone.requires_tests)
+        self.assertTrue(any("editor::trim::geometry::".startswith(prefix) for prefix in standalone.argv))
+        feature = steps["ui-feature-tests"].argv
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
     def test_trim_geometry_keeps_rendered_audio_and_midi_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

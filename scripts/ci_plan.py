@@ -222,6 +222,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/native_automation_recording/editor_input.rs": ("editor::native_automation_recording::editor_input::tests::",),
     "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
     "src/editor/clip_selection.rs": ("editor::clip_selection::unit_tests::",),
+    "src/editor/trim.rs": ("editor::trim::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),

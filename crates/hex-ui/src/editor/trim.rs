@@ -1844,7 +1844,7 @@ impl MidiTrimDrag {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{TrimDrag, payload_is_current};
     use crate::editor::{drag::LaneBounds, viewport::Viewport};
