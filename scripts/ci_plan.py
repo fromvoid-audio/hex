@@ -202,6 +202,7 @@ ADDITIVE_TEST_FEATURES = {
 
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
+CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
@@ -220,7 +221,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
     "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
     "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
-    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT,),
+    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT),
     "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
     "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
     "src/editor/device_gesture.rs": ("editor::device_gesture::unit_tests::",),
@@ -624,8 +625,8 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                       "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
-                      "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents",
-                      "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                      "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                      "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
                       "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                       "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"},
@@ -935,6 +936,21 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             if any("editor::device_panel::device_meter::tests::".startswith(name) for name in names):
                 names.update((
                     "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
+                ))
+            if {
+                "crates/hex-ui/src/editor/session_navigation.rs",
+                "crates/hex-ui/src/editor/session_navigation_ui_test.rs",
+            }.intersection(executable):
+                names.update((
+                    "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+                    "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
+                ))
+            if any(CONTROLLER_SESSION_ACTION_UNIT.startswith(name) for name in names):
+                names.update((
+                    "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+                    "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+                    "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+                    "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
                 ))
             if any("editor::drag_autoscroll::tests::".startswith(name) for name in names):
                 names.update((
