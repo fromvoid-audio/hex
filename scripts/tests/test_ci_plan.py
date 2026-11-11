@@ -2847,7 +2847,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv and step.requires_tests
                             for step in steps if "unit_editor_logic" in step.argv))
-        self.assertTrue(any(all(name in step.argv for name in (drag, worker, group))
+        drag_state = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertIn(drag, drag_state.argv)
+        self.assertTrue(drag_state.requires_tests)
+        self.assertTrue(any(all(name in step.argv for name in (worker, group))
                             for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_stretch_projection_retains_real_cache_consumer(self):
