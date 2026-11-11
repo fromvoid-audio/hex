@@ -404,3 +404,35 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "zoom_fit_ui_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{Viewport, interval};
+
+    #[test]
+    fn fit_interval_normalizes_bounds_and_handles_empty_minimum_and_overflow_limits() {
+        assert_eq!(
+            interval(9, 3, 12, 1),
+            Some(Viewport {
+                start: 3,
+                length: 6
+            })
+        );
+        assert_eq!(
+            interval(0, 1, 16, 4),
+            Some(Viewport {
+                start: 0,
+                length: 4
+            })
+        );
+        assert_eq!(interval(9, 9, 12, 1), None);
+        assert_eq!(interval(0, 1, 0, 1), None);
+        assert_eq!(
+            interval(u64::MAX - 1, u64::MAX, u64::MAX, 8),
+            Some(Viewport {
+                start: u64::MAX - 8,
+                length: 8
+            })
+        );
+    }
+}
