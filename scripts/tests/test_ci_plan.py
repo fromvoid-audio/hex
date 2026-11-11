@@ -3078,6 +3078,32 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_changelog_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::changelog::tests::"
+        consumers = (
+            "editor::changelog::ui_tests::changelog_empty_groups_unavailable_and_malformed_render_truthfully",
+            "editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently",
+            "editor::changelog::ui_tests::shortcut_opens_actual_embedded_generated_notes_without_network_or_files",
+        )
+        for name in (
+            "crates/hex-ui/src/editor/changelog.rs",
+        ):
+            with self.subTest(name=name):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
