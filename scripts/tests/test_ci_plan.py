@@ -3863,6 +3863,28 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     (consumer, feature_args))
 
+    def test_clip_range_fit_units_keep_both_rendered_drag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for module in ("clip_range_fit", "midi_cue", "time_selection"):
+            with self.subTest(module=module):
+                source = f"crates/hex-ui/src/editor/{module}.rs"
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                self.assertIn("editor::clip_range_fit::tests::", steps["ui-default-lib-unit-tests"].argv)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in (
+                    "editor::clip_range_fit::ui_tests::dragged_selection_fits_the_audio_editor_to_the_selected_root_range",
+                    "editor::clip_range_fit::ui_tests::dragged_selection_fits_the_piano_roll_to_the_selected_source_beats",
+                ):
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args))
+
     def test_output_meter_logic_keeps_rendered_and_editor_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

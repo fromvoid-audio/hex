@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
@@ -910,6 +911,8 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 ))
             if "crates/hex-ui/src/theme.rs" in executable:
                 names.update(("output_meter::tests::unit_tests::", "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps"))
+            if "crates/hex-ui/src/editor/time_selection.rs" in executable:
+                names.update(("editor::clip_range_fit::tests::", "editor::clip_range_fit::ui_tests::"))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
