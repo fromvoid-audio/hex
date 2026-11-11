@@ -46,17 +46,74 @@ mod waveform_source;
 #[path = "session_audio_panel.rs"]
 mod session_audio_panel;
 
+#[path = "session_grid.rs"]
+mod session_grid;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/play_intent.rs"]
+mod play_intent;
+
 #[path = "eq_response.rs"]
 mod device_panel;
 
 // Exercise the production column contract without compiling the full UI owner.
 use crate::theme;
 #[allow(dead_code)]
-#[path = "../../src/editor/waveform_columns.rs"]
-mod waveform_columns;
-mod waveform {
-    pub(super) use super::waveform_columns::waveform_column_count;
-}
-#[allow(dead_code)]
 #[path = "../../src/editor/overview_waveform.rs"]
 mod overview_waveform;
+#[path = "waveform.rs"]
+mod waveform;
+#[allow(dead_code)]
+#[path = "../../src/editor/waveform_columns.rs"]
+mod waveform_columns;
+
+#[path = "drag.rs"]
+mod drag;
+
+// Compile the real peak projection and stretch root against the shared source mapper.
+#[path = "waveform_loop.rs"]
+mod waveform_loop;
+#[path = "waveform_stretch.rs"]
+mod waveform_stretch;
+
+#[path = "trim.rs"]
+mod trim;
+
+// Compile the production grid against the real viewport and column budget.
+#[allow(dead_code)]
+#[path = "../../src/editor/viewport.rs"]
+mod viewport;
+#[path = "waveform_geometry.rs"]
+mod waveform_geometry;
+
+#[path = "arrangement_focus.rs"]
+mod arrangement_focus;
+#[path = "arrangement_map.rs"]
+mod arrangement_map;
+
+// Compile the real test gate; unit tests never start a filesystem worker.
+#[path = "browser.rs"]
+mod browser;
+#[allow(dead_code)]
+#[path = "../../src/editor/test_environment.rs"]
+mod test_environment;
+
+#[path = "group_overview.rs"]
+mod group_overview;
+
+// Compile the production interval splitter without pulling in GPUI or Service.
+mod time_move_preview;
+
+mod tempo_input;
+
+#[path = "section_launch.rs"]
+mod section_launch;
+
+#[path = "track_latency.rs"]
+mod track_latency;
+
+#[path = "tracks.rs"]
+mod tracks;
+
+#[path = "recent_projects.rs"]
+mod recent_projects;

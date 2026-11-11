@@ -9,6 +9,7 @@ pub(super) mod plugin_parameter;
 pub(super) enum Identity {
     Device(DevicePreviewIdentity),
     Tuning(TuningPreviewIdentity),
+    Stretch(ArrangementStretchAudition),
 }
 pub(crate) struct Preview {
     pub(super) project: Arc<Project>,
@@ -25,6 +26,12 @@ impl Preview {
     pub(super) fn tuning_identity(&self) -> Option<TuningPreviewIdentity> {
         match self.identity {
             Identity::Tuning(id) => Some(id),
+            _ => None,
+        }
+    }
+    pub(super) fn stretch_target(&self) -> Option<ArrangementStretchAudition> {
+        match self.identity {
+            Identity::Stretch(target) => Some(target),
             _ => None,
         }
     }
@@ -55,11 +62,11 @@ fn metadata(
         context,
         device_preview: identity.and_then(|id| match id {
             Identity::Device(id) => Some(id),
-            Identity::Tuning(_) => None,
+            _ => None,
         }),
         tuning_preview: identity.and_then(|id| match id {
             Identity::Tuning(id) => Some(id),
-            Identity::Device(_) => None,
+            _ => None,
         }),
         seek_request: None,
         stopped_restore: false,
@@ -98,6 +105,7 @@ pub(super) fn device_operation(
                 preview,
                 sink,
                 admission,
+                None,
             )
         }
         GesturePreparation::Commit(draft) => commit_preview(
@@ -109,25 +117,7 @@ pub(super) fn device_operation(
             sink,
             admission,
         ),
-        GesturePreparation::Restore => {
-            let snapshot = current
-                .as_mut()
-                .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
-            let selected = snapshot.inputs.clone();
-            let admission = with_preview(admission, preview.as_ref());
-            session.publish_resident_runtime_inputs(
-                snapshot,
-                sink,
-                admission,
-                metadata(context, None, &snapshot.prepared),
-                ResidentPublicationPolicy::InheritRuntime,
-                selected,
-                None,
-            )?;
-            let prepared = Arc::clone(&snapshot.prepared);
-            *preview = None;
-            Ok(Some((Arc::new(session.project().clone()), prepared)))
-        }
+        GesturePreparation::Restore => restore(session, context, current, preview, sink, admission),
     }
 }
 #[allow(clippy::too_many_arguments)] // Same owner/admission boundary as ordinary device gestures.
@@ -156,6 +146,7 @@ pub(super) fn tuning_operation(
             preview,
             sink,
             admission,
+            None,
         ),
         TuningPreparation::Commit(draft) => commit_preview(
             session,
@@ -176,6 +167,63 @@ pub(super) fn tuning_operation(
             admission,
         ),
     }
+}
+
+pub(super) fn restore(
+    session: &Session,
+    context: hex_engine::AudioSourceContext,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+) -> crate::device_gesture::PreparedGesture {
+    let snapshot = current
+        .as_mut()
+        .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
+    let selected = snapshot.inputs.clone();
+    let admission = with_preview(admission, preview.as_ref());
+    session.publish_resident_runtime_inputs(
+        snapshot,
+        sink,
+        admission,
+        metadata(context, None, &snapshot.prepared),
+        ResidentPublicationPolicy::InheritRuntime,
+        selected,
+        None,
+    )?;
+    let prepared = Arc::clone(&snapshot.prepared);
+    *preview = None;
+    Ok(Some((Arc::new(session.project().clone()), prepared)))
+}
+
+pub(super) fn stretch(
+    session: &Session,
+    target: ArrangementStretchAudition,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    cancel: &Arc<AtomicBool>,
+) -> crate::device_gesture::PreparedGesture {
+    session
+        .audio_transforms
+        .with_preview_cancellation(cancel, || {
+            prepare_preview(
+                session,
+                Command::StretchAudioClipEdge {
+                    clip: target.clip,
+                    edge: target.edge,
+                    frame: target.frame,
+                },
+                Identity::Stretch(target),
+                target.context,
+                current,
+                preview,
+                sink,
+                admission,
+                Some(cancel),
+            )
+        })
 }
 #[allow(clippy::too_many_arguments)] // Last fallible publication remains inside the reserved canonical transaction.
 fn commit_preview(
@@ -216,6 +264,7 @@ fn prepare_preview(
     preview: &mut Option<Preview>,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
+    cancel: Option<&AtomicBool>,
 ) -> crate::device_gesture::PreparedGesture {
     let canonical = current
         .as_mut()
@@ -231,8 +280,9 @@ fn prepare_preview(
                 .ok_or(SessionError::Invalid("preview metadata overflow"))?,
         )
         .ok_or(SessionError::Invalid("preview metadata overflow"))?;
-    let (project, snapshot) =
-        session.prepare_resident_preview(command, context, identity, sink, admission, canonical)?;
+    let (project, snapshot) = session.prepare_resident_preview(
+        command, context, identity, sink, admission, canonical, cancel,
+    )?;
     let prepared = Arc::clone(&snapshot.prepared);
     canonical.inputs = snapshot.inputs.clone();
     *preview = Some(Preview {

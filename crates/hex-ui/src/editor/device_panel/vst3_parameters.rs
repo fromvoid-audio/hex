@@ -48,11 +48,11 @@ struct ReportedStatus {
     message: String,
     error: Option<String>,
 }
-#[derive(Clone, Copy)]
 struct LiveTouchValue {
     touch: TouchObservation,
     value: PluginParameterValue,
-    after_request: u64,
+    sequence: u64,
+    formatted: String,
 }
 
 struct Panel {
@@ -160,50 +160,71 @@ impl Panel {
         self.result.as_ref().map(|rows| rows.as_slice())
     }
 
-    fn observe_value(&mut self, touch: TouchObservation, value: Option<PluginParameterValue>) {
+    fn observe_value(
+        &mut self,
+        touch: TouchObservation,
+        sequence: u64,
+        value: Option<PluginParameterValue>,
+    ) {
         // Bound this map by the admitted row inventory. Unknown targets still
         // follow the ordinary controller lookup before displaying a value.
         if let Some(value) = value
             && self.source == Some(touch.binding)
             && self.query.context == touch.source.context
             && self.query.output_identity == touch.source.output_identity
-            && self.rows().is_some_and(|rows| {
+            && let Some(row) = self.result.as_ref().and_then(|rows| {
                 rows.iter()
-                    .any(|row| row.id == touch.parameter && row.metadata_revision != 0)
+                    .find(|row| row.id == touch.parameter && row.metadata_revision != 0)
             })
+            && sequence > row.editor_sequence
         {
-            self.live_values.insert(
-                touch.parameter,
-                LiveTouchValue {
+            let live = self
+                .live_values
+                .entry(touch.parameter)
+                .or_insert_with(|| LiveTouchValue {
                     touch,
                     value,
-                    after_request: self.query.request_id,
-                },
-            );
+                    sequence,
+                    formatted: row.value.clone(),
+                });
+            if sequence > live.sequence {
+                live.sequence = sequence;
+                live.value = value;
+            }
         }
     }
 
+    fn live_value(&self, row: &PluginParameterRow) -> Option<&LiveTouchValue> {
+        self.live_values.get(&row.id).filter(|live| {
+            self.source == Some(live.touch.binding)
+                && self.query.context == live.touch.source.context
+                && self.query.output_identity == live.touch.source.output_identity
+                && row.metadata_revision != 0
+        })
+    }
+
     fn display_value(&self, row: &PluginParameterRow) -> f64 {
-        self.live_values
-            .get(&row.id)
-            .filter(|live| {
-                self.source == Some(live.touch.binding)
-                    && self.query.context == live.touch.source.context
-                    && self.query.output_identity == live.touch.source.output_identity
-                    && row.metadata_revision != 0
-            })
+        self.live_value(row)
             .map_or(row.normalized, |live| live.value.normalized())
+    }
+
+    fn display_text<'a>(&'a self, row: &'a PluginParameterRow) -> &'a str {
+        // Only the SDK page formats values. Hold its last text while the
+        // immediate knob preview is ahead of the controller observation.
+        self.live_value(row)
+            .map_or(row.value.as_str(), |live| live.formatted.as_str())
     }
 
     fn reconcile_live_values(
         &mut self,
-        query: PluginParameterQuery,
         source: hex_lattice_contract::ForeignProcessorBinding,
         rows: &[PluginParameterRow],
     ) {
         self.live_values.retain(|&id, live| {
             live.touch.binding == source
-                && (query.request_id <= live.after_request || !rows.iter().any(|row| row.id == id))
+                && !rows
+                    .iter()
+                    .any(|row| row.id == id && row.editor_sequence >= live.sequence)
         });
     }
 
@@ -231,8 +252,8 @@ impl Panel {
                         // Keep the last observed presentation while the source renews.
                         // Capabilities stay revoked; this value never authorizes input
                         // and the disk cache still stores descriptors only.
-                        pending.normalized = row.normalized;
-                        pending.value = row.value.clone();
+                        pending.normalized = self.display_value(row);
+                        pending.value = self.display_text(row).to_owned();
                         pending
                     })
                     .collect(),
@@ -300,6 +321,7 @@ pub(in crate::editor) fn touched(
     binding: hex_lattice_contract::ForeignProcessorBinding,
     device_id: u64,
     parameter: u32,
+    sequence: u64,
     value: Option<PluginParameterValue>,
 ) {
     let Some(device) = view
@@ -322,7 +344,7 @@ pub(in crate::editor) fn touched(
     }
     view.device_panel.vst3_parameters.last_touched_device = Some(device);
     if let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) {
-        panel.observe_value(touch, value);
+        panel.observe_value(touch, sequence, value);
         queue_native_touch(panel, touch);
     }
 }
@@ -743,7 +765,7 @@ fn apply_result(
         panel.mark_values_stale();
         return;
     };
-    panel.reconcile_live_values(result.query, source, &rows);
+    panel.reconcile_live_values(source, &rows);
     if panel.descriptor_signature != result.descriptor_signature {
         panel.live_values.clear();
     }
@@ -1269,11 +1291,11 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
                     .and_then(|rows| rows.iter().find(|row| row.id == touch.parameter))
                     .map(|row| row.page_first)
             });
+            panel.mark_values_stale();
             panel.query.context = context;
             if let Some(output_identity) = output_identity {
                 panel.query.output_identity = output_identity;
             }
-            panel.mark_values_stale();
             panel.pending_touch = pending_touch;
             panel.priority_page = touch_page;
         }
@@ -1523,7 +1545,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         });
     }
     let name = row.map(|row| row.name.as_str());
-    let value = row.map(|row| row.value.as_str()).unwrap_or("");
+    let value = row.map(|row| panel.display_text(row)).unwrap_or("");
     let retry = panel.cache_error.is_some() || panel.retry_count > MAX_AUTOMATIC_RETRIES;
     let field = if retry {
         hex_widgets::action(theme::text("retry"), theme::action_style())
@@ -3188,11 +3210,18 @@ mod tests {
                 assert_eq!(panel.priority_page, Some(0));
                 assert_eq!(panel.next_query_at, refresh_due);
             }
-            // A native receipt can paint ahead of an already submitted page.
-            // It must never change the edit origin or be overwritten by that page.
-            panel.query.request_id = 12;
-            panel.observe_value(touch, Some(PluginParameterValue::new(0.7).unwrap()));
-            let row = panel.rows().unwrap()[0].clone();
+            // A main-lane page may observe the latest native edit before the
+            // processing queue delivers an older Perform for the same parameter.
+            let mut row = panel.rows().unwrap()[0].clone();
+            row.editor_sequence = 10;
+            row.value = "current".into();
+            panel.result = Some(Arc::new(vec![row.clone()]));
+            panel.observe_value(touch, 2, Some(PluginParameterValue::new(0.25).unwrap()));
+            assert_eq!(panel.display_value(&row), 0.4);
+            // The next Perform leads the page. An older receipt or a lagging
+            // page must not undo it or flicker the SDK's formatted text.
+            panel.observe_value(touch, 12, Some(PluginParameterValue::new(0.7).unwrap()));
+            panel.observe_value(touch, 11, Some(PluginParameterValue::new(0.55).unwrap()));
             assert_eq!(panel.display_value(&row), 0.7);
             assert_eq!(
                 parameter_origin(panel.query, &row)
@@ -3201,15 +3230,25 @@ mod tests {
                     .normalized(),
                 0.4
             );
-            panel.reconcile_live_values(panel.query, binding, std::slice::from_ref(&row));
-            assert_eq!(panel.display_value(&row), 0.7);
-            let newer = PluginParameterQuery {
-                request_id: 13,
-                ..panel.query
+            let lagging = PluginParameterRow {
+                value: "earlier".into(),
+                normalized: 0.55,
+                editor_sequence: 11,
+                ..row.clone()
             };
-            panel.reconcile_live_values(newer, binding, std::slice::from_ref(&row));
-            assert_eq!(panel.display_value(&row), 0.4);
-            panel.observe_value(touch, Some(PluginParameterValue::new(0.8).unwrap()));
+            panel.reconcile_live_values(binding, std::slice::from_ref(&lagging));
+            assert_eq!(panel.display_value(&lagging), 0.7);
+            assert_eq!(panel.display_text(&lagging), "current");
+            let current = PluginParameterRow {
+                value: "formatted".into(),
+                normalized: 0.7,
+                editor_sequence: 12,
+                ..row.clone()
+            };
+            panel.reconcile_live_values(binding, std::slice::from_ref(&current));
+            assert_eq!(panel.display_value(&current), 0.7);
+            assert_eq!(panel.display_text(&current), "formatted");
+            panel.observe_value(touch, 13, Some(PluginParameterValue::new(0.8).unwrap()));
             panel.source = Some(hex_lattice_contract::ForeignProcessorBinding {
                 epoch: 5,
                 ..binding
@@ -3219,7 +3258,7 @@ mod tests {
             panel.live_values.clear();
 
             let query = panel.query;
-            panel.observe_value(touch, Some(PluginParameterValue::new(0.9).unwrap()));
+            panel.observe_value(touch, 14, Some(PluginParameterValue::new(0.9).unwrap()));
             let control = knob(view, device, query, &row, cx).unwrap();
             assert_eq!(control.read(cx).value(), 0.9);
             let panel = view
@@ -3377,6 +3416,7 @@ mod tests {
                 PluginParameterRow {
                     id: 9,
                     metadata_revision: 0,
+                    editor_sequence: 0,
                     ..live
                 },
             ]));
@@ -3499,6 +3539,7 @@ mod tests {
             automation_class: Some([6; 16]).filter(|_| editable),
             page_first: 0,
             metadata_revision,
+            editor_sequence: 0,
         }
     }
 }

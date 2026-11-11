@@ -137,12 +137,26 @@ Section hit tests use:
 cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 ```
 
-Editor logic tests, including Session route view state, EQ response sampling and
-overview-waveform geometry, use:
+Editor logic tests, including Session route view state, EQ response sampling,
+overview-waveform, loop and stretch projections, waveform-grid, peak and fade paint geometry,
+clip-drag geometry,
+arrangement-map and group-overview projections, browser tree and sample state, recent-project labels, session-receipt reconciliation,
+output-meter logic, project tempo value conversion, and passive time-move interval splitting, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 ```
+
+The seven default standalone targets run with the default package tests.
+Whole-package plans that elide the default package run select those standalone
+targets directly. The windowed library and standalone MIDI pressure test use
+`ui-test-support` in separate invocations:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --lib --locked
+cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+```
+
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
@@ -224,7 +238,12 @@ result and include the time spent on every case.
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
 example or bench, so building and linking those targets was pure overhead
-(hex-session has 28 test and 7 example targets, hex-storage 34).
+(hex-session has 28 test and 7 example targets, hex-storage 34). Explicit
+source-by-path targets are exceptions. Arrangement focus, track indentation and
+track-reorder subtree changes also select the standalone `hex-ui`
+`track_group_focus` unit target. It owns the in-memory visibility and indentation
+assertions. Changes to those sources also select the rendered consumers in the
+`ui-test-support` library.
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
@@ -263,6 +282,10 @@ prints its own `test result`; every listed test runs exactly once (70 s).
 Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
+The hex-ui gesture barrier and waveform geometry unit tests use the default
+library. Merge plans select the relevant modules,
+`editor::device_gesture::unit_tests::` and `editor::waveform_geometry::tests::`.
+Run either directly with `cargo test -p hex-ui --lib --locked MODULE`.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
 feature tests. Consumers lint in two invocations: default features
@@ -389,6 +412,34 @@ Keep that target for the same executor and run the normal checks again. Preserve
 the previous target and failed report; changing the location is not evidence that
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
+
+`FreshTargetReservation` is an explicit, bounded, lock-owning primitive for a
+canonical absolute target which is absent or empty before the caller starts
+Cargo. It pins directory ancestry, revalidates exact identity and emptiness,
+and invalidates authority when closed. Existing CLI, programmatic and release
+entrypoints do not use it yet. Raw Cargo and other processes which ignore the
+cooperative target lock remain outside this observation; it is not a sandbox.
+A target-wide `.admission-pending` sentinel beside its lock makes cooperating
+lock users refuse before cleanup or build, including explicit adoption and
+release recovery. Its contents are not trusted: any entry, including a dangling
+symlink, requires preserving it and choosing a fresh target. The standalone dev
+publisher syncs this sentinel before creating the existing dev owner record,
+verifies and syncs that record, then removes the sentinel before transferring the
+same lock to the runner. A failed publication before removal preserves the
+sentinel. A failed final directory sync denies handoff after the verified owner
+has been made durable. After a crash the sentinel can still be present, in which
+case the target remains unavailable to cooperating consumers.
+The refusal relies on the same intact lock-state directory; a replaced state
+directory can hide the sentinel. Older runner versions and raw Cargo do not
+honor it. Current guarded paths may run initial Cargo metadata before locking.
+For the opt-in identity-resolution API, the caller must acquire a reservation
+before its first Cargo operation and retain it through the later custody
+decision. Metadata must report exactly the explicit target and leave it fresh;
+resolution alone neither admits the target nor publishes ownership. A target
+inferred only from Cargo configuration does not meet this API's proof contract.
+The standalone dev publisher currently accepts existing empty directories after
+the caller has captured Git, Cargo and dependency inputs. Release publication,
+absent-target creation and guarded entrypoint adoption are separate boundaries.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target

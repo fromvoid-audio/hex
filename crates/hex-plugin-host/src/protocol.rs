@@ -27,7 +27,7 @@ pub use parameter_page::{
     ControllerParameter, ControllerRequest, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE,
     ParameterConversion, ParameterConversionResult, ParameterConversionStatus, ParameterPage,
     ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
-    PluginEditorState, parameter_page, parameter_page_request,
+    PluginEditorPosition, PluginEditorState, parameter_page, parameter_page_request,
 };
 mod flush;
 pub use capture::{

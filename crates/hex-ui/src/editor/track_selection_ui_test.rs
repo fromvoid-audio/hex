@@ -545,7 +545,7 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
                 );
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
                 if !modifiers.shift {
-                    assert_eq!(view.edit_cursor.unwrap().track, target);
+                    assert_eq!(view.edit_cursor.unwrap().track, Some(target));
                 }
             });
             for id in [source, empty] {

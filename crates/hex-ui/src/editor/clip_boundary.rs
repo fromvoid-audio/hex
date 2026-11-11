@@ -339,6 +339,7 @@ pub(super) struct Backdrop {
     pub stroke: f32,
     pub bottom_radius: f32,
     pub header_height: f32,
+    pub header_gradient: Option<super::clip_header_loop::HeaderGradient>,
     pub notch: Notch,
 }
 
@@ -500,8 +501,21 @@ fn paint_backdrop(
             Default::default(),
         ));
     };
+    let paint_header_gradient = |window: &mut gpui::Window| {
+        if let Some(gradient) = &style.header_gradient {
+            gradient.paint(
+                bounds,
+                style.header_height,
+                style.stroke,
+                cut,
+                style.header,
+                window,
+            );
+        }
+    };
     if cut == 0.0 {
         paint_square(window);
+        paint_header_gradient(window);
         return;
     }
     let below = Bounds::from_corners(
@@ -531,6 +545,7 @@ fn paint_backdrop(
         if let Ok(path) = triangle.build() {
             window.paint_path(path, rgb(style.header));
         }
+        paint_header_gradient(window);
         let inset = px(style.stroke / (2.0 * std::f32::consts::SQRT_2));
         let mut diagonal = gpui::PathBuilder::stroke(px(style.stroke));
         diagonal.move_to(point(

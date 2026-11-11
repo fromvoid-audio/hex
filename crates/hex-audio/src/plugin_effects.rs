@@ -10,7 +10,8 @@ use hex_lattice::{
     PreparedForeignProcessor, ProcessorInstanceIdentity,
 };
 use hex_lattice_contract::{
-    DeviceContractError, ForeignProcessorBinding as Binding, NativeDeviceState,
+    DeviceContractError, ForeignProcessorBinding as Binding, MAX_FOREIGN_AUTOMATION_TARGETS,
+    NativeDeviceState,
 };
 use hex_plugin_host::{
     Error,
@@ -204,9 +205,8 @@ impl NativeEffect {
         prepared: PreparedForeignProcessor,
         reserve_dense: bool,
     ) -> Option<usize> {
-        let source = instance.storage_with_authored_capacity_on_control(
-            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
-        )?;
+        let source =
+            instance.storage_with_authored_capacity_on_control(MAX_FOREIGN_AUTOMATION_TARGETS)?;
         let worker = if reserve_dense {
             NativeWorker::preconstruction_dense_effect_for_source_on_control(source)?
         } else {
@@ -385,7 +385,7 @@ impl NativeEffect {
                 instance,
             ));
         }
-        let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+        let mut authored_bases = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
         if let Some((class, ids)) = authored {
             let (capabilities, bases) = match automation::SourceCapabilities::arm(
                 &mut instance,
@@ -416,9 +416,9 @@ impl NativeEffect {
             ));
         }
         configuration.dense_raw_id = dense_raw_id;
-        if let Err(cause) = instance.reserve_authored_parameter_capacity_on_control(
-            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
-        ) {
+        if let Err(cause) =
+            instance.reserve_authored_parameter_capacity_on_control(MAX_FOREIGN_AUTOMATION_TARGETS)
+        {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 cause, instance,
             ));

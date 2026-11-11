@@ -92,7 +92,6 @@ impl AudioAdmissionStatus {
             .and_then(|current| current.audio_revision)
     }
 
-    #[cfg(test)]
     pub(super) fn current(&self) -> Option<CurrentAdmission> {
         self.current
     }

@@ -204,9 +204,9 @@ fn control_input_capacity_follows_whole_physical_callback_across_quantum_and_seg
     callback.finish(true).unwrap();
     assert!(worker.receive_with_parameter_capacity().unwrap().is_none());
     // This physical callback fills one old quantum and starts a new partial
-    // one. Its64 points split63/1 across them. Counting only the completed
-    // block would wrongly permit a65th physical-callback point.
-    let first: Vec<_> = (1..=63)
+    // one. All but one point lands in the completed quantum. Counting only
+    // that block would wrongly permit one more physical-callback point.
+    let first: Vec<_> = (1..MAX_PARAMETER_POINTS as u32)
         .map(|id| ParameterPoint {
             frame: 0,
             id,
@@ -224,7 +224,7 @@ fn control_input_capacity_follows_whole_physical_callback_across_quantum_and_seg
             &[],
             &[ParameterPoint {
                 frame: 3,
-                id: 64,
+                id: MAX_PARAMETER_POINTS as u32,
                 normalized: 0.25,
             }],
             &mut [[0.0; 2]; 4],
@@ -238,7 +238,7 @@ fn control_input_capacity_follows_whole_physical_callback_across_quantum_and_seg
     let (mut block, capacity) = worker.receive_with_parameter_capacity().unwrap().unwrap();
     assert_eq!(
         (block.sequence, block.parameters.as_slice().len(), capacity),
-        (0, 63, 0)
+        (0, MAX_PARAMETER_POINTS - 1, 0)
     );
     assert!(
         block
@@ -268,7 +268,7 @@ fn control_input_capacity_follows_whole_physical_callback_across_quantum_and_seg
     let (block, capacity) = worker.receive_with_parameter_capacity().unwrap().unwrap();
     assert_eq!(
         (block.sequence, block.parameters.as_slice().len(), capacity),
-        (2, 0, 64),
+        (2, 0, MAX_PARAMETER_POINTS),
         "fresh quantum gets fresh physical budget"
     );
     worker.complete(block).unwrap();

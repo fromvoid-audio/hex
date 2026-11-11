@@ -54,7 +54,7 @@ pub struct ResponseGraphNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseGraphPhase {
-    /// Owner-opted-in blank plot press; subsequent double-click presses do not create again.
+    /// Owner-opted-in blank plot press at the configured click count.
     /// With creation dragging enabled, its pointer stream keeps node_id zero.
     Create,
     Select,
@@ -201,7 +201,7 @@ pub struct ResponseGraph {
     editable: bool,
     creation_enabled: bool,
     creation_drag_enabled: bool,
-    marquee_enabled: bool,
+    marquee_start: MarqueeStart,
     marquee: Option<MarqueePress>,
     creation_hint_resolver: Option<fn([f32; 2]) -> ResponseGraphCreationHint>,
     creation_hover: Option<creation_hint::Hover>,
@@ -214,6 +214,13 @@ pub struct ResponseGraph {
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
     scroll: scroll::State,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MarqueeStart {
+    Disabled,
+    Shift,
+    Blank,
 }
 
 #[derive(Clone, Copy)]
@@ -234,9 +241,8 @@ struct MarqueePress {
     last: Vec<u32>,
     mode: MarqueeMode,
     modifiers: Modifiers,
-    /// Normalized press position for a click that creates a point.
-    position: [f32; 2],
-    click_count: usize,
+    /// A Shift marquee press may create on release if it does not drag.
+    create_on_click: Option<[f32; 2]>,
     active: bool,
 }
 
@@ -273,7 +279,7 @@ impl ResponseGraph {
             editable: false,
             creation_enabled: false,
             creation_drag_enabled: false,
-            marquee_enabled: false,
+            marquee_start: MarqueeStart::Disabled,
             marquee: None,
             creation_hint_resolver: None,
             creation_hover: None,
@@ -338,8 +344,8 @@ impl ResponseGraph {
         }
     }
 
-    /// Allow blank plot presses to create one owner-defined point. Node hits
-    /// keep select/drag semantics; double-click's second press is suppressed.
+    /// Allow blank plot presses to create one owner-defined point. Creation
+    /// uses the first press by default or the second with plain blank marquee.
     pub fn set_creation_enabled(&mut self, enabled: bool) {
         self.creation_enabled = enabled;
         if !enabled {
@@ -366,10 +372,36 @@ impl ResponseGraph {
     /// their select/drag stream: owners moving a multi-selection apply the
     /// dragged node's delta to the other selected nodes in one edit.
     pub fn set_marquee_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if !enabled && self.marquee.is_some() {
+        self.set_marquee_start(
+            if enabled {
+                MarqueeStart::Shift
+            } else {
+                MarqueeStart::Disabled
+            },
+            cx,
+        );
+    }
+
+    /// Use blank drags for marquee selection and stationary blank clicks to
+    /// clear it. With creation enabled, a blank double-click starts creation
+    /// on its second press and can continue directly into a creation drag.
+    /// Shift+Cmd still toggles the marquee hits against the prior selection.
+    pub fn set_blank_marquee_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.set_marquee_start(
+            if enabled {
+                MarqueeStart::Blank
+            } else {
+                MarqueeStart::Disabled
+            },
+            cx,
+        );
+    }
+
+    fn set_marquee_start(&mut self, start: MarqueeStart, cx: &mut Context<Self>) {
+        if self.marquee_start != start && self.marquee.is_some() {
             self.cancel(cx);
         }
-        self.marquee_enabled = enabled;
+        self.marquee_start = start;
     }
 
     /// Opt existing nodes into relative vertical Option drags, independent of
@@ -605,16 +637,25 @@ impl ResponseGraph {
             {
                 return;
             }
-            // Adding nodes comes first: only Shift starts a marquee, and
-            // creation-drag owners keep their held create-and-shape on Option.
-            if self.marquee_enabled
-                && MarqueeMode::starts(event.modifiers)
-                && !(self.creation_drag_enabled && event.modifiers.alt)
-            {
-                self.begin_marquee(event, position, window, cx);
+            let create_count = if self.marquee_start == MarqueeStart::Blank {
+                2
+            } else {
+                1
+            };
+            let create = self.creation_enabled && event.click_count == create_count;
+            let marquee = match self.marquee_start {
+                MarqueeStart::Disabled => false,
+                MarqueeStart::Shift => {
+                    MarqueeMode::starts(event.modifiers)
+                        && !(self.creation_drag_enabled && event.modifiers.alt)
+                }
+                MarqueeStart::Blank => !create,
+            };
+            if marquee {
+                self.begin_marquee(event, create.then_some(position), window, cx);
                 return;
             }
-            if self.creation_enabled && event.click_count == 1 {
+            if create {
                 if self.creation_drag_enabled {
                     if !self.capture_pointer(window, cx) {
                         return;
@@ -683,7 +724,7 @@ impl ResponseGraph {
     fn begin_marquee(
         &mut self,
         event: &MouseDownEvent,
-        position: [f32; 2],
+        create_on_click: Option<[f32; 2]>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -705,10 +746,13 @@ impl ResponseGraph {
             band,
             last: base.clone(),
             base,
-            mode: MarqueeMode::from_modifiers(event.modifiers),
+            mode: if event.modifiers.shift {
+                MarqueeMode::from_modifiers(event.modifiers)
+            } else {
+                MarqueeMode::Replace
+            },
             modifiers: event.modifiers,
-            position,
-            click_count: event.click_count,
+            create_on_click,
             active: false,
         });
         self.focus.focus(window);
@@ -782,12 +826,13 @@ impl ResponseGraph {
                     .combine(&press.base, &self.marquee_hits(&press.band)),
                 modifiers: press.modifiers,
             });
-        } else if self.creation_enabled && press.click_count == 1 {
-            // Live: a blank click adds a point; only a drag draws a marquee.
+        } else if self.creation_enabled
+            && let Some(position) = press.create_on_click
+        {
             cx.emit(ResponseGraphEvent {
                 phase: ResponseGraphPhase::Create,
                 node_id: 0,
-                position: press.position,
+                position,
                 modifiers: press.modifiers,
             });
             if self.creation_drag_enabled {
@@ -795,7 +840,7 @@ impl ResponseGraph {
                 cx.emit(ResponseGraphEvent {
                     phase: ResponseGraphPhase::Release,
                     node_id: 0,
-                    position: press.position,
+                    position,
                     modifiers: press.modifiers,
                 });
             }

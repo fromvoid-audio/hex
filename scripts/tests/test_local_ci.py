@@ -78,6 +78,292 @@ def bounded_checkpoint_case(function):
     return function
 
 
+class FreshTargetReservationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        install_delivery_source_fixture(self.root)
+        self.state = self.root / "locks"
+        self.target = self.root / "cargo-target"
+
+    def reserve(self, target=None):
+        return local_ci.FreshTargetReservation.acquire(
+            self.root, str(self.target if target is None else target), {"run_id": "fixture"}, state_dir=self.state)
+
+    def test_empty_and_absent_hold_exact_lock_until_close(self):
+        for absent in (True, False):
+            with self.subTest(absent=absent):
+                if not absent:
+                    self.target.mkdir()
+                with self.reserve() as reservation:
+                    reservation.revalidate(str(self.target))
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                        self.reserve()
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "differs"):
+                        reservation.revalidate(str(self.root / "other"))
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(self.target))
+                if not absent:
+                    self.target.rmdir()
+
+    def test_relative_alias_symlink_and_missing_parent_refuse(self):
+        self.target.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(self.target, target_is_directory=True)
+        parent_alias = self.root / "parent-alias"
+        parent_alias.symlink_to(self.root, target_is_directory=True)
+        for value in ("relative", "//tmp/alias", str(self.target) + "\0bad", str(alias), str(parent_alias / "cargo-target"),
+                      str(self.root / "missing" / "target"), str(self.target) + "/."):
+            with self.subTest(value=value), self.assertRaises(local_ci.TargetCacheError):
+                self.reserve(value)
+        self.assertFalse(any(self.target.iterdir()))
+
+    def test_metadata_entries_and_target_presence_changes_refuse(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            (self.target / ".rustc_info.json").write_text("metadata")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                reservation.revalidate(str(self.target))
+            (self.target / ".rustc_info.json").unlink()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+        with self.reserve() as replacement:
+            replacement.revalidate(str(self.target))
+        self.target.rmdir()
+        with self.reserve() as reservation:
+            self.target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "presence"):
+                reservation.revalidate(str(self.target))
+            self.target.rmdir()
+
+    def test_replacement_of_target_or_ancestor_refuses(self):
+        parent = self.root / "parent"
+        parent.mkdir()
+        target = parent / "target"
+        target.mkdir()
+        with self.reserve(target) as reservation:
+            target.rename(parent / "old-target")
+            target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+        target.rmdir()
+        (parent / "old-target").rename(target)
+        with self.reserve(target) as reservation:
+            parent.rename(self.root / "old-parent")
+            parent.mkdir()
+            (parent / "target").mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+
+    def test_source_change_revokes_reservation(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            helper = self.root / "scripts/ci_plan.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# changed\n")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "source mismatch"):
+                reservation.revalidate(str(self.target))
+            self.assertIsNone(reservation._lock.file)
+            self.assertEqual(reservation._handles, [])
+
+    def test_failure_closes_descriptors_and_preserves_target_and_owner(self):
+        self.target.mkdir()
+        sentinel = self.target / "keep"
+        sentinel.write_bytes(b"preserve")
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        owner.parent.mkdir(parents=True)
+        opened = []
+        original = os.open
+        def record(*args, **kwargs):
+            descriptor = original(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+        with patch.object(local_ci.os, "open", side_effect=record):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                self.reserve()
+        self.assertTrue(opened)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        self.assertEqual(sentinel.read_bytes(), b"preserve")
+        self.assertFalse(owner.exists())
+        sentinel.unlink()
+        owner.write_bytes(b"existing owner")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+            self.reserve()
+        self.assertEqual(owner.read_bytes(), b"existing owner")
+        owner.unlink()
+        with self.reserve() as reservation:
+            self.assertTrue(reservation._handles)
+            reservation._lock.release()  # Unusual external unlock invalidates authority.
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+
+    def test_owner_markers_revoke_fresh_authority(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        for marker in (owner, release):
+            with self.subTest(marker=marker.name):
+                with self.reserve() as reservation:
+                    marker.write_bytes(b"other owner")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                        reservation.revalidate(str(self.target))
+                self.assertEqual(marker.read_bytes(), b"other owner")
+                marker.unlink()
+
+    def test_existing_release_marker_and_dangling_marker_refuse(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        self.state.mkdir(parents=True)
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                if dangling:
+                    release.symlink_to(self.root / "missing")
+                else:
+                    release.write_bytes(b"existing")
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                    self.reserve()
+                self.assertTrue(os.path.lexists(release))
+                release.unlink()
+                with self.reserve():
+                    pass
+
+    def test_replaced_lock_or_state_directory_revokes_authority(self):
+        self.target.mkdir()
+        for replace_state in (False, True):
+            with self.subTest(replace_state=replace_state):
+                with self.reserve() as reservation:
+                    lock_path = reservation._lock.path
+                    if replace_state:
+                        self.state.rename(self.root / "old-locks")
+                        self.state.mkdir()
+                    else:
+                        lock_path.unlink()
+                    lock_path.write_text("replacement")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "lock identity"):
+                        reservation.revalidate(str(self.target))
+                    self.assertIsNone(reservation._lock.file)
+                    self.assertEqual(lock_path.read_text(), "replacement")
+                if replace_state:
+                    lock_path.unlink()
+                    self.state.rmdir()
+                    (self.root / "old-locks").rename(self.state)
+
+    def test_reserved_metadata_matches_target_and_preserves_live_lock(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertTrue(runner._resolve_cargo_identity(reservation))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+            self.assertIsNone(runner.target_lock)  # Identity resolution grants no custody.
+
+    def test_reserved_metadata_mismatch_or_mutation_refuses(self):
+        self.target.mkdir()
+        for scenario in ("configured", "selected", "created"):
+            with self.subTest(scenario=scenario):
+                env_target = self.root / "other" if scenario == "configured" else self.target
+                runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(env_target)},
+                                                target_state_dir=self.state)
+                metadata = {"target_directory": str(self.root / "other" if scenario == "selected" else self.target),
+                            "workspace_root": str(self.root), "workspace_members": ["fixture"],
+                            "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+                def run(*args, **kwargs):
+                    if scenario == "created":
+                        (self.target / "entry").write_text("preserve")
+                    return subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+                with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", side_effect=run) as cargo:
+                    self.assertFalse(runner._resolve_cargo_identity(reservation))
+                    self.assertIsNone(runner.cargo_identity)
+                    self.assertIsNone(reservation._lock.file)
+                    if scenario == "configured":
+                        cargo.assert_not_called()
+                if scenario == "created":
+                    self.assertEqual((self.target / "entry").read_text(), "preserve")
+                    (self.target / "entry").unlink()
+
+    def test_reserved_real_cargo_metadata_on_empty_target(self):
+        (self.root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+        (self.root / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+        (self.root / "src").mkdir()
+        (self.root / "src/lib.rs").write_text("")
+        self.target.mkdir()
+        env = dict(os.environ, CARGO_TARGET_DIR=str(self.target), CARGO_NET_OFFLINE="true")
+        runner = local_ci.LocalCiRunner(self.root, env=env, target_state_dir=self.state)
+        with self.reserve() as reservation:
+            self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+
+    def test_reserved_metadata_refuses_other_lock_namespace_before_cargo(self):
+        self.target.mkdir()
+        other_state = self.root / "other-locks"
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=other_state)
+        _, owner = local_ci.target_state_paths(self.target, other_state)
+        owner.parent.mkdir(parents=True)
+        owner.write_text("existing owner")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run") as cargo:
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+            cargo.assert_not_called()
+            self.assertIsNone(reservation._lock.file)
+        self.assertEqual(owner.read_text(), "existing owner")
+
+    def test_failed_or_interrupted_resolution_revokes_prior_identity(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        success = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        for interruption in (False, True):
+            with self.subTest(interruption=interruption), self.reserve() as reservation:
+                with patch.object(local_ci.subprocess, "run", return_value=success):
+                    self.assertTrue(runner._resolve_cargo_identity(reservation))
+                failure = KeyboardInterrupt() if interruption else subprocess.CompletedProcess([], 1, "", "failure")
+                with patch.object(local_ci.subprocess, "run", side_effect=failure if interruption else None,
+                                  return_value=None if interruption else failure):
+                    if interruption:
+                        with self.assertRaises(KeyboardInterrupt):
+                            runner._resolve_cargo_identity(reservation)
+                    else:
+                        self.assertFalse(runner._resolve_cargo_identity(reservation))
+                self.assertIsNone(runner.cargo_identity)
+                self.assertIsNone(runner.target_owner_path)
+                self.assertIsNone(runner._lexical_cargo_target)
+                self.assertNotIn("cargo_identity", runner.summary)
+                self.assertIsNone(reservation._lock.file)
+            with self.reserve():
+                pass
+
+    def test_metadata_refusal_reports_cleanup_failure_without_masking_cause(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        reservation = self.reserve()
+        release = reservation._lock.release
+        def failed_release():
+            release()
+            return "simulated release failure"
+        metadata = {"target_directory": str(self.root / "other"), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"], "packages": []}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with patch.object(reservation._lock, "release", side_effect=failed_release), \
+                patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+        self.assertIn("differs", runner.summary["cargo_metadata_error"])
+        self.assertEqual(runner.summary["reservation_close_error"], "simulated release failure")
+        self.assertIsNone(reservation._lock.file)
+
+
 class LocalCiRunnerTests(unittest.TestCase):
     def test_module_shard_empty_configs_require_aggregate_passes(self):
         (self.bin / "python3").write_text(
@@ -1889,6 +2175,270 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dependency patches passed", result.stdout)
 
+    def test_dev_owner_record_matches_writer_and_reader(self) -> None:
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        runner = self.runner("owner-record")
+        runner.cargo_identity = {"target_directory": str(target)}
+        runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        workspace = {"workspace_root": str(self.repo), "git_common_dir": str(self.repo / ".git")}
+        marker = self.base / "owner.json"
+        with patch.object(local_ci, "utc_now", return_value="2026-01-01T00:00:00Z"), \
+                patch.object(runner, "_cache_provenance", return_value={"witness": "fixture"}) as provenance:
+            record = runner._target_owner_record(workspace, checked=True)
+            runner._write_target_owner(marker, workspace, checked=True)
+        self.assertEqual(runner._load_target_owner(marker, target), record)
+        self.assertEqual(record["workspace_owner"], workspace)
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
+        self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
+
+    def _reserved_dev_runner(self, name, *, real_cargo=False):
+        target = self.repo / name
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        if real_cargo:
+            # Use real offline Cargo metadata and provenance, with the same
+            # deterministic Git witness as the other runner fixtures.
+            git_bin = self.base / "git-only"
+            git_bin.mkdir()
+            (git_bin / "git").symlink_to(self.bin / "git")
+            env = dict(os.environ, **env)
+            env.update(PATH=str(git_bin) + os.pathsep + os.environ["PATH"],
+                       CARGO_NET_OFFLINE="true", CARGO_CACHE_RUSTC_INFO="0",
+                       FAKE_FILE_LIST="Cargo.toml")
+            (self.repo / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+            (self.repo / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+            (self.repo / "src").mkdir()
+            (self.repo / "src/lib.rs").write_text("")
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"), runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+        if real_cargo:
+            runner._dependency_inputs = runner._dependency_context()
+            runner._workspace_inputs = local_ci.build_inputs.workspace_snapshot(
+                runner.root, runner.env, runner._release_metadata)
+        else:
+            runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        return runner, reservation, target
+
+    def test_fresh_dev_publication_transfers_same_lock_and_real_owner_schema(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-owner-real", real_cargo=True)
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        locked_file = lock.file
+        with reservation:
+            runner._claim_fresh_dev_owner(reservation)
+            self.addCleanup(lock.release)
+        self.assertIs(runner.target_lock, lock)
+        self.assertIs(lock.file, locked_file)
+        self.assertTrue(runner.target_owner_claimed)
+        record = runner._load_target_owner(owner, target)
+        self.assertEqual(record["workspace_owner"], {key: runner.git_identity[key]
+                                                    for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertFalse(record["cache_inputs"]["workspace"]["checked"])
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        with self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "contender"})
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+            contender.acquire()
+        self.assertIs(lock.file, locked_file)
+        self.assertEqual(runner._load_target_owner(owner, target), record)
+
+    def _assert_pending_consumers_refuse(self, name, target):
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        calls = self.call_log.read_text()
+        for adopt in (False, True):
+            consumer = self.runner(f"{name}-dev-{adopt}", env=env, adopt_target=adopt)
+            self.assertEqual(consumer.run(), 1)
+            self.assertIn("admission is incomplete", consumer.summary["target_cache_error"])
+            self.assertIsNone(consumer.target_lock)
+            release = self.runner(f"{name}-release-{adopt}", env=env)
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                with release.guarded_release(adopt=adopt):
+                    self.fail("release accepted a pending target")
+            self.assertIsNone(release.target_lock)
+        new_calls = self.call_log.read_text()[len(calls):]
+        self.assertNotIn("cargo clean", new_calls)
+        self.assertNotIn("cargo build", new_calls)
+
+    def test_fresh_dev_publication_keeps_durable_refusal_after_precommit_failure(self):
+        for event in ("same-profile", "opposite-profile", "target-contents", "target-replaced",
+                      "lock", "state", "owner-bytes", "owner-inode", "temporary",
+                      "link-error", "link-interrupt", "pending-file-sync", "pending-directory-sync",
+                      "owner-file-sync", "owner-directory-sync"):
+            with self.subTest(event=event):
+                runner, reservation, target = self._reserved_dev_runner("fresh-" + event)
+                owner = runner.target_owner_path
+                opposite = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+                lock_path = reservation._lock.path
+                pending = local_ci.target_admission_pending_path(lock_path)
+                observed_pending = pending
+                link, fsync = os.link, os.fsync
+                expected = {}
+                synced = []
+
+                def change(source, destination, **kwargs):
+                    nonlocal observed_pending
+                    identity = pending.stat()
+                    self.assertIn((identity.st_dev, identity.st_ino), synced)
+                    self.assertIn("directory", synced)
+                    if event == "same-profile":
+                        owner.write_bytes(b"other dev owner")
+                        expected[owner] = owner.read_bytes()
+                    link(source, destination, **kwargs)
+                    expected[owner] = owner.read_bytes()
+                    if event == "opposite-profile":
+                        opposite.write_bytes(b"release owner")
+                        expected[opposite] = opposite.read_bytes()
+                    elif event in {"target-contents", "target-replaced"}:
+                        if event == "target-replaced":
+                            target.rename(target.with_suffix(".old"))
+                            target.mkdir()
+                        (target / "keep").write_bytes(b"unowned target")
+                        expected[target / "keep"] = b"unowned target"
+                    elif event == "lock":
+                        lock_path.rename(lock_path.with_suffix(".old"))
+                        lock_path.write_bytes(b"replacement lock")
+                        expected[lock_path] = lock_path.read_bytes()
+                    elif event == "state":
+                        old_state = self.target_state_dir.with_suffix(".old")
+                        self.target_state_dir.rename(old_state)
+                        self.target_state_dir.mkdir()
+                        expected[old_state / owner.name] = expected.pop(owner)
+                        observed_pending = old_state / pending.name
+                    elif event == "owner-bytes":
+                        owner.write_bytes(b"changed in place")
+                        expected[owner] = owner.read_bytes()
+                    elif event == "owner-inode":
+                        owner.rename(owner.with_suffix(".old"))
+                        owner.write_bytes(expected[owner])
+                        expected[owner.with_suffix(".old")] = expected[owner]
+                    elif event == "temporary":
+                        temporary = owner.parent / source
+                        temporary.unlink()
+                        temporary.write_bytes(b"replacement temporary")
+                        expected[temporary] = temporary.read_bytes()
+                    elif event == "link-error":
+                        raise OSError(errno.EIO, "ambiguous link")
+                    elif event == "link-interrupt":
+                        raise KeyboardInterrupt()
+
+                def sync(descriptor):
+                    if descriptor == reservation._state_fd:
+                        key = "directory"
+                        stage = "owner-directory-sync" if owner.exists() else "pending-directory-sync"
+                    else:
+                        info = os.fstat(descriptor)
+                        key = (info.st_dev, info.st_ino)
+                        identity = pending.stat()
+                        stage = ("pending-file-sync" if key == (identity.st_dev, identity.st_ino)
+                                 else "owner-file-sync")
+                    if event == stage:
+                        raise OSError(errno.EIO, "failed " + stage)
+                    fsync(descriptor)
+                    synced.append(key)
+
+                error = KeyboardInterrupt if event == "link-interrupt" else local_ci.TargetCacheError
+                with patch.object(local_ci.os, "link", side_effect=change), \
+                        patch.object(local_ci.os, "fsync", side_effect=sync), self.assertRaises(error):
+                    runner._claim_fresh_dev_owner(reservation)
+                self.assertIsNone(runner.target_lock)
+                self.assertFalse(runner.target_owner_claimed)
+                self.assertIsNone(reservation._lock.file)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(target))
+                self.assertEqual(observed_pending.read_bytes(), b"")
+                self.assertEqual(owner.exists(), owner in expected)
+                for path, preserved in expected.items():
+                    self.assertEqual(path.read_bytes(), preserved)
+                self.assertEqual(set(self.target_state_dir.glob(f".{owner.name}.*.tmp")),
+                                 {path for path in expected if path.suffix == ".tmp"})
+                if event in {"opposite-profile", "target-contents", "link-interrupt"}:
+                    self._assert_pending_consumers_refuse(event, target)
+                    self.assertEqual(observed_pending.read_bytes(), b"")
+                    for path, preserved in expected.items():
+                        self.assertEqual(path.read_bytes(), preserved)
+
+    def test_fresh_dev_link_interrupt_survives_temp_cleanup_failure(self):
+        runner, reservation, _ = self._reserved_dev_runner("fresh-link-double-failure")
+        pending = local_ci.target_admission_pending_path(reservation._lock.path)
+        replacement = []
+        def interrupt(source, destination, **kwargs):
+            temporary = self.target_state_dir / source
+            temporary.unlink()
+            temporary.write_bytes(b"replacement temporary")
+            replacement.append(temporary)
+            raise KeyboardInterrupt()
+        with patch.object(local_ci.os, "link", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsInstance(caught.exception.__cause__, local_ci.TargetCacheError)
+        self.assertEqual(replacement[0].read_bytes(), b"replacement temporary")
+        self.assertTrue(pending.exists())
+        self.assertIsNone(reservation._lock.file)
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_dev_handoff_interruption_closes_remaining_pins_and_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-close-interrupt")
+        descriptors = set(reservation._handles + [reservation._state_fd])
+        attempted = []
+        original_finish, original_close = reservation._finish, os.close
+        def interrupted_finish(*, transfer_lock):
+            if not transfer_lock:
+                return original_finish(transfer_lock=False)
+            def close_then_interrupt(descriptor):
+                original_close(descriptor)
+                attempted.append(descriptor)
+                if len(attempted) == 1:
+                    raise KeyboardInterrupt()
+            with patch.object(local_ci.os, "close", side_effect=close_then_interrupt):
+                return original_finish(transfer_lock=True)
+        with patch.object(reservation, "_finish", side_effect=interrupted_finish):
+            with self.assertRaises(KeyboardInterrupt):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertEqual(set(attempted), descriptors)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNotNone(runner._load_target_owner(runner.target_owner_path, target))
+        self.assertFalse(local_ci.target_admission_pending_path(reservation._lock.path).exists())
+
+    def test_fresh_dev_publication_sync_failure_after_commit_does_not_transfer_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-final-sync")
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        fsync = os.fsync
+
+        def sync(descriptor):
+            if descriptor == reservation._state_fd and not pending.exists():
+                raise OSError(errno.EIO, "failed final directory sync")
+            fsync(descriptor)
+
+        with patch.object(local_ci.os, "fsync", side_effect=sync):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "failed final directory sync"):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsNone(runner.target_lock)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(lock.file)
+        self.assertFalse(pending.exists())
+        self.assertEqual(runner._load_target_owner(owner, target)["target_identity"],
+                         runner._directory_identity(target))
+        # The verified owner was durable before commit. If the deletion is
+        # lost on crash, the restored sentinel would instead refuse admission.
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "later"})
+        contender.acquire()
+        self.assertIsNone(contender.release())
+
     def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
         _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)
@@ -1899,7 +2449,15 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             '  [ -f "$EXPECTED_OWNER" ] || exit 12\n'
             '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
             '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
-            'fi\necho "completed $tool $*"',
+            'fi\n'
+            'if [ "$1" = scripts/test_shards.py ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
+        ))
+        cargo = self.bin / "cargo"
+        cargo.write_text(FAKE_TOOL.replace(
+            'echo "completed $tool $*"',
+            'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
         ))
         runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
                              steps=local_ci.FULL_STEPS)
@@ -2103,6 +2661,143 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertNotIn("step: format", output)
         self.assertIn("target-handoff-clean.log", output)
         self.assertIn("workspace dev-artifact cleanup failed", output)
+
+    def test_pending_admission_refuses_dev_release_and_adoption_without_mutation(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        target.mkdir()
+        (target / "keep").write_bytes(b"original target")
+        self.assertEqual(self.runner("pending-seed", adopt_target=True).run(), 0)
+        self.release_attempt("pending-release-seed", adopt=True)
+        lock_path, owner = local_ci.target_state_paths(target, self.target_state_dir)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        pending = local_ci.target_admission_pending_path(lock_path)
+        before_owner, before_release = owner.read_bytes(), release.read_bytes()
+        before_lock = lock_path.read_bytes()
+        for kind in ("regular", "dangling"):
+            with self.subTest(kind=kind):
+                if kind == "regular":
+                    pending.write_bytes(b"incomplete claim")
+                else:
+                    pending.symlink_to(self.base / "missing")
+                for adopt in (False, True):
+                    calls_before = self.call_log.read_text()
+                    runner = self.runner(f"pending-{kind}-{adopt}", adopt_target=adopt)
+                    self.assertEqual(runner.run(), 1)
+                    self.assertIn("admission is incomplete", runner.summary["target_cache_error"])
+                    self.assertIsNone(runner.target_lock)
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                        self.release_attempt(f"pending-release-{kind}-{adopt}", adopt=adopt)
+                    calls = self.call_log.read_text()[len(calls_before):]
+                    self.assertNotIn("cargo clean", calls)
+                    self.assertNotIn("cargo build", calls)
+                    self.assertEqual((target / "keep").read_bytes(), b"original target")
+                    self.assertEqual(owner.read_bytes(), before_owner)
+                    self.assertEqual(release.read_bytes(), before_release)
+                    self.assertEqual(lock_path.read_bytes(), before_lock)
+                    self.assertTrue(os.path.lexists(pending))
+                pending.unlink()
+        # Refusals release the actual flock without altering its metadata.
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "after-pending"})
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_admission_inspection_failure_releases_lock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "inspection-error"})
+        original = os.stat
+        pending_name = local_ci.target_admission_pending_path(lock_path).name
+        def deny(path, *args, **kwargs):
+            if path == pending_name:
+                raise PermissionError("pending inspection denied")
+            return original(path, *args, **kwargs)
+        with patch.object(local_ci.os, "stat", side_effect=deny):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "pending inspection denied"):
+                lock.acquire()
+        self.assertIsNone(lock.file)
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_guard_refuses_replaced_lock_or_state_directory(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                replaced = False
+                def replace(path_arg, *args, **kwargs):
+                    nonlocal replaced
+                    if not replaced and ((kind == "lock" and path_arg == path.name)
+                                         or (kind == "directory" and path_arg == state)):
+                        replaced = True
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "original-state")
+                            state.mkdir()
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertTrue(replaced)
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+                if kind == "lock":
+                    self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_pending_guard_interruption_releases_flock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        pending = local_ci.target_admission_pending_path(lock_path).name
+        original = os.stat
+        def interrupt(path, *args, **kwargs):
+            if path == pending:
+                raise KeyboardInterrupt()
+            return original(path, *args, **kwargs)
+        for stage in ("flock", "pending"):
+            with self.subTest(stage=stage):
+                lock = local_ci.CargoTargetLock(lock_path, {"run_id": stage})
+                operation = (patch.object(local_ci.fcntl, "flock", side_effect=KeyboardInterrupt())
+                             if stage == "flock" else patch.object(local_ci.os, "stat", side_effect=interrupt))
+                with operation, self.assertRaises(KeyboardInterrupt):
+                    lock.acquire()
+                self.assertIsNone(lock.file)
+                lock.acquire()
+                self.assertIsNone(lock.release())
+
+    def test_pending_guard_rechecks_lock_after_pending_lookup(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"late-state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                pending = local_ci.target_admission_pending_path(path).name
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                def replace_during_pending(path_arg, *args, **kwargs):
+                    if path_arg == pending:
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "late-original-state")
+                            state.mkdir()
+                        raise FileNotFoundError("pending absent")
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace_during_pending):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "late-original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
 
     def test_target_lock_contention_refuses_before_cargo_build(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()

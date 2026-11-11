@@ -716,6 +716,7 @@ pub trait WorkerAudioSink: Send {
     fn prepare_offline_bounce(
         &mut self,
         input: ResidentEffectPreparation<'_>,
+        _control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
         if input.requires_plugin_profile() {
             return Err("offline vst3 bounce unavailable for this host".into());
@@ -1048,6 +1049,7 @@ pub(super) struct WorkerEvents {
 }
 /// One bounded control poll may make a previously admitted gesture ready.
 /// The queued user FIFO retains priority over this copied continuation.
+#[derive(Default)]
 pub(super) struct ControlPoll {
     pub pending: bool,
     pub gesture: Option<GestureRequest>,
@@ -1462,7 +1464,7 @@ impl WorkerEvents {
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> ControlPoll,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>, bool) -> ControlPoll,
     ) -> Option<QueuedRequest> {
         // The original barrier retains its FIFO place. Continue polling SDK/disk
         // work without consuming a later request; accepted New/Open intent and
@@ -1476,6 +1478,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             if let Some(request) =
                 recording_barrier.poll(context, document_intent.load(Ordering::Acquire))
@@ -1503,6 +1506,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             let readiness = self
                 .audio
@@ -1520,6 +1524,7 @@ impl WorkerEvents {
             self.audio
                 .as_mut()
                 .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            false,
         );
         if self.audio.is_none() && !bounded {
             let result = requests.recv().ok();
@@ -1527,6 +1532,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             return result;
         }
@@ -1540,6 +1546,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             // Preserve queued New/Open/edit ordering before a callback-ready
             // continuation. No worker wait can strand project replacement.
@@ -1627,7 +1634,14 @@ impl WorkerEvents {
             }
             // Idle only when no worker continuation, control lane or sink work
             // is pending; any of them restores the busy cadence at once.
+            let audition = control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                true,
+            );
             let idle = !control_pending.pending
+                && !audition.pending
                 && plugin_effect.is_none()
                 && stopped_restore.is_none()
                 && !self.stopped_fence.active()
@@ -1644,6 +1658,7 @@ impl WorkerEvents {
                         self.audio
                             .as_mut()
                             .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                        false,
                     );
                     return Some(request);
                 }

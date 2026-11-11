@@ -38,10 +38,46 @@ plan = module("scope_fixture", "ci_plan.py")
 inputs = module("build_inputs_fixture", "build_inputs.py")
 ci = module("runner_scope_fixture", "local-ci.py")
 
-METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
+METER_BOUNDARY = ["editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+                  "editor::console_track_page::", "editor::output_meter_ui_test::", "editor::refresh_state::",
+                  "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+                  "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+                  "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
-                  "editor::track_meters::selection::", "editor::track_meters::tests::"]
+                  "editor::track_meters::selection::", "editor::track_meters::tests::",
+                  "output_meter::logic::", "output_meter::tests::"]
+
+
+WAVEFORM_PAINT_GEOMETRY_CONSUMERS = [
+    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+    "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+    "editor::fade_handles::ui_tests::released_two_axis_fade_stays_painted_until_real_worker_ack",
+    "editor::fades::musical_tests::transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_curve",
+]
+
+
+GRID_CONSUMERS = [
+    *WAVEFORM_PAINT_GEOMETRY_CONSUMERS,
+    "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+    "editor::overview_waveform::",
+    "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+    "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::",
+    "editor::waveform_loop::", "editor::waveform_source::", "editor::waveform_stretch::",
+]
+
+ARRANGEMENT_CONSUMERS = [
+    "editor::arrangement_focus::visibility::",
+    "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+    "editor::arrangement_map::model::",
+    "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+    "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+    "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+    "editor::group_overview::model::",
+    "editor::group_overview::tests::",
+    "section_surface::geometry::",
+]
 
 
 class PlannerSourceLoaderTests(unittest.TestCase):
@@ -171,6 +207,43 @@ class ScopeTests(unittest.TestCase):
                     self.assertEqual(step.argv[step.argv.index("--features") + 1],
                                      ci.ci_plan.UI_UNIT_FEATURES[target])
 
+
+    def test_ui_library_and_midi_pressure_feature_targets_are_disjoint(self):
+        for scope in ("full", "ui"):
+            with self.subTest(scope=scope):
+                steps = {step.step_id: step for step in ci.planned_steps({"scope": scope})}
+                self.assertIn("--lib", steps["ui-feature-tests"].argv)
+                self.assertNotIn("--test", steps["ui-feature-tests"].argv)
+                self.assertEqual(steps["ui-midi-pressure-boundary-tests"].argv,
+                                 ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
+                                  "--test", "midi_pressure_boundary", "--locked"))
+                self.assertTrue(steps["ui-midi-pressure-boundary-tests"].requires_tests)
+                self.assertIn("--doc", steps["ui-feature-doctests"].argv)
+                self.assertIn("--example", steps["device-gallery-tests"].argv)
+                self.assertNotIn("ui-default-standalone-tests", steps)
+
+        health = {"python": False, "workspace_inputs": False, "packages": ["hex-ui"]}
+        steps = {step.step_id: step for step in ci.planned_steps({"scope": "rust", "health": health})}
+        self.assertEqual(steps["health-tests"].argv, ("cargo", "test", "-p", "hex-ui", "--locked"))
+        self.assertFalse(any("midi_pressure_boundary" in step.argv for step in steps.values()))
+
+    def test_hex_ui_standalone_targets_require_the_reviewed_features(self):
+        root = SCRIPTS.parent
+        metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
+        ui = next(package for package in plan.cargo_inventory(metadata, root) if package["name"] == "hex-ui")
+        by_feature = {}
+        for target in ui["targets"]:
+            if target["kind"] == ["test"]:
+                features = tuple(target.get("required-features", ()))
+                by_feature.setdefault(features, set()).add(target["name"])
+        self.assertEqual(by_feature, {
+            (): {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
+                 "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"},
+            ("ui-unit-tier",): set(plan.UI_UNIT_FEATURES),
+            ("ui-test-support",): {"midi_pressure_boundary"},
+        })
+
     def test_shared_theme_selects_unit_and_path_consumer_configurations(self):
         root = SCRIPTS.parent
         inventory = [
@@ -186,11 +259,22 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(affected, ["hex-sandbox", "hex-ui"])
                 boundary = plan.boundary_selection(root, [path], inventory, affected)
                 self.assertEqual(boundary["test_packages"], affected)
+                ui_filters = ["editor::theme_settings::tests::", "theme::"]
+                if path.endswith("/theme.rs"):
+                    ui_filters.extend((
+                        "output_meter::tests::unit_tests::",
+                        "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps",
+                    ))
                 self.assertEqual(boundary["module_filters"], {
-                    "hex-ui": ["editor::theme_settings::tests::", "theme::"],
+                    "hex-ui": sorted(ui_filters),
                     "hex-sandbox": [sandbox_filter]})
                 steps = ci.boundary_steps({"affected_packages": affected, "cargo_inventory": inventory,
                                            "paths": [path], "boundary": boundary})
+                if path.endswith("/theme.rs"):
+                    default_ui = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+                    self.assertIn("output_meter::tests::unit_tests::", default_ui.argv)
+                    feature_ui = next(step for step in steps if step.step_id == "ui-feature-tests")
+                    self.assertIn("output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps", feature_ui.argv)
                 ui_units = [step for step in steps if "unit_editor_logic" in step.argv]
                 self.assertEqual(len(ui_units), 1)
                 self.assertTrue(ui_units[0].requires_tests)
@@ -1297,6 +1381,179 @@ class SingleRunFeatureTests(unittest.TestCase):
             (root / "crates/hex-ui/src/lib.rs").write_text('#[cfg(not(feature = "ui-test-support"))]\nfn f() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
 
+    def test_ui_default_lib_units_keep_scope_and_feature_consumers(self):
+        root = SCRIPTS.parent
+        path = "crates/hex-ui/src/editor/device_gesture.rs"
+        unit = "editor::device_gesture::unit_tests::"
+        inventory = [{"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        names = plan.module_test_filters(root, [path], inventory, ["hex-ui"])
+        self.assertEqual(names, {"hex-ui": ["editor::device_gesture::"]})
+        for single in ({}, {"hex-ui": "ui-test-support"}):
+            for filters in (names, {}):
+                boundary = {"kind": "packages", "tests": [], "test_packages": ["hex-ui"],
+                            "lint_packages": ["hex-ui"], "single_run": single,
+                            "module_filters": filters}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": ["hex-ui"], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                feature = steps["ui-feature-tests"].argv
+                self.assertIn("ui-test-support", feature)
+                if filters:
+                    self.assertIn("editor::device_gesture::", feature)
+                    self.assertIn("--lib", feature)
+                default_id = "module-tests-hex-ui" if filters else "affected-tests"
+                if single:
+                    self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                    all_units = {prefix for modules in plan.UI_DEFAULT_LIB_UNIT_MODULES.values()
+                                 for prefix in modules}
+                    expected_units = [unit] if filters else sorted(all_units)
+                    self.assertEqual(steps["ui-default-lib-unit-tests"].argv,
+                                     ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", *expected_units))
+                    self.assertNotIn(default_id, steps)
+                else:
+                    default = steps[default_id].argv
+                    self.assertNotIn("--features", default)
+                    if filters:
+                        self.assertIn("editor::device_gesture::", default)
+                        self.assertIn("--lib", default)
+                    self.assertNotIn("ui-default-lib-unit-tests", steps)
+
+        unrelated = {"kind": "packages", "tests": [], "test_packages": ["hex-ui"],
+                     "lint_packages": ["hex-ui"], "single_run": {"hex-ui": "ui-test-support"},
+                     "module_filters": {"hex-ui": ["editor::recent_projects::"]}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": ["hex-ui"], "boundary": unrelated,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in steps))
+
+    def test_default_lib_keeps_multiple_unit_modules_from_one_source(self):
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        parent = "editor::shared::"
+        first, second = parent + "first::", parent + "second::"
+        relative_source = "src/editor/shared.rs"
+        shared = "crates/hex-ui/" + relative_source
+        first_source = "crates/hex-ui/src/editor/shared/first.rs"
+        modules = {relative_source: (first, second), "src/editor/shared/first.rs": (first,)}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(plan.UI_DEFAULT_LIB_UNIT_MODULES, modules, clear=True), \
+                patch.dict(ci.ci_plan.UI_DEFAULT_LIB_UNIT_MODULES, modules, clear=True):
+            root = Path(directory)
+            source = root / "crates/hex-ui/src"
+            source.joinpath("editor/shared").mkdir(parents=True)
+            source.joinpath("lib.rs").write_text("mod editor;\n")
+            source.joinpath("editor.rs").write_text("mod shared;\n")
+            (root / shared).write_text(
+                plan.UI_DEFAULT_LIB_UNIT_CFG + "\nmod first;\n"
+                + plan.UI_DEFAULT_LIB_UNIT_CFG + "\nmod second;\n"
+                '#[cfg(all(test, feature = "ui-test-support"))]\nmod rendered;\n')
+            for child in ("first", "second", "rendered"):
+                source.joinpath(f"editor/shared/{child}.rs").write_text("#[test]\nfn covers_case() {}\n")
+
+            for path, scope, expected in (
+                (shared, [parent], (first, second)),
+                (first_source, [first], (first,)),
+                (shared, [], (first, second)),
+            ):
+                with self.subTest(path=path, scope=scope):
+                    boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                    self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                    if scope:
+                        self.assertEqual(boundary["module_filters"], {owner: scope})
+                    else:
+                        boundary["module_filters"] = {}
+                    steps = {step.step_id: step for step in ci.planned_steps({
+                        "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                        "cargo_inventory": inventory, "paths": [path]})}
+                    unit = steps["ui-default-lib-unit-tests"]
+                    self.assertTrue(unit.requires_tests)
+                    self.assertEqual(unit.argv, ("cargo", "test", "-p", owner, "--lib", "--locked",
+                                                 "--", *expected))
+                    self.assertEqual(steps["ui-feature-tests"].argv,
+                                     ("cargo", "test", "-p", owner, "--lib", "--features",
+                                      "ui-test-support", "--locked", *(("--", *scope) if scope else ())))
+
+            source.joinpath("unreviewed.rs").write_text(plan.UI_DEFAULT_LIB_UNIT_CFG + "\nmod tests {}\n")
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+
+    def test_live_hex_ui_plans_keep_the_test_tier_split(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        def planned_for(path):
+            boundary = plan.boundary_selection(root, [path], inventory, [owner])
+            self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+            return {step.step_id: step for step in ci.planned_steps({
+                "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                "cargo_inventory": inventory, "paths": [path]})}
+
+        scoped = planned_for("crates/hex-ui/src/editor/device_panel/operator_panel/filter_response.rs")
+        self.assertNotIn("module-tests-hex-ui", scoped)
+        self.assertIn("editor::device_panel::operator_panel::filter_response::tests::",
+                      scoped["ui-default-lib-unit-tests"].argv)
+        self.assertIn("editor::device_panel::tests::operator_filter_response_tests::filter_curve_keeps_released_parameter_preview_across_completed_repaints",
+                      scoped["ui-feature-tests"].argv)
+
+        whole = planned_for("crates/hex-ui/Cargo.toml")
+        self.assertNotIn("affected-tests", whole)
+        for name in ("ui-default-lib-unit-tests", "ui-default-standalone-tests",
+                     "ui-feature-tests", "ui-midi-pressure-boundary-tests", "ui-feature-doctests"):
+            self.assertIn(name, whole)
+        self.assertTrue(any("unit_editor_logic" in step.argv for step in whole.values()))
+
+    def test_ui_test_cfg_exceptions_keep_unknown_gates_conservative(self):
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            editor = root / "crates/hex-ui/src/editor"
+            editor.mkdir(parents=True)
+            witness = editor / "clip_boundary.rs"
+            witness.write_text(
+                '#[cfg(not(any(test, feature = "ui-test-support")))]\nfn production_edge() {}\n')
+            fixture = editor / "fixture.rs"
+            fixture.write_text(
+                '#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]\n'
+                'fn fixture() {}\n')
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory),
+                             {owner: "ui-test-support"})
+            unknown = editor / "unknown.rs"
+            unknown.write_text(witness.read_text())
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+            unknown.unlink()
+            fixture.write_text('#[cfg(feature = "ui-unit-tier")]\nfn production() {}\n')
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+            fixture.unlink()
+            witness.write_text('#[cfg(not(feature = "ui-test-support"))]\nfn production_edge() {}\n')
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+
+    def test_ui_default_lib_unit_cfg_exception_is_exact_and_local(self):
+        inventory = [{"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "crates/hex-ui/src"
+            (src / "editor").mkdir(parents=True)
+            recognized = src / "editor/device_gesture.rs"
+            unknown = src / "editor/other.rs"
+            gate = '#[cfg(all(test, not(feature = "ui-test-support")))]'
+            recognized.write_text(gate + "\nmod unit_tests {}\n")
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            unknown.write_text(gate + "\nmod unit_tests {}\n")
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui"], inventory), {})
+            unknown.unlink()
+            recognized.write_text('#[cfg(not(feature = "ui-test-support"))]\nfn runtime() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui"], inventory), {})
+
 
 class BaseAdvanceCarryTests(unittest.TestCase):
     """Fabricated reports exercise carry policy; no product test counts are claimed."""
@@ -1919,12 +2176,33 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         path = "crates/hex-ui/src/editor/pending_edit.rs"
         filters = plan.module_test_filters(root, [path], inventory, [owner])
-        self.assertEqual(filters, {owner: ["editor::pending_edit::"]})
+        pending = "editor::pending_edit::"
+        receipt_consumers = [
+            "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
+            "editor::fade_handles::ui_tests::real_refusal_retires_frozen_curve_with_its_canonical_state",
+        ]
+        expected_receipt_filters = sorted([pending, *receipt_consumers])
+        self.assertEqual(filters, {owner: expected_receipt_filters})
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        receipt_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        receipt_unit = receipt_steps["ui-unit-unit_editor_state"].argv
+        self.assertEqual(receipt_unit[receipt_unit.index("--") + 1:], (pending,))
+        receipt_support = receipt_steps["ui-feature-tests"].argv
+        self.assertEqual(receipt_support[receipt_support.index("--") + 1:],
+                         tuple(expected_receipt_filters))
         viewport = "editor::viewport::"
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
-            {owner: timeline})
+            {owner: sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS])})
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/mod.rs"], inventory, [owner]),
+            {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
+                     "section_surface::focus::geometry::",
+                     "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
+                     "section_surface::geometry::"]})
         disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
@@ -1990,6 +2268,7 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
                     if (name != recovery_integration and name not in timeline[:3]
+                            and name not in receipt_consumers
                             and (name not in METER_BOUNDARY or name == scale)):
                         self.assertIn(name, unit[0].argv)
                 if recovery in names:
@@ -2002,7 +2281,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "boundary": boundary, "cargo_inventory": inventory,
                                   "paths": ["crates/hex-ui/src/lib.rs"]})
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-        self.assertNotIn("--lib", feature.argv)
+        self.assertIn("--lib", feature.argv)
         self.assertNotIn("--test", feature.argv)
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in steps))
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in steps))
@@ -2021,28 +2300,155 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner]),
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
-                         {owner: ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                         {owner: ["editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement",
+                                  "editor::arrangement_focus::visibility::",
+                                  "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+                                  "editor::arrangement_map::model::",
+                                  "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                                  "editor::arrangement_sections::tests::launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections",
+                                  "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+                                  "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+                                  "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+                                  "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                                  "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                                  "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+                                  "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
                                   "editor::audio_import_settings::admission::",
+                                  "editor::browser::audition_geometry::",
+                                  "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+                                  "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
+                                  "editor::browser::geometry::",
+                                  "editor::browser::random_rank::",
+                                  "editor::browser::samples::state::",
+                                  "editor::browser::scan::",
+                                  "editor::browser::scrollbar_geometry::",
+                                  "editor::browser::tree::state::",
+                                  "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
+                                  "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
+                                  "editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport",
+                                  "editor::browser::ui_test::browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes",
+                                  "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
+                                  "editor::browser::ui_test::browser_history_ui_test::review_history_waits_for_the_used_catalog_not_an_unrelated_scan",
+                                  "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
                                   "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                                  "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                                  "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
+                                  "editor::browser::ui_test::browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches",
+                                  "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
+                                  "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                                  "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                                  "editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus",
+                                  "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+                                  "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+                                  "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
+                                  "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged",
+                                  "editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
+                                  "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture",
+                                  "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+                                  "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop",
+                                  "editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack",
+                                  "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+                                  "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+                                  "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
+                                  "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
+                                  "editor::console_track_page::",
+                                  "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                                  "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                                  "editor::controller::session_feedback::",
+                                  "editor::controller::source_binding_unit_tests::",
+                                  "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+                                  "editor::delete_ui_tests::",
                                   "editor::device_panel::eq_panel::axes::",
                                   "editor::device_panel::eq_panel::response::",
+                                  "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
                                   "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
+                                  "editor::drag::geometry::",
+                                  "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
+                                  "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
+                                  "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
+                                  "editor::drag::tests::",
+                                  "editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes",
+                                  "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+                                  "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
+                                  "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination",
+                                  "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
-                                  "editor::fade_handles::", "editor::fades::",
-                                  "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
+                                  "editor::fade_handles::", "editor::fades::", "editor::group_overview::model::", "editor::group_overview::tests::",
+                                  "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths",
+                                  "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
+                                  "editor::output_meter_ui_test::", "editor::overview_waveform::",
+                                  "editor::recent_projects::labels::", "editor::recent_projects::tests::",
+                                  "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                                  "editor::section_launch::geometry::",
                                   "editor::session_audio_panel::",
+                                  "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
-                                  "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
+                                  "editor::session_route_view::",
+                                  "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+                                  "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+                                  "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
+                                  "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
+                                  "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
+                                  "editor::tempo_input::value::",
+                                  "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
+                                  "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft",
+                                  "editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit",
+                                  "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
+                                  "editor::theme_settings::tests::",
+                                  "editor::time_move_preview::intervals::tests::",
+                                  "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
+                                  "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+                                  "editor::track_compact_ui_test::compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel",
+                                  "editor::track_defaults::",
+                                  "editor::track_latency::presentation::",
+                                  "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
+                                  "editor::track_layout_ui_test::empty_project_main_header_width_handle_uses_current_window_limit",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
-                                  "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
+                                  "editor::track_meters::selection::", "editor::track_meters::tests::",
+                                  "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+                                  "editor::tracks::clone_source_window::",
+                                  "editor::tracks::group_overlap::",
+                                  "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
+                                  "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
+                                  "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+                                  "editor::trim::admission::",
+                                  "editor::trim::geometry::",
+                                  "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+                                  "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo",
+                                  "editor::trim::preview_state::",
+                                  "editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step",
+                                  "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
+                                  "editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit",
+                                  "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
+                                  "editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion",
+                                  "editor::trim::stretch_limit_tests::",
+                                  "editor::trim::stretch_preview::resolver::",
+                                  *names,
                                   "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
-                                  "editor::waveform_source::", "editor::waveform_stretch::", "theme::"]})
+                                  "editor::waveform_source::", "editor::waveform_stretch::",
+                                  "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
+                                  "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation",
+                                  "log_viewer::filter::",
+                                  "log_viewer::presentation::",
+                                  "log_viewer::scrollbar::geometry::",
+                                  "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
+                                  "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
+                                  "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
+                                  "log_viewer::tests::rapid_filter_changes_install_only_the_latest_result",
+                                  "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
+                                  "output_meter::logic::", "output_meter::tests::", "section_surface::geometry::",
+                                  "theme::"]})
+        meter_consumer = "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"
+        self.assertTrue(any(meter_consumer.startswith(selected) for selected in
+                            plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"],
+                                                     inventory, [owner])[owner]))
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
@@ -2053,6 +2459,864 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-editor-logic-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-editor-logic-unit" for step in health))
+
+    def test_group_overview_projection_keeps_native_and_project_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::group_overview::model::"
+        native = "editor::group_overview::tests::"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/group_overview/model.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted(ARRANGEMENT_CONSUMERS)})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(native in step.argv
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        self.assertTrue(any("track_group_focus" in step.argv and step.requires_tests
+                            for step in steps if step.step_id == "ui-consumer-track_group_focus"))
+        for path in ("group_overview.rs", "arrangement_map/model.rs", "arrangement_focus/visibility.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_arrangement_map_projection_keeps_real_focus_and_render_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::arrangement_map::model::"
+        required = [unit, "editor::arrangement_focus::visibility::", "editor::group_overview::tests::",
+                    "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                    "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused"]
+        for path in ("arrangement_map/model.rs", "arrangement_focus/interval.rs", "arrangement_focus/visibility.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            for name in required:
+                self.assertTrue(any(name.startswith(selected) for selected in names[owner]))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(unit in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(required[3] in step.argv and required[4] in step.argv
+                                for step in steps if step.step_id == "ui-feature-tests"))
+            self.assertTrue(any("track_group_focus" in step.argv and step.requires_tests
+                                for step in steps if step.step_id == "ui-consumer-track_group_focus"))
+        for path in ("arrangement_map.rs", "group_overview.rs", "arrangement_sections.rs", "viewport.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in names[owner]))
+        mixed = plan.module_test_filters(root, ["crates/hex-ui/src/editor/arrangement_focus/interval.rs",
+                                                "crates/hex-ui/tests/track_group_focus.rs"], inventory, [owner])
+        self.assertIn("editor::arrangement_focus::", mixed[owner])
+        mixed_boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                          "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                          "module_filters": mixed}
+        mixed_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                        "boundary": mixed_boundary, "cargo_inventory": inventory, "paths": []})
+        consumers = [step for step in mixed_steps if step.step_id == "ui-consumer-track_group_focus"]
+        self.assertEqual(len(consumers), 1)
+        self.assertEqual(consumers[0].argv, ("cargo", "test", "-p", "hex-ui", "--test", "track_group_focus", "--locked"))
+        self.assertTrue(consumers[0].requires_tests)
+        unrelated = {"kind": "packages", "tests": [], "test_packages": [owner],
+                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                     "module_filters": {owner: ["editor::user_errors::"]}}
+        unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                            "boundary": unrelated, "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in unrelated_steps))
+
+    def test_track_group_focus_source_consumers_and_full_run_deduplication(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        rendered_consumers = {
+            "arrangement_focus/visibility.rs": (
+                "editor::arrangement_focus::visibility::",
+                "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
+                "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
+                "editor::track_tags::tests::folded_matches_stay_selected_and_filter_applies_to_console_headers",
+                "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+            ),
+            "track_hierarchy_indent.rs": (
+                "editor::track_hierarchy_indent::",
+                "editor::track_clipboard_ui_test::nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends",
+                "editor::track_clipboard_ui_test::group_track_header_menu_arrangement",
+                "editor::track_clipboard_ui_test::group_track_header_menu_session",
+            ),
+        }
+        for path in (*rendered_consumers, "track_reorder/subtree.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+            self.assertEqual(sum(step.step_id == "ui-consumer-track_group_focus" for step in steps), 1)
+            if path in rendered_consumers:
+                feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+                self.assertNotIn("editor::", feature.argv)
+                for name in rendered_consumers[path]:
+                    self.assertIn(name, feature.argv)
+        harness = "crates/hex-ui/tests/track_group_focus.rs"
+        target_only = plan.module_test_filters(root, [harness], inventory, [owner])
+        self.assertIn("editor::arrangement_focus::", target_only[owner])
+        target_boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                           "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                           "module_filters": target_only}
+        target_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                        "boundary": target_boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertEqual(sum(step.step_id == "ui-consumer-track_group_focus" for step in target_steps), 1)
+        unknown = plan.module_test_filters(root, [harness, "crates/hex-ui/unknown-input.txt"], inventory, [owner])
+        self.assertNotIn(owner, unknown)
+        full = {"kind": "packages", "tests": [], "test_packages": [owner],
+                "lint_packages": [owner], "single_run": {owner: "ui-test-support"}, "module_filters": {}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": full, "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
+        other = {"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",
+                 "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]}
+        consumer_only = {"kind": "packages", "tests": [], "test_packages": ["hex-session"],
+                         "lint_packages": [owner, "hex-session"], "single_run": {},
+                         "module_filters": {owner: ["editor::arrangement_focus::"]}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner, "hex-session"],
+                                  "boundary": consumer_only, "cargo_inventory": [*inventory, other], "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
+
+    def test_midi_pressure_boundary_source_target_feature_and_full_run_selection(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        target = "midi_pressure_boundary"
+        module = "editor::midi_recording::"
+        fixture = "editor::midi_recording::pressure_fixture"
+        paths = [
+            ("crates/hex-ui/src/editor/midi_recording_pressure_fixture.rs", fixture),
+            ("crates/hex-ui/src/editor/midi_recording.rs", "editor::midi_recording"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, expected in paths:
+            self.assertEqual(modules[(root / path).resolve()], expected)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(module.startswith(selected) for selected in names), names)
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            feature_suite = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("--lib", feature_suite.argv)
+            self.assertTrue(any(module.startswith(selected) for selected in feature_suite.argv))
+            consumer = [step for step in steps if step.step_id == "ui-consumer-" + target]
+            self.assertEqual(len(consumer), 1)
+            self.assertEqual(sum(target in step.argv for step in steps), 1)
+            self.assertTrue(consumer[0].requires_tests)
+            self.assertEqual(consumer[0].argv,
+                             ("cargo", "test", "-p", owner, "--features", "ui-test-support",
+                              "--test", target, "--locked"))
+
+        harness = "crates/hex-ui/tests/midi_pressure_boundary.rs"
+        target_change = plan.module_test_filters(root, [harness], inventory, [owner])
+        self.assertEqual(target_change, {owner: [module]})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": target_change}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory,
+                                  "paths": [harness]})
+        self.assertEqual(sum(step.step_id == "ui-consumer-" + target for step in steps), 1)
+
+        unrelated = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner])
+        boundary["module_filters"] = unrelated
+        unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                            "boundary": boundary, "cargo_inventory": inventory,
+                                            "paths": ["crates/hex-ui/src/editor/user_errors.rs"]})
+        self.assertFalse(any(target in step.argv for step in unrelated_steps))
+
+        full = {"kind": "packages", "tests": [], "test_packages": [owner],
+                "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                "module_filters": {}}
+        full_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": full, "cargo_inventory": inventory,
+                                      "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-" + target for step in full_steps))
+        full_suite = next(step for step in full_steps if step.step_id == "ui-feature-tests")
+        self.assertIn("--lib", full_suite.argv)
+        self.assertNotIn("--test", full_suite.argv)
+        self.assertEqual(sum(target in step.argv for step in full_steps), 1)
+        standalone = next(step for step in full_steps if step.step_id == "ui-default-standalone-tests")
+        self.assertEqual({standalone.argv[i + 1] for i, arg in enumerate(standalone.argv) if arg == "--test"},
+                         {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
+                          "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"})
+        self.assertNotIn("--features", standalone.argv)
+        self.assertTrue(any(step.step_id == "single-run-doctests" for step in full_steps))
+        self.assertTrue(any(step.step_id == "ui-feature-doctests" for step in full_steps))
+
+        full["single_run"] = {}
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": full,
+            "cargo_inventory": inventory, "paths": []})}
+        self.assertEqual(steps["affected-tests"].argv, ("cargo", "test", "-p", owner, "--locked"))
+        self.assertNotIn("ui-default-standalone-tests", steps)
+        self.assertEqual(sum(target in step.argv for step in steps.values()), 1)
+
+    def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::browser::samples::state::"
+        consumers = ["editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
+                     "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
+                     "editor::browser::ui_test::browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches",
+                     "editor::browser::ui_test::browser_history_ui_test::review_history_waits_for_the_used_catalog_not_an_unrelated_scan",
+                     "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
+                     "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
+                     "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop"]
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/browser/samples/state.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("browser/samples.rs", "browser_ui_test.rs", "browser.rs",
+                     "browser_history_ui_test.rs", "browser/folder_places_ui_test.rs", "missing_media/ui_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_browser_geometry_keeps_rendered_resize_and_drag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/browser/geometry.rs"
+        unit = "editor::browser::geometry::"
+        consumers = [
+            "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
+            "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
+            "editor::track_layout_ui_test::empty_project_main_header_width_handle_uses_current_window_limit",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("browser.rs", "browser_ui_test.rs", "track_layout_ui_test.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_browser_scan_keeps_supersession_and_path_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::browser::scan::"
+        tree_unit = "editor::browser::tree::state::"
+        consumers = [
+            "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
+            "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+            "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+            "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+            "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+            "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+            "editor::browser::ui_test::browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes",
+            "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
+            "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
+        ]
+        paths = [
+            ("crates/hex-ui/src/editor/browser/scan.rs", "editor::browser::scan"),
+            ("crates/hex-ui/src/editor/browser.rs", "editor::browser"),
+            ("crates/hex-ui/src/editor/browser_ui_test.rs", "editor::browser::ui_test"),
+            ("crates/hex-ui/src/editor/browser_history_ui_test.rs",
+             "editor::browser::ui_test::browser_history_ui_test"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, tree_unit, *consumers]))
+            if path == paths[1][0]:
+                self.assertIn("editor::browser::", names)
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(any(tree_unit.startswith(selected) for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
+
+    def test_browser_tree_state_keeps_real_worker_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::browser::tree::state::"
+        scan_unit = "editor::browser::scan::"
+        folder_position = (
+            "editor::browser::ui_test::"
+            "browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes"
+        )
+        consumers = ["editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                     "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                     "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                     folder_position,
+                     "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
+                     "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
+                     "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+                     "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+                     "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget"]
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/browser/tree/state.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, scan_unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(scan_unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("browser/tree.rs", "browser_ui_test.rs", "browser.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+            self.assertTrue(any(scan_unit.startswith(name) for name in selected[owner]))
+            self.assertTrue(any(folder_position.startswith(name) for name in selected[owner]))
+
+    def test_project_tempo_value_keeps_unit_and_focused_commit_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::tempo_input::value::"
+        consumers = [
+            "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
+            "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
+            "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
+            "editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit",
+            "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
+            "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
+            "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft",
+        ]
+        path = "crates/hex-ui/src/editor/tempo_input/value.rs"
+        names = plan.module_test_filters(root, [path], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [path]})
+        unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+        self.assertTrue(unit_step.requires_tests)
+        self.assertIn(unit, unit_step.argv)
+        integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertTrue(all(case in integration.argv for case in consumers))
+        for source in ("tempo_input.rs", "tempo_input/keyboard_tests.rs", "tempo_input_ui_test.rs"):
+            with self.subTest(source=source):
+                selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+                for required in (unit, *consumers):
+                    self.assertTrue(any(required.startswith(name) for name in selected[owner]))
+
+    def test_time_move_interval_split_keeps_unit_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::time_move_preview::intervals::"
+        visual = "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping"
+        move = "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled"
+        midi = "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination"
+        acknowledgement = "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source"
+        expected = sorted([unit, visual, move, midi, acknowledgement])
+        names = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/time_move_preview/intervals.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: expected})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in (visual, move, midi, acknowledgement))
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        # Editing the GPUI owner still retains its real visual test.
+        owner_names = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/time_move_preview.rs"], inventory, [owner])
+        self.assertTrue(any(visual.startswith(name) for name in owner_names[owner]))
+        self.assertTrue(any(unit.startswith(name) for name in owner_names[owner]))
+
+    def test_trim_preview_state_keeps_rendered_release_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim/preview_state.rs"
+        unit = "editor::trim::preview_state::"
+        consumers = [
+            "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
+            "editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step",
+            "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+            "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("trim.rs", "resize_release_tests.rs", "clip_loop_ui_tests.rs", "midi_stretch_ui_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_trim_admission_keeps_rendered_refusal_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim/admission.rs"
+        unit = "editor::trim::admission::"
+        consumers = [
+            "editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion",
+            "editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("trim.rs", "resize_terminal_tests.rs", "resize_release_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_trim_geometry_keeps_rendered_audio_and_midi_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim/geometry.rs"
+        unit = "editor::trim::geometry::"
+        consumers = [
+            "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+            "editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack",
+            "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+            "editor::track_compact_ui_test::compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("trim.rs", "clip_drag_ui_test.rs", "track_compact_ui_test.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_operator_panel_units_keep_their_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        source = "crates/hex-ui/src/editor/device_panel/"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        cases = (
+            ("operator_panel.rs", "editor::device_panel::operator_panel::tests::", (
+                "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
+                "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo",
+            )),
+            ("operator_panel/envelope.rs", "editor::device_panel::operator_panel::envelope::tests::", (
+                "editor::device_panel::tests::operator_envelope_reference_ui_tests::other_envelopes_refresh_without_stealing_selection_and_reuse_repaint_geometry",
+            )),
+            ("operator_panel/filter_response.rs", "editor::device_panel::operator_panel::filter_response::tests::", (
+                "editor::device_panel::tests::operator_filter_response_tests::native_filter_display_fits_reuses_cache_and_follows_real_control_history",
+                "editor::device_panel::tests::operator_filter_response_tests::filter_curve_keeps_released_parameter_preview_across_completed_repaints",
+            )),
+            ("operator_panel/harmonics.rs", "editor::device_panel::operator_panel::harmonics::tests::", (
+                "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo",
+            )),
+        )
+        for path, unit, consumers in cases:
+            with self.subTest(path=path):
+                names = plan.module_test_filters(root, [source + path], inventory, [owner])
+                self.assertTrue(any(unit.startswith(prefix) for prefix in names[owner]))
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source + path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in steps["ui-feature-tests"].argv))
+                    module = consumer.split("::")[-2]
+                    reverse = plan.module_test_filters(
+                        root, [source + "tests/" + module + ".rs"], inventory, [owner])
+                    self.assertTrue(any(unit.startswith(prefix) for prefix in reverse[owner]))
+
+    def test_arrangement_seek_units_keep_callback_worker_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::arrangement_seek::unit_tests::"
+        consumers = (
+            "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
+            "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+            "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+        )
+        for name in ("arrangement_seek.rs", "arrangement_seek_tests.rs",
+                     "arrangement_seek_unit_tests.rs", "arrangement_sections.rs", "edit_cursor_ui_test.rs"):
+            path = "crates/hex-ui/src/editor/" + name
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                self.assertNotIn("editor::arrangement_seek::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} is missing from {feature_args}")
+
+    def test_controller_monitoring_units_keep_ingress_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller_input::monitoring::unit_tests::"
+        consumers = (
+            "editor::controller_input::monitoring::tests::actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect",
+            "editor::controller_input::hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history",
+            "editor::controller_input::hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest",
+            "editor::midi_canvas::audition_tests::configured_controller_keeps_its_root_during_note_and_marquee_audition",
+        )
+        for name in ("controller_input/monitoring.rs", "controller_input.rs", "midi_audition_ui_tests.rs"):
+            with self.subTest(name=name):
+                path = "crates/hex-ui/src/editor/" + name
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_device_meter_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::device_meter::tests::"
+        consumers = (
+            "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
+        )
+        for name in (
+            "crates/hex-ui/src/editor/device_panel/device_meter.rs",
+            "crates/hex-ui/src/editor/device_panel.rs",
+        ):
+            with self.subTest(name=name):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_changelog_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::changelog::tests::"
+        consumers = (
+            "editor::changelog::ui_tests::changelog_empty_groups_unavailable_and_malformed_render_truthfully",
+            "editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently",
+            "editor::changelog::ui_tests::shortcut_opens_actual_embedded_generated_notes_without_network_or_files",
+        )
+        for name in (
+            "crates/hex-ui/src/editor/changelog.rs",
+        ):
+            with self.subTest(name=name):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_drag_autoscroll_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::drag_autoscroll::tests::"
+        consumers = (
+            "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+            "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint",
+            "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
+        )
+        for name in (
+            "crates/hex-ui/src/editor/drag_autoscroll.rs",
+            "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+            "crates/hex-ui/src/editor/resize_pan_tests.rs",
+            "crates/hex-ui/src/editor/trim.rs",
+            "crates/hex-ui/src/editor/drag.rs",
+            "crates/hex-ui/src/editor/group_drag_ui_test.rs",
+            "crates/hex-ui/src/editor/midi_left_extension_ui_tests.rs",
+        ):
+            with self.subTest(name=name):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_take_recovery_keeps_ordered_query_and_real_custody_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        module = "editor::automation_take_recovery::"
+        unit = module + "unit_tests::"
+        support = module + "tests::"
+        consumers = (
+            support + "cancelled_picker_and_stale_responses_cannot_release_the_original",
+            support + "rendered_copy_action_can_cancel_without_releasing_the_close_fence",
+            support + "file_action_selects_a_finished_take_without_applying_it",
+        )
+        for path in ("automation_take_recovery.rs", "automation_take_recovery/tests.rs",
+                     "automation_take_recovery/test_fixture.rs"):
+            name = "crates/hex-ui/src/editor/" + path
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_cases = (
+            "editor::arrangement_audio_panel::tests::controls_map_to_typed_clip_edits_and_loop_toggle",
+            "editor::arrangement_audio_panel::tests::gain_steps_use_db_units_and_refuse_the_bounds",
+            "editor::arrangement_audio_panel::tests::invalid_edges_and_overflow_refuse_without_partial_command",
+            "editor::arrangement_audio_panel::tests::review_play_start_uses_retained_source_looping_independent_of_placement_mode",
+            "editor::arrangement_audio_panel::controls::tests::",
+        )
+        windows = (
+            "editor::arrangement_audio_panel::controls::pitch_ui_tests::pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen",
+            "editor::arrangement_audio_panel::controls::pitch_ui_tests::pitch_release_keeps_its_draft_until_accepted_or_refused_ack",
+            "editor::arrangement_audio_panel::controls::ui_tests::clip_slider_cancel_and_frozen_release_wait_for_own_terminal",
+            "editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_ordinary_trim_real_worker_control",
+            "editor::arrangement_audio_panel::tests::review_placed_mode_only_change_invalidates_captured_control",
+        )
+        for path in ("arrangement_audio_panel.rs", "arrangement_audio_panel/controls.rs",
+                     "arrangement_audio_panel/pitch_ui_tests.rs"):
+            with self.subTest(path=path):
+                source = "crates/hex-ui/src/editor/" + path
+                names = plan.module_test_filters(root, [source], inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                for name in unit_cases:
+                    self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-default-lib-unit-tests"].argv))
+                for name in windows:
+                    self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::drag::geometry::"
+        drag = "editor::drag::tests::"
+        worker = "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack"
+        group = "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag/geometry.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, drag, worker, group])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag.rs"], inventory, [owner])
+        self.assertEqual(parent, {owner: sorted([
+            "editor::drag::", worker, "editor::tracks::group_overlap::",
+            "editor::drag_autoscroll::tests::",
+            "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+            "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
+            "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
+            "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
+        ])})
+        for path in ("clip_drag_ui_test.rs", "group_drag_ui_test.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertIn(unit, selected[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        drag_state = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertIn(drag, drag_state.argv)
+        self.assertTrue(drag_state.requires_tests)
+        self.assertTrue(any(all(name in step.argv for name in (worker, group))
+                            for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_stretch_projection_retains_real_cache_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform_stretch::projection::"
+        cache = "editor::waveform_stretch::tests::geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/waveform_stretch/projection.rs"], inventory, [owner])
+        self.assertTrue(any(unit.startswith(name) for name in names[owner]))
+        self.assertTrue(any(cache.startswith(name) for name in names[owner]))
+        consumers = (
+            "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+            "editor::waveform_geometry::", "editor::waveform_loop::", "editor::waveform_source::",
+            "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+            "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+            "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+            "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+        )
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(name) for name in names[owner]))
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any("unit_editor_logic" in step.argv and step.requires_tests
+                            and any(unit.startswith(arg) for arg in step.argv) for step in steps))
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(arg) for arg in feature.argv))
+        for source in ("waveform_geometry.rs", "waveform_loop.rs", "waveform.rs"):
+            reverse = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in reverse[owner]))
+
+    def test_session_feedback_keeps_real_callback_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::session_feedback::"
+        callback = "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed"
+        window = "editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller/session_feedback.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, callback, window])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller.rs"], inventory, [owner])
+        self.assertIn("editor::controller::", parent[owner])
+        self.assertIn(window, parent[owner])
+        reverse = plan.module_test_filters(root, ["crates/hex-ui/src/editor/action_outcome_ui_tests.rs"], inventory, [owner])
+        self.assertIn(unit, reverse[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(callback in step.argv and window in step.argv
+                            for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_computer_keyboard_state_selects_unit_and_integration(self):
         root = SCRIPTS.parent
@@ -2074,19 +3338,53 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(unit.requires_tests)
         self.assertIn(names[1], integration.argv)
 
+    def test_waveform_paint_geometry_keeps_exact_render_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform::paint_geometry::"
+        event_detail = "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column"
+        consumers = [
+            *WAVEFORM_PAINT_GEOMETRY_CONSUMERS,
+            "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
+            "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
+        ]
+        source = "crates/hex-ui/src/editor/"
+        names = plan.module_test_filters(root, [source + "waveform/paint_geometry.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, event_detail, *consumers])})
+        for path in ("waveform.rs", "waveform_geometry.rs", "tracks.rs",
+                     "audio_event_editor/waveform_preview.rs", "audio_event_editor/workflow_tests.rs",
+                     "audio_event_editor/free_placement_tests.rs", "audio_event_editor/tests.rs",
+                     "fades/musical_tests.rs", "fade_handles_ui_test.rs", "waveform_header_ui_test.rs"):
+            with self.subTest(path=path):
+                selected = plan.module_test_filters(root, [source + path], inventory, [owner])[owner]
+                self.assertTrue(any(unit.startswith(name) for name in selected))
+                for consumer in (*consumers, event_detail):
+                    self.assertTrue(any(consumer.startswith(name) for name in selected))
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+        self.assertTrue(unit_step.requires_tests)
+        self.assertIn(unit, unit_step.argv)
+        cache_step = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertEqual(cache_step.argv[-1], event_detail)
+        self.assertTrue(cache_step.requires_tests)
+        feature_step = next(step for step in steps if step.step_id == "ui-feature-tests")
+        for consumer in consumers:
+            self.assertIn(consumer, feature_step.argv)
+
     def test_waveform_source_selects_unit_and_projection_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        names = ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
-                 "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
-                 "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
-                 "editor::overview_waveform::",
-                 "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
-                 "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
-                 "editor::waveform_source::", "editor::waveform_stretch::"]
+        names = sorted(GRID_CONSUMERS)
         for path in ("crates/hex-ui/src/editor/waveform_source.rs", "crates/hex-ui/src/editor/waveform.rs"):
             self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
@@ -2100,6 +3398,80 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(unit.requires_tests)
             for name in names:
                 self.assertIn(name, integration.argv)
+
+    def test_clone_source_window_keeps_unit_harness_and_rendered_drag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::tracks::clone_source_window::"
+        consumers = [
+            "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
+            "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+            "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
+        ]
+        source = "crates/hex-ui/src/editor/tracks/clone_source_window.rs"
+        names = plan.module_test_filters(root, [source], inventory, [owner])[owner]
+        self.assertEqual(names, sorted([unit, *consumers]))
+
+        tracks_shim = "crates/hex-ui/tests/editor_logic_unit/tracks.rs"
+        overlap_source = "crates/hex-ui/src/editor/tracks/group_overlap.rs"
+        overlap_names = plan.module_test_filters(root, [overlap_source], inventory, [owner])[owner]
+        self.assertEqual(plan.module_test_filters(root, [tracks_shim], inventory, [owner]),
+                         {owner: sorted({unit, *consumers, *overlap_names})})
+        editor_shim = "crates/hex-ui/tests/editor_logic_unit/editor.rs"
+        combined_paths = [source, "crates/hex-ui/src/editor/tracks.rs", tracks_shim]
+        # The shared shim can register tests outside the known unit prefixes.
+        self.assertEqual(plan.module_test_filters(root, [editor_shim], inventory, [owner]), {})
+        self.assertEqual(plan.module_test_filters(root, [*combined_paths, editor_shim], inventory, [owner]), {})
+        combined = plan.module_test_filters(root, combined_paths, inventory, [owner])[owner]
+        self.assertIn("editor::tracks::", combined)
+        self.assertNotIn("editor::", combined)
+        self.assertTrue(all(any(consumer.startswith(selected) for selected in combined)
+                            for consumer in consumers))
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": {owner: combined}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory,
+                                  "paths": combined_paths})
+        unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+        self.assertTrue(unit_step.requires_tests)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_group_overlap_keeps_arrangement_and_audio_event_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/tracks/group_overlap.rs"
+        unit = "editor::tracks::group_overlap::"
+        consumers = [
+            "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
+            "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
+            "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
+            "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("tracks.rs", "group_drag_ui_test.rs", "audio_event_editor/paint.rs",
+                     "audio_event_editor/workflow_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_section_hit_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
@@ -2118,8 +3490,18 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/" + name + ".rs"], inventory, [owner]),
                              {owner: [name + "::"]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_section.rs"], inventory, [owner]),
-                         {owner: ["section_appearance::", "section_hit::", "section_input::", "section_reorder::",
-                                  "section_resize::", "section_selection::"]})
+                         {owner: ["editor::arrangement_focus::tests::only_selected_sections_in_q_focus_receive_the_pattern",
+                                  "editor::arrangement_focus::visibility::",
+                                  "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+                                  "editor::arrangement_map::model::",
+                                  "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                                  "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+                                  "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+                                  "editor::group_overview::model::", "editor::group_overview::tests::",
+                                  "section_appearance::", "section_hit::", "section_input::", "section_reorder::",
+                                  "section_resize::", "section_selection::", "section_surface::focus::geometry::",
+                                  "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
+                                  "section_surface::geometry::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2138,6 +3520,245 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-section-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-section-unit" for step in health))
+
+    def test_section_surface_geometry_keeps_actual_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "section_surface::geometry::"
+        consumers = [
+            "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+            "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+            "editor::group_overview::tests::native_group_preview_tracks_viewport_content_removal_and_undo",
+            "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+        ]
+        paths = [
+            ("crates/hex-ui/src/section_surface/geometry.rs", "section_surface::geometry"),
+            ("crates/hex-ui/src/section_surface.rs", "section_surface"),
+            ("crates/hex-ui/src/editor/arrangement_sections.rs", "editor::arrangement_sections"),
+            ("crates/hex-ui/src/editor/arrangement_main_track_ui_test.rs",
+             "editor::arrangement_main_track_ui_test"),
+            ("crates/hex-ui/src/editor/group_overview.rs", "editor::group_overview"),
+            ("crates/hex-ui/src/editor/arrangement_map.rs", "editor::arrangement_map"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names), path)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_section" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
+
+    def test_section_focus_geometry_keeps_q_focus_rendered_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "section_surface::focus::geometry::"
+        consumers = [
+            "editor::arrangement_focus::tests::only_selected_sections_in_q_focus_receive_the_pattern",
+            "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
+        ]
+        paths = [
+            ("crates/hex-ui/src/section_surface/focus/geometry.rs", "section_surface::focus::geometry"),
+            ("crates/hex-ui/src/section_surface/focus.rs", "section_surface::focus"),
+            ("crates/hex-ui/src/section_surface.rs", "section_surface"),
+            ("crates/hex-ui/src/editor/arrangement_focus/tests.rs", "editor::arrangement_focus::tests"),
+            ("crates/hex-ui/src/editor/arrangement_focus.rs", "editor::arrangement_focus"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_section" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_section_launch_geometry_keeps_action_and_autoplay_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::section_launch::geometry::"
+        consumers = [
+            "editor::arrangement_sections::tests::launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections",
+            "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+        ]
+        parent = "editor::section_launch::"
+        paths = [
+            ("crates/hex-ui/src/editor/section_launch/geometry.rs", "editor::section_launch::geometry"),
+            ("crates/hex-ui/src/editor/section_launch.rs", "editor::section_launch"),
+            ("crates/hex-ui/src/editor/arrangement_sections.rs", "editor::arrangement_sections"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            if path == paths[1][0]:
+                self.assertIn(parent, names)
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path == paths[1][0]:
+                self.assertIn(parent, unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_track_latency_presentation_keeps_header_render_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::track_latency::presentation::"
+        consumers = [
+            "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
+            "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+        ]
+        paths = [
+            ("crates/hex-ui/src/editor/track_latency/presentation.rs",
+             "editor::track_latency::presentation"),
+            ("crates/hex-ui/src/editor/track_latency.rs", "editor::track_latency"),
+            ("crates/hex-ui/src/editor/track_performance/tests.rs",
+             "editor::track_performance::tests"),
+            ("crates/hex-ui/src/editor/track_performance.rs", "editor::track_performance"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            if path == paths[1][0]:
+                self.assertIn("editor::track_latency::", names)
+            if path == paths[3][0]:
+                self.assertIn("editor::track_performance::", names)
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path == paths[1][0]:
+                self.assertIn("editor::track_latency::", unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
+
+    def test_stretch_preview_resolver_keeps_resize_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::trim::stretch_preview::resolver::"
+        consumers = [
+            "editor::trim::stretch_limit_tests::",
+            "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
+            "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
+            "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes",
+        ]
+        paths = [
+            ("crates/hex-ui/src/editor/stretch_preview/resolver.rs",
+             "editor::trim::stretch_preview::resolver"),
+            ("crates/hex-ui/src/editor/trim.rs", "editor::trim"),
+            ("crates/hex-ui/src/editor/stretch_preview.rs", "editor::trim::stretch_preview"),
+            ("crates/hex-ui/src/editor/stretch_limit_tests.rs", "editor::trim::stretch_limit_tests"),
+            ("crates/hex-ui/src/editor/resize_release_tests.rs", "editor::trim::resize_release_tests"),
+            ("crates/hex-ui/src/editor/clip_drag_ui_test.rs", "editor::clip_drag_ui_test"),
+            ("crates/hex-ui/src/editor/resize_pan_tests.rs",
+             "editor::drag_autoscroll::resize_pan_tests"),
+            ("crates/hex-ui/src/editor/drag_autoscroll.rs", "editor::drag_autoscroll"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            if path == paths[1][0]:
+                self.assertIn("editor::trim::", names)
+            if path == paths[2][0]:
+                self.assertIn("editor::trim::stretch_preview::", names)
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path in (paths[1][0], paths[2][0]):
+                self.assertTrue(any(selected.startswith("editor::trim::")
+                                    for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
 
     def test_device_display_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
@@ -2188,6 +3809,25 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-device-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-device-unit" for step in health))
+
+    def test_vst3_filesystem_cache_selects_support_without_default_or_projection_units(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/device_panel/vst3_parameters/cache.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        prefix = "editor::device_panel::vst3_parameters::cache::"
+        self.assertEqual(boundary["module_filters"], {owner: [prefix]})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        self.assertNotIn("ui-default-lib-unit-tests", steps)
+        self.assertNotIn("module-tests-hex-ui", steps)
+        self.assertFalse(any("unit_device" in step.argv for step in steps.values()))
+        self.assertIn(prefix, steps["ui-feature-tests"].argv)
 
     def test_vst3_row_projection_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
@@ -2279,17 +3919,46 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::session_navigation::"
         window = "editor::session_navigation_ui_test::"
+        related = ["editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                   "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                   "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+                   "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
+                   "editor::delete_ui_tests::",
+                   "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
+                   "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+                   "editor::session_grid::actions::", "editor::session_grid::tests::", unit, window]
         for path in ("session_navigation.rs", "session_navigation_ui_test.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
-            self.assertEqual(names, {owner: [unit, window]})
+            self.assertEqual(names, {owner: sorted(related)})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/mode.rs"], inventory, [owner]),
-                         {owner: ["editor::"]})
-        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
-                    "single_run": {owner: "ui-test-support"}, "module_filters": {owner: [unit, window]}}
+                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
+                                  "section_surface::focus::geometry::",
+                                  "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
+                                  "section_surface::geometry::"]})
+        action_cases = (
+            "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+            "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+            "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+            "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
+        )
+        path = "crates/hex-ui/src/editor/session_navigation_ui_test.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
-        self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertIn(window, feature.argv)
+        self.assertIn("editor::session_grid::tests::", feature.argv)
+        self.assertIn(
+            "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+            feature.argv,
+        )
+        for consumer in (
+            "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+            "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+            "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
+        ):
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature.argv))
 
     def test_controller_correlation_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
@@ -2301,7 +3970,8 @@ class ModuleScopeTests(unittest.TestCase):
         window = "editor::controller::sampler_native_ui_protocol_tests::"
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller/audio_event_correlation.rs"],
                                          inventory, [owner])
-        self.assertEqual(names, {owner: [unit, window]})
+        source_unit = "editor::controller::source_binding_unit_tests::"
+        self.assertEqual(names, {owner: [unit, window, source_unit]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2329,6 +3999,267 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(any(expected[0] in step.argv for step in steps if "unit_editor_logic" in step.argv))
             self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
+    def test_device_panel_header_style_uses_default_lib_and_keeps_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::header_style_unit_tests::"
+        consumers = (
+            "editor::device_panel::tests::header_style_tests::retained_source_path_indicator_is_rendered_with_the_existing_chain",
+            "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
+            "editor::device_panel::tests::sine_and_effect_place_their_shared_header_to_the_left_of_the_body",
+        )
+        for source in (
+            "crates/hex-ui/src/editor/device_panel.rs",
+            "crates/hex-ui/src/editor/device_panel/tests/header_style_tests.rs",
+            "crates/hex-ui/src/editor/device_panel/return_view.rs",
+        ):
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                chain = "editor::device_panel::chain_layout_unit_tests::"
+                if source.endswith("/device_panel.rs"):
+                    self.assertIn(chain, steps["ui-default-lib-unit-tests"].argv)
+                if source.endswith("/header_style_tests.rs"):
+                    self.assertNotIn(chain, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_output_meter_contrast_uses_default_lib_and_keeps_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "output_meter::tests::unit_tests::"
+        consumers = (
+            "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps",
+            "output_meter::tests::rendered::fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geometry",
+            "editor::output_meter_ui_test::output_meter_status_snapshot_reaches_actual_editor_at_minimum_size",
+        )
+        for source in (
+            "crates/hex-ui/src/output_meter.rs",
+            "crates/hex-ui/src/output_meter/tests.rs",
+            "crates/hex-ui/src/output_meter/tests/rendered.rs",
+            "crates/hex-ui/src/output_meter/logic.rs",
+        ):
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_clip_range_fit_units_keep_both_rendered_drag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for module in ("clip_range_fit", "midi_cue", "time_selection"):
+            with self.subTest(module=module):
+                source = f"crates/hex-ui/src/editor/{module}.rs"
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                self.assertIn("editor::clip_range_fit::tests::", steps["ui-default-lib-unit-tests"].argv)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in (
+                    "editor::clip_range_fit::ui_tests::dragged_selection_fits_the_audio_editor_to_the_selected_root_range",
+                    "editor::clip_range_fit::ui_tests::dragged_selection_fits_the_piano_roll_to_the_selected_source_beats",
+                ):
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args))
+
+    def test_output_meter_logic_keeps_rendered_and_editor_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for source in ("crates/hex-ui/src/output_meter/logic.rs",
+                       "crates/hex-ui/src/output_meter/logic_tests.rs",
+                       "crates/hex-ui/src/output_meter/tests.rs"):
+            names = plan.module_test_filters(root, [source], inventory, [owner])
+            self.assertEqual(names, {owner: METER_BOUNDARY})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any("output_meter::logic::" in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            library = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("output_meter::tests::", library.argv)
+            self.assertIn("editor::output_meter_ui_test::", library.argv)
+            self.assertIn("editor::refresh_state::", names[owner])
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/output_meter.rs"], inventory, [owner])
+        self.assertIn("output_meter::", parent[owner])
+        self.assertIn("editor::output_meter_ui_test::", parent[owner])
+
+    def test_waveform_cache_identity_keeps_profile_and_render_witnesses(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        rendered_consumers = (
+            "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+            "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+        )
+        profiler = "editor::clip_content_cache::profile::navigation::headless_navigation_framework_profile"
+        cases = (
+            ("crates/hex-ui/src/editor/waveform_geometry.rs", True,
+             (*rendered_consumers, profiler)),
+            ("crates/hex-ui/src/editor/clip_content_profile.rs", False, (profiler,)),
+        )
+        for path, runs_unit, consumers in cases:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                if runs_unit:
+                    default = steps["ui-default-lib-unit-tests"]
+                    self.assertIn("editor::waveform_geometry::tests::", default.argv)
+                    self.assertTrue(default.requires_tests)
+                else:
+                    self.assertNotIn("ui-default-lib-unit-tests", steps)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_waveform_grid_selects_unit_geometry_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        grid = "editor::waveform_geometry::grid::"
+        geometry = "editor::waveform_geometry::tests::"
+        rendered = "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"
+        for source in ("waveform_geometry/grid.rs", "viewport.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            for required in (grid, geometry, rendered, *GRID_CONSUMERS):
+                self.assertTrue(any(required.startswith(selected) for selected in names[owner]))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(any(grid.startswith(arg) for arg in step.argv) and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            cache_step = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+            self.assertTrue(cache_step.requires_tests)
+            self.assertIn(geometry, cache_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for required in (geometry, rendered, *GRID_CONSUMERS):
+                self.assertTrue(any(required.startswith(arg) for arg in feature.argv))
+        # A rendered consumer edit must select the new unit owner in reverse.
+        rendered_source = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/waveform_resize_ui_test.rs"], inventory, [owner])
+        self.assertTrue(any(grid.startswith(selected) for selected in rendered_source[owner]))
+        self.assertTrue(any(geometry.startswith(selected) for selected in rendered_source[owner]))
+        # A column-budget edit must still select the grid even when the broader
+        # waveform geometry prefix subsumes its child in the final filter set.
+        columns = plan.module_test_filters(root, ["crates/hex-ui/src/editor/waveform_columns.rs"], inventory, [owner])
+        self.assertIn("editor::waveform_geometry::", columns[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"}, "module_filters": columns}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any("editor::waveform_geometry::" in step.argv
+                            for step in steps if "unit_editor_logic" in step.argv))
+
+    def test_loop_projection_keeps_real_waveform_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for source in ("waveform_loop/projection.rs", "waveform_loop.rs",
+                       "waveform_stretch/accepted_root.rs", "waveform_stretch.rs", "waveform_source.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            for required in ("editor::waveform_loop::", "editor::waveform_stretch::",
+                             "editor::waveform_source::", "editor::waveform_geometry::"):
+                self.assertIn(required, names[owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any("editor::waveform_loop::" in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("editor::waveform_loop::", feature.argv)
+            self.assertIn("editor::waveform_geometry::", feature.argv)
+            for consumer in (
+                "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+            ):
+                self.assertIn(consumer, feature.argv)
+
+    def test_accepted_loop_root_keeps_waveform_resize_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform_loop::accepted_root::"
+        parent = "editor::waveform_loop::"
+        consumers = [
+            "editor::waveform::resize_tests::shift_stretch_keeps_live_sample_varied_waveforms_visible",
+            "editor::waveform::resize_tests::trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off",
+        ]
+        source_path = "crates/hex-ui/src/editor/waveform_loop/accepted_root.rs"
+        parent_path = "crates/hex-ui/src/editor/waveform_loop.rs"
+        consumer_path = "crates/hex-ui/src/editor/waveform_resize_ui_test.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / source_path).resolve()], "editor::waveform_loop::accepted_root")
+        self.assertEqual(modules[(root / parent_path).resolve()], "editor::waveform_loop")
+        self.assertEqual(modules[(root / consumer_path).resolve()], "editor::waveform::resize_tests")
+        for path in (source_path, parent_path, consumer_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertIn(parent, names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            if path == parent_path:
+                self.assertIn(parent, unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
     def test_refresh_state_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -2340,7 +4271,10 @@ class ModuleScopeTests(unittest.TestCase):
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh_state.rs"], inventory, [owner])
         self.assertEqual(names, {owner: METER_BOUNDARY})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh.rs"], inventory, [owner]),
-                         {owner: ["editor::"]})
+                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
+                                  "section_surface::focus::geometry::",
+                                  "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
+                                  "section_surface::geometry::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2356,8 +4290,9 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"]
         for path in ("musical_time.rs", "seek.rs", "signed_frame_viewport.rs", "viewport.rs"):
+            expected = sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS]) if path == "viewport.rs" else timeline
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
-                             {owner: timeline})
+                             {owner: expected})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),
                          {owner: ["editor::clip_range_fit::", "editor::midi_cue::", *timeline]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
@@ -2369,6 +4304,836 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
+
+    def test_device_chain_layout_units_keep_rendered_pointer_and_keyboard_cases(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::device_panel::chain_layout_unit_tests::",
+            "editor::device_panel::chain_window::tests::",
+            "editor::device_panel::parameter_rows::tests::",
+        )
+        consumers = (
+            "editor::device_panel::tests::chain_window_tests::short_chain_window_does_not_add_scroll_extent",
+            "editor::device_panel::tests::clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail",
+            "editor::device_panel::tests::keyboard_navigation_tests::arrows_step_devices_and_paste_lands_in_the_clicked_gap",
+            "editor::device_panel::tests::parameter_rows_tests::generic_track_effect_rows_preserve_extent_identity_and_pins",
+        )
+        paths = (
+            "device_panel.rs",
+            "device_panel/chain_window.rs",
+            "device_panel/parameter_rows.rs",
+            "device_panel/tests.rs",
+            "device_panel/tests/chain_window_tests.rs",
+            "device_panel/tests/keyboard_navigation_tests.rs",
+            "device_panel/tests/parameter_rows_tests.rs",
+        )
+        for module in paths:
+            path = "crates/hex-ui/src/editor/" + module
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                for prefix in unit_prefixes:
+                    self.assertIn(prefix, unit_args)
+                self.assertNotIn("editor::device_panel::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
+    def test_browser_scalar_controls_keep_unit_and_native_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        controls = (
+            ("audition", "audition_geometry", (
+                "editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus",
+                "editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport",
+            )),
+            ("random", "random_rank", (
+                "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
+                "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged",
+            )),
+            ("scrollbar", "scrollbar_geometry", (
+                "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+                "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture",
+            )),
+        )
+        for runtime, helper, consumers in controls:
+            unit = f"editor::browser::{helper}::"
+            for module in (runtime, helper):
+                path = f"crates/hex-ui/src/editor/browser/{module}.rs"
+                with self.subTest(path=path):
+                    boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                    self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                    self.assertNotIn("editor::browser::", boundary["module_filters"][owner])
+                    steps = {step.step_id: step for step in ci.planned_steps({
+                        "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                        "cargo_inventory": inventory, "paths": [path]})}
+                    unit_step = steps["ui-unit-unit_editor_logic"]
+                    self.assertIn(unit, unit_step.argv)
+                    self.assertTrue(unit_step.requires_tests)
+                    for consumer in consumers:
+                        self.assertIn(consumer, steps["ui-feature-tests"].argv)
+
+        consumer_paths = ("browser_ui_test.rs", "browser_random_ui_test.rs",
+                          "browser_scrollbar_ui_test.rs")
+        for path, (_, helper, _) in zip(consumer_paths, controls):
+            path = "crates/hex-ui/src/editor/" + path
+            with self.subTest(path=path):
+                names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+                self.assertIn(f"editor::browser::{helper}::", names)
+
+    def test_close_policy_units_keep_real_prompt_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/close.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        self.assertNotIn("module-tests-hex-ui", steps)
+        self.assertIn("editor::close::tests::", steps["ui-default-lib-unit-tests"].argv)
+        self.assertNotIn("editor::close::", steps["ui-default-lib-unit-tests"].argv)
+        feature_args = steps["ui-feature-tests"].argv
+        for consumer in (
+            "editor::close::window_tests::automation_close_freezes_admission_until_prompt_cancellation",
+            "editor::close::window_tests::custom_close_button_keeps_cancelled_dirty_window_and_discards_on_second_close",
+            "editor::close::window_tests::clean_base_device_draft_is_committed_before_cancel_and_discard_prompt",
+        ):
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args))
+
+    def test_controller_session_action_owner_keeps_real_worker_and_callback_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::session_action_unit_tests::"
+        consumers = (
+            "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+            "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+            "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+            "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/controller.rs",
+            "crates/hex-ui/src/editor/controller/session_action_unit_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_controller_source_binding_unit_keeps_preview_protocol_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::source_binding_unit_tests::"
+        publication = "editor::controller::publication_unit_tests::"
+        session_action = "editor::controller::session_action_unit_tests::"
+        preview = ("editor::controller::sampler_native_ui_protocol_tests::"
+                   "worker_preview_ack_waits_for_exact_submission_metadata")
+        native = ("editor::controller::sampler_native_ui_protocol_tests::"
+                  "native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion")
+        comparison = ("editor::controller::comparison_source_binding_tests::"
+                     "comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion")
+        for path in ("crates/hex-ui/src/editor/controller.rs",
+                     "crates/hex-ui/src/editor/controller/audio_event_correlation.rs"):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                if path.endswith("controller.rs"):
+                    self.assertIn(publication, unit_args)
+                    self.assertIn(session_action, unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                consumers = (preview, native, comparison) if path.endswith("controller.rs") else (preview, native)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
+    def test_device_automation_entry_units_keep_rendered_targets(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::device_automation::unit_tests::",
+        )
+        consumers = (
+            "editor::device_automation::host_tests::host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners",
+            "editor::device_automation::host_tests::utility_toggle_and_choice_offer_their_exact_recording_targets",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/device_automation.rs",
+            "crates/hex-ui/src/editor/device_automation/tests.rs",
+            "crates/hex-ui/src/editor/device_automation/unit_tests.rs",
+            "crates/hex-ui/src/editor/device_automation/host_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                for prefix in unit_prefixes:
+                    self.assertIn(prefix, unit.argv)
+                self.assertTrue(unit.requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_native_automation_recording_units_keep_receipt_and_vst3_witnesses(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::native_automation_recording::unit_tests::",
+            "editor::native_automation_recording::editor_input::tests::",
+        )
+        consumers = (
+            "editor::native_automation_recording::tests::refused_and_lost_submissions_keep_delivered_receipts_until_recovery",
+            "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
+            "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
+        )
+        routes = (
+            "crates/hex-ui/src/editor/native_automation_recording.rs",
+            "crates/hex-ui/src/editor/native_automation_recording/editor_input.rs",
+            "crates/hex-ui/src/editor/native_automation_recording/unit_tests.rs",
+            "crates/hex-ui/src/editor/device_automation/host_tests.rs",
+        )
+        for path in routes:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(unit.requires_tests)
+                feature = steps["ui-feature-tests"]
+                feature_filters = feature.argv[feature.argv.index("--") + 1:]
+                for consumer in consumers:
+                    self.assertTrue(any(consumer == prefix or consumer.startswith(prefix)
+                                        for prefix in feature_filters),
+                                    f"{consumer} missing from {feature_filters}")
+                if "native_automation_recording" in path:
+                    self.assertTrue(any(any(prefix in arg for arg in unit.argv)
+                                        for prefix in unit_prefixes))
+                    self.assertFalse(any("unit_editor_logic" in step.argv for step in steps.values()))
+                    self.assertFalse(any("editor::save::tests::" in arg for arg in unit.argv))
+                else:
+                    self.assertIn("editor::device_automation::unit_tests::", unit.argv)
+                    for prefix in unit_prefixes:
+                        self.assertIn(prefix, unit.argv)
+
+    def test_selection_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::selection::tests::"
+        consumers = (
+            "editor::controller::project_replacement_tests::worker_snapshots_and_undo_keep_the_last_user_detail_focus",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/selection.rs",
+            "crates/hex-ui/src/editor/controller/project_replacement_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_session_audio_source_window_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::session_audio_panel::unit_tests::"
+        consumers = (
+            "editor::session_audio_panel::tests::source_panel_keeps_its_compact_row_while_an_edit_is_pending",
+            "editor::session_audio_panel::tests::console_audio_loop_controls_edit_real_cell_history_and_saved_state",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/session_audio_panel.rs",
+            "crates/hex-ui/src/editor/session_audio_panel/unit_tests.rs",
+            "crates/hex-ui/src/editor/session_audio_panel/playhead.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+                if path.endswith(("/session_audio_panel.rs", "/playhead.rs")):
+                    standalone = steps["ui-unit-unit_editor_logic"].argv
+                    self.assertTrue(any("editor::session_audio_panel::playhead::".startswith(name) for name in standalone))
+
+    def test_console_return_paging_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::console_returns::tests::"
+        consumers = (
+            "editor::console_returns::ui_tests::return_columns_align_and_page_through_all_sixteen_buses",
+            "editor::console_returns::ui_tests::return_draft_blocks_paging_and_stays_visible_after_a_narrow_resize",
+            "editor::console_returns::ui_tests::console_return_controls_use_the_existing_actor_and_history",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/console_returns.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_midi_draw_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_draw::tests::"
+        consumers = (
+            "editor::midi_canvas::pending_drag_tests::stroke_preview_tests::capture_tests::draw_and_erase_own_input_then_handoff_preview_without_holding_capture",
+            "editor::midi_canvas::created_selection_tests::committed_draw_selects_actual_authored_ids_with_last_primary_after_later_frames",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/midi_draw.rs",
+            "crates/hex-ui/src/editor/midi_draw_capture_ui_tests.rs",
+            "crates/hex-ui/src/editor/midi_created_selection_ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_midi_pan_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_pan::tests::"
+        consumers = (
+            "editor::midi_canvas::pan_tests::middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space",
+            "editor::midi_pan::capture_tests::piano_pan_owns_both_buttons_and_finishes_outside_without_edit",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/midi_pan.rs",
+            "crates/hex-ui/src/editor/midi_pan_ui_tests.rs",
+            "crates/hex-ui/src/editor/midi_pan_capture_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_poll_cadence_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::poll_cadence::tests::"
+        consumers = (
+            "editor::poll_cadence::ui_tests::key_and_render_wake_a_sleeping_poll",
+            "editor::poll_cadence::ui_tests::pending_edit_wakes_a_sleeping_poll_and_is_acknowledged",
+            "editor::poll_cadence::ui_tests::play_command_wakes_a_sleeping_poll_and_keeps_sixteen_ms",
+            "editor::poll_cadence::ui_tests::stopped_editor_idles_at_ten_wakeups_per_second",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/poll_cadence.rs",
+            "crates/hex-ui/src/editor/poll_cadence_ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_eq_creation_spectrum_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::eq_panel::tests::"
+        consumers = (
+            "editor::device_panel::tests::eq_ui_tests::eq_notch_hover_matches_creation_and_node_priority_at_narrow_and_wide_sizes",
+            "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio",
+            "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+            "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+            "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                expected = consumers[1:] if path.endswith("/eq_graph_layout_tests.rs") else consumers
+                for consumer in expected:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_track_performance_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::track_performance::tests::"
+        consumers = (
+            "editor::track_performance::tests::rendered::six_segments_fit_compact_width_and_fill_only_measured_work",
+            "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+            "editor::track_performance::tests::missing_output_invalidates_cached_work_inside_the_sample_interval",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/track_performance/tests.rs",
+            "crates/hex-ui/src/editor/track_performance.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_waveform_canonical_trim_unit_route_preserves_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform_geometry::tests::"
+        consumers = (
+            "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+            "editor::waveform::resize_tests::plain_lower_fade_prefix_uses_the_same_raw_source_mapping",
+            "editor::trim::loop_ui_tests::clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/waveform_geometry.rs",
+            "crates/hex-ui/src/editor/waveform_geometry/grid.rs",
+            "crates/hex-ui/src/editor/waveform_resize_ui_test.rs",
+            "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+            "crates/hex-ui/src/editor/clip_loop_ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_step = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, unit_step.argv)
+                self.assertTrue(unit_step.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_missing_media_relink_unit_route_preserves_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::missing_media::tests::"
+        consumers = (
+            "editor::missing_media::ui_tests::missing_media_can_open_offline_and_shows_the_missing_count",
+            "editor::missing_media::ui_tests::moved_media_shows_panel_instead_of_failing_and_opens_with_relink",
+            "editor::missing_media::ui_tests::offline_media_relinks_in_place_from_the_indicator_and_undoes",
+            "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/missing_media/tests.rs",
+            "crates/hex-ui/src/editor/missing_media.rs",
+            "crates/hex-ui/src/editor/missing_media/ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_step = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, unit_step.argv)
+                self.assertTrue(unit_step.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_export_status_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::export::status_tests::"
+        consumers = (
+            "editor::export::tests::export_dialog_cancel_reopen_starts_in_user_folder_and_native_save_needs_no_second_consent",
+            "editor::export::tests::export_button_cancels_pending_control_without_opening_another_dialog",
+        )
+        path = "crates/hex-ui/src/editor/export.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertIn(unit, default.argv)
+        self.assertTrue(default.requires_tests)
+        feature_args = steps["ui-feature-tests"].argv
+        self.assertIn("editor::export::", feature_args)
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                            (consumer, feature_args))
+
+        logic_path = "crates/hex-ui/tests/unit_editor_logic.rs"
+        logic_boundary = plan.boundary_selection(root, [logic_path], inventory, [owner])
+        logic_names = logic_boundary["module_filters"][owner]
+        self.assertFalse(any(name.startswith(unit) or unit.startswith(name) for name in logic_names))
+        logic_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": logic_boundary,
+            "cargo_inventory": inventory, "paths": [logic_path]})}
+        logic_feature = logic_steps["ui-feature-tests"].argv
+        self.assertNotIn("editor::export::", logic_feature)
+        for consumer in consumers:
+            self.assertFalse(any(consumer.startswith(prefix) for prefix in logic_feature),
+                             (consumer, logic_feature))
+
+    def test_dialog_pending_import_generation_keeps_open_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::dialogs::tests::pending_import_rejects_same_numeric_track_id_from_a_new_project"
+        consumers = (
+            "editor::dialogs::ui_tests::one_open_stale_picker_or_confirmation_cannot_replace_a_new_project",
+            "editor::dialogs::ui_tests::native_open_action_survives_editor_focus_loss",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/dialogs.rs",
+            "crates/hex-ui/src/editor/dialogs/ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(any(unit.startswith(arg) or arg.startswith(unit) for arg in default.argv),
+                                default.argv)
+                self.assertTrue(default.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::publication_unit_tests::"
+        session_action_unit = "editor::controller::session_action_unit_tests::"
+        consumers = (
+            "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+            "editor::controller::comparison_source_binding_tests::comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion",
+            "editor::controller::project_replacement_tests::receive_preserves_fresh_installation_through_edits_and_failed_open",
+            "editor::controller::project_replacement_tests::stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_later_edits",
+            "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
+            "editor::controller::verified_gain_tests::verified_preview_submission_waits_for_exact_view_without_canonical_promotion",
+        )
+        for module in ("controller.rs", "controller/publication_unit_tests.rs",
+                       "controller/project_replacement_tests.rs", "controller/verified_gain_tests.rs"):
+            path = "crates/hex-ui/src/editor/" + module
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                if module == "controller.rs":
+                    self.assertIn(session_action_unit, unit_args)
+                else:
+                    self.assertNotIn(session_action_unit, unit_args)
+                self.assertNotIn("editor::controller::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
+    def test_arrangement_loop_rail_units_keep_render_and_pending_ack(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::loop_rail::tests::"
+        consumers = (
+            "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end",
+            "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
+            "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
+            "editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs",
+        )
+        for file in ("loop_rail.rs", "loop_rail/review_ui_tests.rs", "loop_rail/pending_ui_tests.rs"):
+            with self.subTest(file=file):
+                path = "crates/hex-ui/src/editor/" + file
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                for name in consumers:
+                    self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_eq8_units_keep_rendered_marquee_and_group_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        units = (
+            "editor::device_panel::eq8_panel::graph::tests::",
+            "editor::device_panel::eq8_panel::group::tests::",
+            "editor::device_panel::eq8_panel::selection::tests::",
+        )
+        consumers = (
+            "editor::device_panel::tests::eq8_marquee_tests::eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device",
+            "editor::device_panel::tests::eq8_marquee_tests::eq8_marquee_group_move_and_disable_each_commit_one_undo",
+        )
+        paths = ("eq8_panel/graph.rs", "eq8_panel/group.rs", "eq8_panel/selection.rs",
+                 "tests/eq8_marquee_tests.rs")
+        for file in paths:
+            with self.subTest(file=file):
+                path = "crates/hex-ui/src/editor/device_panel/" + file
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertEqual(steps["ui-default-lib-unit-tests"].argv[-3:], units)
+                self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in steps["ui-feature-tests"].argv))
+
+    def test_save_policy_units_keep_rendered_open_and_save_as(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::save::tests::"
+        consumers = (
+            "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success",
+            "editor::save::ui_tests::older_format_explicit_overwrite_warns_once_and_save_as_keeps_original",
+        )
+        for module in ("save.rs", "save/ui_tests.rs", "dialogs/ui_tests.rs"):
+            path = "crates/hex-ui/src/editor/" + module
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                self.assertNotIn("editor::save::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
+    def test_gain_lane_units_keep_rendered_worker_and_refusal_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::gain_lane::tests::unit_tests::"
+        consumers = (
+            "editor::automation_view::tests::foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal",
+            "editor::automation_view::tests::earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does",
+            "editor::gain_lane::tests::native::occupied_pointer_move_refuses_before_actor_and_keeps_visible_draft",
+        )
+        for module in ("gain_lane/mod.rs", "gain_lane/tests.rs", "automation_view/tests.rs"):
+            path = "crates/hex-ui/src/editor/" + module
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                self.assertNotIn("editor::gain_lane::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
+    def test_midi_loop_display_cohort_routes_source_and_consumer_changes(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_roots = ["editor::midi_loop_notes::tests::",
+                      "editor::midi_ruler::geometry_tests::",
+                      "editor::midi_ruler::loop_brace::tests::"]
+        consumers = [
+            "editor::midi_loop_notes::tests::rendered_long_loop_paints_every_repeat_without_a_sample_badge",
+            "editor::midi_loop_notes::tests::rendered_tiled_loop_paints_one_sprite_per_visible_tile",
+            "editor::midi_loop_notes::tests::rendered_long_loop_trim_preview_paints_every_visible_repeat",
+            "editor::midi_ruler::tests::marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_state",
+            "editor::midi_ruler::tests::marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement",
+            "editor::midi_ruler::loop_tests::loop_capture_cancel_and_stale_frame_preserve_source_and_transport",
+            "editor::midi_ruler::loop_tests::console_loop_resize_enable_and_roundtrip_leave_arrangement_source_unchanged",
+        ]
+        routes = {
+            "crates/hex-ui/src/editor/midi_loop_notes.rs": "editor::midi_loop_notes",
+            "crates/hex-ui/src/editor/midi_ruler.rs": "editor::midi_ruler",
+            "crates/hex-ui/src/editor/midi_loop.rs": "editor::midi_ruler::loop_brace",
+            "crates/hex-ui/src/editor/midi_ruler_ui_tests.rs": "editor::midi_ruler::tests",
+            "crates/hex-ui/src/editor/midi_loop_ui_tests.rs": "editor::midi_ruler::loop_tests",
+        }
+        module_paths = plan.module_paths(root / "crates/hex-ui/src")
+        for path, expected_module in routes.items():
+            with self.subTest(path=path):
+                self.assertEqual(module_paths[(root / path).resolve()], expected_module)
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                selected = names[owner]
+                self.assertTrue(all(any(root_name.startswith(name) or name.startswith(root_name)
+                                         for name in selected) for root_name in unit_roots), selected)
+                self.assertTrue(all(any(consumer.startswith(name) for name in selected) for consumer in consumers), selected)
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertEqual(unit.argv, ("cargo", "test", "-p", "hex-ui", "--lib", "--locked",
+                                             "--", *unit_roots))
+                self.assertTrue(unit.requires_tests)
+                feature = steps["ui-feature-tests"].argv
+                self.assertIn("--lib", feature)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in feature))
+
+        unrelated = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": unrelated}
+        unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                            "boundary": boundary, "cargo_inventory": inventory,
+                                            "paths": ["crates/hex-ui/src/editor/user_errors.rs"]})
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in unrelated_steps))
+        self.assertFalse(any(any(consumer.startswith(arg) for arg in step.argv) for step in unrelated_steps
+                             for consumer in consumers))
 
     def test_midi_cue_timing_selects_unit_and_real_consumers(self):
         root = SCRIPTS.parent
@@ -2398,14 +5163,38 @@ class ModuleScopeTests(unittest.TestCase):
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        piano = ["editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"]
-        for path in ("midi_drag.rs", "midi_group_drag.rs", "midi_scene.rs", "midi_selection.rs", "midi_stroke.rs", "midi_velocity.rs", "midi_viewport_grid.rs"):
+        piano = ["editor::midi_canvas::geometry::", "editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"]
+        creation = "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"
+        for path in ("midi_drag.rs", "midi_group_drag.rs", "midi_scene.rs", "midi_selection.rs", "midi_stroke.rs", "midi_velocity.rs", "midi_viewport_grid.rs", "midi_canvas/geometry.rs"):
             self.assertEqual(plan.module_test_filters(
-                root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]), {owner: piano})
-        self.assertEqual(plan.module_test_filters(
-            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner]),
-            {owner: sorted(piano + ["editor::midi_source_controls::", "editor::midi_wheel::",
-                                    "editor::midi_wheel_mapping::"])})
+                root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
+                {owner: sorted([*piano, creation])})
+        piano_harness = plan.module_test_filters(
+            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner])
+        self.assertEqual(piano_harness,
+                         {owner: sorted(piano + ["editor::midi_source_controls::", "editor::midi_wheel::",
+                                                 "editor::midi_wheel_mapping::", creation])})
+        shim_paths = ["crates/hex-ui/tests/piano_roll_unit/editor.rs",
+                      "crates/hex-ui/tests/piano_roll_unit/midi_canvas.rs"]
+        for path in shim_paths:
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), piano_harness)
+        combined_shims = plan.module_test_filters(root, shim_paths, inventory, [owner])
+        self.assertEqual(combined_shims, piano_harness)
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": combined_shims}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory,
+                                  "paths": shim_paths})
+        units = [step for step in steps if "unit_piano_roll" in step.argv]
+        self.assertEqual(len(units), 1)
+        self.assertTrue(units[0].requires_tests)
+        for name in [*piano, "editor::midi_source_controls::", "editor::midi_wheel_mapping::"]:
+            self.assertIn(name, units[0].argv)
+        self.assertNotIn("editor::midi_wheel::", units[0].argv)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertIn(creation, feature.argv)
+        self.assertIn("editor::midi_wheel::", feature.argv)
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/midi_source_controls.rs"], inventory, [owner]),
             {owner: ["editor::midi_source_controls::"]})
@@ -2429,6 +5218,57 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in full))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-piano-unit" for step in health))
+
+    def test_midi_canvas_geometry_keeps_unit_dependencies_and_creation_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_canvas::geometry::"
+        collaborators = [
+            "editor::midi_drag::",
+            "editor::midi_group_drag::",
+            "editor::midi_scene::",
+            "editor::midi_selection::",
+            "editor::midi_stroke::",
+            "editor::midi_velocity::",
+            "editor::midi_viewport_grid::",
+        ]
+        consumer = "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"
+        paths = [
+            ("crates/hex-ui/src/editor/midi_canvas/geometry.rs", "editor::midi_canvas::geometry"),
+            ("crates/hex-ui/src/editor/midi_canvas.rs", "editor::midi_canvas"),
+            ("crates/hex-ui/src/editor/midi_creation_ui_tests.rs", "editor::midi_canvas::creation_tests"),
+            ("crates/hex-ui/src/editor/midi_drag.rs", "editor::midi_drag"),
+            ("crates/hex-ui/src/editor/midi_scene.rs", "editor::midi_scene"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *collaborators, consumer]))
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for collaborator in collaborators:
+                self.assertTrue(any(collaborator.startswith(selected) for selected in names),
+                                f"{path} does not select {collaborator}: {names}")
+            self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                            f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_piano_roll" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            for expected in [unit, *collaborators]:
+                self.assertTrue(any(expected.startswith(selected) for selected in unit_step.argv),
+                                f"{path} unit step misses {expected}")
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
     def test_eq_response_keeps_axes_unit_and_window_coverage(self):
         root = SCRIPTS.parent
@@ -2466,12 +5306,15 @@ class ModuleScopeTests(unittest.TestCase):
         graph = "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::"
         names = plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([axes, response, graph])})
+        creation_spectrum = "editor::device_panel::eq_panel::tests::"
+        self.assertEqual(names, {owner: sorted([axes, response, graph, creation_spectrum])})
         boundary["module_filters"] = names
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(axes in step.argv and response in step.argv
                             for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(creation_spectrum in step.argv and step.requires_tests
+                            for step in steps if step.step_id == "ui-default-lib-unit-tests"))
         self.assertTrue(any(graph in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_overview_waveform_unit_cohort_keeps_real_consumers(self):
@@ -2550,7 +5393,19 @@ class ModuleScopeTests(unittest.TestCase):
         integration = "editor::fade_handles::"
         for path in ("fade_handle_geometry.rs", "fade_handles.rs", "fade_handles_ui_test.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
-            self.assertEqual(names, {owner: [unit, integration]})
+            expected = [unit, integration]
+            if path == "fade_handles_ui_test.rs":
+                expected += [
+                    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                    "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+                    "editor::fades::musical_tests::transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_curve",
+                    "editor::waveform::paint_geometry::",
+                    "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
+                    "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
+                    "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
+                ]
+            self.assertEqual(names, {owner: sorted(expected)})
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                         "single_run": {owner: "ui-test-support"}, "module_filters": names}
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2571,16 +5426,211 @@ class ModuleScopeTests(unittest.TestCase):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertEqual(names, {owner: METER_BOUNDARY})
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/track_meters.rs"], inventory, [owner])
-        self.assertEqual(parent, {owner: ["editor::output_meter_ui_test::", "editor::refresh_state::",
-                                          "editor::track_meters::"]})
-        page = plan.module_test_filters(root, ["crates/hex-ui/src/editor/console_track_page.rs"], inventory, [owner])
-        self.assertEqual(page, {owner: ["editor::"]})
+        self.assertEqual(parent, {owner: [
+            "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+            "editor::console_track_page::", "editor::output_meter_ui_test::", "editor::refresh_state::",
+            "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+            "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+            "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+            "editor::track_meters::", "output_meter::logic::", "output_meter::tests::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_console_track_page_keeps_unit_and_paging_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::console_track_page::"
+        meter_unit = "editor::track_meters::selection::"
+        consumers = [
+            "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+            "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+            "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+            "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+            "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers",
+        ]
+        paths = ["crates/hex-ui/src/editor/console_track_page.rs",
+                 "crates/hex-ui/src/editor/console_drop_ui_test.rs",
+                 "crates/hex-ui/src/editor/session_track_reorder_ui_test.rs",
+                 "crates/hex-ui/src/editor/track_clipboard_ui_test.rs",
+                 "crates/hex-ui/src/editor/track_meters/selection.rs",
+                 "crates/hex-ui/src/editor/track_meters.rs"]
+        for path in paths:
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertIn(unit, names)
+            self.assertTrue(any(meter_unit.startswith(selected) for selected in names))
+            self.assertNotIn("editor::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory, "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertIn(unit, unit_step.argv)
+            self.assertTrue(any(meter_unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+        combined_paths = [
+            "crates/hex-ui/src/editor/session_grid.rs",
+            "crates/hex-ui/src/editor/console_track_page.rs",
+        ]
+        combined = plan.module_test_filters(root, combined_paths, inventory, [owner])[owner]
+        self.assertIn(unit, combined)
+        self.assertTrue(any(meter_unit.startswith(selected) for selected in combined))
+        self.assertTrue(any("editor::session_grid::" == selected for selected in combined))
+        self.assertTrue(all(any(consumer.startswith(selected) for selected in combined)
+                            for consumer in consumers))
+        action_consumers = [
+            "editor::delete_ui_tests::",
+            "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+            "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+            "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+            "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
+        ]
+        self.assertTrue(all(any(consumer.startswith(selected) for selected in combined)
+                            for consumer in action_consumers))
+        combined_boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                             "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                             "module_filters": {owner: combined}}
+        combined_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                           "boundary": combined_boundary,
+                                           "cargo_inventory": inventory, "paths": combined_paths})
+        combined_unit = next(step for step in combined_steps
+                             if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertIn(unit, combined_unit.argv)
+        self.assertTrue(any(meter_unit.startswith(selected) for selected in combined_unit.argv))
+        self.assertIn("editor::session_grid::", combined_unit.argv)
+        self.assertTrue(combined_unit.requires_tests)
+        combined_feature = next(step for step in combined_steps if step.step_id == "ui-feature-tests")
+        self.assertIn("editor::session_grid::", combined_feature.argv)
+        for consumer in [*consumers, *action_consumers]:
+            self.assertTrue(any(consumer.startswith(selected) for selected in combined_feature.argv))
+
+    def test_recent_project_labels_keep_menu_and_mru_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/recent_projects/labels.rs"
+        shim = "crates/hex-ui/tests/editor_logic_unit/recent_projects.rs"
+        unit = "editor::recent_projects::labels::"
+        menu = "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"
+        mru = "editor::recent_projects::tests::"
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, menu, mru])})
+        self.assertEqual(plan.module_test_filters(root, [shim], inventory, [owner]), names)
+        self.assertEqual(plan.module_test_filters(
+            root, [source, "crates/hex-ui/tests/editor_logic_unit/editor.rs"], inventory, [owner]), {})
+        for path in (source, shim, "crates/hex-ui/src/editor/recent_projects.rs",
+                     "crates/hex-ui/src/editor/menus.rs"):
+            selected = plan.module_test_filters(root, [path], inventory, [owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": selected}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": [path]})
+            unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(name) for name in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in (menu, mru):
+                self.assertTrue(any(consumer.startswith(name) for name in feature.argv))
+
+    def test_guarded_session_launch_keeps_real_action_and_intent_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/session_grid/actions.rs"
+        shim = "crates/hex-ui/tests/editor_logic_unit/session_grid.rs"
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(plan.module_test_filters(root, [shim], inventory, [owner]), names)
+        unit = "editor::session_grid::actions::"
+        intent = "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents"
+        self.assertIn(unit, names[owner])
+        self.assertIn(intent, names[owner])
+        # The shared editor shim may register unknown modules: keep its package fallback.
+        self.assertEqual(plan.module_test_filters(
+            root, [source, "crates/hex-ui/tests/editor_logic_unit/editor.rs"], inventory, [owner]), {})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": [source]})
+        unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertIn(unit, unit_step.argv)
+        self.assertTrue(unit_step.requires_tests)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        default_units = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertIn(intent, default_units.argv)
+        launch = "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action"
+        self.assertTrue(any(launch.startswith(prefix) for prefix in feature.argv))
+        self.assertIn("editor::session_grid::tests::", feature.argv)
+
+    def test_session_grid_quantization_keeps_unit_parent_and_ui_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::session_grid::actions::"
+        integration = "editor::session_grid::tests::"
+        delete = "editor::delete_ui_tests::"
+        launch = ("editor::device_panel::tests::device_comparison_tests::"
+                  "device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack")
+        queued = "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions"
+        intent = "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents"
+        navigation = "editor::session_navigation_ui_test::"
+        navigation_unit = "editor::session_navigation::"
+        menu = ("editor::context_menu::tests::"
+                "global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits")
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid/actions.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, integration, delete, launch, queued, intent, navigation,
+                                                navigation_unit, menu])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid.rs"], inventory, [owner])
+        self.assertEqual(parent, {owner: sorted(["editor::session_grid::", delete, launch, queued, intent, navigation,
+                                                 navigation_unit, menu])})
+        combined = plan.module_test_filters(
+            root,
+            ["crates/hex-ui/src/editor/session_grid/actions.rs",
+             "crates/hex-ui/src/editor/session_grid.rs"],
+            inventory,
+            [owner],
+        )
+        self.assertEqual(combined, {owner: sorted(["editor::session_grid::", delete, launch, queued, intent,
+                                                   navigation, navigation_unit, menu])})
+        self.assertNotIn(unit, combined[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": combined}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertIn("editor::session_grid::", unit_step.argv)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertTrue(any("editor::session_grid::" in step.argv for step in steps
+                            if step.step_id == "ui-feature-tests"))
+        default_units = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertIn(queued, default_units.argv)
+        self.assertIn(intent, default_units.argv)
+        self.assertTrue(all(test in feature.argv for test in (delete, launch, navigation, menu)))
+        for path in ("delete_ui_tests.rs", "controller.rs", "session_navigation_ui_test.rs",
+                     "context_menu.rs",
+                     "device_panel/tests/device_comparison_tests.rs"):
+            consumers = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertIn(unit, consumers[owner])
 
     def crate(self, root: Path) -> list[dict]:
         files = {
@@ -2618,17 +5668,145 @@ class ModuleScopeTests(unittest.TestCase):
             (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
             self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
 
+    def test_log_viewer_scrollbar_geometry_selects_nested_unit_and_real_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "log_viewer::scrollbar::geometry::"
+        consumers = [
+            "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
+            "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
+        ]
+        geometry_path = "crates/hex-ui/src/log_viewer/scrollbar/geometry.rs"
+        parent_path = "crates/hex-ui/src/log_viewer/scrollbar.rs"
+        consumer_path = "crates/hex-ui/src/log_viewer/scrollbar_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / geometry_path).resolve()], "log_viewer::scrollbar::geometry")
+        self.assertEqual(modules[(root / parent_path).resolve()], "log_viewer::scrollbar")
+        self.assertEqual(modules[(root / consumer_path).resolve()], "log_viewer::scrollbar::tests")
+        for path in (geometry_path, parent_path, consumer_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertIn("log_viewer::scrollbar::", names)
+            self.assertNotIn("log_viewer::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path == parent_path:
+                self.assertIn("log_viewer::scrollbar::", unit_step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_log_viewer_filter_selects_unit_and_copy_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "log_viewer::filter::"
+        consumers = [
+            "log_viewer::tests::rapid_filter_changes_install_only_the_latest_result",
+            "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
+            "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation",
+        ]
+        filter_path = "crates/hex-ui/src/log_viewer/filter.rs"
+        parent_path = "crates/hex-ui/src/log_viewer.rs"
+        copy_path = "crates/hex-ui/src/log_viewer/copy_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / filter_path).resolve()], "log_viewer::filter")
+        self.assertEqual(modules[(root / parent_path).resolve()], "log_viewer")
+        self.assertEqual(modules[(root / copy_path).resolve()], "log_viewer::copy_tests")
+        for path in (filter_path, parent_path, copy_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertIn("log_viewer::", names)
+            else:
+                self.assertNotIn("log_viewer::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_log_viewer_presentation_selects_unit_and_rendered_copy_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "log_viewer::presentation::"
+        consumers = [
+            "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
+            "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
+            "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
+            "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation",
+        ]
+        presentation_path = "crates/hex-ui/src/log_viewer/presentation.rs"
+        parent_path = "crates/hex-ui/src/log_viewer.rs"
+        copy_path = "crates/hex-ui/src/log_viewer/copy_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / presentation_path).resolve()], "log_viewer::presentation")
+        self.assertEqual(modules[(root / parent_path).resolve()], "log_viewer")
+        self.assertEqual(modules[(root / copy_path).resolve()], "log_viewer::copy_tests")
+        for path in (presentation_path, parent_path, copy_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertEqual(names, ["log_viewer::"])
+            else:
+                self.assertNotIn("log_viewer::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            if path == parent_path:
+                self.assertIn("log_viewer::", unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
     def test_changed_module_roots_run_the_complete_test_subtree(self):
         root = SCRIPTS.parent
-        for owner, path, prefix, child in (
-            ("hex-session", "crates/hex-session/src/service.rs", "service::", "format_upgrade_tests"),
-            ("hex-ui", "crates/hex-ui/src/editor/save.rs", "editor::save::", "ui_tests"),
+        for owner, path, prefix, child, consumer in (
+            ("hex-session", "crates/hex-session/src/service.rs", "service::", "format_upgrade_tests", None),
+            ("hex-ui", "crates/hex-ui/src/editor/save.rs", "editor::save::", "ui_tests",
+             "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success"),
         ):
             with self.subTest(owner=owner):
                 inventory = [{"name": owner, "manifest": f"crates/{owner}/Cargo.toml",
                               "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]}]
                 filters = plan.module_test_filters(root, [path], inventory, [owner])
-                self.assertEqual(filters, {owner: [prefix]})
+                expected = [prefix] if consumer is None else sorted([prefix, consumer])
+                self.assertEqual(filters, {owner: expected})
                 modules = plan.module_paths(root / f"crates/{owner}/src")
                 self.assertIn(prefix + child, modules.values())
                 boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
@@ -2641,6 +5819,8 @@ class ModuleScopeTests(unittest.TestCase):
                 for step in selected:
                     self.assertIn(prefix, step.argv)
                     self.assertNotIn("--skip", step.argv)
+                if consumer is not None:
+                    self.assertTrue(any(consumer in step.argv for step in selected))
 
     def test_reuse_rejects_a_report_that_skipped_a_child_subtree(self):
         inventory = [{"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",

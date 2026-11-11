@@ -463,3 +463,31 @@ fn off_center_shapes_concentrate_transitions_with_long_quiet_or_loud_tails() {
     );
     assert!((late.gain_at(850) - 501.0 / 2002.0).abs() < 1e-6);
 }
+
+#[test]
+fn smoothstep_ramps_are_monotone_and_equal_gain() {
+    use hex_project::FadeCurveLaw::Linear;
+    let incoming = ClipFade::new(101, 0, 101, 0)
+        .unwrap()
+        .with_curve_laws([ClipFade::DEFAULT_S_CURVE, Linear]);
+    let outgoing = ClipFade::new(101, 0, 0, 101)
+        .unwrap()
+        .with_curve_laws([Linear, ClipFade::DEFAULT_S_CURVE]);
+    let mut previous = 0.0;
+    for frame in 0..=100 {
+        let gain = incoming.gain_at(frame);
+        assert!(gain >= previous);
+        assert_eq!(gain, outgoing.gain_at(100 - frame));
+        assert!((gain + outgoing.gain_at(frame) - 1.0).abs() <= f32::EPSILON);
+        assert!(
+            (incoming.position_at_gain(false, f64::from(gain)).unwrap() - frame as f64 / 100.0)
+                .abs()
+                < 1e-6
+        );
+        previous = gain;
+    }
+    assert_eq!(
+        [0, 25, 50, 75, 100].map(|frame| incoming.gain_at(frame)),
+        [0.0, 0.15625, 0.5, 0.84375, 1.0]
+    );
+}

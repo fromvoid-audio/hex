@@ -14,59 +14,6 @@ use std::sync::Arc;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[gpui::test]
-fn configured_hardware_defers_selection_audition_without_retiring_the_live_input(
-    cx: &mut gpui::TestAppContext,
-) {
-    use super::midi_canvas::creation_tests::{fixture, pump};
-    use hex_project::{BeatTime, Command};
-    let (mut visual, editor, _environment, clip) = fixture(cx);
-    editor.update(&mut visual, |view, _| {
-        assert!(
-            view.enqueue(hex_session::service::Request::Edit(Command::AddMidiNote {
-                clip,
-                start: BeatTime::ZERO,
-                duration: BeatTime::ONE,
-                pitch: 60,
-                channel: 0,
-                velocity: 37,
-            }))
-        );
-    });
-    pump(&editor, &mut visual);
-    editor.update(&mut visual, |view, _| {
-        let note = view
-            .state
-            .as_ref()
-            .unwrap()
-            .project
-            .midi_source(clip)
-            .unwrap()
-            .notes()[0]
-            .id();
-        let input = Arc::new(
-            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
-                .with_live_notes()
-                .unwrap(),
-        );
-        view.computer_keyboard.input = Some(Arc::clone(&input));
-        view.controller_input.selected_port = Some(hex_midi::Port {
-            id: 1,
-            name: "synthetic input".into(),
-        });
-        view.midi_audition.enabled = true;
-        view.audition_midi_notes(&[note]);
-        assert_eq!(view.tick_midi_audition(), None);
-        assert!(Arc::ptr_eq(
-            view.computer_keyboard.input.as_ref().unwrap(),
-            &input
-        ));
-        assert!(!input.is_cancelled());
-        assert!(view.controller_input.selected_port.is_some());
-    });
-}
-
-#[cfg(all(test, feature = "ui-test-support"))]
-#[gpui::test]
 fn settings_uses_stable_port_identity_preserves_missing_choice_and_saves_explicit_selection(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -310,6 +257,15 @@ impl EditorView {
             self.controller_input.cancel();
         }
     }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_audition_port(&mut self) {
+        self.controller_input.selected_port = Some(hex_midi::Port {
+            id: 1,
+            name: "synthetic input".into(),
+        });
+        self.controller_input.target = self.controller_target();
+    }
+
     pub(super) fn controller_wants_live_notes(&self) -> bool {
         self.controller_input.selected_port.is_some()
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident

@@ -2875,7 +2875,7 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("resized outer divider");
     assert!((resized.left() - target.x).abs() < px(1.0));
     editor.update(visual, |view, cx| {
-        view.browser.width = super::MIN_WIDTH;
+        view.browser.width = super::geometry::MIN_WIDTH;
         cx.notify();
     });
     visual.run_until_parked();
@@ -3190,11 +3190,20 @@ fn browser_audition_volume_drag_preserves_playback_position_and_selection_level(
     });
     visual.run_until_parked();
     let volume = visual.debug_bounds("browser-audition-volume").unwrap();
+    assert_eq!(
+        visual.debug_bounds("browser-audition-volume-fill"),
+        Some(volume)
+    );
     let down = volume.center();
     let quieter = down + point(px(0.0), px(11.0));
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(quieter, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
+    let fill = visual.debug_bounds("browser-audition-volume-fill").unwrap();
+    assert_eq!(fill.left(), volume.left());
+    assert_eq!(fill.right(), volume.right());
+    assert_eq!(fill.bottom(), volume.bottom());
+    assert_eq!(fill.size.height, volume.size.height / 2.0);
     visual.simulate_mouse_up(quieter, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.browser.audition_gain, 0.5);
@@ -4157,6 +4166,95 @@ fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows
         visual
             .debug_bounds(lane)
             .expect("retained arrangement lane")
+    );
+}
+
+#[gpui::test]
+fn browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let previous = directory.0.join("a");
+    let target = directory.0.join("c");
+    for folder in [&previous, &target] {
+        std::fs::create_dir(folder).unwrap();
+        for index in 0..80 {
+            std::fs::write(folder.join(format!("{index:02}.hex")), []).unwrap();
+        }
+    }
+    for index in 0..12 {
+        std::fs::create_dir(directory.0.join(format!("b{index:02}"))).unwrap();
+    }
+    for index in 0..60 {
+        std::fs::write(directory.0.join(format!("tail-{index:02}.hex")), []).unwrap();
+    }
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.request_browser_scan(directory.0.clone(), cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let disclosure = |index| {
+        let selector = format!("browser-disclosure-{index}");
+        Box::leak(selector.into_boxed_str()) as &'static str
+    };
+    let at = visual.debug_bounds(disclosure(0)).unwrap().center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
+    let target_index = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, cx| {
+            view.browser_visible_entries(cx)
+                .iter()
+                .position(|entry| entry.path == target)
+                .unwrap()
+        })
+    };
+    let old_index = target_index(&visual);
+    assert_eq!(old_index, 93);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.scroll.0.borrow().base_handle.set_offset(point(
+            px(0.0),
+            -px((old_index - 3) as f32 * super::ROW_HEIGHT + 5.0),
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let before = visual.debug_bounds(disclosure(old_index)).unwrap();
+    let gate = editor.update(&mut visual, |view, _| {
+        view.browser.tree.test_gate_next_scan()
+    });
+    visual.simulate_click(before.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(gate.reached.load(std::sync::atomic::Ordering::Acquire));
+    let new_index = target_index(&visual);
+    assert_eq!(
+        new_index, 13,
+        "the earlier branch closed on normal expansion"
+    );
+    let loading = visual.debug_bounds(disclosure(new_index));
+    gate.release();
+    visual.run_until_parked();
+
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries[new_index + 1].path, target.join("00.hex"));
+        assert!(!view.browser.tree.test_worker_busy());
+    });
+    let expanded = visual.debug_bounds(disclosure(new_index));
+    assert_eq!(
+        expanded.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "expanding a long folder must keep its disclosure in view"
+    );
+    assert_eq!(
+        loading.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "the disclosure must also stay put while its children are loading"
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-entry-14").unwrap().top(),
+        before.bottom(),
+        "the first child is painted immediately below its folder"
     );
 }
 
@@ -5591,10 +5689,8 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
                 "load into sampler"
             );
             assert!(
-                target
-                    .replacement
-                    .as_ref()
-                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+                matches!(target.slot, hex_session::service::SamplerLoadSlot::Existing { ref expected_state, .. }
+                    if hex_engine::is_empty_sampler_state_on_control(expected_state))
             );
             assert!(
                 !view.first_sampler_current(),

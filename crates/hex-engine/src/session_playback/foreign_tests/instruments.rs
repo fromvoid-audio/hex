@@ -708,6 +708,82 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
 }
 
 #[test]
+fn live_audition_releases_only_its_own_vst_occurrence() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, LiveNoteEvent},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    let mut playback = Playback::from_prepared(revision);
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    let queue = input.live_notes().unwrap();
+    let activation = input.begin_live_notes_activation_on_control().unwrap();
+    queue
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOn {
+                channel: 0,
+                pitch: 60,
+                velocity: 93,
+            },
+        )
+        .unwrap();
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 4)
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut render = || {
+        endpoint.next_offset = 0;
+        endpoint.notes.clear();
+        playback
+            .render_with_foreign_processors(&mut [[0.; 2]; 8], None, None, None, &mut endpoint)
+            .unwrap();
+        endpoint.notes.clone()
+    };
+
+    let [(_, preview), (_, hardware)] = render()[..] else {
+        panic!("preview and live onsets");
+    };
+    assert!(preview.on && preview.velocity == 37);
+    assert!(hardware.on && hardware.velocity == 93 && hardware.note_id != preview.note_id);
+    let [(_, released)] = render()[..] else {
+        panic!("only the preview expires");
+    };
+    assert!(!released.on && released.note_id == preview.note_id);
+
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 32)
+        .unwrap();
+    let [(_, replacement)] = render()[..] else {
+        panic!("fresh preview");
+    };
+    assert!(replacement.on && replacement.note_id != preview.note_id);
+    input.cancel_live_note_audition_on_control();
+    queue
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOff {
+                channel: 0,
+                pitch: 60,
+                velocity: 41,
+            },
+        )
+        .unwrap();
+    let [(_, cancelled), (_, off)] = render()[..] else {
+        panic!("each input releases its own occurrence");
+    };
+    assert!(!cancelled.on && cancelled.note_id == replacement.note_id);
+    assert!(!off.on && off.note_id == hardware.note_id && off.velocity == 41);
+    assert!(queue.same_current_activation(activation));
+}
+
+#[test]
 fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     use crate::{
         computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock, LiveNoteEvent},

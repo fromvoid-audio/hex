@@ -21,8 +21,8 @@ pub use controller::{
     NativeWorkerControllerQuery,
 };
 pub use hex_plugin_host::protocol::{
-    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorState,
-    RecoveryEdits,
+    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorPosition,
+    PluginEditorState, RecoveryEdits,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;

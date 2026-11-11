@@ -95,7 +95,8 @@ impl AuthoredOrigins {
 mod tests {
     use super::*;
     use crate::transport::{
-        Callback, ParameterPoint, ProcessTiming, SegmentTiming, TimingChange, channel,
+        Callback, MAX_PARAMETER_POINTS, ParameterPoint, ProcessTiming, SegmentTiming, TimingChange,
+        channel,
     };
     use std::cell::Cell;
 
@@ -326,7 +327,7 @@ mod tests {
                     } else {
                         0.0
                     };
-                for id in 0..32 {
+                for id in 0..(MAX_PARAMETER_POINTS / 2) as u32 {
                     output.push(ParameterPoint {
                         id,
                         frame: frame as u16,
@@ -430,10 +431,11 @@ mod tests {
                 let key = if part == 3 { 1.0 } else { 3.0 };
                 let first = if part == 3 { 0 } else { 8 };
                 let points = request.block.parameters.as_slice();
-                assert_eq!(points.len(), 64);
+                let ids = MAX_PARAMETER_POINTS / 2;
+                assert_eq!(points.len(), MAX_PARAMETER_POINTS);
                 for (index, point) in points.iter().enumerate() {
-                    let frame = if index < 32 { 0 } else { 7 };
-                    assert_eq!(point.id, (index % 32) as u32);
+                    let frame = if index < ids { 0 } else { 7 };
+                    assert_eq!(point.id, (index % ids) as u32);
                     assert_eq!(point.frame, frame);
                     let expected = key / 4.0
                         + if linear {

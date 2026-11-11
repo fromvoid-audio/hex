@@ -95,6 +95,7 @@ fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut Test
                         stroke,
                         bottom_radius: 0.0,
                         header_height: 14.0,
+                        header_gradient: None,
                         notch: super::Notch::new(native),
                     },
                     native,
@@ -1225,6 +1226,7 @@ fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestApp
                 stroke: 1.0 / window.scale_factor(),
                 bottom_radius: 2.0,
                 header_height: 12.0,
+                header_gradient: None,
                 notch: super::Notch::new(true),
             };
             div()
@@ -1290,6 +1292,7 @@ fn profile_clip_edge_paint_composition(cx: &mut TestAppContext) {
                         stroke,
                         bottom_radius: 0.0,
                         header_height: 18.0,
+                        header_gradient: None,
                         notch: notch.clone(),
                     };
                     let observe = notch.clone();
