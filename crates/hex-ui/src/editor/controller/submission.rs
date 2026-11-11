@@ -38,6 +38,7 @@ pub(super) struct PendingKinds {
     track_reorder: bool,
     duplicate: bool,
     track_clipboard: bool,
+    device_duplicate: bool,
     midi_drag: bool,
     fade: bool,
     locator_move: bool,
@@ -102,6 +103,7 @@ impl EditorView {
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
                 track_clipboard: self.pending_track_clipboard_matches(request),
+                device_duplicate: self.device_panel.pending_duplicate_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
                 locator_move: self.locators.matches(request),
@@ -200,6 +202,10 @@ impl EditorView {
         }
         if kinds.track_clipboard {
             self.track_clipboard_submitted();
+        }
+        if kinds.device_duplicate {
+            self.device_panel
+                .duplicate_submitted(self.worker_requests_pending);
         }
         if kinds.duplicate {
             self.duplicate_submitted();
@@ -311,6 +317,9 @@ impl EditorView {
         }
         if kinds.track_clipboard {
             visible |= self.pending_track_clipboard.take().is_some();
+        }
+        if kinds.device_duplicate {
+            visible |= self.device_panel.pending_duplicate.take().is_some();
         }
         if kinds.duplicate {
             visible |= self.duplicate_intent.reject();
