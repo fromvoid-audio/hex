@@ -955,8 +955,9 @@ impl WorkerAudioSink for ResidentSink {
     fn prepare_offline_bounce(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
+        control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
-        self.inner.prepare_offline_bounce(input)
+        self.inner.prepare_offline_bounce(input, control)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
