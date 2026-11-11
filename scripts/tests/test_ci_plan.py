@@ -3247,9 +3247,9 @@ class ModuleScopeTests(unittest.TestCase):
         ]
         names = plan.module_test_filters(root, [source], inventory, [owner])
         self.assertEqual(names, {owner: sorted([unit, *consumers])})
-        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
-                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
-                    "module_filters": names}
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertEqual(boundary["module_filters"], names)
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": [source]})
         self.assertTrue(any(unit in step.argv and step.requires_tests
@@ -3259,6 +3259,18 @@ class ModuleScopeTests(unittest.TestCase):
         for path in ("trim.rs", "clip_drag_ui_test.rs", "track_compact_ui_test.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+        geometry_path = "src/editor/trim/geometry.rs"
+        fixture_gate = plan.UI_FEATURE_EQUIVALENT_TEST_CFGS[geometry_path]
+        self.assertIn(f"{fixture_gate}\npub(super) fn clip_fixture(", (root / source).read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            geometry = root / source
+            geometry.parent.mkdir(parents=True)
+            geometry.write_text(f"{fixture_gate}\nfn clip_fixture() {{}}\n")
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {owner: "ui-test-support"})
+            geometry.rename(geometry.with_name("unreviewed.rs"))
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
 
     def test_operator_panel_units_keep_their_rendered_consumers(self):
         root = SCRIPTS.parent

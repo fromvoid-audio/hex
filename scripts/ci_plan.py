@@ -287,9 +287,10 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
-# Both library test configurations compile the clip-edge debug witnesses.
+# These test-only gates preserve the reviewed test registrations.
 UI_FEATURE_EQUIVALENT_TEST_CFGS = {
     "src/editor/clip_boundary.rs": '#[cfg(not(any(test, feature = "ui-test-support")))]',
+    "src/editor/trim/geometry.rs": '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
 }
 UI_UNIT_TIER_TEST_CFGS = frozenset({
     '#[cfg(all(test, feature = "ui-unit-tier"))]',
@@ -326,6 +327,7 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
             # production code or gains an unreviewed expression.
             companion = 'feature = "ui-unit-tier"'
             gated |= any(companion in line and line.strip() not in UI_UNIT_TIER_TEST_CFGS
+                         and line.strip() != equivalent_tests.get(source.relative_to(directory).as_posix())
                          for source in directory.joinpath("src").rglob("*.rs") if source.is_file()
                          for line in source.read_text(errors="replace").splitlines())
         if not gated:
