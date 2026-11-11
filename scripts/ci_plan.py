@@ -218,6 +218,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/selection.rs": ("editor::selection::tests::",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
+    "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
@@ -722,6 +723,7 @@ UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "edito
                         "editor::track_meters::selection::": "editor::track_meters::tests::",
                         "editor::track_meters::decay::": "editor::track_meters::tests::",
                         "editor::track_meters::follower::": "editor::track_meters::main_output::tests::",
+                        "editor::poll_cadence::tests::": "editor::poll_cadence::ui_tests::",
                         "theme::": "editor::theme_settings::tests::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
