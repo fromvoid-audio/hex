@@ -1018,6 +1018,17 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
                     "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
                 ))
+            if {
+                "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+                "crates/hex-ui/src/editor/clip_loop_ui_tests.rs",
+            }.intersection(executable):
+                names.add("editor::waveform_geometry::tests::")
+            if any("editor::waveform_geometry::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+                    "editor::waveform::resize_tests::plain_lower_fade_prefix_uses_the_same_raw_source_mapping",
+                    "editor::trim::loop_ui_tests::clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body",
+                ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
