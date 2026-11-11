@@ -1436,6 +1436,20 @@ fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mu
         visual.simulate_click(take_row, Modifiers::default());
         visual.run_until_parked();
         let waveform = visual.debug_bounds("take-waveform").unwrap();
+        let mut controls = Vec::new();
+        for selector in [
+            "take-audition",
+            "take-loop",
+            "take-snap",
+            "prepare-take-drag",
+        ] {
+            let control = visual.debug_bounds(selector).expect("take control");
+            assert!(control.size.width > px(19.0));
+            assert!(control.left() >= waveform.left() && control.right() <= waveform.right());
+            assert!(control.bottom() <= waveform.top());
+            assert!(controls.iter().all(|prior| !control.intersects(prior)));
+            controls.push(control);
+        }
         let from = point(
             waveform.left() + waveform.size.width * 0.25,
             waveform.center().y,
