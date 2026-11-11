@@ -272,6 +272,7 @@ impl EditorView {
         if matches!(
             request,
             Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {

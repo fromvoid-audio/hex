@@ -3463,6 +3463,7 @@ impl EditorView {
                 &request,
                 Request::SaveCurrent
                     | Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrentWithFormatUpgrade { .. }
             );
         // An already-started recovery must finish while a picker/confirmation
