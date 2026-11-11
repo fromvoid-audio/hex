@@ -229,6 +229,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/clip_header_loop.rs": ("editor::clip_header_loop::tests::",),
     "src/editor/clip_loop_handles.rs": ("editor::trim::loop_handles::tests::",),
     "src/editor/browser/history.rs": ("editor::browser::history::tests::",),
+    "src/editor/musical_audio_controls.rs": ("editor::musical_audio_controls::tests::",),
+    "src/editor/musical_audio_controls/sample_bpm.rs": ("editor::musical_audio_controls::sample_bpm::tests::",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
@@ -1101,6 +1103,14 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::browser::ui_test::browser_history_ui_test::browser_history_typing_coalesces_until_navigation_and_branch_clears_forward",
                     "editor::browser::ui_test::browser_history_ui_test::browser_history_toolbar_restores_source_without_preview_or_import",
                     "editor::browser::ui_test::browser_history_ui_test::browser_history_removed_or_hidden_source_fallback_does_not_push_or_clear_forward",
+                ))
+            if "crates/hex-ui/src/editor/musical_audio_controls/tests.rs" in executable:
+                names.update((
+                    "editor::musical_audio_controls::tests::",
+                    "editor::musical_audio_controls::ui_tests::algorithm_picker_dispatches_direct_choice_without_resetting_current_settings",
+                    "editor::musical_audio_controls::ui_tests::selected_clip_beats_controls_are_visible_and_dispatch_existing_loop_envelope_bindings",
+                    "editor::musical_audio_controls::ui_tests::selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats",
+                    "editor::musical_audio_controls::ui_tests::shift_selected_warp_applies_to_every_clip_with_its_own_source_region",
                 ))
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
