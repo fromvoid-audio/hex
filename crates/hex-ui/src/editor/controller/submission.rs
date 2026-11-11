@@ -368,7 +368,7 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod observation_tests {
     use super::*;
 
