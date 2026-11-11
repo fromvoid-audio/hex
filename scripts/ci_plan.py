@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 UI_DEFAULT_LIB_UNIT_MODULES = {
     "src/editor/device_gesture.rs": "editor::device_gesture::unit_tests::",
+    "src/editor/waveform_geometry.rs": "editor::waveform_geometry::tests::",
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
