@@ -4922,6 +4922,27 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn("ui-default-lib-unit-tests", fixture_steps)
         self.assertTrue(any(witness.startswith(prefix) for prefix in fixture_steps["ui-feature-tests"].argv))
 
+    def test_degraded_device_membership_keeps_live_recovery(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor_backend.rs"
+        unit = "editor_backend::tests::"
+        witness = "editor::recovery::tests::explicit_play_from_recovers_degraded_vst3_at_the_requested_frame"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertEqual(default.argv[default.argv.index("--") + 1:], (unit,))
+        feature = steps["ui-feature-tests"].argv
+        self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
     def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
