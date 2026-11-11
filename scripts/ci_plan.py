@@ -219,6 +219,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
     "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
     "src/editor/device_automation/vst3.rs": ("editor::device_automation::vst3::tests::",),
+    "src/editor/edit_cursor.rs": ("editor::edit_cursor::tests::",),
     "src/editor/native_automation_recording.rs": ("editor::native_automation_recording::unit_tests::",),
     "src/editor/native_automation_recording/editor_input.rs": ("editor::native_automation_recording::editor_input::tests::",),
     "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
@@ -564,7 +565,14 @@ UI_MODULE_TEST_DEPENDENCIES = {
         "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
         "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
     ),
-    "editor::edit_cursor_ui_test::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::edit_cursor::": (
+        "editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_e_uses_it_offline",
+        "editor::edit_cursor_ui_test::space_restarts_from_selection_then_edit_cursor_and_respects_focus",
+    ),
+    "editor::edit_cursor_ui_test::": (
+        "editor::arrangement_seek::unit_tests::",
+        "editor::edit_cursor::tests::",
+    ),
     "editor::browser::audition::": ("editor::browser::audition_geometry::",),
     "editor::browser::random::": ("editor::browser::random_rank::",),
     "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
