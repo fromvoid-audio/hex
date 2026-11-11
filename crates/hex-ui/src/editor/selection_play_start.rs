@@ -189,8 +189,8 @@ mod tests {
         editor.update(&mut visual, |view, _| {
             let track = view.edit_cursor.unwrap().track.unwrap();
             view.time_selection = Some(TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 10_000,
                 end_frame: 5_000,
             });

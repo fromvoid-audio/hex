@@ -681,8 +681,8 @@ mod tests {
             v.computer_keyboard.enabled = false;
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 36_007,
                 end_frame: 12_013,
             });
@@ -718,8 +718,8 @@ mod tests {
             assert!(p.tracks()[0].clips()[0].active());
             let track = p.tracks()[0].id();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 12_013,
                 end_frame: 36_007,
             });
@@ -799,8 +799,8 @@ mod tests {
             assert_eq!(p.track(track).unwrap().clips().len(), 2);
             let original = p.snapshot();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 12000,
                 end_frame: 24000,
             });
@@ -845,8 +845,8 @@ mod tests {
             // Header selection may clear a range. Keep a smaller range active
             // at dispatch to verify that the typed track intent never reads it.
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 12000,
                 end_frame: 24000,
             });

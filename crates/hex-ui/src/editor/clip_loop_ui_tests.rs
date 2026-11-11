@@ -986,8 +986,8 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                 clip.start() + clip.duration()
             };
             view.time_selection = Some(super::super::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 0,
                 end_frame: if boundary {
                     clip_end
@@ -1008,6 +1008,7 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                         .time_selection
                         .unwrap()
                         .anchor_track
+                        .unwrap()
                         .value())
                 )
                 .into_boxed_str(),

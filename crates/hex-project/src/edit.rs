@@ -860,6 +860,8 @@ pub enum Command {
     /// Empty tracks are skipped; returns the last populated track's resulting clip.
     /// All fragments and groups form one atomic edit; mixed media on a row refuses.
     GroupTimeRange(crate::TimeRange),
+    /// Group populated lanes, or place blank MIDI clips if the entire range is empty.
+    GroupTimeRangeOrCreate(crate::TimeRange),
     /// Extract a selected root-local audio span into one clip, retaining outer fragments.
     GroupAudioEventRange {
         clip: ClipId,
@@ -2384,7 +2386,12 @@ impl Project {
             }
             Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
             Command::GroupClips(clips) => crate::clip_consolidate::apply(self, clips),
-            Command::GroupTimeRange(range) => crate::clip_consolidate::time_range(self, &range),
+            Command::GroupTimeRange(range) => {
+                crate::clip_consolidate::time_range(self, &range, false)
+            }
+            Command::GroupTimeRangeOrCreate(range) => {
+                crate::clip_consolidate::time_range(self, &range, true)
+            }
             Command::GroupAudioEventRange { clip, start, end } => {
                 crate::clip_consolidate::event_range(self, clip, start, end)
             }

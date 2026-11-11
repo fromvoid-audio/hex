@@ -597,6 +597,7 @@ pub enum Request {
         project_generation: u64,
         revision: u64,
         range: hex_project::TimeRange,
+        create_if_empty: bool,
     },
     /// Captured range in the focused lower audio-event editor.
     GroupAudioEvents {
@@ -3894,6 +3895,7 @@ fn run_worker(
                 project_generation: captured_generation,
                 revision: captured_revision,
                 range,
+                create_if_empty,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("clip grouping canceled · project changed".into())
@@ -3902,6 +3904,8 @@ fn run_worker(
                     || tuning_gesture.snapshot().is_some()
                 {
                     Err("finish or cancel the active gesture before grouping clips".into())
+                } else if *create_if_empty {
+                    Ok(Command::GroupTimeRangeOrCreate(range.clone()))
                 } else {
                     Ok(Command::GroupTimeRange(range.clone()))
                 },
@@ -12809,6 +12813,7 @@ mod service_tests {
                         project_generation,
                         revision,
                         range: hex_project::TimeRange::new(vec![track], 12_000, 60_000).unwrap(),
+                        create_if_empty: false,
                     }
                 } else {
                     Request::GroupClips {
