@@ -250,7 +250,7 @@ fn device_d_refuses_stale_cards_and_instruments_and_leaves_nested_text_alone(
     // Advance the view revision without repainting the focused card.
     visual.update(|window, cx| {
         editor.update(cx, |view, _| view.state = Some(newer.clone()));
-        window.dispatch_action(Box::new(keyboard::DuplicateDevices), cx);
+        window.dispatch_keystroke(gpui::Keystroke::parse("d").unwrap(), cx);
         editor.update(cx, |view, cx| {
             assert!(settled(view));
             assert_eq!(
