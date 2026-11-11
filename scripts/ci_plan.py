@@ -240,6 +240,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
     "src/editor/track_meters.rs": ("editor::track_meters::tests::",),
     "src/editor/missing_media.rs": ("editor::missing_media::tests::",),
+    "src/editor/display_error.rs": ("editor::display_error::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
@@ -478,6 +479,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::display_error::": (
+        "editor::controller::project_replacement_tests::failed_batch_worker_event_displays_original_path_in_status_and_tooltip",
+    ),
     "editor::menus::": (
         "editor::recent_projects::labels::",
         "editor::recent_projects::tests::recent_menu_action_keeps_its_path_after_mru_reordering_and_obeys_open_guard",

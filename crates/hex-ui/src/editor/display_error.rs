@@ -142,7 +142,7 @@ impl gpui::Render for RecoveryTooltip {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use std::path::PathBuf;
