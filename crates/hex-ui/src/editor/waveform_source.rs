@@ -142,9 +142,29 @@ pub(super) fn aggregate_ranges(
     waveform: &CachedWaveform,
     ranges: &[Range<usize>],
 ) -> Option<[CachedPeak; 2]> {
+    aggregate_ranges_with_detail(waveform, ranges, 0)
+}
+
+/// Refine narrow resident ranges without exceeding the supplied per-column PCM budget.
+pub(super) fn aggregate_ranges_with_detail(
+    waveform: &CachedWaveform,
+    ranges: &[Range<usize>],
+    budget: usize,
+) -> Option<[CachedPeak; 2]> {
     let mut merged = None;
+    let per_range_budget = budget / ranges.len().max(1);
+    let leaf_width = waveform
+        .source_frames()
+        .div_ceil(waveform.bins().len().max(1));
     for range in ranges {
-        let peaks = aggregate_peaks(waveform, range.start, range.end)?;
+        let span = range.end.saturating_sub(range.start);
+        let peaks = if budget > 0 && span > 64 && span < leaf_width {
+            waveform
+                .bounded_exact_peaks_for_frames(range.start, range.end, per_range_budget)
+                .or_else(|| aggregate_peaks(waveform, range.start, range.end))?
+        } else {
+            aggregate_peaks(waveform, range.start, range.end)?
+        };
         if let Some(current) = merged.as_mut() {
             let current: &mut [CachedPeak; 2] = current;
             for channel in 0..2 {
@@ -252,6 +272,25 @@ mod tests {
         assert_eq!(aggregate_peaks(&waveform, 4, 7).unwrap()[0].max, 0.2);
         assert_eq!(aggregate_peaks(&waveform, 7, 11).unwrap()[0].max, 0.8);
         assert_eq!(waveform.cached_bin_count(), 6);
+    }
+
+    #[test]
+    fn narrow_loop_ranges_refine_within_budget_and_fall_back_without_pcm() {
+        let mut samples = vec![[0.0, 0.0]; 4_096];
+        samples[1_200] = [1.0, -1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 4).unwrap();
+        let ranges = [1_024..1_100, 1_300..1_376];
+        let exact = aggregate_ranges_with_detail(&waveform, &ranges, 152).unwrap();
+        assert_eq!(exact[0].max, 0.0);
+        let fallback = aggregate_ranges_with_detail(&waveform, &ranges, 0).unwrap();
+        assert_eq!(fallback[0].max, 1.0);
+        let peak_only = CachedWaveform::from_peaks(4_096, waveform.bins().to_vec()).unwrap();
+        assert_eq!(
+            aggregate_ranges_with_detail(&peak_only, &ranges, 152),
+            Some(fallback)
+        );
+        assert!(aggregate_ranges_with_detail(&waveform, &[20..10], 152).is_none());
     }
 
     #[test]
