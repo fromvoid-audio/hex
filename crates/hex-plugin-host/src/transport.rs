@@ -1238,6 +1238,8 @@ impl Callback {
             return Err(Fault::InvalidParameters);
         }
         let q = u64::from(self.quantum);
+        let quantum_frames = usize::from(self.quantum);
+        let initial_offset = (stage.state.position % q) as usize;
         let EffectSegmentOrigins { authored, manual } = origins;
         if authored.is_some() && !parameters.is_empty() {
             return Err(Fault::InvalidParameters);
@@ -1245,7 +1247,7 @@ impl Callback {
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
-        if stage.state.position % q != 0
+        if initial_offset != 0
             && self.authored_origins.program.is_some()
             && self.authored_origins.program != program
         {
@@ -1261,7 +1263,8 @@ impl Callback {
         let mut result = SegmentReply {
             events: Events::default(),
             parameters: Parameters::default(),
-            concealed_output: None,
+            concealed_output: (initial_offset != 0 && stage.state.output_gap)
+                .then_some((0, input.len().min(quantum_frames - initial_offset))),
         };
         let mut event_index = 0;
         let mut parameter_index = 0;
@@ -1305,6 +1308,10 @@ impl Callback {
                         &mut stage.state,
                         sequence - 2,
                     )?;
+                    if stage.state.output_gap {
+                        result.concealed_output =
+                            Some((index, input.len().min(index + quantum_frames)));
+                    }
                     if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
                         // start can fall in the complete physical callback.
@@ -1374,10 +1381,6 @@ impl Callback {
             }
             if sequence >= 2 {
                 *destination = stage.state.output.block.pcm[offset];
-                if stage.state.output_gap {
-                    let start = result.concealed_output.map_or(index, |(start, _)| start);
-                    result.concealed_output = Some((start, index + 1));
-                }
                 for event in stage
                     .state
                     .output
@@ -1410,7 +1413,7 @@ impl Callback {
                 self.authored_origins.frames[offset] = origin;
             }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
-            if offset + 1 == usize::from(self.quantum) {
+            if offset + 1 == quantum_frames {
                 // Absence is also frozen at the opening frame. A programme
                 // first supplied mid-quantum starts at the next boundary;
                 // it cannot replace this quantum's ordinary parameter input.
