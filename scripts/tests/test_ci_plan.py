@@ -3786,6 +3786,88 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
+    def test_arrangement_section_insertion_keeps_unit_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [
+                          {"name": "hex_ui", "kind": ["lib"], "crate_types": ["lib"],
+                           "src_path": str(root / "crates/hex-ui/src/lib.rs"), "edition": "2024",
+                           "test": True, "doc": True, "doctest": True},
+                          {"name": "unit_section", "kind": ["test"], "crate_types": ["bin"],
+                           "src_path": "tests/unit_section.rs", "edition": "2024", "test": True,
+                           "doc": False, "doctest": False, "required-features": ["ui-unit-tier"]},
+                      ]}]
+        unit = (
+            "editor::arrangement_sections::tests::"
+            "section_insertion_uses_edges_and_does_not_move_a_clicked_source"
+        )
+        consumers = (
+            "editor::arrangement_sections::tests::first_section_can_be_inserted_after_last",
+            "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
+            "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
+        )
+        for source in (
+            "crates/hex-ui/src/editor/arrangement_sections.rs",
+            "crates/hex-ui/src/editor/arrangement_sections/tests.rs",
+        ):
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                filters = boundary["module_filters"][owner]
+                self.assertTrue(any(unit.startswith(prefix) for prefix in filters), filters)
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                self.assertNotIn("--features", default.argv)
+                feature = steps["ui-feature-tests"]
+                self.assertIn("ui-test-support", feature.argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature.argv), consumer)
+
+        # Both real helper source owners select the composed unit, rendered witnesses,
+        # and their existing standalone projection targets.
+        for path, prefix in (
+            ("crates/hex-ui/src/section_appearance.rs", "section_appearance::"),
+            ("crates/hex-ui/src/section_reorder.rs", "section_reorder::"),
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                filters = boundary["module_filters"][owner]
+                for selected in (prefix, unit, *consumers):
+                    self.assertIn(selected, filters)
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                feature = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertIn(consumer, feature)
+                self.assertNotIn("editor::arrangement_sections::tests::", feature)
+                standalone = steps["ui-unit-unit_section"]
+                self.assertTrue(standalone.requires_tests)
+                self.assertIn("section_appearance::", standalone.argv)
+                self.assertIn("section_reorder::", standalone.argv)
+
+        projection = "crates/hex-ui/tests/unit_section.rs"
+        boundary = plan.boundary_selection(root, [projection], inventory, [owner])
+        self.assertEqual(boundary["ui_standalone_unit_targets"], {"unit_section": []})
+        self.assertEqual(boundary["module_filters"], {})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [projection]})}
+        self.assertIn("ui-unit-unit_section", steps)
+        self.assertNotIn("ui-unit-unit_editor_logic", steps)
+        self.assertEqual(steps["ui-unit-unit_section"].argv,
+                         ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
+                          "--test", "unit_section", "--locked"))
+
     def test_section_hit_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -3795,7 +3877,14 @@ class ModuleScopeTests(unittest.TestCase):
         names = ["section_hit::"]
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/section_hit.rs"], inventory, [owner]),
                          {owner: names})
-        reorder = ["section_appearance::", "section_reorder::"]
+        reorder = sorted([
+            "section_appearance::",
+            "section_reorder::",
+            "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
+            "editor::arrangement_sections::tests::first_section_can_be_inserted_after_last",
+            "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
+            "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
+        ])
         for path in ("section_appearance.rs", "section_reorder.rs"):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/" + path], inventory, [owner]),
                              {owner: reorder})

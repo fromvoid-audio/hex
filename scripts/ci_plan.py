@@ -256,6 +256,9 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
+    "src/editor/arrangement_sections.rs": (
+        "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
+    ),
     "src/editor/device_panel/eq8_panel/graph.rs": ("editor::device_panel::eq8_panel::graph::tests::",),
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
     "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
@@ -518,6 +521,18 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
     "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
+    "section_appearance::": (
+        "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
+        "editor::arrangement_sections::tests::first_section_can_be_inserted_after_last",
+        "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
+        "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
+    ),
+    "section_reorder::": (
+        "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
+        "editor::arrangement_sections::tests::first_section_can_be_inserted_after_last",
+        "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
+        "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
+    ),
     "editor::edit_cursor_ui_test::": ("editor::arrangement_seek::unit_tests::",),
     "editor::browser::audition::": ("editor::browser::audition_geometry::",),
     "editor::browser::random::": ("editor::browser::random_rank::",),
