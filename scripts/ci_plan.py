@@ -218,6 +218,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
     "src/editor/selection.rs": ("editor::selection::tests::",),
+    "src/editor/clip_header_loop.rs": ("editor::clip_header_loop::tests::",),
+    "src/editor/clip_loop_handles.rs": ("editor::trim::loop_handles::tests::",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
@@ -1056,6 +1058,16 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::waveform::resize_tests::plain_lower_fade_prefix_uses_the_same_raw_source_mapping",
                     "editor::trim::loop_ui_tests::clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body",
                     "editor::clip_content_cache::profile::navigation::headless_navigation_framework_profile",
+                ))
+            if {
+                "crates/hex-ui/src/editor/clip_header_loop.rs",
+                "crates/hex-ui/src/editor/clip_loop_handles.rs",
+            }.intersection(executable):
+                names.update((
+                    "editor::clip_header_loop::tests::",
+                    "editor::trim::loop_handles::tests::",
+                    "editor::waveform::waveform_header_ui_test::looped_header_paints_canonical_visible_cycle_edges_at_two_zooms",
+                    "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
                 ))
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((

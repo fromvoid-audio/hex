@@ -396,7 +396,7 @@ pub(in crate::editor) fn midi_markers(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
