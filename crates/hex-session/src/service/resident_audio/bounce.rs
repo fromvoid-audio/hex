@@ -1,5 +1,6 @@
 //! Synchronous isolated source render followed by one reserved ordinary conversion transaction.
 use super::*;
+use crate::service::{RequestCancellation, plugin_state_save};
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::service) fn bounce_clip(
@@ -123,6 +124,7 @@ pub(in crate::service) fn bounce_arrangement(
     adoption: hex_project::BounceAdoption,
     directory: &Path,
     control: &hex_export::ExportControl,
+    cancellation: &RequestCancellation,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
@@ -166,13 +168,20 @@ pub(in crate::service) fn bounce_arrangement(
                 .map_err(|e| e.to_string())?;
             let waveforms =
                 std::cell::RefCell::new(session.audio_clip_waveforms().map_err(|e| e.to_string())?);
-            let offline_input = ResidentEffectPreparation {
+            let effect_input = |project| ResidentEffectPreparation {
                 project,
                 context,
                 restoring_plugin_state: false,
                 preparing_edit: false,
             };
-            let offline = sink.prepare_offline_bounce(offline_input, control)?;
+            let captured = plugin_state_save::project_for_bounce_with_capture(
+                session.project(),
+                &effect_input(project),
+                cancellation,
+                &mut **sink,
+            )?;
+            let project = captured.as_ref().unwrap_or(project);
+            let offline = sink.prepare_offline_bounce(effect_input(project), control)?;
             let mut isolated = inputs
                 .prepare_with_gain(
                     project,

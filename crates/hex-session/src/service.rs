@@ -110,7 +110,7 @@ pub use plugin_parameters::{
     PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
     vst3_parameter_cache_key,
 };
-pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
+pub use plugin_state_save::{PluginStateCapture, PluginStateCaptureInput};
 pub mod diagnostics;
 mod request_cancellation;
 mod save_status;
@@ -7270,6 +7270,12 @@ fn run_worker(
                                         resident_seek.as_ref(),
                                         resident_preview.as_ref(),
                                     );
+                                    let cancellation = RequestCancellation::new(
+                                        Arc::clone(&session.shutdown),
+                                        Arc::clone(&document_intent),
+                                        queued.document_intent,
+                                    )
+                                    .with_bounce(&control);
                                     resident_audio::bounce_arrangement(
                                         &mut session,
                                         target,
@@ -7277,6 +7283,7 @@ fn run_worker(
                                         adoption,
                                         &root,
                                         &control,
+                                        &cancellation,
                                         context,
                                         sink,
                                         admission,
