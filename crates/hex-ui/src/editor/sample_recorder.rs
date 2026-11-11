@@ -70,6 +70,20 @@ struct Row {
     take: Take,
 }
 
+// The waveform adapter uses an icon-width hit target. Recorder labels
+// need their own text-sized surfaces, including their horizontal padding.
+fn recorder_button(
+    label: &'static str,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+) -> Stateful<Div> {
+    button(label, tooltip, id)
+        .w_auto()
+        .px_1()
+        .whitespace_nowrap()
+        .debug_selector(move || id.0.into())
+}
+
 impl EditorView {
     fn sample_source_name(&self, source: Source) -> Option<&str> {
         let project = &self.state.as_ref()?.project;
@@ -167,12 +181,11 @@ impl EditorView {
         } else {
             "recorder"
         };
-        button(
+        recorder_button(
             label,
             "switch spectrum and recorder",
             ("sample-recorder-mode", 0),
         )
-        .debug_selector(|| "sample-recorder-mode".into())
         .on_click(cx.listener(|view, _, _, cx| {
             view.sample_recorder.visible = !view.sample_recorder.visible;
             view.tick_project_spectrum();
@@ -347,24 +360,28 @@ impl EditorView {
                     .gap_2()
                     .px_1()
                     .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                    .child(theme::text("sample recorder"))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(theme::text("sample recorder")),
+                    )
                     .child(self.sample_recorder_mode_button(cx))
                     .child(
-                        button(
+                        recorder_button(
                             if phase.is_some() { "stop" } else { "record" },
                             "start or stop sample recording",
                             ("sample-record", 0),
                         )
-                        .debug_selector(|| "sample-record".into())
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.sample_record_or_stop();
                             cx.notify();
                         })),
                     )
-                    .child(theme::text(format!(
+                    .child(div().min_w_0().truncate().child(theme::text(format!(
                         "{label} · {} armed",
                         self.sample_recorder.armed.len()
-                    ))),
+                    )))),
             )
             .child(
                 div()
@@ -440,6 +457,73 @@ mod tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn recorder_header_fits_the_button_labels_and_hit_targets(cx: &mut TestAppContext) {
+        #[cfg(target_os = "macos")]
+        {
+            cx.use_native_text_system().expect("native font shaping");
+            cx.update(|cx| theme::load_fonts(cx).expect("bundled fonts"));
+        }
+        let (project, _, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        let check = |visual: &mut VisualTestContext, selector, label: &str| {
+            let text = theme::text(label);
+            let width = visual.update(|window, _| {
+                window
+                    .text_system()
+                    .shape_line(
+                        text.clone(),
+                        window.rem_size() * 0.75,
+                        &[gpui::TextRun {
+                            len: text.len(),
+                            font: gpui::font(theme::FONT_FAMILY),
+                            color: rgb(0xffffff).into(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    )
+                    .width
+            });
+            let bounds = visual.debug_bounds(selector).expect("painted control");
+            assert!(bounds.size.width > width, "{label} must fit its button");
+            bounds
+        };
+        for (width, height) in [(880.0, 540.0), (1440.0, 800.0)] {
+            visual.simulate_resize(gpui::size(px(width), px(height)));
+            visual.run_until_parked();
+            let mode = check(&mut visual, "sample-recorder-mode", "recorder");
+            visual.simulate_click(mode.center(), Modifiers::default());
+            visual.run_until_parked();
+            let panel = visual.debug_bounds("sample-recorder").unwrap();
+            for (phase, label) in [(Some(Phase::Capturing), "stop"), (None, "record")] {
+                editor.update(&mut visual, |view, cx| {
+                    view.sample_recorder.phase = phase;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let mode = check(&mut visual, "sample-recorder-mode", "spectrum");
+                let record = check(&mut visual, "sample-record", label);
+                assert!(panel.left() <= mode.left() && mode.right() < record.left());
+                assert!(record.right() <= panel.right());
+            }
+            let record = visual.debug_bounds("sample-record").unwrap();
+            visual.simulate_click(record.center(), Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.sample_recorder.error.as_deref(),
+                    Some("arm at least one source for sampling")
+                );
+            });
+            let mode = visual.debug_bounds("sample-recorder-mode").unwrap();
+            visual.simulate_click(mode.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("project-spectrum").is_some());
+        }
+    }
 
     #[gpui::test]
     fn sampler_mode_switch_preserves_independent_arrangement_and_main_arms(
