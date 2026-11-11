@@ -4,8 +4,6 @@ use gpui::{AppContext, Context, PromptButton, PromptLevel, Window};
 use hex_session::service::Request;
 use std::path::{Path, PathBuf};
 
-const MAX_PROJECT_PATH_BYTES: usize = 4_096;
-
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests;
 
@@ -57,7 +55,7 @@ fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
     if path.extension().is_none() {
         path.set_extension("hex");
     }
-    if path.as_os_str().len() > MAX_PROJECT_PATH_BYTES {
+    if path.as_os_str().len() > hex_session::service::project_name::MAX_PROJECT_PATH_BYTES {
         return Err("project path exceeds the 4096-byte limit".into());
     }
     hex_session::service::project_name::check(&path).map_err(|error| error.to_string())?;
@@ -308,7 +306,8 @@ impl EditorView {
                 return;
             }
         };
-        if extension_added && std::fs::symlink_metadata(&path).is_ok() {
+        let replace_existing = std::fs::symlink_metadata(&path).is_ok();
+        if extension_added && replace_existing {
             let name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -317,7 +316,10 @@ impl EditorView {
                 Some(format!("{name} already exists · choose it by name to replace it").into());
             return;
         }
-        if self.enqueue_device_barrier(Request::SaveNew(path)) {
+        if self.enqueue_device_barrier(Request::SaveProjectAs {
+            path,
+            replace_existing,
+        }) {
             self.saving_project = true;
             self.status = "saving project as".into();
             self.error = None;
