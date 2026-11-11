@@ -778,7 +778,7 @@ fn control(label: &str) -> gpui::Stateful<gpui::Div> {
         .px(px(7.0))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
 
@@ -998,6 +998,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 #[path = "log_viewer/copy_tests.rs"]
 mod copy_tests;
