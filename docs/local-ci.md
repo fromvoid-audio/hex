@@ -146,6 +146,17 @@ output-meter logic, project tempo value conversion, and passive time-move interv
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 ```
+
+The seven default standalone targets run with the default package tests.
+Whole-package plans that elide the default package run select those standalone
+targets directly. The windowed library and standalone MIDI pressure test use
+`ui-test-support` in separate invocations:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --lib --locked
+cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+```
+
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
