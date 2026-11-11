@@ -211,6 +211,12 @@ void error(int channel,const wire::Config* config,uint32_t reason) {
     if(config) for(auto id:config->binding) wire::number(out,id,8);
     wire::number(out,reason,4);wire::send(channel,"HXVIER01",out);
 }
+bool send_retirement(int channel,const wire::Config& config,uint64_t blocks,uint64_t frames,
+    uint32_t failure,bool closed,bool unloaded) {
+    wire::Bytes terminal;config.stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);
+    wire::number(terminal,failure,4);wire::number(terminal,closed?1:0,1);wire::number(terminal,unloaded?1:0,1);
+    return wire::send(channel,"HXVITR01",terminal);
+}
 wire::Bytes state_payload(const wire::Config& config,const hex_instance::CapturedState& state) {
     wire::Bytes out{'H','X','V','S',1,static_cast<uint8_t>((state.component?1:0)|(state.controller?2:0)),0,0};
     out.insert(out.end(),config.cid.begin(),config.cid.end());
@@ -1350,6 +1356,16 @@ int main(int argc,char** argv) {
             }
             error(channel,config?&*config:nullptr,failure);
         }
+        // A private offline instance has no reusable SDK state or editor.
+        // After an exact normal stop, successful SDK processing stop and
+        // worker join, exit with the complete PCM prefix. Keep the module and
+        // objects mapped through process exit, including the autorelease pool.
+        // Processing, stop, and controller failures still take the refusal path.
+        if(offline && normal_stop && !failure && config) {
+            const bool sent=send_retirement(channel,*config,blocks,frames,0,true,false);
+            ::close(channel);
+            std::_Exit(sent?0:ProtocolFailure);
+        }
         try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
     }
     @autoreleasepool {
@@ -1360,12 +1376,7 @@ int main(int argc,char** argv) {
         const bool process_only=closing==CloseResult::RetainedHost && normal_stop && !failure;
         const bool closed=closing==CloseResult::Closed || process_only;
         if(!closed || (!unloaded && !process_only)) failure=Teardown;
-        bool terminal_sent=false;
-        if(config) {
-            wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);
-            wire::number(terminal,failure,4);wire::number(terminal,closed?1:0,1);wire::number(terminal,unloaded?1:0,1);
-            terminal_sent=wire::send(channel,"HXVITR01",terminal);
-        }
+        const bool terminal_sent=config && send_retirement(channel,*config,blocks,frames,failure,closed,unloaded);
         ::close(channel);
         if(process_only) std::_Exit(terminal_sent?0:ProtocolFailure);
         return failure==0 && normal_stop && closed && unloaded?0:static_cast<int>(failure?failure:ProtocolFailure);
