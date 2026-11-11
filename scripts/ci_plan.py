@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::",),
@@ -463,6 +464,10 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                     {"editor::save::tests::",
                      "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success",
                      "editor::save::ui_tests::older_format_explicit_overwrite_warns_once_and_save_as_keeps_original"},
+                    {"editor::gain_lane::tests::unit_tests::",
+                     "editor::automation_view::tests::foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal",
+                     "editor::automation_view::tests::earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does",
+                     "editor::gain_lane::tests::native::occupied_pointer_move_refuses_before_actor_and_keeps_visible_draft"},
                     {"editor::midi_loop_notes::tests::",
                      "editor::midi_ruler::geometry_tests::",
                      "editor::midi_ruler::loop_brace::tests::",
