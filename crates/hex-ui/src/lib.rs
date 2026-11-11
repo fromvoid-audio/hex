@@ -134,7 +134,7 @@ pub struct PluginEffectTestView {
     pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
     pub pending: bool,
     pub queued_requests: usize,
-    /// Read-only VST3 parameter control identities keyed by device and ID.
+    /// Source-bound VST3 parameter controls keyed by device and parameter ID.
     pub parameter_controls: Vec<(u64, u32, gpui::EntityId)>,
     /// A controller parameter enumeration/page query is awaiting its terminal.
     pub parameter_query_pending: bool,
