@@ -281,6 +281,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq_panel.rs": ("editor::device_panel::eq_panel::tests::",),
     "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
     "src/editor/fade_handles.rs": ("editor::fade_handles::tests::",),
+    "src/editor/controller/submission.rs": ("editor::controller::submission::observation_tests::",),
     "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
                                    CONTROLLER_SOURCE_BINDING_UNIT),
     "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),

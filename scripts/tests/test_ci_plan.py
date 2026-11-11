@@ -4712,6 +4712,28 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(unit.requires_tests)
             self.assertIn(name, integration.argv)
 
+    def test_submission_observation_unit_keeps_refusal_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/controller/submission.rs"
+        unit = "editor::controller::submission::observation_tests::"
+        consumer = "editor::controller::submission::tests::a_refused_request_leaves_identical_custody_on_both_paths"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertIn("editor::controller::submission::", boundary["module_filters"][owner])
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertIn(unit, default.argv)
+        self.assertTrue(default.requires_tests)
+        feature = steps["ui-feature-tests"]
+        self.assertIn("editor::controller::submission::", feature.argv)
+        self.assertTrue(consumer.startswith("editor::controller::submission::"))
+
     def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
