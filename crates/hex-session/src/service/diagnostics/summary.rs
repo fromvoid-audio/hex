@@ -1837,6 +1837,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveNew(value0) => {
             describe!("save_new"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
         }
+        Request::SaveProjectAs {
+            path,
+            replace_existing,
+        } => {
+            describe!("save_project_as"; ["path_redacted_bytes" => path.as_os_str().len(), "replace_existing" => replace_existing]; omitted="")
+        }
         Request::SaveCurrent => describe!("save_current"; []; omitted=""),
         Request::SaveCurrentWithFormatUpgrade {
             project_generation,
