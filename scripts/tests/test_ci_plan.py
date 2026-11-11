@@ -2647,6 +2647,32 @@ class ModuleScopeTests(unittest.TestCase):
                                             "boundary": unrelated, "cargo_inventory": inventory, "paths": []})
         self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in unrelated_steps))
 
+    def test_track_tag_palette_unit_keeps_rendered_tag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::track_tags::tests::normalized_tags_use_only_the_eight_musical_element_colors"
+        consumers = (
+            "editor::track_tags::tests::tag_dots_are_compact_equal_and_shared_by_arrangement_and_console",
+            "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
+        )
+        for path in ("crates/hex-ui/src/editor/track_tags.rs", "crates/hex-ui/src/editor/track_tags/tests.rs"):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                feature = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+                self.assertNotIn("editor::", feature)
+
     def test_track_group_focus_source_consumers_and_full_run_deduplication(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
