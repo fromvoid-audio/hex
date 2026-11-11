@@ -700,7 +700,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
@@ -736,6 +736,15 @@ mod tests {
             absolute_command(window, Field::Gain, -6.1, false),
             Some(Command::SetAudioClipGain { millidb: -6100, .. })
         ));
+        for (gain_db, delta) in [(-0.1, -100), (1.0, 1_000)] {
+            assert!(matches!(
+                absolute_command(window, Field::Gain, gain_db, true),
+                Some(Command::EditClips {
+                    clips,
+                    edit: hex_project::ClipEdit::GainBy { millidb },
+                }) if clips == vec![window.clip] && millidb == delta
+            ));
+        }
         assert!(absolute_command(window, Field::Gain, 24.001, false).is_none());
     }
 }
