@@ -411,7 +411,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::ImportPromptTarget;
     use hex_project::{Command, Created, Editor, Project};
