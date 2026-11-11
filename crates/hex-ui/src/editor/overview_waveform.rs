@@ -328,7 +328,7 @@ mod tests {
             .collect();
         Source::Browser(Arc::new(CachedWaveform::from_peaks(4096, bins).unwrap()))
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn device_pixel_outline_is_bounded_connected_and_preserves_stereo_extrema_on_resize() {
         let source = source();
@@ -370,7 +370,7 @@ mod tests {
             );
         }
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn silence_dc_short_sources_and_invalid_bounds_have_defined_geometry() {
         for sample in [0.0, 0.7, -0.7] {
@@ -405,7 +405,7 @@ mod tests {
         }
         assert!(prepare(0, bounds(20.0), 2.0, |_, _| None).is_none());
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn mixed_transients_dc_and_silence_keep_true_extrema_and_zero_range_hairlines() {
         for scale in [1.0, 2.0] {
@@ -464,7 +464,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn post_clamp_collapsed_overrange_peaks_remain_visible_inside_their_channel() {
         for scale in [1.0, 2.0] {
@@ -497,7 +497,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn cached_paths_reuse_only_exact_source_geometry_and_device_scale() {
         let mut cache = Cache::default();
