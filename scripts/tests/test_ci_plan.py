@@ -4819,6 +4819,45 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     (consumer, feature_args))
 
+    def test_export_status_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::export::status_tests::"
+        consumers = (
+            "editor::export::tests::export_dialog_cancel_reopen_starts_in_user_folder_and_native_save_needs_no_second_consent",
+            "editor::export::tests::export_button_cancels_pending_control_without_opening_another_dialog",
+        )
+        path = "crates/hex-ui/src/editor/export.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertIn(unit, default.argv)
+        self.assertTrue(default.requires_tests)
+        feature_args = steps["ui-feature-tests"].argv
+        self.assertIn("editor::export::", feature_args)
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                            (consumer, feature_args))
+
+        logic_path = "crates/hex-ui/tests/unit_editor_logic.rs"
+        logic_boundary = plan.boundary_selection(root, [logic_path], inventory, [owner])
+        logic_names = logic_boundary["module_filters"][owner]
+        self.assertFalse(any(name.startswith(unit) or unit.startswith(name) for name in logic_names))
+        logic_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": logic_boundary,
+            "cargo_inventory": inventory, "paths": [logic_path]})}
+        logic_feature = logic_steps["ui-feature-tests"].argv
+        self.assertNotIn("editor::export::", logic_feature)
+        for consumer in consumers:
+            self.assertFalse(any(consumer.startswith(prefix) for prefix in logic_feature),
+                             (consumer, logic_feature))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

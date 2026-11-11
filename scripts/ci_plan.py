@@ -205,6 +205,7 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
     "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
     "src/editor/native_automation_recording.rs": ("editor::native_automation_recording::unit_tests::",),
