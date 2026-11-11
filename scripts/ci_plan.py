@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
+CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
@@ -221,7 +222,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
     "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
     "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
-    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT),
+    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
+                                   CONTROLLER_SOURCE_BINDING_UNIT),
     "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
     "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
     "src/editor/device_gesture.rs": ("editor::device_gesture::unit_tests::",),
@@ -688,6 +690,7 @@ UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_g
                         "editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
                         "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
+                        "editor::controller::source_binding_unit_tests::": "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
                         "editor::fade_calculation::": "editor::fades::",
                         "editor::fade_handle_geometry::": "editor::fade_handles::",
                         "editor::midi_wheel_mapping::": "editor::midi_wheel::",

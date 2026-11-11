@@ -5436,7 +5436,7 @@ mod tuning_audition_error_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod comparison_source_binding_tests {
     use super::super::audio_admission::{AdmissionState, AudioAdmissionStatus, ProjectRevision};
     use super::*;
@@ -5601,7 +5601,7 @@ mod comparison_source_binding_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod sampler_native_ui_protocol_tests {
     use super::*;
     #[cfg(feature = "ui-test-support")]
@@ -6220,35 +6220,6 @@ mod sampler_native_ui_protocol_tests {
     }
 
     #[test]
-    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
-        let context = hex_engine::AudioSourceContext {
-            project_generation: 4,
-            editor_revision: 7,
-        };
-        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
-        assert!(!relinquish_client_matches(
-            4,
-            Some(8),
-            Some(12),
-            12,
-            context
-        ));
-        assert!(!relinquish_client_matches(
-            4,
-            Some(7),
-            Some(13),
-            12,
-            context
-        ));
-        assert!(!relinquish_client_matches(
-            5,
-            Some(7),
-            Some(12),
-            12,
-            context
-        ));
-    }
-    #[test]
     fn native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion() {
         // UI protocol metadata only; actual native proof/PCM is covered by the
         // Service/Desktop eligible publication and callback integration probes.
@@ -6362,5 +6333,40 @@ mod sampler_native_ui_protocol_tests {
             .1,
             None
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod source_binding_unit_tests {
+    use super::relinquish_client_matches;
+
+    #[test]
+    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 4,
+            editor_revision: 7,
+        };
+        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(8),
+            Some(12),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(7),
+            Some(13),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            5,
+            Some(7),
+            Some(12),
+            12,
+            context
+        ));
     }
 }
