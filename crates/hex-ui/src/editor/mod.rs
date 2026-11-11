@@ -48,7 +48,7 @@ mod delete_ui_tests;
 mod device_automation;
 mod history_playback;
 mod leftover_recovery;
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(test)]
 mod navigation_metrics;
 mod plugin_effect;
 mod selection_play_start;
