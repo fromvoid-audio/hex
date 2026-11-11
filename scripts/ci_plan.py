@@ -218,6 +218,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/header.rs": ("editor::header::tests::",),
     "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
     "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
+    "src/editor/device_automation/vst3.rs": ("editor::device_automation::vst3::tests::",),
     "src/editor/native_automation_recording.rs": ("editor::native_automation_recording::unit_tests::",),
     "src/editor/native_automation_recording/editor_input.rs": ("editor::native_automation_recording::editor_input::tests::",),
     "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
@@ -520,6 +521,10 @@ UI_MODULE_TEST_DEPENDENCIES = {
         "editor::native_automation_recording::unit_tests::",
         "editor::native_automation_recording::editor_input::tests::"),
     "editor::device_automation::tests::": ("editor::device_automation::unit_tests::",),
+    "editor::device_automation::vst3::": (
+        "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
+        "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
+    ),
     "editor::pending_clip_move::": (
         "editor::clip_drag_ui_test::rendered_move_survives_same_revision_worker_work",
         "editor::clip_drag_ui_test::rendered_move_real_refusal_retires_only_its_matching_fifo_terminal",
