@@ -3932,6 +3932,38 @@ class ModuleScopeTests(unittest.TestCase):
                 names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
                 self.assertIn(f"editor::browser::{helper}::", names)
 
+    def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::publication_unit_tests::"
+        consumers = (
+            "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+            "editor::controller::comparison_source_binding_tests::comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion",
+            "editor::controller::project_replacement_tests::receive_preserves_fresh_installation_through_edits_and_failed_open",
+            "editor::controller::project_replacement_tests::stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_later_edits",
+            "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
+            "editor::controller::verified_gain_tests::verified_preview_submission_waits_for_exact_view_without_canonical_promotion",
+        )
+        for module in ("controller.rs", "controller/publication_unit_tests.rs",
+                       "controller/project_replacement_tests.rs", "controller/verified_gain_tests.rs"):
+            path = "crates/hex-ui/src/editor/" + module
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                self.assertNotIn("editor::controller::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
     def test_midi_loop_display_cohort_routes_source_and_consumer_changes(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
