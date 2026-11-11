@@ -481,7 +481,7 @@ fn bounce_capture_uses_the_live_receiver_and_projects_only_the_isolated_instrume
     editor
         .execute(Command::BindTrackSource {
             track: contributor,
-            source,
+            source: Some(source),
         })
         .unwrap();
     let canonical = editor.project();
