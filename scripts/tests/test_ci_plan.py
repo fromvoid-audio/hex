@@ -5098,6 +5098,31 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_vst3_entry_unit_keeps_raw_zero_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        path = "crates/hex-ui/src/editor/device_automation/vst3.rs"
+        unit = "editor::device_automation::vst3::tests::"
+        consumers = (
+            "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
+            "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
+        )
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default_args = steps["ui-default-lib-unit-tests"].argv
+        self.assertIn(unit, default_args)
+        feature_args = steps["ui-feature-tests"].argv
+        for consumer in consumers:
+            self.assertTrue(any(consumer == prefix or consumer.startswith(prefix)
+                                for prefix in feature_args),
+                            f"{consumer} missing from {feature_args}")
+
     def test_native_automation_recording_units_keep_receipt_and_vst3_witnesses(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
