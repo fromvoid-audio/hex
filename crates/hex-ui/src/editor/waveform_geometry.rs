@@ -290,7 +290,7 @@ impl WaveformGeometryCache {
             .collect()
     }
 
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(test)]
     pub(super) fn entry_count(&self) -> usize {
         self.entries.len()
     }

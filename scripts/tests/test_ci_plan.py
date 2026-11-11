@@ -3821,6 +3821,33 @@ class ModuleScopeTests(unittest.TestCase):
             reverse = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in reverse[owner]))
 
+    def test_stretch_cache_unit_keeps_projection_and_rendered_stretch(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform_stretch::tests::geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map"
+        projection = "editor::waveform_stretch::projection::"
+        witness = "editor::waveform::resize_tests::shift_stretch_keeps_live_sample_varied_waveforms_visible"
+        for name in ("waveform_stretch.rs", "waveform_stretch/projection.rs", "waveform_stretch/tests.rs"):
+            with self.subTest(name=name):
+                path = "crates/hex-ui/src/editor/" + name
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertTrue(any(unit.startswith(prefix) for prefix in default.argv))
+                standalone = steps["ui-unit-unit_editor_logic"]
+                self.assertTrue(standalone.requires_tests)
+                self.assertTrue(any(projection.startswith(prefix) for prefix in standalone.argv))
+                feature = steps["ui-feature-tests"].argv
+                self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+                self.assertNotIn("editor::", feature)
+
     def test_session_feedback_keeps_real_callback_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

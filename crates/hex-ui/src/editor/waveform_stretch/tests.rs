@@ -34,7 +34,6 @@ fn projection(
     }
 }
 
-#[cfg(feature = "ui-test-support")]
 #[test]
 fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
     use crate::editor::waveform_geometry::{WaveformGeometryRequest, cached_waveform_geometry};
