@@ -935,7 +935,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::GroupClips(value0) => {
             describe!("group_clips"; ["value0_count" => value0.len()]; omitted="")
         }
-        Command::GroupTimeRange(_) => describe!("group_time_range"; []; omitted="value0"),
+        Command::GroupTimeRange(_) | Command::GroupTimeRangeOrCreate(_) => {
+            describe!("group_time_range"; []; omitted="value0")
+        }
         Command::GroupAudioEventRange { clip, start, end } => {
             describe!("group_audio_event_range"; ["clip" => clip.value(), "start" => start, "end" => end]; omitted="")
         }

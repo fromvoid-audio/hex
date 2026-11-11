@@ -509,6 +509,7 @@ pub(crate) fn event_range(
 pub(crate) fn time_range(
     project: &mut Project,
     range: &crate::TimeRange,
+    create_if_empty: bool,
 ) -> Result<Created, Invalid> {
     range.validate(project)?;
     let left = project.tempo_map().frame_to_beat(range.start())?;
@@ -581,6 +582,35 @@ pub(crate) fn time_range(
                 result = Some(Created::Clip(*id));
             }
             _ => result = Some(group(&mut candidate, ids, Some(range))?),
+        }
+    }
+    if result.is_none() && create_if_empty {
+        let length = BeatTime::from_raw(right.raw() - left.raw());
+        // Reuse the ordinary blank MIDI clip on hybrid lanes. Validate its
+        // actual beat-to-frame projection before allowing placement to cut any
+        // adjacent content, even when frame/beat conversion rounds an edge.
+        let start = project.tempo_map().beat_to_frame(left)?;
+        let end = project.tempo_map().beat_to_frame(right)?;
+        for &track in range.tracks() {
+            let row = project
+                .track(track)
+                .ok_or(Invalid("selected track no longer exists"))?;
+            if row.is_group() {
+                continue;
+            }
+            if row.clips().iter().any(|clip| {
+                clip.start() < end && clip.start().saturating_add(clip.duration()) > start
+            }) || row.midi_clips().iter().any(|clip| {
+                clip.start() < right
+                    && clip.start().raw().saturating_add(clip.length().raw()) > left.raw()
+            }) {
+                return Err(Invalid("selected time range overlaps a clip"));
+            }
+            result = Some(candidate.apply(crate::Command::PlaceMidiClip {
+                track,
+                start: left,
+                length,
+            })?);
         }
     }
     let result = result.ok_or(Invalid("selected time range contains no clips"))?;

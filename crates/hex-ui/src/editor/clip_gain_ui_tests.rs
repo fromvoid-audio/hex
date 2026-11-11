@@ -435,8 +435,8 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
         if context == "selection" {
             editor.update(&mut visual, |v, cx| {
                 v.time_selection = Some(time_selection::TimeSelection {
-                    anchor_track: track,
-                    end_track: track,
+                    anchor_track: Some(track),
+                    end_track: Some(track),
                     anchor_frame: 0,
                     end_frame: 96_000,
                 });

@@ -94,8 +94,8 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
                     view.state = Some(event.state);
                     view.selected_clip = Some(clip); // Time range must beat whole MIDI duplication.
                     view.time_selection = Some(TimeSelection {
-                        anchor_track: audio,
-                        end_track: if scope == 0 { audio } else { midi },
+                        anchor_track: Some(audio),
+                        end_track: Some(if scope == 0 { audio } else { midi }),
                         anchor_frame: 12_000,
                         end_frame: 72_000,
                     });
@@ -236,8 +236,8 @@ fn command_d_refuses_overflow_and_pending_time_edits(cx: &mut TestAppContext) {
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
                 view.time_selection = Some(TimeSelection {
-                    anchor_track: audio,
-                    end_track: audio,
+                    anchor_track: Some(audio),
+                    end_track: Some(audio),
                     anchor_frame: if pending { 12_000 } else { u64::MAX - 1 },
                     end_frame: if pending { 24_000 } else { u64::MAX },
                 });

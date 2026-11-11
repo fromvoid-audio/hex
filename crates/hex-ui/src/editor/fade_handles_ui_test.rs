@@ -49,8 +49,8 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
         .center();
     editor.update(&mut visual, |view, cx| {
         view.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 0,
             end_frame: 96_000,
         });
