@@ -627,10 +627,11 @@ pub trait WorkerAudioSink: Send {
     }
     /// Exact same-context recompilation terminal. Before acceptance, the sink
     /// retains its admitted unpublished document graph and original resources.
+    /// Refusals carry the reason for the matching output's recovery consumer.
     fn finish_plugin_state_restore(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-        _accepted: bool,
+        _result: Result<(), &str>,
     ) {
     }
     /// Renew stopped native sources through their original output owner. None

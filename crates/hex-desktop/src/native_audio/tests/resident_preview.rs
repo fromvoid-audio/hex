@@ -668,8 +668,12 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        self.inner.finish_plugin_state_restore(context, accepted);
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        self.inner.finish_plugin_state_restore(context, result);
     }
     fn plugin_parameter_requires_stopped_restore(
         &mut self,

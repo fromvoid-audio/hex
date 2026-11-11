@@ -4848,26 +4848,33 @@ impl EditorView {
                 })
             });
         self.finish_midi_recording();
-        // The first Stop fenced the output and the restore is already
-        // replacing its VST3 epochs. A repeat clears view and Play intent
-        // and lets the fresh endpoints finish installing.
+        // A healthy stopped output can be renewing its VST3 epochs after
+        // Stop or staging its first graph after restart. In either case a
+        // priority Stop would revoke the fresh endpoints. Keep the transport
+        // intent below and let the graph install before accepting Play.
         use super::audio_admission::StoppedPlaybackRestore;
-        let stopped_restore_owns_output = matches!(
-            self.stopped_playback_restore,
-            Some(
-                StoppedPlaybackRestore::Preparing
-                    | StoppedPlaybackRestore::Ready
-                    | StoppedPlaybackRestore::Published(_)
+        let restore_owns_stopped_output = self.audio_status().is_some_and(|status| {
+            if status.playing.load(Acquire)
+                || status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+            {
+                return false;
+            }
+            if self.recovery.generation().is_some() {
+                return self.has_resident_vst3() && status.applied_revision.load(Acquire) == 0;
+            }
+            matches!(
+                self.stopped_playback_restore,
+                Some(
+                    StoppedPlaybackRestore::Preparing
+                        | StoppedPlaybackRestore::Ready
+                        | StoppedPlaybackRestore::Published(_)
+                )
             )
-        ) && self.recovery.generation().is_none()
-            && self.audio_status().is_some_and(|status| {
-                !status.playing.load(Acquire)
-                    && !status.device_fault.load(Acquire)
-                    && !status.render_fault.load(Acquire)
-            });
+        });
         // Publish the MIDI finish intent before any input prefix is revoked.
         if stop_output
-            && !stopped_restore_owns_output
+            && !restore_owns_stopped_output
             && let Some(audio) = &self.audio
         {
             if let Some(trace) = &self.transport_trace {
