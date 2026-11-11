@@ -1958,10 +1958,14 @@ pub(in crate::editor) fn test_state(view: &EditorView) -> (Vec<(u64, u32, gpui::
         .panels
         .iter()
         .flat_map(|(device, panel)| {
-            panel
-                .knobs
-                .iter()
-                .map(|(parameter, knob)| (device.value(), *parameter, knob.control.entity_id()))
+            panel.knobs.iter().filter_map(|(parameter, knob)| {
+                let row = panel
+                    .rows()?
+                    .iter()
+                    .find(|row| row.id == *parameter && row.editable)?;
+                knob.matches_source(panel.source?, panel.query, row)
+                    .then_some((device.value(), *parameter, knob.control.entity_id()))
+            })
         })
         .collect::<Vec<_>>();
     controls.sort_by_key(|(device, parameter, _)| (*device, *parameter));
