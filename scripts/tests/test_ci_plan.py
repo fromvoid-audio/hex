@@ -5229,15 +5229,17 @@ class ModuleScopeTests(unittest.TestCase):
 
     def test_changed_module_roots_run_the_complete_test_subtree(self):
         root = SCRIPTS.parent
-        for owner, path, prefix, child in (
-            ("hex-session", "crates/hex-session/src/service.rs", "service::", "format_upgrade_tests"),
-            ("hex-ui", "crates/hex-ui/src/editor/save.rs", "editor::save::", "ui_tests"),
+        for owner, path, prefix, child, consumer in (
+            ("hex-session", "crates/hex-session/src/service.rs", "service::", "format_upgrade_tests", None),
+            ("hex-ui", "crates/hex-ui/src/editor/save.rs", "editor::save::", "ui_tests",
+             "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success"),
         ):
             with self.subTest(owner=owner):
                 inventory = [{"name": owner, "manifest": f"crates/{owner}/Cargo.toml",
                               "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]}]
                 filters = plan.module_test_filters(root, [path], inventory, [owner])
-                self.assertEqual(filters, {owner: [prefix]})
+                expected = [prefix] if consumer is None else sorted([prefix, consumer])
+                self.assertEqual(filters, {owner: expected})
                 modules = plan.module_paths(root / f"crates/{owner}/src")
                 self.assertIn(prefix + child, modules.values())
                 boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
@@ -5250,6 +5252,8 @@ class ModuleScopeTests(unittest.TestCase):
                 for step in selected:
                     self.assertIn(prefix, step.argv)
                     self.assertNotIn("--skip", step.argv)
+                if consumer is not None:
+                    self.assertTrue(any(consumer in step.argv for step in selected))
 
     def test_reuse_rejects_a_report_that_skipped_a_child_subtree(self):
         inventory = [{"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",
