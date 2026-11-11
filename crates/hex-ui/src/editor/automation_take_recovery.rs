@@ -556,5 +556,43 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod test_fixture;
+
+#[cfg(all(
+    test,
+    feature = "ui-test-support",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+mod test_fixture;
+
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::test_fixture::plugin_scope;
+    use super::*;
+
+    #[test]
+    fn only_the_ordered_plugin_query_selects_the_original_scope() {
+        let scope = plugin_scope();
+        let mut flow = Recovery {
+            phase: Phase::Discover {
+                until: Instant::now() + Duration::from_secs(1),
+            },
+            request: Some(1),
+            saved: None,
+        };
+        let found = Progress::FailedPluginCustody {
+            scope: Box::new(scope),
+            path: "original".into(),
+        };
+        assert_eq!(flow.settle(0, &found), None);
+        assert!(!flow.unresolved());
+        assert_eq!(flow.settle(1, &found), None);
+        assert!(flow.unresolved());
+        assert!(matches!(flow.phase, Phase::NeedsCopy(selected) if selected == scope));
+    }
+}

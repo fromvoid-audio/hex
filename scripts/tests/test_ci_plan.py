@@ -3140,6 +3140,33 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_take_recovery_keeps_ordered_query_and_real_custody_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        module = "editor::automation_take_recovery::"
+        unit = module + "unit_tests::"
+        support = module + "tests::"
+        consumers = (
+            support + "cancelled_picker_and_stale_responses_cannot_release_the_original",
+            support + "rendered_copy_action_can_cancel_without_releasing_the_close_fence",
+            support + "file_action_selects_a_finished_take_without_applying_it",
+        )
+        for path in ("automation_take_recovery.rs", "automation_take_recovery/tests.rs",
+                     "automation_take_recovery/test_fixture.rs"):
+            name = "crates/hex-ui/src/editor/" + path
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
