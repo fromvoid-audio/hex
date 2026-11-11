@@ -75,21 +75,21 @@ fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> 
     matches(old, new) && matches(new, old)
 }
 
-fn appended_foreign_effect(
-    new: &[hex_lattice::PreparedRuntimeInstance],
+fn appended_foreign_effect<'a>(
+    new: &'a [hex_lattice::PreparedRuntimeInstance],
     old: &[hex_lattice::PreparedRuntimeInstance],
-) -> bool {
-    new.split_last().is_some_and(|(appended, prefix)| {
-        prefix.len() == old.len()
-            && matches!(
-                appended.definition,
-                Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-            )
-            && prefix
-                .iter()
-                .zip(old)
-                .all(|(new, old)| new.device_id == old.device_id)
-    })
+) -> Option<&'a hex_lattice::PreparedRuntimeInstance> {
+    let (appended, prefix) = new.split_last()?;
+    (prefix.len() == old.len()
+        && matches!(
+            appended.definition,
+            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+        )
+        && prefix
+            .iter()
+            .zip(old)
+            .all(|(new, old)| new.device_id == old.device_id))
+    .then_some(appended)
 }
 
 /// One physical foreign endpoint cannot process both current input and an old
@@ -924,9 +924,11 @@ impl SessionPlayback {
         // when the timing map and loop are unchanged.
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
-        // A newly appended hosted effect can require fresh delay rings. The
-        // same-clock restart keeps the Arrangement cursor, worker binding and
-        // accepted gate deadlines even while the local PCM history refills.
+        // Appending a hosted effect or removing an already bypassed suffix
+        // can require fresh delay rings. The same-clock restart keeps the
+        // Arrangement cursor, worker binding and accepted gate deadlines
+        // while the local PCM history refills. An active removed effect still
+        // needs the tail planner.
         let keep_foreign_gates = foreign_handoff.requires_clock_continuity
             && running_restart
             && !force_restart
@@ -939,7 +941,9 @@ impl SessionPlayback {
                 .zip(previous.revision.arrangement().tracks())
                 .any(|(new, old)| {
                     new.canonical_track_id() == old.canonical_track_id()
-                        && appended_foreign_effect(&new.device_chain, &old.device_chain)
+                        && (appended_foreign_effect(&new.device_chain, &old.device_chain).is_some()
+                            || appended_foreign_effect(&old.device_chain, &new.device_chain)
+                                .is_some_and(|removed| removed.bypassed))
                 });
         if foreign_handoff.requires_clock_continuity
             && (force_restart
