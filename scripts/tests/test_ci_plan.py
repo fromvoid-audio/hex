@@ -4583,6 +4583,34 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_midi_draw_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_draw::tests::"
+        consumers = (
+            "editor::midi_canvas::pending_drag_tests::stroke_preview_tests::capture_tests::draw_and_erase_own_input_then_handoff_preview_without_holding_capture",
+            "editor::midi_canvas::created_selection_tests::committed_draw_selects_actual_authored_ids_with_last_primary_after_later_frames",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/midi_draw.rs",
+            "crates/hex-ui/src/editor/midi_draw_capture_ui_tests.rs",
+            "crates/hex-ui/src/editor/midi_created_selection_ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, default.argv)
+                self.assertTrue(default.requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
