@@ -7974,14 +7974,18 @@ fn run_worker(
                                 resident_snapshot.as_ref(),
                             )
                         };
-                        sink.finish_plugin_state_restore(context, result.is_ok());
+                        let result = result.map_err(|reason| reason.to_string());
+                        sink.finish_plugin_state_restore(
+                            context,
+                            result.as_ref().map(|_| ()).map_err(String::as_str),
+                        );
                         match result {
                             Ok(snapshot) => {
                                 compiled = Some((revision, Arc::clone(&snapshot.prepared)));
                                 resident_snapshot = Some(snapshot);
                                 status = Some("vst3 playback prepared".into());
                             }
-                            Err(reason) => error = Some(reason.to_string()),
+                            Err(reason) => error = Some(reason),
                         }
                     }
                 }
