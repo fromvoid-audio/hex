@@ -37,7 +37,7 @@ pub(super) struct State {
     serial: u64,
     reconciled: Option<(AudioSourceContext, Option<u64>)>,
     panels: HashMap<DeviceId, Panel>,
-    in_flight: Option<(DeviceId, PluginParameterQuery)>,
+    in_flight: Option<(PluginParameterQuery, AppliedAudioSource)>,
     deferred_result: Option<(PluginParameterResult, u64)>,
     last_touched_device: Option<DeviceId>,
     reported_status: Option<ReportedStatus>,
@@ -287,6 +287,28 @@ fn current_applied_source(view: &EditorView) -> Option<AppliedAudioSource> {
         .as_ref()
         .and_then(|audio| audio.status())
         .and_then(|status| status.native_effect_source())
+}
+
+/// A panel can outlive the original hosted endpoint while Stop or an output
+/// restart prepares its replacement. Only the installed output can supply
+/// inventory, and its exact revision fences late background terminals.
+fn refresh_source(view: &EditorView) -> Option<AppliedAudioSource> {
+    let source = current_applied_source(view)?;
+    let output = view.audio.as_ref()?.control.output_identity()?;
+    (source.output_identity == output
+        && source.context.project_generation == view.project_generation
+        && view.stopped_playback_restore.is_none()
+        && view.recovery.generation().is_none())
+    .then_some(source)
+}
+
+fn refreshable_device(view: &EditorView, device: DeviceId, source: AppliedAudioSource) -> bool {
+    !view.degraded_plugins.contains(device.value())
+        && view.audible_playback.as_ref().is_some_and(|audible| {
+            audible.audio_revision == source.audio_revision
+                && audible.project_generation == source.context.project_generation
+                && super::audible_vst3_processor(view, device) == Some(true)
+        })
 }
 
 fn touch_is_current(view: &EditorView, device: DeviceId, touch: TouchObservation) -> bool {
@@ -704,7 +726,7 @@ pub(in crate::editor) fn install_result(
     result: PluginParameterResult,
     revision: u64,
 ) {
-    let Some((_, pending)) = view.device_panel.vst3_parameters.in_flight else {
+    let Some((pending, _)) = view.device_panel.vst3_parameters.in_flight else {
         return;
     };
     if pending != result.query {
@@ -717,9 +739,10 @@ fn apply_result(
     view: &mut EditorView,
     result: PluginParameterResult,
     revision: u64,
+    current_source: Option<AppliedAudioSource>,
     cx: &mut Context<EditorView>,
 ) {
-    let Some((device, pending)) = view.device_panel.vst3_parameters.in_flight else {
+    let Some((pending, source)) = view.device_panel.vst3_parameters.in_flight else {
         return;
     };
     if pending != result.query {
@@ -730,15 +753,11 @@ fn apply_result(
         return;
     }
     view.device_panel.vst3_parameters.in_flight = None;
-    let context = current_context(view);
-    let output = view
-        .audio
-        .as_ref()
-        .and_then(|audio| audio.control.output_identity());
-    if result.query.context.project_generation != view.project_generation
+    let device = pending.device;
+    if current_source != Some(source)
+        || view.degraded_plugins.contains(device.value())
         || result.query.context.editor_revision != revision
-        || Some(result.query.context) != context
-        || output != Some(result.query.output_identity)
+        || Some(result.query.context) != current_context(view)
     {
         return;
     }
@@ -1154,8 +1173,9 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     if view.stopped_playback_restore.is_some() || interactions_active(view, cx) {
         return;
     }
+    let source = refresh_source(view);
     if let Some((result, revision)) = view.device_panel.vst3_parameters.deferred_result.take() {
-        apply_result(view, result, revision, cx);
+        apply_result(view, result, revision, source, cx);
         cx.notify();
         return;
     }
@@ -1173,6 +1193,9 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     if view.device_panel.vst3_parameters.in_flight.is_some() {
         return;
     }
+    let Some(source) = source else {
+        return;
+    };
     let now = Instant::now();
     let pending_touch =
         view.device_panel
@@ -1185,11 +1208,12 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
                     .is_some_and(|touch| current_context(view) == Some(touch.source.context))
                     && !panel.cache_loading
                     && panel.retry_count <= MAX_AUTOMATIC_RETRIES
-                    && now >= panel.next_query_at)
-                    .then_some((*device, panel.priority_page))
+                    && now >= panel.next_query_at
+                    && refreshable_device(view, *device, source))
+                .then_some((*device, panel.priority_page))
             });
     if let Some((device, page)) = pending_touch {
-        submit_query(view, device, page, cx);
+        submit_query(view, device, page, source, cx);
         return;
     }
     let Some(owner) = view.device_panel.owner.filter(|_| view.device_panel_active) else {
@@ -1204,7 +1228,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         if panel.owner != owner || panel.cache_loading || now < panel.next_query_at {
             return None;
         }
-        if panel.retry_count > MAX_AUTOMATIC_RETRIES {
+        if panel.retry_count > MAX_AUTOMATIC_RETRIES || !refreshable_device(view, device, source) {
             return None;
         }
         let mut visible_pages = panel.visible_pages.clone();
@@ -1231,7 +1255,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         {
             panel.next_page = first.saturating_add(PAGE_SIZE as u16);
         }
-        submit_query(view, device, page, cx);
+        submit_query(view, device, page, source, cx);
     }
 }
 
@@ -1307,16 +1331,10 @@ fn submit_query(
     view: &mut EditorView,
     device: DeviceId,
     page_first: Option<u16>,
+    source: AppliedAudioSource,
     cx: &mut Context<EditorView>,
 ) {
     let Some(context) = current_context(view) else {
-        return;
-    };
-    let Some(output_identity) = view
-        .audio
-        .as_ref()
-        .and_then(|audio| audio.control.output_identity())
-    else {
         return;
     };
     let Some(request_id) = view.device_panel.vst3_parameters.serial.checked_add(1) else {
@@ -1333,7 +1351,7 @@ fn submit_query(
     let query = PluginParameterQuery {
         context,
         device,
-        output_identity,
+        output_identity: source.output_identity,
         request_id,
         page_first,
     };
@@ -1341,7 +1359,7 @@ fn submit_query(
         return;
     }
     view.device_panel.vst3_parameters.serial = request_id;
-    view.device_panel.vst3_parameters.in_flight = Some((device, query));
+    view.device_panel.vst3_parameters.in_flight = Some((query, source));
     let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) else {
         return;
     };
@@ -1940,10 +1958,14 @@ pub(in crate::editor) fn test_state(view: &EditorView) -> (Vec<(u64, u32, gpui::
         .panels
         .iter()
         .flat_map(|(device, panel)| {
-            panel
-                .knobs
-                .iter()
-                .map(|(parameter, knob)| (device.value(), *parameter, knob.control.entity_id()))
+            panel.knobs.iter().filter_map(|(parameter, knob)| {
+                let row = panel
+                    .rows()?
+                    .iter()
+                    .find(|row| row.id == *parameter && row.editable)?;
+                knob.matches_source(panel.source?, panel.query, row)
+                    .then_some((device.value(), *parameter, knob.control.entity_id()))
+            })
         })
         .collect::<Vec<_>>();
     controls.sort_by_key(|(device, parameter, _)| (*device, *parameter));
@@ -2312,6 +2334,90 @@ fn knob_event(
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn vst3_refresh_waits_for_an_installed_output(cx: &mut gpui::TestAppContext) {
+        let _output_serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let client = output.take_client().unwrap();
+        let (project, track, device) = parameter_project();
+        let (_, editor) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        editor.update(cx, |view, cx| {
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "vst3 refresh fixture".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.error = None;
+            view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+            view.device_panel_active = true;
+            ensure_panel(view, device, cx);
+            view.device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap()
+                .cache_loading = false;
+            tick(view, cx);
+            assert!(
+                !query_pending(view),
+                "an open output is not an installed VST3 source"
+            );
+            assert!(view.error.is_none());
+
+            let query = view.device_panel.vst3_parameters.panels[&device].query;
+            let first = AppliedAudioSource {
+                context: query.context,
+                output_identity: query.output_identity,
+                audio_revision: 1,
+            };
+            let recovered = AppliedAudioSource {
+                audio_revision: 2,
+                ..first
+            };
+            let failed = || PluginParameterResult {
+                query,
+                source: None,
+                total: 0,
+                descriptor_signature: None,
+                rows: Err("vst3 parameter source unavailable".into()),
+            };
+            view.device_panel.vst3_parameters.in_flight = Some((query, first));
+            apply_result(
+                view,
+                failed(),
+                query.context.editor_revision,
+                Some(recovered),
+                cx,
+            );
+            assert!(!query_pending(view));
+            assert!(
+                view.device_panel.vst3_parameters.panels[&device]
+                    .cache_error
+                    .is_none()
+            );
+
+            view.device_panel.vst3_parameters.in_flight = Some((query, recovered));
+            apply_result(
+                view,
+                failed(),
+                query.context.editor_revision,
+                Some(recovered),
+                cx,
+            );
+            assert!(report_panel_state(view));
+            assert_eq!(
+                view.error.as_deref(),
+                Some("vst3 parameter source unavailable")
+            );
+        });
+        drop(backend);
+        output.publication.close();
+    }
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
