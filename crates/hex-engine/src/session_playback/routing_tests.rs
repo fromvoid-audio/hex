@@ -441,15 +441,24 @@ fn routed_midi_source_edit_reconciles_each_destination_voice_against_local_sourc
                 .unwrap();
         }
     }
-    let mut next = SessionPlayback::new(prepare(&f, Some(revision.session()))).unwrap();
-    next.try_inherit_state_from(&mut old).unwrap();
-    let mut expected = SessionPlayback::new(prepare(&local, Some(reference.session()))).unwrap();
-    expected.try_inherit_state_from(&mut oracle).unwrap();
-    assert_pcm(
-        &render(&mut next, 1024, 63),
-        &render(&mut expected, 1024, 256),
-        1e-7,
-    );
+    let edited = prepare(&f, Some(revision.session()));
+    let local_edited = prepare(&local, Some(reference.session()));
+    for (revision, previous) in [(&edited, &mut old), (&local_edited, &mut oracle)] {
+        let mut strict = SessionPlayback::new(Arc::clone(revision)).unwrap();
+        assert_eq!(
+            strict.try_inherit_state_from(previous),
+            Err(SessionPlaybackError::MutableInstrumentChase)
+        );
+        assert_eq!(previous.performance_frame(), 32);
+    }
+    let mut next = SessionPlayback::new(edited).unwrap();
+    next.try_inherit_state_live_from(&mut old).unwrap();
+    let mut expected = SessionPlayback::new(local_edited).unwrap();
+    expected.try_inherit_state_live_from(&mut oracle).unwrap();
+    let actual = render(&mut next, 1024, 63);
+    let expected = render(&mut expected, 1024, 256);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    assert_pcm(&actual, &expected, 1e-7);
 }
 
 #[test]
