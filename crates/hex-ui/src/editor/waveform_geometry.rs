@@ -77,6 +77,7 @@ enum WaveformMappingKey {
         looping: bool,
         timeline_origin: u64,
         gain: i32,
+        fade: Option<hex_project::ClipFade>,
     },
     Source {
         timeline_origin: u64,
@@ -117,6 +118,7 @@ pub(super) struct WaveformPaintSample {
     pub(super) mask: Bounds<Pixels>,
     pub(super) ordinates: [(f32, f32); 2],
     pub(super) envelope_points: usize,
+    pub(super) outline_fingerprint: [u64; 2],
 }
 
 impl WaveformGeometryCache {
@@ -196,24 +198,30 @@ impl WaveformGeometryCache {
         if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
             self.painted.pop_front();
         }
+        let observations: [(f32, f32, u64); 2] = std::array::from_fn(|channel| {
+            geometry.channels[channel].outline.iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY, 0xcbf29ce484222325_u64),
+                |(lo, hi, hash), point| {
+                    let y = f32::from(point.y);
+                    (
+                        lo.min(y),
+                        hi.max(y),
+                        (hash ^ u64::from(y.to_bits())).wrapping_mul(0x100000001b3),
+                    )
+                },
+            )
+        });
         self.painted.push_back(WaveformPaintSample {
             colors,
             bounds,
             mask,
-            ordinates: std::array::from_fn(|channel| {
-                geometry.channels[channel]
-                    .outline
-                    .iter()
-                    .map(|p| f32::from(p.y))
-                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
-                        (lo.min(y), hi.max(y))
-                    })
-            }),
+            ordinates: observations.map(|(lo, hi, _)| (lo, hi)),
             envelope_points: geometry
                 .channels
                 .iter()
                 .map(|channel| channel.outline.len())
                 .sum(),
+            outline_fingerprint: observations.map(|(_, _, fingerprint)| fingerprint),
         });
     }
 
@@ -281,6 +289,9 @@ pub(super) enum WaveformMapping {
     Clip {
         clip: Clip,
         timeline_origin: u64,
+        /// Arrangement fade to display, including a held or pending preview.
+        /// Source-editing waveforms may omit this independent clip envelope.
+        fade: Option<hex_project::ClipFade>,
     },
     Source {
         timeline_origin: u64,
@@ -377,6 +388,7 @@ fn waveform_geometry_key(
         WaveformMapping::Clip {
             clip,
             timeline_origin,
+            fade,
         } => WaveformMappingKey::Clip {
             id: clip.id().value(),
             gain: clip.gain().millidb(),
@@ -387,6 +399,7 @@ fn waveform_geometry_key(
             source_phase: clip.source_phase(),
             looping: clip.looping(),
             timeline_origin: *timeline_origin,
+            fade: *fade,
         },
         WaveformMapping::Source { timeline_origin } => WaveformMappingKey::Source {
             timeline_origin: *timeline_origin,
@@ -466,6 +479,18 @@ pub(super) fn prepare_waveform_geometry(
         }
         WaveformMapping::Source { .. } => 1.0,
     };
+    let clip_fade = match mapping {
+        WaveformMapping::Clip {
+            clip,
+            fade: Some(fade),
+            ..
+        } if !fade.is_neutral() => Some((
+            clip.start(),
+            clip.start().saturating_add(clip.duration()),
+            *fade,
+        )),
+        _ => None,
+    };
     #[cfg(all(test, feature = "ui-test-support"))]
     let sampling_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformSampling);
@@ -521,6 +546,7 @@ pub(super) fn prepare_waveform_geometry(
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,
+                ..
             } => {
                 let ranges = timeline_source_ranges_at(
                     clip,
@@ -555,6 +581,22 @@ pub(super) fn prepare_waveform_geometry(
                 }),
         };
         let mut peaks = peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]);
+        let fade_gain = match clip_fade {
+            Some((clip_start, clip_end, fade)) => {
+                // A cached peak represents an interval; use its timeline
+                // midpoint within the clip to sample the envelope without PCM.
+                let first = start.max(clip_start);
+                let last = end.min(clip_end);
+                if first < last {
+                    let midpoint = first + (last - first - 1) / 2;
+                    fade.gain_at(midpoint - clip_start)
+                } else {
+                    0.0
+                }
+            }
+            _ => 1.0,
+        };
+        let gain = gain * fade_gain;
         if gain != 1.0 {
             for peak in &mut peaks {
                 peak.min *= gain;
@@ -677,6 +719,86 @@ mod tests {
 
     fn bounds() -> Bounds<Pixels> {
         Bounds::new(point(px(12.0), px(34.0)), size(px(1200.0), px(180.0)))
+    }
+
+    #[test]
+    fn plain_clip_fade_shapes_peaks_and_changes_cache_identity() {
+        use hex_project::{Command, Created, Editor, Project};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "fade".into(),
+                path: "fade.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("imported clip")
+        };
+        let neutral = editor.project().clip(clip).unwrap().clone();
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 40,
+                fade_out: 40,
+            })
+            .unwrap();
+        let faded = editor.project().clip(clip).unwrap().clone();
+        let peak = CachedPeak {
+            min: -1.0,
+            max: 1.0,
+        };
+        let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
+        let mapping = |clip: &Clip| WaveformMapping::Clip {
+            clip: clip.clone(),
+            timeline_origin: 0,
+            fade: Some(clip.retained_fade()),
+        };
+        let held = WaveformMapping::Clip {
+            clip: neutral.clone(),
+            timeline_origin: 0,
+            fade: Some(faded.retained_fade()),
+        };
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let get = |mapping: &WaveformMapping| {
+            cached_waveform_geometry(
+                &cache,
+                &waveform,
+                &WaveformGeometryRequest {
+                    mapping,
+                    visible_start: 0,
+                    visible_end: 100,
+                    bounds,
+                    scale: 1.0,
+                    columns: 100,
+                    grid: None,
+                },
+            )
+            .unwrap()
+        };
+        let neutral = get(&mapping(&neutral));
+        let faded = get(&mapping(&faded));
+        assert!(
+            !Arc::ptr_eq(&neutral, &faded),
+            "fade edits invalidate cached geometry"
+        );
+        assert!(
+            Arc::ptr_eq(&faded, &get(&held)),
+            "held and canonical fades share the same geometry"
+        );
+        let neutral_top = &neutral.channels[0].outline[..100];
+        let faded_top = &faded.channels[0].outline[..100];
+        assert!(faded_top[0].y > neutral_top[0].y);
+        assert_eq!(faded_top[50].y, neutral_top[50].y);
+        assert!(faded_top[99].y > neutral_top[99].y);
+        let neutral_bottom = &neutral.channels[0].outline[100..];
+        let faded_bottom = &faded.channels[0].outline[100..];
+        assert!(faded_bottom[0].y < neutral_bottom[0].y);
+        assert_eq!(faded_bottom[50].y, neutral_bottom[50].y);
+        assert!(faded_bottom[99].y < neutral_bottom[99].y);
     }
 
     fn key(origin: u64, bounds: Bounds<Pixels>) -> WaveformGeometryKey {
@@ -876,6 +998,7 @@ mod tests {
             &WaveformMapping::Clip {
                 clip: editor.project().clip(id).unwrap().clone(),
                 timeline_origin: 0,
+                fade: None,
             },
             0,
             6_500,
@@ -1389,6 +1512,7 @@ mod tests {
                     &WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: start,
+                        fade: Some(clip.retained_fade()),
                     },
                     start,
                     end,
