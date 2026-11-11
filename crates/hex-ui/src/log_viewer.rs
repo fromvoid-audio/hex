@@ -36,7 +36,7 @@ const WINDOWS: &[(&str, Option<u64>)] = &[
 mod presentation;
 mod scrollbar;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 use presentation::COPY_LIMIT;
 use presentation::{COPY_CLIPPED, format_time, make_excerpt};
 
