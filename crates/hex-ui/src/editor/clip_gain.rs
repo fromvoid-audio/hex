@@ -1,6 +1,6 @@
 //! Option-drag on an Arrangement audio clip's top edge adjusts gain. The Window
-//! lease owns held input only; the
-//! ordinary FIFO receipt retains the released value until canonical installation.
+//! lease owns held input. The ordinary FIFO receipt retains the released value
+//! until canonical installation.
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
 //! their relative gains in one EditClips command; a single audio clip
 //! uses its typed gain command.

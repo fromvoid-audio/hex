@@ -115,16 +115,26 @@ fn plain_audio_top_edge_drag_moves_the_clip_without_changing_gain(cx: &mut TestA
         assert!(view.active_clip_drag.is_some());
         assert!(!view.clip_gain.held());
     });
-    let up = point(down.x + px(160.0), down.y);
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let up = point(lane.origin.x + lane.size.width * 0.57, lane.center().y);
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        assert!(matches!(
+        assert!(
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::MoveClipWithOverwrite { clip: moved, track: target, start })
+                    if moved == clip && target == track && start > 0
+            ),
+            "unexpected release: {:?}, {:?}",
             view.last_enqueued_edit,
-            Some(Command::MoveClipWithOverwrite { clip: moved, track: target, start })
-                if moved == clip && target == track && start > 0
-        ));
+            view.error
+        );
         assert!(view.displayed_clip_gain(clip).is_none());
     });
 }
