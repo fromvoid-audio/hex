@@ -1235,51 +1235,7 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
     ) -> Result<(), String> {
-        use hex_session::service::ResidentPublicationAcceptance;
-        use std::time::{Duration, Instant};
-
-        let ResidentPublicationAcceptance::Submitted {
-            output_identity,
-            audio_revision,
-        } = acceptance
-        else {
-            return Ok(());
-        };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let control = self
-                .output
-                .as_mut()
-                .and_then(|output| output.publication.control())
-                .filter(|control| control.output_identity() == Some(output_identity))
-                .ok_or("source edit lost its audio output")?;
-            let status = &control.status;
-            if status.recording_source().is_some_and(|source| {
-                source.output_identity == output_identity
-                    && source.audio_revision == audio_revision
-                    && source.context == context
-            }) {
-                return Ok(());
-            }
-            if let Some((revision, reason)) = status.rejected_revision()
-                && revision == audio_revision
-            {
-                return Err(format!(
-                    "source edit playback refused · {}",
-                    reason.message()
-                ));
-            }
-            if status.device_fault.load(Acquire)
-                || status.render_fault.load(Acquire)
-                || Instant::now() >= deadline
-            {
-                // A queued candidate must not install after the editor refuses
-                // its revision. Retire this output before reporting loss.
-                self.relinquish_output();
-                return Err("source edit lost audio confirmation · restart audio".into());
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        self.confirm_resident_edit_publication(context, acceptance, "source edit")
     }
     fn resident_publication_readiness(
         &mut self,
@@ -1827,7 +1783,20 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        NativeAudioSink::begin_section_edit(self, context, allow_playing)
+        NativeAudioSink::begin_section_edit(self, context, allow_playing, false)
+    }
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<(), String> {
+        NativeAudioSink::begin_section_edit(self, context, true, true)
+    }
+    fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        NativeAudioSink::confirm_section_edit_recovery(self, context, acceptance)
     }
     fn section_edit_ready(
         &mut self,

@@ -3,6 +3,8 @@ use super::*;
 use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
+mod section_edit;
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
