@@ -259,11 +259,22 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(affected, ["hex-sandbox", "hex-ui"])
                 boundary = plan.boundary_selection(root, [path], inventory, affected)
                 self.assertEqual(boundary["test_packages"], affected)
+                ui_filters = ["editor::theme_settings::tests::", "theme::"]
+                if path.endswith("/theme.rs"):
+                    ui_filters.extend((
+                        "output_meter::tests::unit_tests::",
+                        "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps",
+                    ))
                 self.assertEqual(boundary["module_filters"], {
-                    "hex-ui": ["editor::theme_settings::tests::", "theme::"],
+                    "hex-ui": sorted(ui_filters),
                     "hex-sandbox": [sandbox_filter]})
                 steps = ci.boundary_steps({"affected_packages": affected, "cargo_inventory": inventory,
                                            "paths": [path], "boundary": boundary})
+                if path.endswith("/theme.rs"):
+                    default_ui = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+                    self.assertIn("output_meter::tests::unit_tests::", default_ui.argv)
+                    feature_ui = next(step for step in steps if step.step_id == "ui-feature-tests")
+                    self.assertIn("output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps", feature_ui.argv)
                 ui_units = [step for step in steps if "unit_editor_logic" in step.argv]
                 self.assertEqual(len(ui_units), 1)
                 self.assertTrue(ui_units[0].requires_tests)
@@ -3815,6 +3826,37 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertIn(chain, steps["ui-default-lib-unit-tests"].argv)
                 if source.endswith("/header_style_tests.rs"):
                     self.assertNotIn(chain, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
+    def test_output_meter_contrast_uses_default_lib_and_keeps_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "output_meter::tests::unit_tests::"
+        consumers = (
+            "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps",
+            "output_meter::tests::rendered::fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geometry",
+            "editor::output_meter_ui_test::output_meter_status_snapshot_reaches_actual_editor_at_minimum_size",
+        )
+        for source in (
+            "crates/hex-ui/src/output_meter.rs",
+            "crates/hex-ui/src/output_meter/tests.rs",
+            "crates/hex-ui/src/output_meter/tests/rendered.rs",
+            "crates/hex-ui/src/output_meter/logic.rs",
+        ):
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
                 self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
                 feature_args = steps["ui-feature-tests"].argv
                 for consumer in consumers:
