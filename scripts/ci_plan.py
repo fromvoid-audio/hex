@@ -291,6 +291,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
     "src/editor/midi_ruler.rs": ("editor::midi_ruler::geometry_tests::",),
     "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
+    "src/editor/waveform_stretch.rs": ("editor::waveform_stretch::tests::",),
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
@@ -1194,6 +1195,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 ))
             if "crates/hex-ui/src/editor/tuning/plots.rs" in executable:
                 names.add("editor::tuning::ui_tests::review_followup_dice_changes_the_actual_palette_without_editing_the_project")
+            if {
+                "crates/hex-ui/src/editor/waveform_stretch.rs",
+                "crates/hex-ui/src/editor/waveform_stretch/projection.rs",
+                "crates/hex-ui/src/editor/waveform_stretch/tests.rs",
+            }.intersection(executable):
+                names.add("editor::waveform::resize_tests::shift_stretch_keeps_live_sample_varied_waveforms_visible")
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
                     "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
