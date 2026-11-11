@@ -296,6 +296,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/tracks.rs": ("editor::tracks::midi_trim_unit_tests::",),
     "src/editor/pending_clip_move.rs": ("editor::pending_clip_move::tests::",),
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
+    "src/editor/midi_origin_view.rs": ("editor::midi_origin_view::tests::",),
     "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
     "src/editor/midi_ruler.rs": ("editor::midi_ruler::geometry_tests::",),
     "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
@@ -563,6 +564,8 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::device_panel::modulators::": (
         "editor::device_panel::tests::modulation_panel_adds_and_maps_an_audio_rate_modulator",
     ),
+    "editor::midi_origin_view::": ("editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges",),
+    "editor::midi_origin_view::tests::": ("editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges",),
     "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
     "editor::drag::": ("editor::drag_autoscroll::tests::",),
