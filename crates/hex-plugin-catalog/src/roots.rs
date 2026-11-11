@@ -16,16 +16,30 @@ pub struct Enumeration {
 
 /// Standard macOS local/user locations. No home or checkout fallback.
 pub fn macos_standard_paths() -> Result<Vec<PathBuf>, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("user home unavailable")?;
-    if !path_valid(&home) {
-        return Err("user home path invalid".into());
+    macos_scan_paths(true, true, None)
+}
+
+/// Resolve only the selected roots, before the bounded batch starts.
+pub fn macos_scan_paths(
+    system: bool,
+    user: bool,
+    custom: Option<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    if system {
+        roots.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
     }
-    Ok(vec![
-        PathBuf::from("/Library/Audio/Plug-Ins/VST3"),
-        home.join("Library/Audio/Plug-Ins/VST3"),
-    ])
+    if user {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("user home unavailable")?;
+        if !path_valid(&home) {
+            return Err("user home path invalid".into());
+        }
+        roots.push(home.join("Library/Audio/Plug-Ins/VST3"));
+    }
+    roots.extend(custom);
+    Ok(roots)
 }
 
 fn existing_root(path: &Path) -> Result<bool, String> {
@@ -50,14 +64,14 @@ fn existing_root(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// At most two roots; stop before any foreign execution on traversal/cap failure.
+/// At most three roots; stop before any foreign execution on traversal/cap failure.
 /// Symlinks encountered within an existing root are counted and never followed.
 pub fn enumerate(
     roots: &[PathBuf],
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Enumeration, String> {
-    if roots.is_empty() || roots.len() > 2 {
-        return Err("one or two vst3 folders required".into());
+    if roots.is_empty() || roots.len() > 3 {
+        return Err("one to three vst3 folders required".into());
     }
     let mut pending = Vec::new();
     for root in roots {

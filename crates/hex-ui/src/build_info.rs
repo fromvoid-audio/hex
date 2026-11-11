@@ -7,15 +7,6 @@ pub(crate) const LABEL: &str = concat!(
     " · ",
     env!("HEX_BUILD_IDENTITY")
 );
-// Reserve the right edge (8), three control gaps (12), log/help buttons (40),
-// changelog button including padding (62), and an eight-pixel title gap.
-// Ten-pixel Ioskeley Mono advances six pixels per character; UTF-8 byte length
-// conservatively bounds that width. Keep the existing compact minimum.
-pub(crate) const HEADER_INSET: f32 = {
-    let width = 130.0 + LABEL.len() as f32 * 6.0;
-    if width > 232.0 { width } else { 232.0 }
-};
-
 pub(crate) fn label() -> Stateful<Div> {
     div()
         .id("application-build-controls")
@@ -98,7 +89,7 @@ impl gpui::Render for LogTooltip {
     ) -> impl IntoElement {
         crate::tooltips::view(
             &crate::tooltips::Kind::control("debug log"),
-            "debug · open latest log in text editor",
+            "debug · open session log",
             _cx,
         )
     }

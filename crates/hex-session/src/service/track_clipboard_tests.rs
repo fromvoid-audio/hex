@@ -180,6 +180,7 @@ fn track_clipboard_full_midi_copy_renders_both_independent_instruments_across_no
             revision: initial.state.revision,
             class: hex_engine::NativeDeviceClass::Instrument,
             type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+            new_track_gain: None,
         },
     );
     let track = inserted.state.project.tracks()[0].id();

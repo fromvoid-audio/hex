@@ -145,7 +145,7 @@ mod tests {
             assert!(c.start() > 0);
             let p = state.audio_clip_waveforms.get(&audio).unwrap();
             assert_eq!(p.offset, 0);
-            assert_eq!(p.waveform.source_frames as u64, c.duration());
+            assert_eq!(p.waveform.source_frames() as u64, c.duration());
             std::sync::Arc::clone(&p.waveform)
         });
         let down = crate::editor::clip_drag_ui_test::trim_grab_point(

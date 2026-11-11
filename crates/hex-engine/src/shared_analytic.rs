@@ -372,6 +372,9 @@ impl SharedAnalyticContextTable {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
                 continue;
             };
+            if crate::compile::is_vst3_instrument(device) {
+                continue;
+            }
             let prepared = crate::native_device_resources::prepare_instrument(
                 registry,
                 device.id(),

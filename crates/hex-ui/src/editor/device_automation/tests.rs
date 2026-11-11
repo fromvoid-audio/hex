@@ -660,15 +660,16 @@ mod native {
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {
             assert!(
-                view.automation_view.devices.marquee.is_some()
+                view.automation_view.devices.draft.is_some()
+                    && view.automation_view.devices.marquee.is_none()
                     && view.automation_view.devices.pending.is_none(),
-                "a blank press waits: release adds a point, a drag selects"
+                "a plain blank press holds the new point; release commits it"
             )
         });
         visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         entity.update(&mut visual, |view, cx| {
-            assert!(view.automation_view.devices.marquee.is_none());
+            assert!(view.automation_view.devices.draft.is_none());
             assert!(view.automation_view.devices.pending.is_some());
             let pending = view.automation_view.devices.pending.as_ref().unwrap();
             let points = pending.points.clone();
@@ -735,5 +736,70 @@ mod native {
             );
         });
         visual.run_until_parked();
+    }
+}
+
+#[test]
+fn receiving_fm4_exposes_granted_assignments_and_retires_unrouted_targets() {
+    let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "carrier assignment".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_engine::default_native_device_state_for_class(
+                NativeDeviceClass::Instrument,
+                DeviceTypeId::from_static("hex.instrument.fm4"),
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let source = editor.project().track(track).unwrap().source_id().unwrap();
+    let before = editor.project().clone();
+    let mut targets = Vec::new();
+    for id in [2, 5, 8, 11, 29, 30, 31, 32] {
+        let entry = Entry::read(
+            editor.project(),
+            4,
+            Owner::Track(track),
+            device,
+            DeviceAutomationTarget::Parameter(ParameterId::from_static(id)),
+        )
+        .unwrap();
+        assert!(entry.target.current(editor.project(), 4).is_some());
+        assert!(entry.target.current(editor.project(), 5).is_none());
+        targets.push(entry.target);
+    }
+    for id in [1, 28, 33, 36] {
+        assert!(
+            Entry::read(
+                editor.project(),
+                4,
+                Owner::Track(track),
+                device,
+                DeviceAutomationTarget::Parameter(ParameterId::from_static(id))
+            )
+            .is_none()
+        );
+    }
+    assert_eq!(editor.project(), &before, "discovery never authors a curve");
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    for target in targets {
+        assert!(target.current(editor.project(), 4).is_none());
     }
 }

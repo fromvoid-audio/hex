@@ -297,3 +297,38 @@ fn profile_graph_pointer(cx: &mut TestAppContext) {
         );
     }
 }
+
+#[gpui::test]
+fn graph_x_removal_is_opt_in_and_does_not_consume_modified_keys(cx: &mut TestAppContext) {
+    cx.update(super::bind_response_graph_keys);
+    let Fixture { handle, graph, .. } = fixture(cx, false);
+    let phases = Rc::new(RefCell::new(Vec::new()));
+    let target = phases.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&graph, move |_, event: &ResponseGraphEvent, _| {
+            target.borrow_mut().push(event.phase);
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(440.), px(150.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| graph.update(cx, |graph, _| graph.focus.focus(window)));
+    visual.simulate_keystrokes("x");
+    assert!(!phases.borrow().contains(&ResponseGraphPhase::Remove));
+    graph.update(&mut visual, |graph, cx| {
+        graph.set_backspace_removal(true);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-x");
+    assert!(!phases.borrow().contains(&ResponseGraphPhase::Remove));
+    visual.simulate_keystrokes("x");
+    assert_eq!(
+        phases
+            .borrow()
+            .iter()
+            .filter(|phase| **phase == ResponseGraphPhase::Remove)
+            .count(),
+        1
+    );
+}

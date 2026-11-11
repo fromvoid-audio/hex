@@ -90,6 +90,9 @@ impl EventProof {
         event: NativeInstrumentEvent,
     ) -> Result<(), Error> {
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { expression, .. } => {
                 let next = modulation::expression_after(self.expression, expression)?;
                 if next == self.expression {
@@ -193,6 +196,9 @@ impl Runtime {
         running: Option<bool>,
     ) -> Result<(), Error> {
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { expression, .. } => {
                 return self.expression(expression);
             }

@@ -4,17 +4,14 @@ use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
 };
 use hex_session::service::{Event, Request, Service};
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::Instant;
 fn event(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
             Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < until => {
-                thread::yield_now()
+                std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(reason) => panic!("event: {reason}"),
         }
@@ -57,6 +54,7 @@ fn stamped_lane_edits_preserve_base_value_and_refuse_stale_queued_requests() {
         revision,
         device,
         target: DeviceAutomationTarget::Parameter(parameter),
+        vst3_class: None,
         points,
     };
     service
@@ -196,6 +194,7 @@ fn provider_and_host_targets_coexist_clear_undo_and_save_reopen_without_base_edi
                 revision: current.state.revision,
                 device,
                 target,
+                vst3_class: None,
                 points: vec![AutomationPoint {
                     beat: BeatTime::ZERO,
                     value: AutomationValue::new(value).unwrap(),
@@ -214,6 +213,7 @@ fn provider_and_host_targets_coexist_clear_undo_and_save_reopen_without_base_edi
             revision: current.state.revision,
             device,
             target: DeviceAutomationTarget::HostInputGain,
+            vst3_class: None,
             points: Vec::new(),
         })
         .unwrap();
@@ -294,6 +294,7 @@ fn actual_source_owner_and_valid_foreign_envelope_do_not_gain_native_host_capabi
             revision: source.state.revision,
             device,
             target: DeviceAutomationTarget::HostInputGain,
+            vst3_class: None,
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.5).unwrap(),

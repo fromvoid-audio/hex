@@ -31,6 +31,18 @@ fn pcm(path: &std::path::Path) -> Vec<[i16; 2]> {
 fn quantize(level: f32) -> [i16; 2] {
     [(level * 32767.0).round() as i16; 2]
 }
+/// PCM16 export applies ±1 LSB TPDF dither: within one LSB of rounding.
+fn assert_pcm_near(actual: &[[i16; 2]], expected: &[[i16; 2]]) {
+    assert_eq!(actual.len(), expected.len());
+    for (frame, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+                "frame {frame}: {actual} not within one lsb of {expected}"
+            );
+        }
+    }
+}
 #[test]
 fn loaded_resident_service_exports_exact_default_range_captures_and_stems_without_monitor_input() {
     let _native = native_fixture();
@@ -56,7 +68,9 @@ fn loaded_resident_export_case(frame_limit: u64) {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -176,14 +190,17 @@ fn loaded_resident_export_case(frame_limit: u64) {
     let done = completed(&mut h);
     assert!(done.result.is_ok(), "{:?}", done.result);
     assert_eq!(done.revision, state.state.revision);
-    let expected: Vec<_> = (0..24_000)
+    // The default range ends at the one-beat clip end plus the sampler's
+    // declared release tail, which now includes the prepared ~2 ms declick
+    // floor (96 frames at 48 kHz) even though the one-shot ends earlier.
+    let expected: Vec<_> = (0..24_000 + 96)
         .map(|frame| {
             let sample = if frame < 8192 { 0.25 } else { 0.0 };
             let audio = if frame < 512 { 0.125 } else { 0.0 };
             quantize((sample + audio + (sample * 0.5 + audio * 0.25) * 0.5) * 0.5)
         })
         .collect();
-    assert_eq!(pcm(&full), expected);
+    assert_pcm_near(&pcm(&full), &expected);
     let range = files.0.join("range.wav");
     let control = ExportControl::default();
     h.run(Request::ExportRange {
@@ -192,10 +209,12 @@ fn loaded_resident_export_case(frame_limit: u64) {
         frames: Some(320),
         signal: ExportSignal::Main,
         control: control.clone(),
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
     });
     assert!(completed(&mut h).result.is_ok());
-    assert_eq!(pcm(&range), expected[129..449]);
+    // Dither is timeline-anchored, so the range is exactly the full slice.
+    assert_eq!(pcm(&range), pcm(&full)[129..449]);
     assert_eq!(control.progress().processed_frames, 449);
     let capture = files.0.join("capture.wav");
     h.run(Request::ExportRange {
@@ -207,10 +226,11 @@ fn loaded_resident_export_case(frame_limit: u64) {
             hex_engine::OutputCaptureId::Return(bus),
         ]),
         control: ExportControl::default(),
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
     });
     assert!(completed(&mut h).result.is_ok());
-    assert_eq!(pcm(&capture), vec![quantize(0.328125); 512]);
+    assert_pcm_near(&pcm(&capture), &[quantize(0.328125); 512]);
     let stems = files.0.join("stems");
     h.run(Request::ExportRange {
         path: stems.clone(),
@@ -227,16 +247,17 @@ fn loaded_resident_export_case(frame_limit: u64) {
             },
         ]),
         control: ExportControl::default(),
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
     });
     assert!(completed(&mut h).result.is_ok());
-    assert_eq!(
-        pcm(&stems.join(format!("track-{}-sampler.wav", track.value()))),
-        vec![quantize(0.25); 512]
+    assert_pcm_near(
+        &pcm(&stems.join(format!("track-{}-sampler.wav", track.value()))),
+        &[quantize(0.25); 512],
     );
-    assert_eq!(
-        pcm(&stems.join(format!("return-{}-bus.wav", bus.value()))),
-        vec![quantize(0.078125); 512]
+    assert_pcm_near(
+        &pcm(&stems.join(format!("return-{}-bus.wav", bus.value()))),
+        &[quantize(0.078125); 512],
     );
     assert!(!input.is_cancelled());
     assert_eq!(h.audio.as_ref().unwrap().control.output_identity(), output);

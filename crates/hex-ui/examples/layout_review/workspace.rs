@@ -281,10 +281,10 @@ impl Workspace {
         self.dismiss(window, cx);
     }
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(menu) = self.menu.take() {
-            if let Some(focus) = menu.previous_focus {
-                focus.focus(window);
-            }
+        if let Some(menu) = self.menu.take()
+            && let Some(focus) = menu.previous_focus
+        {
+            focus.focus(window);
         }
         cx.notify();
     }

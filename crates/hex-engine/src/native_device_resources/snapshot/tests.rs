@@ -9,6 +9,18 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
 fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() {
+    normal_preparation_and_render(false);
+}
+
+/// Saved sampler states keep their saved version in the project (v2, or v3
+/// with a crossfade, Pulse #4088); both prepare and render without migration.
+/// A dormant one-shot crossfade forces v3 with identical output.
+#[test]
+fn control_sampler_prepares_and_renders_a_saved_v3_state() {
+    normal_preparation_and_render(true);
+}
+
+fn normal_preparation_and_render(saved_v3: bool) {
     let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
     let Created::Asset(asset) = editor
         .execute(Command::ImportDeviceAsset {
@@ -58,6 +70,9 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
         sustain: 1.0,
         release_seconds: 0.0,
     };
+    if saved_v3 {
+        state.loop_crossfade_ms = 5.0;
+    }
     let native = state
         .to_native()
         .unwrap()
@@ -66,6 +81,7 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
             asset: DeviceAssetKey::new(asset.value()).unwrap(),
         }])
         .unwrap();
+    assert_eq!(native.state_version(), if saved_v3 { 3 } else { 2 });
     editor
         .execute(Command::InsertInstrument {
             track,

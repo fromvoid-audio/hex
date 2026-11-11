@@ -3,6 +3,7 @@
 use super::*;
 use crate::device_gesture::{GesturePreparation, command_for_snapshot};
 use hex_engine::native_device_resources::DeviceResourceAdmission;
+pub(super) mod plugin_parameter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Identity {
@@ -78,6 +79,9 @@ pub(super) fn device_operation(
     admission: sampler_export::Admission<'_>,
 ) -> crate::device_gesture::PreparedGesture {
     match operation {
+        GesturePreparation::Plugin(operation) => plugin_parameter::operation(
+            session, operation, context, current, preview, sink, admission,
+        ),
         GesturePreparation::Preview(draft) => {
             let identity = Identity::Device(DevicePreviewIdentity {
                 project_generation: context.project_generation,

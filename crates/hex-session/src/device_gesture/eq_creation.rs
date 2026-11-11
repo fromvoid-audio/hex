@@ -70,6 +70,7 @@ impl EqNodeCreationSnapshot {
             .and_then(|state| state.with_host_metadata_from(entry.state()))
             .map_err(|_| SessionError::Invalid("eq creation state is unsupported"))?;
         Ok(Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: entry.state().clone(),
             expected_variant: self.variant,
@@ -188,6 +189,7 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid("eq no longer exists"))?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
                         touched_parameters: crate::device_gesture::TouchedParameters::default(),
                         manual_edit: false,
                         key,
@@ -197,6 +199,7 @@ impl GestureMachine {
                         secondary_value: None,
                         parameters: None,
                         creation: Some(snapshot),
+                        plugin_value: None,
                     },
                     kind: ActiveKind::Device {
                         class,
@@ -204,6 +207,8 @@ impl GestureMachine {
                     },
                     creation_origin: Some(entry.state().clone()),
                     origin_parameters: None,
+                    state_origin: None,
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -232,6 +237,7 @@ impl GestureMachine {
                 let draft = GestureSnapshot {
                     sequence,
                     creation: Some(snapshot),
+                    plugin_value: None,
                     ..active
                 };
                 let before = session.project().clone();

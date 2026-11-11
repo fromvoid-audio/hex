@@ -1,4 +1,6 @@
 //! Coherent nonowning observation of an actual eligible installation ACK.
+//! Each instance has one callback publisher. Repeating the same complete source
+//! must not create a false-absence window for bounded control-side readers.
 use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppliedAudioSource {
@@ -16,8 +18,23 @@ pub(super) struct AppliedSourceStatus {
 }
 impl AppliedSourceStatus {
     pub(super) fn publish(&self, source: Option<AppliedAudioSource>) {
+        self.publish_between(source, || {});
+    }
+    fn publish_between(&self, source: Option<AppliedAudioSource>, observe: impl FnOnce()) {
         let before = self.sequence.load(SeqCst);
+        // The sole publisher can compare its stable fields without opening a
+        // write window. Real changes still invalidate readers before replacing
+        // any field; contention is never accepted as an installed source.
+        if before & 1 == 0
+            && self.root.load(SeqCst) == source.map_or(0, |s| s.output_identity)
+            && self.generation.load(SeqCst) == source.map_or(0, |s| s.context.project_generation)
+            && self.editor.load(SeqCst) == source.map_or(0, |s| s.context.editor_revision)
+            && self.audio.load(SeqCst) == source.map_or(0, |s| s.audio_revision)
+        {
+            return;
+        }
         self.sequence.store(before.wrapping_add(1), SeqCst);
+        observe();
         self.root
             .store(source.map_or(0, |s| s.output_identity), SeqCst);
         self.generation
@@ -84,6 +101,65 @@ impl Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_source_stays_observable_at_callback_republication_frontier() {
+        let status = Status::default();
+        let source = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 7,
+            },
+            audio_revision: 3,
+            output_identity: 9,
+        };
+        status
+            .applied_revision
+            .store(source.audio_revision, Release);
+        status
+            .ordinary_native_revision
+            .store(source.audio_revision, Release);
+        status.recording_source.publish(Some(source));
+        let seen = std::cell::Cell::new(Some(source));
+        status
+            .recording_source
+            .publish_between(Some(source), || seen.set(status.native_effect_source()));
+        assert_eq!(
+            seen.get(),
+            Some(source),
+            "an unchanged callback publication must not cancel a live source reader"
+        );
+        assert_eq!(status.native_effect_source(), Some(source));
+    }
+
+    #[test]
+    fn real_source_change_and_removal_revoke_reader_before_data_replacement() {
+        let source = AppliedSourceStatus::default();
+        let first = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 7,
+            },
+            audio_revision: 3,
+            output_identity: 9,
+        };
+        let next = AppliedAudioSource {
+            audio_revision: 4,
+            ..first
+        };
+        source.publish(Some(first));
+        let observed = std::cell::Cell::new(false);
+        source.publish_between(Some(next), || {
+            observed.set(true);
+            assert_eq!(source.read(), None);
+        });
+        assert!(
+            observed.get(),
+            "sensitivity: the changed-source write frontier must be exercised"
+        );
+        assert_eq!(source.read(), Some(next));
+        source.publish_between(None, || assert_eq!(source.read(), None));
+        assert_eq!(source.read(), None);
+    }
     #[test]
     fn missing_unacked_contended_or_legacy_source_is_never_reported_as_applied() {
         let status = Status::default();
