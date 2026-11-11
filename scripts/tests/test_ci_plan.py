@@ -4771,6 +4771,38 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     (consumer, feature_args))
 
+    def test_missing_media_relink_unit_route_preserves_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::missing_media::tests::"
+        consumers = (
+            "editor::missing_media::ui_tests::missing_media_can_open_offline_and_shows_the_missing_count",
+            "editor::missing_media::ui_tests::moved_media_shows_panel_instead_of_failing_and_opens_with_relink",
+            "editor::missing_media::ui_tests::offline_media_relinks_in_place_from_the_indicator_and_undoes",
+            "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/missing_media/tests.rs",
+            "crates/hex-ui/src/editor/missing_media.rs",
+            "crates/hex-ui/src/editor/missing_media/ui_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_step = steps["ui-default-lib-unit-tests"]
+                self.assertIn(unit, unit_step.argv)
+                self.assertTrue(unit_step.requires_tests)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
