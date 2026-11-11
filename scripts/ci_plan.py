@@ -229,6 +229,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
     "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
+    "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
@@ -453,6 +454,20 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::menus::": (
+        "editor::recent_projects::labels::",
+        "editor::recent_projects::tests::recent_menu_action_keeps_its_path_after_mru_reordering_and_obeys_open_guard",
+        "editor::dialogs::ui_tests::project_menu_without_active_or_after_closed_window_cannot_touch_another_editor",
+    ),
+    "editor::recent_projects::labels::": (
+        "editor::menus::tests::",
+        "editor::recent_projects::tests::recent_menu_action_keeps_its_path_after_mru_reordering_and_obeys_open_guard",
+        "editor::dialogs::ui_tests::project_menu_without_active_or_after_closed_window_cannot_touch_another_editor",
+    ),
+    "editor::recent_projects::": (
+        "editor::menus::tests::",
+        "editor::dialogs::ui_tests::project_menu_without_active_or_after_closed_window_cannot_touch_another_editor",
+    ),
     "editor::midi_canvas::created_selection_tests::": ("editor::midi_draw::tests::",),
     "editor::midi_canvas::pending_drag_tests::stroke_preview_tests::capture_tests::": ("editor::midi_draw::tests::",),
     "editor::session_audio_panel::playhead::": ("editor::session_audio_panel::unit_tests::",),
@@ -602,9 +617,6 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::arrangement_audio_panel::controls::ui_tests::clip_slider_cancel_and_frozen_release_wait_for_own_terminal",
                      "editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_ordinary_trim_real_worker_control",
                      "editor::arrangement_audio_panel::tests::review_placed_mode_only_change_invalidates_captured_control"},
-                    {"editor::recent_projects::labels::",
-                     "editor::recent_projects::tests::",
-                     "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"},
                     {"editor::arrangement_map::model::",
                       "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
                       "editor::arrangement_focus::visibility::",
