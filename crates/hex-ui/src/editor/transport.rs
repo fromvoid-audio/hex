@@ -111,8 +111,19 @@ impl EditorView {
                 ),
             )
             .child(
-                self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+                self.vector_icon_surface(
+                    TransportIcon::Stop,
+                    "stop · escape · double-click to return to beginning",
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .on_click(|event, window, cx| {
+                    window.dispatch_action(
+                        Box::new(Stop {
+                            return_to_beginning: event.click_count() >= 2,
+                        }),
+                        cx,
+                    );
+                }),
             )
             .child(
                 self.control_icon(
@@ -507,6 +518,14 @@ impl EditorView {
         action: impl gpui::Action,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
+        self.vector_icon_surface(icon, description)
+            .on_click(cx.listener(move |_, _, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+                cx.notify();
+            }))
+    }
+
+    fn vector_icon_surface(&self, icon: TransportIcon, description: &'static str) -> Stateful<Div> {
         let (path, selector) = icon.asset();
         let style = theme::action_style();
         let hover_text = style.hover_text.unwrap_or(style.text);
@@ -534,10 +553,6 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |_, _, window, cx| {
-                window.dispatch_action(action.boxed_clone(), cx);
-                cx.notify();
-            }))
     }
 
     fn icon(

@@ -2742,6 +2742,8 @@ impl EditorView {
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.locked_play_start = None;
+            self.play_start_at_beginning = false;
+            self.escape_stop_armed = false;
             self.loop_start_over_clip = None;
             self.selection_loop_start = None;
             self.clip_paint_gesture = None;
@@ -4712,7 +4714,27 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.escape_stop_armed = false;
         self.stop_transport(true);
+    }
+
+    pub(super) fn stop_at_beginning(&mut self) {
+        self.play_start_at_beginning = true;
+        self.stop();
+    }
+
+    /// Only an Escape that reaches the transport arms the next keyboard stop.
+    /// Use desired state so the second stop can reset before callback feedback.
+    pub(super) fn stop_from_escape(&mut self) {
+        let playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(Acquire));
+        if self.escape_stop_armed && !self.desired_playing(playing) {
+            self.stop_at_beginning();
+        } else {
+            self.stop();
+        }
+        self.escape_stop_armed = true;
     }
 
     fn tick_stopped_vst3_restore(&mut self) -> bool {
@@ -4825,7 +4847,12 @@ impl EditorView {
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
         self.deferred_play = None;
-        self.status = "stopped · returned to start".into();
+        self.status = if self.play_start_at_beginning {
+            "stopped · play start at beginning"
+        } else {
+            "stopped"
+        }
+        .into();
         if restart_degraded && !self.update_preparing() {
             // A revoked worker cannot be renewed on the applied graph. Start a
             // new output from the current project, at the explicit Stop cursor.
