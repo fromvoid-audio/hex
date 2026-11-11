@@ -18,7 +18,8 @@ pub(super) use super::waveform_source::{
 
 mod paint_geometry;
 pub(super) use paint_geometry::{
-    fade_envelope_samples, fraction_u64, peak_vertical_bounds, projected_fade_envelope_samples,
+    WaveformAmplitudeScale, fade_envelope_samples, fraction_u64, peak_vertical_bounds,
+    projected_fade_envelope_samples,
 };
 
 /// Same-revision accepted peaks and the original/prospective metadata view.
@@ -494,6 +495,9 @@ pub(super) fn waveform_canvas(
             let columns = waveform_column_count(width, paint.scale);
             let geometry = cache.as_ref().and_then(|cache| {
                 let request = WaveformGeometryRequest {
+                    amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                        false,
+                    ),
                     mapping: &mapping,
                     visible_start,
                     visible_end,
