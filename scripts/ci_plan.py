@@ -234,6 +234,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/tuning/mod.rs": ("editor::tuning::snap_tests::", "editor::tuning::audition_level_unit_tests::"),
     "src/editor/tuning/plots.rs": ("editor::tuning::plots::tests::",),
     "src/editor/session_grid.rs": ("editor::session_grid::tests::",),
+    "src/editor/clip_boundary.rs": ("editor::clip_boundary::tests::corner_geometry_is_bounded_and_resolves_again_after_resize",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
