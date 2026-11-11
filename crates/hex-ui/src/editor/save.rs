@@ -325,7 +325,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{SaveAdmission, prepare_save_path, save_admission};
     use std::path::PathBuf;

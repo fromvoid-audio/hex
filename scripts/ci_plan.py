@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/save.rs": ("editor::save::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
@@ -458,6 +459,9 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
                     {"editor::midi_canvas::geometry::",
                      "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
+                    {"editor::save::tests::",
+                     "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success",
+                     "editor::save::ui_tests::older_format_explicit_overwrite_warns_once_and_save_as_keeps_original"},
                     {"editor::midi_loop_notes::tests::",
                      "editor::midi_ruler::geometry_tests::",
                      "editor::midi_ruler::loop_brace::tests::",
