@@ -166,7 +166,11 @@ impl EditorView {
                     style
                 }
             })
-            .on_drop(super::sampler_load::track_drop_listener(cx, Some(track)))
+            .on_drop(super::sampler_load::track_drop_listener(
+                cx,
+                Some(track),
+                hex_project::InstrumentLoadPlacement::First,
+            ))
             .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
                 let valid = owner
                     .read(cx)

@@ -2846,7 +2846,7 @@ pub(super) mod tests {
                 &AtomicBool::new(false),
                 crate::native_assets::NativeAssetDestination::NewInstrument {
                     track,
-                    replacing: None,
+                    placement: hex_project::InstrumentLoadPlacement::First,
                     state,
                     source_slot,
                 },
@@ -3071,7 +3071,7 @@ pub(super) mod tests {
                 project_generation: 0,
                 revision: sampler_track.state.revision,
                 track: sampler_track_id,
-                slot: SamplerLoadSlot::New { replacing: None },
+                slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
                 path: files.source().to_owned(),
                 cancel: Arc::new(AtomicBool::new(false)),
             })

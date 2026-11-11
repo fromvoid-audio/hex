@@ -888,14 +888,14 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::ImportDeviceAssetIntoNewInstrument {
             track,
-            replacing,
+            placement,
             path,
             sample_rate,
             frames,
             state,
             ..
         } => {
-            describe!("import_device_asset_into_new_instrument"; ["track" => track.value(), "replacing" => replacing.map(|id| id.value()), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+            describe!("import_device_asset_into_new_instrument"; ["track" => track.value(), "placement" => placement, "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::ImportDeviceAssetReplacingInstrument {
             track,

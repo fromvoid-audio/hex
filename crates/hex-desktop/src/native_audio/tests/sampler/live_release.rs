@@ -28,7 +28,9 @@ fn check(key_up: &str) {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });

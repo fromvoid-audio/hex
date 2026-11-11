@@ -320,7 +320,9 @@ fn resident_sampler_and_grouped_audio_retain_every_media_root_and_pcm() {
         project_generation: 0,
         revision: added.state.revision,
         track: sampler_track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path,
         cancel: Arc::new(AtomicBool::new(false)),
     });

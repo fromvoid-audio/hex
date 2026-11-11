@@ -1,6 +1,7 @@
 //! One first-load UI intent; the Session worker owns source/assignment state.
 use super::*;
 use gpui::{App, Pixels, Point};
+use hex_project::InstrumentLoadPlacement;
 use hex_session::service::SamplerLoadSlot;
 use std::{
     path::PathBuf,
@@ -77,7 +78,7 @@ impl EditorView {
                 expected_state: device.state().clone(),
             }
         } else {
-            SamplerLoadSlot::New { replacing: None }
+            SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First)
         };
         Ok(Target {
             generation: self.project_generation,
@@ -94,8 +95,9 @@ impl EditorView {
                     && s.project
                         .track(target.track)
                         .is_some_and(|track| match &target.slot {
-                            SamplerLoadSlot::New { replacing } => {
-                                track.instrument().map(hex_project::Device::id) == *replacing
+                            SamplerLoadSlot::New(placement) => {
+                                track.instrument().map(hex_project::Device::id)
+                                    == placement.replacement()
                             }
                             SamplerLoadSlot::Existing {
                                 device,
@@ -215,12 +217,13 @@ impl EditorView {
         Ok(target)
     }
 
-    /// Panel and header drops own the painted track's instrument slot. An
-    /// occupied slot follows native header placement, preserving its effects.
+    /// Panel drops append a new instrument. Header drops use the front slot.
+    /// Either surface replaces an occupied slot in place, preserving effects.
     pub(super) fn drop_browser_sample_on_track(
         &mut self,
         drag: &drag::BrowserAudioDrag,
         track: Option<TrackId>,
+        placement: InstrumentLoadPlacement,
         cx: &mut Context<Self>,
     ) {
         let target = self
@@ -230,9 +233,9 @@ impl EditorView {
                 revision: drag.revision,
                 track: track.id(),
                 path: drag.path.clone(),
-                slot: SamplerLoadSlot::New {
-                    replacing: track.instrument().map(hex_project::Device::id),
-                },
+                slot: SamplerLoadSlot::New(track.instrument().map_or(placement, |device| {
+                    InstrumentLoadPlacement::Replace(device.id())
+                })),
             });
         self.finish_browser_sampler_drop(drag, target, cx);
     }
@@ -401,9 +404,10 @@ impl EditorView {
 pub(super) fn track_drop_listener(
     cx: &Context<EditorView>,
     track: Option<TrackId>,
+    placement: InstrumentLoadPlacement,
 ) -> impl Fn(&drag::BrowserAudioDrag, &mut Window, &mut App) + 'static {
     cx.listener(move |view, drag: &drag::BrowserAudioDrag, _, cx| {
-        view.drop_browser_sample_on_track(drag, track, cx);
+        view.drop_browser_sample_on_track(drag, track, placement, cx);
     })
 }
 

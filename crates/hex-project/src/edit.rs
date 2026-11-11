@@ -12,6 +12,23 @@ pub enum TrackDeviceSlot {
     Effect,
 }
 
+/// Placement of an instrument loaded with a newly imported source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentLoadPlacement {
+    First,
+    Append,
+    Replace(DeviceId),
+}
+
+impl InstrumentLoadPlacement {
+    pub fn replacement(self) -> Option<DeviceId> {
+        match self {
+            Self::Replace(device) => Some(device),
+            Self::First | Self::Append => None,
+        }
+    }
+}
+
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -797,7 +814,7 @@ pub enum Command {
     /// ID is bound inside this candidate, never predicted by a UI caller.
     ImportDeviceAssetIntoNewInstrument {
         track: TrackId,
-        replacing: Option<DeviceId>,
+        placement: InstrumentLoadPlacement,
         path: PathBuf,
         sample_rate: u32,
         frames: u64,
@@ -2930,7 +2947,7 @@ impl Project {
             }
             Command::ImportDeviceAssetIntoNewInstrument {
                 track,
-                replacing,
+                placement,
                 path,
                 sample_rate,
                 frames,
@@ -2940,6 +2957,7 @@ impl Project {
                 let target = self
                     .track(track)
                     .ok_or(Invalid("instrument track no longer exists"))?;
+                let replacing = placement.replacement();
                 if target.is_group()
                     || target.instrument().map(crate::Device::id) != replacing
                     || (replacing.is_some() && !target.receives_source_audio())
@@ -2970,7 +2988,17 @@ impl Project {
                         device_name: "sampler".into(),
                     })?;
                 } else {
-                    self.apply(Command::InsertInstrument { track, state })?;
+                    let created = self.apply(Command::InsertInstrument { track, state })?;
+                    if placement == InstrumentLoadPlacement::Append {
+                        let Created::Device(device) = created else {
+                            return Err(Invalid("imported instrument identity is unavailable"));
+                        };
+                        self.apply(Command::MoveTrackDevice {
+                            device,
+                            track,
+                            before: None,
+                        })?;
+                    }
                 }
                 Ok(Created::Asset(asset))
             }

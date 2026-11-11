@@ -1963,7 +1963,7 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
     model
         .execute(Command::ImportDeviceAssetIntoNewInstrument {
             track,
-            replacing: None,
+            placement: hex_project::InstrumentLoadPlacement::First,
             path: "original.wav".into(),
             sample_rate: 48_000,
             frames: 4,

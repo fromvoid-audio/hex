@@ -48,7 +48,7 @@ pub(super) fn request(before: &Event, track: hex_project::TrackId, path: PathBuf
             .project_generation,
         revision: before.state.revision,
         track,
-        slot: SamplerLoadSlot::New { replacing: None },
+        slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
         path,
         cancel: Arc::new(AtomicBool::new(false)),
     }
@@ -557,9 +557,7 @@ fn new_sampler_drop_replaces_the_captured_instrument_and_reopens() {
         .id();
     let mut load = request(&before, track, files.source.clone());
     if let Request::LoadFirstSampler { slot, .. } = &mut load {
-        *slot = SamplerLoadSlot::New {
-            replacing: Some(instrument),
-        };
+        *slot = SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::Replace(instrument));
     }
     service.submit(load).unwrap();
     let loaded = event(&service);
@@ -582,9 +580,7 @@ fn new_sampler_drop_replaces_the_captured_instrument_and_reopens() {
     // A late duplicate still names the pre-import revision.
     let mut stale = request(&before, track, files.source.clone());
     if let Request::LoadFirstSampler { slot, .. } = &mut stale {
-        *slot = SamplerLoadSlot::New {
-            replacing: Some(instrument),
-        };
+        *slot = SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::Replace(instrument));
     }
     service.submit(stale).unwrap();
     let refused = event(&service);

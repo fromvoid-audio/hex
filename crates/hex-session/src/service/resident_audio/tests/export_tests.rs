@@ -31,7 +31,7 @@ fn load(service: &Service, path: &std::path::Path, request_id: u64, generation: 
             project_generation: generation,
             revision: added.state.revision,
             track,
-            slot: SamplerLoadSlot::New { replacing: None },
+            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
             path: path.to_owned(),
             cancel: Arc::new(AtomicBool::new(false)),
         },

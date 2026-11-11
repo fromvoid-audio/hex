@@ -88,7 +88,12 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
             let mut stale_browser = sample_drag(view, path.clone());
             stale_browser.browser_generation = Some(view.browser.scan_generation() - 1);
             view.begin_browser_audio_drag(&stale_browser);
-            view.drop_browser_sample_on_track(&stale_browser, Some(tracks[0]), cx);
+            view.drop_browser_sample_on_track(
+                &stale_browser,
+                Some(tracks[0]),
+                hex_project::InstrumentLoadPlacement::First,
+                cx,
+            );
             assert_eq!(view.worker_requests_pending, pending);
             assert!(view.active_browser_audio_drag.is_none());
             assert_eq!(view.browser.playback_output, Some((1, 1)));
@@ -111,7 +116,12 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
             let blocked = sample_drag(view, path.clone());
             view.begin_browser_audio_drag(&blocked);
             let pending = view.worker_requests_pending;
-            view.drop_browser_sample_on_track(&blocked, Some(tracks[0]), cx);
+            view.drop_browser_sample_on_track(
+                &blocked,
+                Some(tracks[0]),
+                hex_project::InstrumentLoadPlacement::First,
+                cx,
+            );
             assert_eq!(view.worker_requests_pending, pending);
             assert_eq!(
                 view.error.as_deref(),
@@ -218,7 +228,6 @@ fn browser_sample_real_drop_targets_load_one_sampler_and_preserve_other_tracks(
                 track
             });
             view.device_panel.owner = Some(DevicePanelOwner::Track(track));
-            view.device_panel.generation = view.project_generation;
             view.device_panel_active = true;
             view.clip_view_open = true;
             view.browser.open = true;
@@ -299,6 +308,10 @@ fn browser_sample_real_drop_targets_load_one_sampler_and_preserve_other_tracks(
             assert_eq!(
                 target.devices(),
                 before.project.track(track).unwrap().devices()
+            );
+            assert_eq!(
+                target.instrument_position(),
+                Some(usize::from(route == "panel"))
             );
             let sampler = target.instrument().unwrap();
             assert_eq!(

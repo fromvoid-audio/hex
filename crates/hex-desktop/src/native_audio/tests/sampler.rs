@@ -1745,7 +1745,9 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1866,7 +1868,9 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });

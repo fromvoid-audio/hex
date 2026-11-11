@@ -233,9 +233,7 @@ pub struct SamplerLoadCompletion {
 #[derive(Clone, Debug)]
 pub enum SamplerLoadSlot {
     /// A new sampler replaces the exact current instrument, if any.
-    New {
-        replacing: Option<hex_project::DeviceId>,
-    },
+    New(hex_project::InstrumentLoadPlacement),
     /// Preserve the identity and settings of an exact empty sampler.
     Existing {
         device: hex_project::DeviceId,
@@ -5247,8 +5245,9 @@ fn run_worker(
                             .track(track)
                             .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
                         let target_current = match &slot {
-                            SamplerLoadSlot::New { replacing } => {
-                                target.instrument().map(hex_project::Device::id) == *replacing
+                            SamplerLoadSlot::New(placement) => {
+                                target.instrument().map(hex_project::Device::id)
+                                    == placement.replacement()
                             }
                             SamplerLoadSlot::Existing {
                                 device,
@@ -5298,11 +5297,11 @@ fn run_worker(
                         });
                         let frames = decoded.audio().frames().len();
                         let destination = match slot {
-                            SamplerLoadSlot::New { replacing } => {
+                            SamplerLoadSlot::New(placement) => {
                                 let (state, source_slot) = hex_engine::native_device_resources::sampler_import_template_on_control(frames)?;
                                 crate::native_assets::NativeAssetDestination::NewInstrument {
                                     track,
-                                    replacing,
+                                    placement,
                                     state,
                                     source_slot,
                                 }

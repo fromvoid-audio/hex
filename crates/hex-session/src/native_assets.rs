@@ -28,7 +28,7 @@ pub(crate) enum NativeAssetDestination {
     Unassigned,
     NewInstrument {
         track: hex_project::TrackId,
-        replacing: Option<hex_project::DeviceId>,
+        placement: hex_project::InstrumentLoadPlacement,
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
@@ -203,12 +203,12 @@ impl Session {
             },
             NativeAssetDestination::NewInstrument {
                 track,
-                replacing,
+                placement,
                 state,
                 source_slot,
             } => Command::ImportDeviceAssetIntoNewInstrument {
                 track,
-                replacing,
+                placement,
                 path,
                 sample_rate: source_rate,
                 frames,

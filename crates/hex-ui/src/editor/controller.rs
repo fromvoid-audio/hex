@@ -6236,7 +6236,9 @@ mod sampler_native_ui_protocol_tests {
                     track,
                     path: path.clone(),
                     revision: event.state.revision,
-                    slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+                    slot: hex_session::service::SamplerLoadSlot::New(
+                        hex_project::InstrumentLoadPlacement::First,
+                    ),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
                 .unwrap();

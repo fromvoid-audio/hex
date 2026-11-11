@@ -24,7 +24,9 @@ fn active_source_provider_change_applies_while_playing() {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -262,7 +264,9 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: sampler_file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -678,7 +682,9 @@ fn sampler_note_fixture() -> SamplerNote {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1094,7 +1100,9 @@ fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
             project_generation: 0,
             revision: added.state.revision,
             track,
-            slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
             path: file.wav(48_000, 8192),
             cancel: Arc::new(AtomicBool::new(false)),
         });
@@ -1173,7 +1181,9 @@ fn adding_a_latency_device_while_a_sampler_plays_applies_without_refusal() {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

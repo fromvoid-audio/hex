@@ -69,7 +69,7 @@ mod tests {
         let before = editor.project().snapshot();
         let command = || Command::ImportDeviceAssetIntoNewInstrument {
             track,
-            replacing: None,
+            placement: crate::InstrumentLoadPlacement::First,
             path: "source.wav".into(),
             sample_rate: 8000,
             frames: 4,
@@ -148,7 +148,7 @@ mod replacement_tests {
         editor
             .execute(Command::ImportDeviceAssetIntoNewInstrument {
                 track,
-                replacing: None,
+                placement: crate::InstrumentLoadPlacement::First,
                 path: "old.wav".into(),
                 sample_rate: 8000,
                 frames: 4,

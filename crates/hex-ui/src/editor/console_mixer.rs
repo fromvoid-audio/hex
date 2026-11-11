@@ -29,7 +29,11 @@ impl EditorView {
             .child(
                 div()
                     .id("console-main-header")
-                    .on_drop(super::sampler_load::track_drop_listener(cx, None))
+                    .on_drop(super::sampler_load::track_drop_listener(
+                        cx,
+                        None,
+                        hex_project::InstrumentLoadPlacement::First,
+                    ))
                     .debug_selector(|| "console-main-header".into())
                     .size_full()
                     .px(px(6.0))
