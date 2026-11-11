@@ -2933,6 +2933,35 @@ class ModuleScopeTests(unittest.TestCase):
                         root, [source + "tests/" + module + ".rs"], inventory, [owner])
                     self.assertTrue(any(unit.startswith(prefix) for prefix in reverse[owner]))
 
+    def test_arrangement_seek_units_keep_callback_worker_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::arrangement_seek::unit_tests::"
+        consumers = (
+            "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
+            "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+            "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+        )
+        for name in ("arrangement_seek.rs", "arrangement_seek_tests.rs",
+                     "arrangement_seek_unit_tests.rs", "arrangement_sections.rs", "edit_cursor_ui_test.rs"):
+            path = "crates/hex-ui/src/editor/" + name
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                self.assertNotIn("editor::arrangement_seek::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} is missing from {feature_args}")
+
     def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
