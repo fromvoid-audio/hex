@@ -1358,8 +1358,9 @@ class SingleRunFeatureTests(unittest.TestCase):
                 default_id = "module-tests-hex-ui" if filters else "affected-tests"
                 if single:
                     self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                    expected_units = [unit] if filters else sorted(plan.UI_DEFAULT_LIB_UNIT_MODULES.values())
                     self.assertEqual(steps["ui-default-lib-unit-tests"].argv,
-                                     ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", unit))
+                                     ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", *expected_units))
                     self.assertNotIn(default_id, steps)
                 else:
                     default = steps[default_id].argv
@@ -2881,15 +2882,15 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::waveform::paint_geometry::"
+        event_detail = "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column"
         consumers = [
             *WAVEFORM_PAINT_GEOMETRY_CONSUMERS,
             "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
             "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
-            "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
         ]
         source = "crates/hex-ui/src/editor/"
         names = plan.module_test_filters(root, [source + "waveform/paint_geometry.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        self.assertEqual(names, {owner: sorted([unit, event_detail, *consumers])})
         for path in ("waveform.rs", "waveform_geometry.rs", "tracks.rs",
                      "audio_event_editor/waveform_preview.rs", "audio_event_editor/workflow_tests.rs",
                      "audio_event_editor/free_placement_tests.rs", "audio_event_editor/tests.rs",
@@ -2897,7 +2898,7 @@ class ModuleScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 selected = plan.module_test_filters(root, [source + path], inventory, [owner])[owner]
                 self.assertTrue(any(unit.startswith(name) for name in selected))
-                for consumer in consumers:
+                for consumer in (*consumers, event_detail):
                     self.assertTrue(any(consumer.startswith(name) for name in selected))
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
@@ -2907,6 +2908,9 @@ class ModuleScopeTests(unittest.TestCase):
         unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
         self.assertTrue(unit_step.requires_tests)
         self.assertIn(unit, unit_step.argv)
+        cache_step = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertEqual(cache_step.argv[-1], event_detail)
+        self.assertTrue(cache_step.requires_tests)
         feature_step = next(step for step in steps if step.step_id == "ui-feature-tests")
         for consumer in consumers:
             self.assertIn(consumer, feature_step.argv)
@@ -3538,6 +3542,9 @@ class ModuleScopeTests(unittest.TestCase):
                                       "cargo_inventory": inventory, "paths": []})
             self.assertTrue(any(any(grid.startswith(arg) for arg in step.argv) and step.requires_tests
                                 for step in steps if "unit_editor_logic" in step.argv))
+            cache_step = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+            self.assertTrue(cache_step.requires_tests)
+            self.assertIn(geometry, cache_step.argv)
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
             for required in (geometry, rendered, *GRID_CONSUMERS):
                 self.assertTrue(any(required.startswith(arg) for arg in feature.argv))

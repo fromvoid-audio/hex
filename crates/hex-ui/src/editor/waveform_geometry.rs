@@ -703,6 +703,7 @@ mod tests {
         assert_eq!(current, key(0, bounds()));
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn geometry(
         source: &CachedWaveform,
         origin: u64,
@@ -767,6 +768,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn repeated_prepared_waveform_keeps_transients_in_their_visible_columns() {
         let mut samples = vec![[0.0, 0.0]; 16_000];
@@ -825,6 +827,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn event_detail_keeps_a_transient_in_its_visible_column() {
         // A long prepared root can have 1,000 source frames per cached bin.
@@ -896,6 +899,7 @@ mod tests {
         assert_eq!(peaks, vec![6_010 / 2_050]);
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn coarse_arranger_bins_keep_narrow_stereo_peaks_silence_and_dc() {
         use crate::editor::viewport::Viewport;
@@ -995,6 +999,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn coarse_peak_remains_visible_inside_a_clip_narrower_than_a_bin() {
         use crate::editor::viewport::Viewport;
@@ -1047,6 +1052,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn coarse_waveforms_translate_without_resampling_during_pan() {
         use crate::editor::viewport::Viewport;
@@ -1124,6 +1130,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn resize_preserves_interior_stereo_outline_at_fractional_edges_and_column_cap() {
         let source = waveform();
@@ -1211,6 +1218,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn prepared_crop_sampling_is_invariant_across_grid_bins_before_clip_origin() {
         let source = waveform();
@@ -1339,6 +1347,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn geometry_cache_reuses_only_matching_source_mapping_and_bounds() {
         let source = waveform();
@@ -1381,6 +1390,7 @@ mod tests {
         assert!(cache.get(cache_key, &different_source).is_none());
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn clip_detail_gain_changes_cached_geometry_and_unity_reuses_it() {
         let source = waveform();
@@ -1424,6 +1434,7 @@ mod tests {
         assert_eq!(cache.borrow().entries.len(), 3);
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn geometry_cache_holds_twelve_visible_clips_and_clip_detail() {
         let source = waveform();
@@ -1446,6 +1457,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn dense_visible_working_set_survives_repeated_selection_paints() {
         let source = waveform();
@@ -1503,6 +1515,7 @@ mod tests {
         assert_eq!(cache.borrow().columns, 350 * 19);
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn geometry_cache_evicts_by_entry_and_column_limits() {
         let source = waveform();
@@ -1535,6 +1548,7 @@ mod tests {
         assert!(column_bounded.get(key(0, extent), &source).is_none());
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     const MAX_WAVEFORM_COLUMNS_FOR_TEST: usize = MAX_CACHED_WAVEFORM_COLUMNS / 16;
 
     #[test]
