@@ -67,16 +67,11 @@ pub(super) fn view(
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
     let identity = state.project.track(track)?.color();
-    let waveform_ink = theme::clip_waveform_ink(
-        identity,
-        theme::ClipWaveformBackground::Source,
-        clip.active(),
-    );
-    let event_ink = theme::clip_waveform_ink(
-        identity,
-        theme::ClipWaveformBackground::Events,
-        clip.active(),
-    );
+    let active = view.displayed_clip_active(clip_id, clip.active());
+    let waveform_ink =
+        theme::clip_waveform_ink(identity, theme::ClipWaveformBackground::Source, active);
+    let event_ink =
+        theme::clip_waveform_ink(identity, theme::ClipWaveformBackground::Events, active);
     let retained_source_count = clip
         .audio_edit()
         .and_then(|edit| edit.domain.events.as_ref())
