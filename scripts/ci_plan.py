@@ -218,6 +218,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/selection.rs": ("editor::selection::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
     "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
