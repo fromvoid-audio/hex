@@ -253,7 +253,7 @@ pub(super) fn disable(view: &mut EditorView, device: DeviceId, cx: &mut Context<
     cx.notify();
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

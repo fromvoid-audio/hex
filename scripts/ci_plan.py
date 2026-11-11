@@ -203,6 +203,9 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES = {
+    "src/editor/device_panel/eq8_panel/graph.rs": "editor::device_panel::eq8_panel::graph::tests::",
+    "src/editor/device_panel/eq8_panel/group.rs": "editor::device_panel::eq8_panel::group::tests::",
+    "src/editor/device_panel/eq8_panel/selection.rs": "editor::device_panel::eq8_panel::selection::tests::",
     "src/editor/loop_rail.rs": "editor::loop_rail::tests::",
     "src/editor/controller.rs": CONTROLLER_PUBLICATION_UNIT,
     "src/editor/arrangement_audio_panel.rs": "editor::arrangement_audio_panel::tests::",
@@ -501,6 +504,11 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
                      "editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs"},
+                    {"editor::device_panel::eq8_panel::graph::tests::",
+                     "editor::device_panel::eq8_panel::group::tests::",
+                     "editor::device_panel::eq8_panel::selection::tests::",
+                     "editor::device_panel::tests::eq8_marquee_tests::eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device",
+                     "editor::device_panel::tests::eq8_marquee_tests::eq8_marquee_group_move_and_disable_each_commit_one_undo"},
                     {"editor::device_panel::operator_panel::tests::",
                      "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
                      "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
