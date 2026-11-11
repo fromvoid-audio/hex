@@ -3028,6 +3028,16 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
     });
     assert!(visual.debug_bounds("locked-play-start-top").is_some());
     assert!(visual.debug_bounds("locked-play-start-bottom").is_some());
+    let rest: gpui::Background =
+        gpui::rgb(crate::theme::locked_time_position_marker_color(0.0)).into();
+    let peak: gpui::Background =
+        gpui::rgb(crate::theme::locked_time_position_marker_color(1.0)).into();
+    let paint = |visual: &mut VisualTestContext, selector| {
+        visual.rendered_path_triangles(selector)[0].color
+    };
+    let start_pulse = editor.read_with(&visual, |v, _| v.locked_play_start.unwrap().pulse_started);
+    assert_eq!(paint(&mut visual, "locked-play-start-top"), rest);
+    assert_eq!(paint(&mut visual, "locked-play-start-bottom"), rest);
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = Some(clip);
         v.time_selection = Some(TimeSelection {
@@ -3036,9 +3046,19 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
             anchor_frame: start + 10_000,
             end_frame: start + 20_000,
         });
+        assert!(v.tick_edit_cursor(start_pulse + std::time::Duration::from_millis(1_200)));
         cx.notify();
     });
     visual.run_until_parked();
+    assert_ne!(rest, peak);
+    assert_eq!(paint(&mut visual, "locked-play-start-top"), peak);
+    assert_eq!(paint(&mut visual, "locked-play-start-bottom"), peak);
+    editor.update(&mut visual, |v, cx| {
+        assert!(v.tick_edit_cursor(start_pulse + std::time::Duration::from_millis(2_400)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(paint(&mut visual, "locked-play-start-top"), rest);
     editor.read_with(&visual, |v, _| assert_eq!(v.playback_start_frame(), start));
     visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
     visual.simulate_keystrokes("space");
