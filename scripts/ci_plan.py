@@ -265,6 +265,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
+    "src/editor/device_panel/sampler_cursor_tests.rs": ("editor::device_panel::sampler_overview::tests::sampler_cursor_original_frame_mapping_bounds_and_time",),
     "src/editor/device_panel/rattle_panel.rs": ("editor::device_panel::rattle_panel::tests::",),
     "src/editor/device_panel/modulators.rs": ("editor::device_panel::modulators::tests::",),
     "src/editor/device_panel/eq_panel/gestures.rs": ("editor::device_panel::eq_panel::gestures::tests::",),
