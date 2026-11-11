@@ -14,7 +14,7 @@ impl Drop for BrowserRoot {
 pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     hex_audio::worker_fixture::serial_output()
 }
-pub(super) fn headless_status_output() -> (
+pub(in crate::editor) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,
     hex_audio::worker_fixture::HeadlessBackend,
 ) {
