@@ -52,7 +52,7 @@ pub(in crate::editor) fn rendered_clip_width(lane_width: f32, width_fraction: f6
     width
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
 pub(super) fn clip_fixture(
     frames: u64,
 ) -> (
