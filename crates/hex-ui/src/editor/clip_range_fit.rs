@@ -98,6 +98,19 @@ pub(super) fn audio_root_range(
 }
 
 impl EditorView {
+    /// Whole-clip selection fits the visible detail pane once. The user can
+    /// still navigate freely until their next explicit clip selection.
+    pub(super) fn fit_clip_editor_to_selected_clip(&mut self) {
+        if !self.clip_view_open || self.device_panel_active || self.selected_clip.is_none() {
+            return;
+        }
+        if let Some(length) = self.midi_clip().map(|clip| clip.source_length().raw()) {
+            self.fit_midi_interval((0, length), false);
+        } else if self.mode == super::EditorMode::Arrangement {
+            self.fit_selected_audio_clip();
+        }
+    }
+
     /// Fit the clip editor to the current Arrangement time selection when it
     /// covers the clip editor's subject on one of its tracks.
     pub(super) fn fit_clip_editor_to_time_selection(&mut self) -> bool {
@@ -313,6 +326,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests {
     use super::super::clip_drag_ui_test::{audio_project, editor_window, midi_project};
+    use super::BeatTime;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
     use std::sync::Arc;
 
@@ -336,6 +350,16 @@ mod ui_tests {
         visual.simulate_mouse_down(at(fractions.0), MouseButton::Left, free);
         visual.simulate_mouse_move(at(fractions.1), MouseButton::Left, free);
         visual.simulate_mouse_up(at(fractions.1), MouseButton::Left, free);
+        visual.run_until_parked();
+    }
+
+    fn click_header(visual: &mut VisualTestContext, clip: hex_project::ClipId) {
+        let header = visual
+            .debug_bounds(Box::leak(
+                format!("clip-name-{}", clip.value()).into_boxed_str(),
+            ))
+            .expect("clip header");
+        visual.simulate_click(header.center(), Modifiers::default());
         visual.run_until_parked();
     }
 
@@ -364,6 +388,40 @@ mod ui_tests {
             assert_eq!(
                 (view.piano_beat_start, view.piano_beat_span.raw()),
                 (i128::from(expected.0), expected.1 - expected.0)
+            );
+        });
+        click_header(&mut visual, clip);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_clip, Some(clip));
+            assert_eq!(
+                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (0, 4 * BeatTime::ONE.raw())
+            );
+        });
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.fit_midi_interval((BeatTime::ONE.raw(), 2 * BeatTime::ONE.raw()), false));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click_header(&mut visual, clip);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (0, 4 * BeatTime::ONE.raw())
+            );
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.clip_view_open = false;
+            assert!(view.fit_midi_interval((BeatTime::ONE.raw(), 2 * BeatTime::ONE.raw()), false));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click_header(&mut visual, clip);
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.clip_view_open);
+            assert_eq!(
+                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (i128::from(BeatTime::ONE.raw()), BeatTime::ONE.raw())
             );
         });
     }
@@ -402,6 +460,49 @@ mod ui_tests {
                         - root.root_frame_at(from, project.tempo_map()).unwrap()
                 )
             );
+        });
+        click_header(&mut visual, clip);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_clip, Some(clip));
+            let root = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_event_root();
+            let viewport = view.event_frame_window(&root);
+            assert_eq!((viewport.start, viewport.length), (0, 96_000));
+        });
+    }
+
+    #[gpui::test]
+    fn selecting_audio_in_source_view_fits_its_crop(cx: &mut TestAppContext) {
+        use hex_project::{Command, Editor};
+
+        let (project, _, _, clip) = audio_project();
+        let mut model = Editor::new(project, 8).unwrap();
+        model
+            .execute(Command::TrimClip {
+                clip,
+                start: 12_000,
+                duration: 48_000,
+                source_offset: 12_000,
+                source_length: 48_000,
+            })
+            .unwrap();
+        let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+        editor.update(cx, |view, cx| {
+            view.audio_event_editor.source_view = true;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click_header(&mut visual, clip);
+        editor.read_with(&visual, |view, _| {
+            let viewport = view.audio_source_viewport();
+            assert_eq!((viewport.start, viewport.length), (12_000, 48_000));
         });
     }
 }
