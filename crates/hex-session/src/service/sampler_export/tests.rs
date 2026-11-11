@@ -613,17 +613,20 @@ fn sampler_unsupported_history_and_ranges_refuse_without_public_source_escape() 
     // Construct a current-format metadata fixture through storage directly.
     // Missing content identity must refuse before attempting the missing media.
     hex_storage::save_new(&saved, &assigned.state.project).unwrap();
+    let saved_bytes = fs::read(&saved).unwrap();
     fs::remove_file(&files.source).unwrap();
-    service.submit(Request::Open(saved)).unwrap();
+    service.submit(Request::Open(saved.clone())).unwrap();
     let refused = event(&service);
+    assert!(refused.open_complete, "expected the open terminal");
+    let reason = refused.error.as_deref().expect("open must be refused");
     assert!(
-        refused
-            .error
-            .unwrap()
-            .contains("qualified original source reconstruction")
+        reason.contains("qualified original source reconstruction"),
+        "unexpected open refusal: {reason}"
     );
     assert!(!refused.project_replaced);
     assert_eq!(refused.state.revision, assigned.state.revision);
+    assert_eq!(refused.state.project, assigned.state.project);
+    assert_eq!(fs::read(saved).unwrap(), saved_bytes);
     assert!(refused.playback.is_none());
 }
 

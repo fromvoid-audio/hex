@@ -149,7 +149,12 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 
 The seven default standalone targets run with the default package tests.
 Whole-package plans that elide the default package run select those standalone
-targets directly. The windowed library and standalone MIDI pressure test use
+targets directly. A change confined to reviewed standalone unit test targets and
+harnesses runs the owning unit targets and keeps the reviewed feature Clippy
+checks. Changes to product source still select its unit and rendered support
+coverage.
+
+The windowed library and standalone MIDI pressure test use
 `ui-test-support` in separate invocations:
 
 ```sh

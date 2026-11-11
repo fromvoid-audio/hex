@@ -10678,6 +10678,13 @@ mod service_tests {
             .expect("default instrument slot");
         let id = instrument.id();
         let removed_id = id;
+        let retained_source = added_track
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .source_id()
+            .expect("instrument source");
         let sine_type = instrument.state().type_id();
 
         service
@@ -10731,6 +10738,13 @@ mod service_tests {
                 .instrument()
                 .is_none()
         );
+        let source = removed
+            .state
+            .project
+            .native_source(retained_source)
+            .expect("unbinding retains the source");
+        assert_eq!(source.receiver(), None);
+        assert_eq!(source.instrument().id(), removed_id);
         service
             .submit(Request::AddNativeDevice {
                 track,
@@ -10925,6 +10939,44 @@ mod service_tests {
         );
         assert!(unsupported_replacement.playback.is_none());
 
+        // The old instrument is no longer bound to the track, but its source
+        // remains canonical and can still be addressed by its device ID.
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device: removed_id,
+                class: NativeDeviceClass::Instrument,
+                type_id: Box::new(sine_type),
+            })
+            .expect("replacement for the retained device");
+        let retained_replacement = next_event(&service);
+        assert!(retained_replacement.request_complete);
+        assert!(retained_replacement.error.is_none());
+        assert!(
+            retained_replacement
+                .state
+                .project
+                .device(removed_id)
+                .is_some()
+        );
+        assert_eq!(
+            retained_replacement.state.revision,
+            replacement.state.revision
+        );
+
+        service
+            .submit(Request::Edit(Command::RemoveNativeSource(retained_source)))
+            .expect("remove the unbound source");
+        let retired = next_event(&service);
+        assert!(retired.request_complete);
+        assert!(retired.error.is_none(), "{:?}", retired.error);
+        assert!(
+            retired
+                .state
+                .project
+                .native_source(retained_source)
+                .is_none()
+        );
+        assert!(retired.state.project.device(removed_id).is_none());
         service
             .submit(Request::ReplaceNativeDevice {
                 device: removed_id,
@@ -10933,14 +10985,15 @@ mod service_tests {
             })
             .expect("replacement for a removed device");
         let missing_replacement = next_event(&service);
+        assert!(missing_replacement.request_complete);
         assert_eq!(
             missing_replacement.error.as_deref(),
             Some("device no longer exists")
         );
-        assert_eq!(
-            missing_replacement.state.revision,
-            replacement.state.revision
-        );
+        assert_eq!(missing_replacement.state.revision, retired.state.revision);
+        assert_eq!(missing_replacement.state.project, retired.state.project);
+        assert_eq!(missing_replacement.state.can_undo, retired.state.can_undo);
+        assert_eq!(missing_replacement.state.can_redo, retired.state.can_redo);
         assert!(missing_replacement.playback.is_none());
     }
 
