@@ -578,6 +578,7 @@ impl Command {
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
             | Self::LoadInstrument { .. }
+            | Self::ReplaceTrackInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }

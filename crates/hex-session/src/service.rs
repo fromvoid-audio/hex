@@ -4840,7 +4840,7 @@ fn run_worker(
                             });
                         match result {
                             Ok(PluginEffectPreparationState::Preparing) => {
-                                status = Some("preparing vst3 effect".into())
+                                status = Some("preparing vst3".into())
                             }
                             result => {
                                 if let Some(pending) = pending_plugin_effect.take() {
@@ -4876,14 +4876,18 @@ fn run_worker(
                                     let accepted = committed.is_ok();
                                     match committed {
                                         Ok((new, snapshot)) => {
-                                            created = Some(new);
+                                            if !matches!(
+                                                pending.insertion.destination,
+                                                PluginEffectDestination::NewTrack { .. }
+                                            ) {
+                                                created = Some(new);
+                                            }
                                             unsaved = true;
                                             replacement_revision =
                                                 Some(Arc::clone(&snapshot.prepared));
                                             resident_snapshot = Some(snapshot);
-                                            status = Some(
-                                                "vst3 effect inserted · waiting for audio".into(),
-                                            );
+                                            status =
+                                                Some("vst3 inserted · waiting for audio".into());
                                         }
                                         Err(reason) => error = Some(reason),
                                     }

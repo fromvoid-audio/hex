@@ -533,6 +533,13 @@ pub(super) fn command(value: &Command) -> Description {
         Command::RemoveInstrument { track } => {
             describe!("remove_instrument"; ["track" => track.value()]; omitted="")
         }
+        Command::ReplaceTrackInstrument {
+            track,
+            replacing,
+            state,
+        } => {
+            describe!("replace_track_instrument"; ["track" => track.value(), "replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::RemoveDevice(value0) => {
             describe!("remove_device"; ["value0" => value0.value()]; omitted="")
         }

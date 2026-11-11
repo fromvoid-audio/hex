@@ -390,6 +390,13 @@ pub enum Command {
     RemoveInstrument {
         track: TrackId,
     },
+    /// Replace the exact instrument on its receiving track with a fresh device identity.
+    /// The source binding and effects survive, and the track's instrument comes first.
+    ReplaceTrackInstrument {
+        track: TrackId,
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     RemoveDevice(DeviceId),
     MoveDevice {
         device: DeviceId,
@@ -2242,6 +2249,7 @@ impl Project {
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
+            | Command::ReplaceTrackInstrument { .. }
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }

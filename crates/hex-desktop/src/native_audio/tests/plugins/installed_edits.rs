@@ -164,6 +164,7 @@ fn distinct_instrument_parameters_commit_and_read_back_while_playing() {
             selection: selected,
             destination: PluginEffectDestination::Instrument(track),
             before: None,
+            track_device_name: None,
             control: Arc::new(PluginEffectControl::default()),
         }))
         .unwrap();

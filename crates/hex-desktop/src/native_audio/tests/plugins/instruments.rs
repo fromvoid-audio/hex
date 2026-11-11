@@ -1111,6 +1111,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             ),
             destination: PluginEffectDestination::Instrument(track),
             before: None,
+            track_device_name: None,
             control: Arc::new(PluginEffectControl::default()),
         }
     } else {

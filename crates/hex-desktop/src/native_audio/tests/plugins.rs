@@ -85,6 +85,7 @@ fn request(
         selection: selection(),
         destination,
         before: None,
+        track_device_name: None,
         control: Arc::new(PluginEffectControl::default()),
     }
 }
@@ -150,6 +151,69 @@ fn same_source_edit(h: &mut ResidentHarness, request: Request) -> Event {
         );
         std::thread::yield_now();
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let original = h
+        .run(Request::Edit(Command::AddTrack {
+            name: "anchor".into(),
+        }))
+        .state;
+    let (applied, _) = h.applied(applied);
+    let anchor = &original.project.tracks()[0];
+    let identity = original.project.next_identity();
+    let destination = PluginEffectDestination::NewTrack {
+        before_track: Some(anchor.id()),
+        slot: hex_project::TrackDeviceSlot::Effect,
+        gain: 0.25,
+        track_identity: identity,
+    };
+    let mut invalid = request(&original, destination);
+    invalid.selection.executable_sha256 = "0".repeat(64);
+    h.service
+        .submit(Request::InsertPluginEffect(invalid))
+        .unwrap();
+    let refused = terminal(&mut h);
+    assert!(refused.error.is_some());
+    assert!(!refused.plugin_effect_complete[0].accepted);
+    assert_eq!(refused.state.revision, original.revision);
+    assert_eq!(refused.state.project, original.project);
+
+    h.service
+        .submit(Request::InsertPluginEffect(request(&original, destination)))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    let (applied, _) = h.applied(applied);
+    let [new, previous] = accepted.state.project.tracks() else {
+        panic!("one added track");
+    };
+    assert_eq!(previous, anchor);
+    assert_eq!(new.id().value(), identity);
+    assert_eq!(new.gain(), 0.25);
+    assert!(new.instrument().is_none());
+    assert_eq!(new.devices().len(), 1);
+    assert_eq!(new.devices()[0].id().value(), identity + 1);
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.tracks(), original.project.tracks());
+    let (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, accepted.state.project);
+    h.applied(applied);
 }
 
 #[test]
