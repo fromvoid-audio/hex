@@ -371,17 +371,22 @@ struct NoteEndpoint {
     next_offset: usize,
     fail_at: Option<usize>,
     rejected: bool,
+    instrument_sample: f32,
+    effect: Option<Borrowed>,
 }
 
 impl ForeignProcessors for NoteEndpoint {
     fn process_segment(
         &mut self,
-        _: ForeignProcessorNode<'_>,
-        _: usize,
-        _: &mut [Frame],
-        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        panic!("instrument must use the note endpoint");
+        self.effect
+            .as_mut()
+            .expect("only the hosted effect uses this endpoint")
+            .process_segment(node, offset, frames, clock)
     }
 
     fn process_segment_with_notes(
@@ -402,6 +407,7 @@ impl ForeignProcessors for NoteEndpoint {
         if self.fail_at == Some(offset) {
             return Err(DeviceContractError::ForeignProcessingFailed);
         }
+        frames.fill([self.instrument_sample; 2]);
         Ok(())
     }
 
@@ -418,6 +424,9 @@ impl NoteEndpoint {
     ) -> Result<(), SessionPlaybackError> {
         self.next_offset = 0;
         self.notes.clear();
+        if let Some(effect) = &mut self.effect {
+            effect.next_offset = 0;
+        }
         playback.render_with_foreign_processors(frames, None, None, None, self)
     }
 }
@@ -1161,6 +1170,159 @@ fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
             }
         )]
     );
+}
+
+#[test]
+fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
+    for on_main in [false, true] {
+        let short_note = BeatTime::from_ratio(1, 128).unwrap();
+        let (mut editor, instrument) = fixture_with_duration(short_note);
+        let track = editor.project().tracks()[0].id();
+        let clip = editor.project().tracks()[0].midi_clips()[0].id();
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_ratio(1, 32).unwrap(),
+                duration: short_note,
+                pitch: 67,
+                channel: 2,
+                velocity: 101,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 512,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = prepare(&editor, instrument, true).unwrap();
+        let instrument_latency = revision.arrangement().main_latency_frames() as usize;
+        let (mut onset_frame, mut release_frame) = (0, 0);
+        revision.arrangement().tracks()[0]
+            .for_each_mutable_midi_span(512, 1024, |span| {
+                onset_frame = span.start;
+                release_frame = span.gate_end;
+            })
+            .unwrap();
+        assert!((512..1024).contains(&onset_frame));
+        let mut playing = SessionPlayback::new(revision).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.5,
+            ..Default::default()
+        };
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        endpoint
+            .render(&mut playing, &mut [[0.0; 2]; 1024])
+            .unwrap();
+        let mut dry = vec![[0.0; 2]; (onset_frame - 512 + 8) as usize];
+        endpoint.render(&mut playing, &mut dry).unwrap();
+        let [(_, onset)] = endpoint.notes.as_slice() else {
+            panic!("one onset on the wrapped pass");
+        };
+        let onset = *onset;
+        assert_eq!((onset.on, onset.pitch), (true, 67));
+        let cut = playing.arrangement_frame();
+        let performance = playing.performance_frame();
+        assert_eq!(cut, onset_frame + 8);
+        assert_eq!(performance - cut, 512);
+
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 512,
+                enabled: true,
+            })
+            .unwrap();
+        let mut moved = SessionPlayback::new(prepare(&editor, instrument, true).unwrap()).unwrap();
+        moved.try_inherit_state_live_from(&mut playing).unwrap();
+        assert_eq!(
+            (moved.arrangement_frame(), moved.performance_frame()),
+            (cut, performance)
+        );
+        endpoint.render(&mut moved, &mut [[0.0; 2]; 8]).unwrap();
+        assert_eq!(moved.arrangement_frame(), cut + 8);
+        assert!(endpoint.notes.is_empty());
+
+        let state = state(19).unwrap();
+        let (owner, command) = if on_main {
+            (
+                ProcessorChainOwner::Main,
+                Command::InsertMainDevice {
+                    before: None,
+                    state,
+                },
+            )
+        } else {
+            (
+                ProcessorChainOwner::Track(track.value()),
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+            )
+        };
+        let Created::Device(device) = editor.execute(command).unwrap() else {
+            panic!("one hosted effect");
+        };
+        let effect = BorrowedDefinition {
+            binding_epoch: Some(1),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+                3,
+            )],
+        };
+        let synth = InstrumentDefinition {
+            identity: instrument,
+            second: None,
+            instrument_profile: true,
+            epoch: 1,
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&synth, &effect];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let candidate = PreparedRevision::prepare_with_effect_registry(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        let mut inserted = SessionPlayback::new(Arc::new(candidate)).unwrap();
+        inserted.try_inherit_state_live_from(&mut moved).unwrap();
+        assert_eq!(
+            (inserted.arrangement_frame(), inserted.performance_frame()),
+            (cut + 8, performance + 8)
+        );
+        let mut effect = Borrowed::new(owner, device.value());
+        // Track insertion starts a fresh compensation epoch. Main can use
+        // the instrument origins already retained in the old delay bank.
+        if !on_main {
+            effect.initial_unstamped_frames = instrument_latency;
+        }
+        endpoint.effect = Some(effect);
+        let release = (release_frame - cut - 8) as usize;
+        let mut wet = vec![[0.0; 2]; release + 1];
+        endpoint.render(&mut inserted, &mut wet).unwrap();
+        assert_eq!(
+            endpoint.notes,
+            [(
+                release,
+                hex_lattice::ForeignNote {
+                    on: false,
+                    velocity: 0,
+                    ..onset
+                }
+            )]
+        );
+        assert_eq!(endpoint.effect.as_ref().unwrap().processed, wet.len());
+        assert_eq!(
+            wet.last().unwrap(),
+            &dry.last().unwrap().map(|sample| sample * 0.25)
+        );
+        assert_ne!(wet.last().unwrap(), &[0.0; 2]);
+    }
 }
 
 #[test]
