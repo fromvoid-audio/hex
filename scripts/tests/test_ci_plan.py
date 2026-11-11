@@ -2806,6 +2806,30 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn("--ignored", feature.argv)
         self.assertNotIn("module-tests-hex-ui", steps)
 
+    def test_audio_unavailable_unit_route_keeps_rendered_status_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/audio_unavailable.rs"
+        unit = "editor::audio_unavailable::tests::"
+        consumer = ("editor::audio_unavailable::ui_tests::"
+                    "rate_mismatch_event_shows_the_recoverable_paused_status")
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertEqual(boundary["module_filters"], {owner: ["editor::audio_unavailable::"]})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [source]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        self.assertNotIn("--features", default.argv)
+        feature = steps["ui-feature-tests"].argv
+        self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
     def test_display_error_unit_route_keeps_batch_failure_window_consumer(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
