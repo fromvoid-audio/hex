@@ -696,9 +696,9 @@ fn positive_delay_midi_routes_align_pcm_capture_and_source_launch_lifecycle() {
         );
     }
     assert!(main[..7].iter().all(|frame| *frame == [0.0; 2]));
-    let mut legacy = crate::Renderer::new(revision.arrangement());
-    legacy.play();
-    let mut output = main.clone();
-    legacy.render(&mut output).unwrap();
-    assert_pcm(&output, &main, 1e-7);
+    let mut reference = start(zero, &[]);
+    let mut expected = vec![[0.0; 2]; 7];
+    expected.extend(render(&mut reference, 320, 256));
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    assert_pcm(&main, &expected, 1e-7);
 }
