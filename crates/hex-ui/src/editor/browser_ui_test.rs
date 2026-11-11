@@ -4161,6 +4161,95 @@ fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows
 }
 
 #[gpui::test]
+fn browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let previous = directory.0.join("a");
+    let target = directory.0.join("c");
+    for folder in [&previous, &target] {
+        std::fs::create_dir(folder).unwrap();
+        for index in 0..80 {
+            std::fs::write(folder.join(format!("{index:02}.hex")), []).unwrap();
+        }
+    }
+    for index in 0..12 {
+        std::fs::create_dir(directory.0.join(format!("b{index:02}"))).unwrap();
+    }
+    for index in 0..60 {
+        std::fs::write(directory.0.join(format!("tail-{index:02}.hex")), []).unwrap();
+    }
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.request_browser_scan(directory.0.clone(), cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let disclosure = |index| {
+        let selector = format!("browser-disclosure-{index}");
+        Box::leak(selector.into_boxed_str()) as &'static str
+    };
+    let at = visual.debug_bounds(disclosure(0)).unwrap().center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
+    let target_index = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, cx| {
+            view.browser_visible_entries(cx)
+                .iter()
+                .position(|entry| entry.path == target)
+                .unwrap()
+        })
+    };
+    let old_index = target_index(&visual);
+    assert_eq!(old_index, 93);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.scroll.0.borrow().base_handle.set_offset(point(
+            px(0.0),
+            -px((old_index - 3) as f32 * super::ROW_HEIGHT + 5.0),
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let before = visual.debug_bounds(disclosure(old_index)).unwrap();
+    let gate = editor.update(&mut visual, |view, _| {
+        view.browser.tree.test_gate_next_scan()
+    });
+    visual.simulate_click(before.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(gate.reached.load(std::sync::atomic::Ordering::Acquire));
+    let new_index = target_index(&visual);
+    assert_eq!(
+        new_index, 13,
+        "the earlier branch closed on normal expansion"
+    );
+    let loading = visual.debug_bounds(disclosure(new_index));
+    gate.release();
+    visual.run_until_parked();
+
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries[new_index + 1].path, target.join("00.hex"));
+        assert!(!view.browser.tree.test_worker_busy());
+    });
+    let expanded = visual.debug_bounds(disclosure(new_index));
+    assert_eq!(
+        expanded.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "expanding a long folder must keep its disclosure in view"
+    );
+    assert_eq!(
+        loading.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "the disclosure must also stay put while its children are loading"
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-entry-14").unwrap().top(),
+        before.bottom(),
+        "the first child is painted immediately below its folder"
+    );
+}
+
+#[gpui::test]
 fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
