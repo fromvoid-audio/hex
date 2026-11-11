@@ -216,6 +216,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
     "src/editor/selection.rs": ("editor::selection::tests::",),
+    "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
+    "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
@@ -444,6 +446,8 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::midi_canvas::created_selection_tests::": ("editor::midi_draw::tests::",),
+    "editor::midi_canvas::pending_drag_tests::stroke_preview_tests::capture_tests::": ("editor::midi_draw::tests::",),
     "editor::session_audio_panel::playhead::": ("editor::session_audio_panel::unit_tests::",),
     "editor::device_automation::host_tests::": ("editor::device_automation::unit_tests::",
         "editor::native_automation_recording::unit_tests::",
@@ -491,6 +495,9 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
                     {"editor::midi_canvas::geometry::",
                      "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
+                    {"editor::midi_pan::tests::",
+                     "editor::midi_canvas::pan_tests::middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space",
+                     "editor::midi_pan::capture_tests::piano_pan_owns_both_buttons_and_finishes_outside_without_edit"},
                     {"editor::save::tests::",
                      "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success",
                      "editor::save::ui_tests::older_format_explicit_overwrite_warns_once_and_save_as_keeps_original"},
@@ -925,6 +932,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             for unit, consumers in (
                 (WAVEFORM_PAINT_GEOMETRY_UNIT, WAVEFORM_PAINT_GEOMETRY_TESTS),
                 (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_PUBLICATION_TESTS),
+                ("editor::midi_draw::tests::", (
+                    "editor::midi_canvas::pending_drag_tests::stroke_preview_tests::capture_tests::draw_and_erase_own_input_then_handoff_preview_without_holding_capture",
+                    "editor::midi_canvas::created_selection_tests::committed_draw_selects_actual_authored_ids_with_last_primary_after_later_frames",
+                )),
             ):
                 if any(unit.startswith(name) for name in names):
                     names.update(consumers)
