@@ -442,7 +442,6 @@ impl SessionPlayback {
             if groups.is_some()
                 || fenced_restart
                 || (live && self.live_restart)
-                || self.loop_region() != previous.loop_region()
                 || self.revision.arrangement().tempo_map
                     != previous.revision.arrangement().tempo_map
             {
@@ -890,6 +889,11 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        // A loop edit may carry a source effect only through the continuous
+        // handoff. Its committed history belongs to the donor's running clock.
+        if relocate && source_transfer.is_some() && new_loop_region != old_loop_region {
+            return Err(SessionPlaybackError::LatencyLayoutChanged);
+        }
         let compatible_instrument_loop_edit = same_base_timing
             && new_loop_region != old_loop_region
             && previous.anchor.is_none()
