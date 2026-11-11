@@ -204,7 +204,7 @@ mod project_spectrum;
 mod recent_projects;
 mod recovery;
 mod recovery_state;
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod recovery_state_integration_tests;
 mod refresh;
 mod refresh_state;
