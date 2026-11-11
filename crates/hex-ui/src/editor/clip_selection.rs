@@ -236,6 +236,7 @@ impl EditorView {
             self.set_selected_clip(owner, primary, window, cx);
         }
         self.clip_selection = selection;
+        self.fit_clip_editor_to_selected_clip();
         let count = self.selected_clip_ids().len();
         self.status = format!("{count} clips selected");
         cx.notify();
