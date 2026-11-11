@@ -5327,13 +5327,8 @@ mod session_action_unit_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::{SessionTicketOutcome, reconcile_session_receipt};
-    use hex_engine::playback::Playback;
     use hex_engine::PlaybackAction;
-    use hex_session::service::Request;
-
-
-
-
+    use hex_engine::playback::Playback;
 
     #[test]
     fn earlier_session_rejection_is_not_reported_as_consumed() {
@@ -5371,10 +5366,6 @@ mod tests {
         callback.begin_block();
         control.reclaim();
     }
-
-
-
-
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

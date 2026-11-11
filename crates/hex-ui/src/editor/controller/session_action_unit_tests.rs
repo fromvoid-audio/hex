@@ -27,10 +27,7 @@ fn rejected_scene_duplicate_clears_only_its_completion_selection_intent() {
     };
     let mut pending = intent();
 
-    clear_rejected_scene_duplicate(
-        &mut pending,
-        &Request::Edit(Command::DuplicateScene(scene)),
-    );
+    clear_rejected_scene_duplicate(&mut pending, &Request::Edit(Command::DuplicateScene(scene)));
     assert!(pending.is_none());
 
     let mut pending = intent();
