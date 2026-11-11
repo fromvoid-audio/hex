@@ -34,7 +34,7 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
 
     let _native = native_fixture();
     let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(131_072);
+    let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (initial, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
@@ -101,6 +101,31 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
         h.service.try_event().is_err(),
         "held preview does not edit the project"
     );
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 36_000,
+            ..target
+        }));
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.revision, imported.state.revision);
+    assert_eq!(unchanged.state.project.snapshot(), before);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
     h.service.audition_arrangement_stretch(None);
     let (restored, pcm) = advance(&mut h, applied);
     assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
@@ -131,11 +156,29 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
         redone.state.project.snapshot(),
         committed.state.project.snapshot()
     );
-    assert!(
-        advance(&mut h, undone_audio)
-            .1
-            .iter()
-            .all(|f| *f == [0.0; 2])
+    let (redone_audio, pcm) = advance(&mut h, undone_audio);
+    assert!(pcm.iter().all(|f| *f == [0.0; 2]));
+
+    let (entered, _resume, _) = h.probe_next_native_publication();
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 84_000,
+            ..target
+        }));
+    assert!(matches!(
+        entered.recv_timeout(Duration::from_millis(120)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        redone_audio
     );
 }
 
