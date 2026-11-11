@@ -290,7 +290,10 @@ mod tests {
             aggregate_ranges_with_detail(&peak_only, &ranges, 152),
             Some(fallback)
         );
-        assert!(aggregate_ranges_with_detail(&waveform, &[20..10], 152).is_none());
+        let invalid = Range { start: 20, end: 10 };
+        assert!(
+            aggregate_ranges_with_detail(&waveform, std::slice::from_ref(&invalid), 152).is_none()
+        );
     }
 
     #[test]

@@ -509,7 +509,11 @@ pub(super) fn prepare_waveform_geometry(
                         .bounded_exact_peaks_for_frames(start, end, detail_budget)
                         .or_else(|| aggregate_peaks(waveform, start, end))
                 } else {
-                    aggregate_ranges_with_detail(waveform, &[start..end], detail_budget)
+                    aggregate_ranges_with_detail(
+                        waveform,
+                        std::slice::from_ref(&(start..end)),
+                        detail_budget,
+                    )
                 }
             }
             WaveformMapping::Clip {
