@@ -2146,6 +2146,7 @@ impl EditorView {
                 && self.focus_clip_details(window, cx)
             {
                 self.selected_clip = Some(clip);
+                self.fit_clip_editor_to_selected_clip();
             }
             let row = if self.mode == EditorMode::Arrangement
                 && (self.arrangement_focus.projection.enabled

@@ -1797,6 +1797,7 @@ impl EditorView {
         self.midi_group_gesture = None;
         self.midi_hit_cycle = None;
         self.piano_beat_start = 0;
+        self.fit_clip_editor_to_selected_clip();
         self.reveal_session_position(Some(track), Some(scene));
     }
 
