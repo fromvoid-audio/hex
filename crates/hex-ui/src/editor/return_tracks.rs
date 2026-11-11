@@ -226,6 +226,7 @@ impl EditorView {
                 None,
             )
             .debug_selector(move || format!("return-track-header-{}", id.value()))
+            .on_drop(super::sampler_load::track_drop_listener(cx, None))
             .child(
                 div()
                     .w_full()

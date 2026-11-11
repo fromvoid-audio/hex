@@ -781,18 +781,9 @@ pub(super) fn view(
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
-        Some(DevicePanelOwner::Main) => {
-            return_view::render(view, window, cx, &state, EffectBusOwner::Main)
-        }
-        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
-        Some(DevicePanelOwner::Return(return_track)) => return_view::render(
-            view,
-            window,
-            cx,
-            &state,
-            EffectBusOwner::Return(return_track),
-        ),
-        None => empty_panel("select a track or return to view devices"),
+        Some(owner) => render_owner(view, window, cx, &state, owner),
+        None => empty_panel("select a track or return to view devices")
+            .on_drop(super::sampler_load::track_drop_listener(cx, None)),
     }
 }
 
@@ -829,6 +820,7 @@ fn render_owner(
     match owner {
         DevicePanelOwner::Main => {
             return_view::render(view, window, cx, state, EffectBusOwner::Main)
+                .on_drop(super::sampler_load::track_drop_listener(cx, None))
         }
         DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
         DevicePanelOwner::Return(return_track) => return_view::render(
@@ -837,7 +829,8 @@ fn render_owner(
             cx,
             state,
             EffectBusOwner::Return(return_track),
-        ),
+        )
+        .on_drop(super::sampler_load::track_drop_listener(cx, None)),
     }
 }
 
@@ -1132,6 +1125,8 @@ fn render_track(
         .flex()
         .flex_col()
         .relative()
+        .group("sampler-drop-panel")
+        .on_drop(super::sampler_load::track_drop_listener(cx, Some(track_id)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_t_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
@@ -1221,6 +1216,14 @@ fn render_track(
         .collect();
     eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let first_device = device_ids.first().copied();
+    let sample_drop = view.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+        view.browser_sampler_drop_track(drag, Some(track_id), cx)
+            .is_ok()
+    });
+    if sample_drop && track.instrument().is_none() {
+        let line = sample_insertion_marker(px(DEVICE_CHAIN_PADDING));
+        chain = chain.child(line);
+    }
     let mut local_index = 0;
     for node in nodes {
         let (device, class) = match node {
@@ -1274,7 +1277,11 @@ fn render_track(
         let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
         let card =
             super::device_comparison::card(view, cx, device.id(), class, focus.clone(), card);
-        let card = super::device_preset::card(view, cx, device.id(), class, focus, card);
+        let mut card = super::device_preset::card(view, cx, device.id(), class, focus, card);
+        if sample_drop && class == NativeDeviceClass::Instrument {
+            let line = sample_insertion_marker(px(0.0));
+            card = card.child(line);
+        }
         chain = chain.child(card);
     }
     chain = chain.child(render_device_end_target(
@@ -1345,6 +1352,20 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+// New instruments occupy the front gap. Replacement is marked at the
+// existing instrument's persisted gap, even if effects precede it.
+fn sample_insertion_marker(left: Pixels) -> Div {
+    div()
+        .absolute()
+        .left(left)
+        .top(px(DEVICE_CHAIN_PADDING))
+        .w(px(2.0))
+        .h(px(DEVICE_FRAME_HEIGHT - DEVICE_CHAIN_PADDING))
+        .group_drag_over::<drag::BrowserAudioDrag>("sampler-drop-panel", |style| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+        })
 }
 
 #[derive(Clone)]

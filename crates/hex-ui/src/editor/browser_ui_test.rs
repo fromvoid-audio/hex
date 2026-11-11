@@ -5591,10 +5591,8 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
                 "load into sampler"
             );
             assert!(
-                target
-                    .replacement
-                    .as_ref()
-                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+                matches!(target.slot, hex_session::service::SamplerLoadSlot::Existing { ref expected_state, .. }
+                    if hex_engine::is_empty_sampler_state_on_control(expected_state))
             );
             assert!(
                 !view.first_sampler_current(),

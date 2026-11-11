@@ -2844,8 +2844,9 @@ pub(super) mod tests {
             .import_resident_sampler(
                 decoded,
                 &AtomicBool::new(false),
-                crate::native_assets::NativeAssetDestination::EmptyInstrument {
+                crate::native_assets::NativeAssetDestination::NewInstrument {
                     track,
+                    replacing: None,
                     state,
                     source_slot,
                 },
@@ -3070,7 +3071,7 @@ pub(super) mod tests {
                 project_generation: 0,
                 revision: sampler_track.state.revision,
                 track: sampler_track_id,
-                empty_sampler: None,
+                slot: SamplerLoadSlot::New { replacing: None },
                 path: files.source().to_owned(),
                 cancel: Arc::new(AtomicBool::new(false)),
             })

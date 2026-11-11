@@ -68,7 +68,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

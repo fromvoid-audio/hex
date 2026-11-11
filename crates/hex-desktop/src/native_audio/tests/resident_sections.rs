@@ -722,7 +722,7 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         path: sampler_path,
         cancel: Arc::new(AtomicBool::new(false)),
     });

@@ -836,7 +836,7 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         path: sampler_files.wav(48_000, 4096),
         cancel: Arc::new(AtomicBool::new(false)),
     });

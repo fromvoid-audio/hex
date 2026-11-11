@@ -1446,7 +1446,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1716,7 +1716,7 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

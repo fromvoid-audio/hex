@@ -924,6 +924,7 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .on_drop(super::sampler_load::track_drop_listener(cx, None))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|view, event: &MouseDownEvent, window, cx| {

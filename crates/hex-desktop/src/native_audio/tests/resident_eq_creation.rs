@@ -617,7 +617,7 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         // Keep natural source exhaustion beyond the held-note/release checks.
         path: periodic_source(&files, 192_000),
         cancel: Arc::new(AtomicBool::new(false)),

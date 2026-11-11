@@ -245,6 +245,7 @@ impl EditorView {
             let context_page = page.clone();
             let header = div()
                 .id(("console-return-header", id.value()))
+                .on_drop(super::sampler_load::track_drop_listener(cx, None))
                 .debug_selector(move || format!("console-return-header-{}", id.value()))
                 .h(px(super::session_grid::TRACK_HEADER_HEIGHT))
                 .flex_shrink_0()

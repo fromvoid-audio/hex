@@ -48,7 +48,7 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New { replacing: None },
         path: source.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

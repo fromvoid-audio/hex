@@ -791,11 +791,13 @@ pub enum Command {
         sample_rate: u32,
         frames: u64,
     },
-    /// One prepared import creates source metadata and fills an empty instrument
-    /// slot. The neutral state template has no asset references; the new source
+    /// One prepared import creates source metadata and loads the track instrument.
+    /// An exact replacement uses the native instrument placement rule.
+    /// The unbound state template has no asset references; the new source
     /// ID is bound inside this candidate, never predicted by a UI caller.
-    ImportDeviceAssetIntoEmptyInstrument {
+    ImportDeviceAssetIntoNewInstrument {
         track: TrackId,
+        replacing: Option<DeviceId>,
         path: PathBuf,
         sample_rate: u32,
         frames: u64,
@@ -2926,8 +2928,9 @@ impl Project {
                 self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
             }
-            Command::ImportDeviceAssetIntoEmptyInstrument {
+            Command::ImportDeviceAssetIntoNewInstrument {
                 track,
+                replacing,
                 path,
                 sample_rate,
                 frames,
@@ -2937,9 +2940,13 @@ impl Project {
                 let target = self
                     .track(track)
                     .ok_or(Invalid("instrument track no longer exists"))?;
-                if target.instrument().is_some() || !state.asset_references().is_empty() {
+                if target.is_group()
+                    || target.instrument().map(crate::Device::id) != replacing
+                    || (replacing.is_some() && !target.receives_source_audio())
+                    || !state.asset_references().is_empty()
+                {
                     return Err(Invalid(
-                        "device source import requires an empty instrument slot and unbound state",
+                        "device source import target changed or is ineligible",
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
@@ -2955,7 +2962,16 @@ impl Project {
                     .map_err(|_| Invalid("invalid device source binding"))?;
                 // Editor applies this composite command to one private candidate;
                 // preparation/refusal commits neither the asset nor instrument.
-                self.apply(Command::InsertInstrument { track, state })?;
+                if replacing.is_some() {
+                    self.apply(Command::LoadInstrument {
+                        track,
+                        replacing,
+                        state,
+                        device_name: "sampler".into(),
+                    })?;
+                } else {
+                    self.apply(Command::InsertInstrument { track, state })?;
+                }
                 Ok(Created::Asset(asset))
             }
             Command::ImportDeviceAssetReplacingInstrument {

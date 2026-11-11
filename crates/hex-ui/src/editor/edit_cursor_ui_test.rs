@@ -1961,8 +1961,9 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
     let (state, source_slot) =
         hex_engine::native_device_resources::sampler_import_template_on_control(4).unwrap();
     model
-        .execute(Command::ImportDeviceAssetIntoEmptyInstrument {
+        .execute(Command::ImportDeviceAssetIntoNewInstrument {
             track,
+            replacing: None,
             path: "original.wav".into(),
             sample_rate: 48_000,
             frames: 4,

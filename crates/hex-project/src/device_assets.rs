@@ -67,8 +67,9 @@ mod tests {
             panic!("track")
         };
         let before = editor.project().snapshot();
-        let command = || Command::ImportDeviceAssetIntoEmptyInstrument {
+        let command = || Command::ImportDeviceAssetIntoNewInstrument {
             track,
+            replacing: None,
             path: "source.wav".into(),
             sample_rate: 8000,
             frames: 4,
@@ -145,8 +146,9 @@ mod replacement_tests {
         };
         let slot = DeviceAssetSlot::new(1).unwrap();
         editor
-            .execute(Command::ImportDeviceAssetIntoEmptyInstrument {
+            .execute(Command::ImportDeviceAssetIntoNewInstrument {
                 track,
+                replacing: None,
                 path: "old.wav".into(),
                 sample_rate: 8000,
                 frames: 4,
