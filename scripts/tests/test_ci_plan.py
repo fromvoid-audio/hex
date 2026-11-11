@@ -3317,6 +3317,57 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_musical_audio_control_units_keep_their_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        all_consumers = (
+            "editor::musical_audio_controls::sample_bpm::ui_tests::sample_bpm_actual_text_input_commits_once_and_escape_cancels",
+            "editor::musical_audio_controls::ui_tests::algorithm_picker_dispatches_direct_choice_without_resetting_current_settings",
+            "editor::musical_audio_controls::ui_tests::selected_clip_beats_controls_are_visible_and_dispatch_existing_loop_envelope_bindings",
+            "editor::musical_audio_controls::ui_tests::selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats",
+            "editor::musical_audio_controls::ui_tests::shift_selected_warp_applies_to_every_clip_with_its_own_source_region",
+        )
+        parent = "crates/hex-ui/src/editor/musical_audio_controls.rs"
+        bpm = "crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs"
+        fixture = "crates/hex-ui/src/editor/musical_audio_controls/ui_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / fixture).resolve()], "editor::musical_audio_controls::ui_tests")
+        self.assertEqual(plan.single_run_packages(root, [owner], inventory),
+                         {owner: "ui-test-support"})
+        cases = (
+            (parent, ("editor::musical_audio_controls::tests::",
+                      "editor::musical_audio_controls::sample_bpm::tests::"), all_consumers),
+            (bpm, ("editor::musical_audio_controls::sample_bpm::tests::",), (all_consumers[0],)),
+            ("crates/hex-ui/src/editor/musical_audio_controls/tests.rs",
+             ("editor::musical_audio_controls::tests::",), all_consumers[1:]),
+            (fixture, (), all_consumers[1:]),
+        )
+        for path, unit_prefixes, consumers in cases:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                names = boundary["module_filters"][owner]
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                feature = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in feature), consumer)
+                defaults = [step for name, step in steps.items()
+                            if name == "ui-default-lib-unit-tests"]
+                self.assertEqual(len(defaults), int(bool(unit_prefixes)))
+                if unit_prefixes:
+                    self.assertNotIn("--features", defaults[0].argv)
+                    for unit in unit_prefixes:
+                        self.assertTrue(any(unit.startswith(name) or name.startswith(unit)
+                                            for name in defaults[0].argv), unit)
+                else:
+                    self.assertTrue(any(name == "editor::musical_audio_controls::ui_tests::"
+                                        for name in names))
+
     def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
