@@ -1173,7 +1173,7 @@ fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
 }
 
 #[test]
-fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
+fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
     for on_main in [false, true] {
         let short_note = BeatTime::from_ratio(1, 128).unwrap();
         let (mut editor, instrument) = fixture_with_duration(short_note);
@@ -1281,15 +1281,18 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
         };
         let definitions: [&dyn NativeDeviceDefinition; 2] = [&synth, &effect];
         let registry = NativeDeviceRegistry::new(&definitions).unwrap();
-        let candidate = PreparedRevision::prepare_with_effect_registry(
-            editor.project(),
-            &std::collections::BTreeMap::new(),
-            Arc::new(SineTable::new()),
-            None,
-            &registry,
-        )
-        .unwrap();
-        let mut inserted = SessionPlayback::new(Arc::new(candidate)).unwrap();
+        let prepare_effect_edit = |editor: &Editor| {
+            let candidate = PreparedRevision::prepare_with_effect_registry(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap();
+            SessionPlayback::new(Arc::new(candidate)).unwrap()
+        };
+        let mut inserted = prepare_effect_edit(&editor);
         inserted.try_inherit_state_live_from(&mut moved).unwrap();
         assert_eq!(
             (inserted.arrangement_frame(), inserted.performance_frame()),
@@ -1302,9 +1305,48 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
             effect.initial_unstamped_frames = instrument_latency;
         }
         endpoint.effect = Some(effect);
-        let release = (release_frame - cut - 8) as usize;
-        let mut wet = vec![[0.0; 2]; release + 1];
+        let mut wet = [[0.0; 2]; 64];
         endpoint.render(&mut inserted, &mut wet).unwrap();
+        let dry_sample = *dry.last().unwrap();
+        assert_eq!(wet[63], dry_sample.map(|sample| sample * 0.25));
+        assert_ne!(wet[63], [0.0; 2]);
+        assert!(endpoint.notes.is_empty());
+
+        if !on_main {
+            editor.execute(Command::RemoveDevice(device)).unwrap();
+            let mut without_active_effect = prepare_effect_edit(&editor);
+            assert!(matches!(
+                without_active_effect.try_inherit_state_live_from(&mut inserted),
+                Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+            ));
+            assert!(editor.undo());
+        }
+        editor
+            .execute(Command::ToggleDeviceBypass { device })
+            .unwrap();
+        let mut bypassed = prepare_effect_edit(&editor);
+        bypassed.try_inherit_state_live_from(&mut inserted).unwrap();
+        let mut aligned_dry = [[0.0; 2]; 64];
+        endpoint.render(&mut bypassed, &mut aligned_dry).unwrap();
+        assert_eq!(aligned_dry[63], dry_sample);
+        assert!(endpoint.notes.is_empty());
+        assert_eq!(endpoint.effect.as_ref().unwrap().processed, 128);
+
+        let mut playing = if on_main {
+            bypassed
+        } else {
+            editor.execute(Command::RemoveDevice(device)).unwrap();
+            let mut removed = prepare_effect_edit(&editor);
+            removed.try_inherit_state_live_from(&mut bypassed).unwrap();
+            assert_eq!(removed.performance_frame(), bypassed.performance_frame());
+            assert_eq!(removed.arrangement_frame(), bypassed.arrangement_frame());
+            endpoint.effect = None;
+            removed
+        };
+        let release = (release_frame - playing.arrangement_frame()) as usize;
+        let mut after = vec![[0.0; 2]; release + 1];
+        endpoint.render(&mut playing, &mut after).unwrap();
+        assert_eq!(after.last().unwrap(), &dry_sample);
         assert_eq!(
             endpoint.notes,
             [(
@@ -1316,12 +1358,6 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
                 }
             )]
         );
-        assert_eq!(endpoint.effect.as_ref().unwrap().processed, wet.len());
-        assert_eq!(
-            wet.last().unwrap(),
-            &dry.last().unwrap().map(|sample| sample * 0.25)
-        );
-        assert_ne!(wet.last().unwrap(), &[0.0; 2]);
     }
 }
 
