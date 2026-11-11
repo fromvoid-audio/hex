@@ -6,6 +6,193 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut TestAppContext) {
+    use gpui::{MouseDownEvent, MouseUpEvent};
+    use hex_engine::PlaybackCommand::PlayFrom;
+
+    cx.update(super::bind_editor_keys);
+    let (project, source, target, clip) = audio_project();
+    let mut project = Editor::new(project, 8).unwrap();
+    project
+        .execute(Command::MoveClip {
+            clip,
+            track: source,
+            start: 60_000,
+        })
+        .unwrap();
+    project
+        .execute(Command::SetLoopRegion {
+            start: 96_000,
+            end: 144_000,
+            enabled: true,
+        })
+        .unwrap();
+
+    for start_source in ["cursor", "range", "clip"] {
+        let (handle, editor) = editor_window(cx, project.project().clone(), Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&target]);
+        let cursor_at = point(px(lane.left + lane.width * 0.4), px(lane.top + 20.0));
+        visual.simulate_click(cursor_at, Modifiers::default());
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                if start_source == "range" {
+                    view.time_selection = Some(super::time_selection::TimeSelection {
+                        anchor_track: target,
+                        end_track: target,
+                        anchor_frame: 80_000,
+                        end_frame: 65_000,
+                    });
+                } else if start_source == "clip" {
+                    view.select_clip_header(source, clip, Modifiers::default(), window, cx);
+                }
+                window.focus(&view.focus);
+                cx.notify();
+            });
+        });
+        let (placed, cursor, range, clips) = editor.read_with(&visual, |view, _| {
+            let frame = view.playback_start_frame();
+            match start_source {
+                "range" => assert_eq!(frame, 65_000),
+                "clip" => assert_eq!(frame, 60_000),
+                _ => assert_eq!(frame, view.edit_cursor.unwrap().frame),
+            }
+            assert_ne!(frame, 0);
+            (
+                frame,
+                view.edit_cursor.map(|cursor| (cursor.track, cursor.frame)),
+                view.time_selection,
+                view.selected_clip_ids(),
+            )
+        });
+
+        let stop = visual.debug_bounds("transport-stop-icon").unwrap().center();
+        let modifiers = Modifiers::default();
+        visual.simulate_click(stop, modifiers);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.status, "stopped");
+            assert!(!view.play_intent.desired_playing(true));
+        });
+        visual.simulate_keystrokes("space");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.last_transport_command, Some(PlayFrom(placed)));
+        });
+
+        visual.simulate_click(stop, modifiers);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.playback_start_frame(),
+                placed,
+                "the first click is a single stop"
+            );
+        });
+        visual.simulate_event(MouseDownEvent {
+            position: stop,
+            button: MouseButton::Left,
+            modifiers,
+            click_count: 2,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position: stop,
+            button: MouseButton::Left,
+            modifiers,
+            click_count: 2,
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.status, "stopped · play start at beginning");
+        });
+        visual.simulate_keystrokes("space");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.last_transport_command,
+                Some(PlayFrom(0)),
+                "{start_source}"
+            );
+            assert_eq!(
+                view.edit_cursor.map(|cursor| (cursor.track, cursor.frame)),
+                cursor
+            );
+            assert_eq!(view.time_selection, range);
+            assert_eq!(view.selected_clip_ids(), clips);
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .loop_region()
+                    .unwrap()
+                    .enabled()
+            );
+        });
+        let zero = visual
+            .debug_bounds("transport-start-line")
+            .expect("reset play start");
+        assert!((f32::from(zero.left()) - lane.left).abs() <= 1.0);
+        assert!(visual.debug_bounds("transport-start-top").is_some());
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("edit-cursor-line-{}", target.value()).into_boxed_str()
+                ))
+                .is_none()
+        );
+    }
+}
+
+#[gpui::test]
+fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut TestAppContext) {
+    use hex_engine::PlaybackCommand::PlayFrom;
+
+    cx.update(super::bind_editor_keys);
+    let (project, _, track, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let at = |fraction| point(px(lane.left + lane.width * fraction), px(lane.top + 20.0));
+    visual.simulate_click(at(0.4), Modifiers::default());
+    visual.run_until_parked();
+    let placed = editor.read_with(&visual, |view, _| view.edit_cursor.unwrap().frame);
+    let marker = visual.debug_bounds("time-marker-top-start").unwrap();
+    visual.simulate_click(marker.center(), Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.valid_locked_play_start().unwrap().frame, placed);
+    });
+
+    visual.simulate_keystrokes("escape space");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.last_transport_command, Some(PlayFrom(placed)));
+    });
+    visual.simulate_keystrokes("escape");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.playback_start_frame(),
+            placed,
+            "Play disarms the previous Escape"
+        );
+    });
+    visual.simulate_keystrokes("escape space");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.last_transport_command, Some(PlayFrom(0)));
+        assert_eq!(view.valid_locked_play_start().unwrap().frame, placed);
+    });
+    assert!(visual.debug_bounds("transport-start-top").is_some());
+    assert!(visual.debug_bounds("locked-play-start-top").is_none());
+
+    visual.simulate_click(at(0.7), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let new_start = view.edit_cursor.unwrap().frame;
+        assert!(new_start > placed);
+        assert_eq!(view.playback_start_frame(), new_start);
+    });
+    assert!(visual.debug_bounds("transport-start-top").is_none());
+}
+
+#[gpui::test]
 fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
     cx: &mut TestAppContext,
 ) {

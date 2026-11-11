@@ -96,6 +96,8 @@ impl EditorView {
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
     pub(super) fn advance_selection_intent(&mut self) {
+        self.play_start_at_beginning = false;
+        self.escape_stop_armed = false;
         if self
             .edit_cursor
             .is_some_and(|cursor| cursor.track.is_none())
@@ -1365,6 +1367,9 @@ impl EditorView {
         let viewport_end = viewport.end()?;
         let stroke = 1.0 / scale_factor.max(1.0);
         if raw_selection.anchor_frame == raw_selection.end_frame {
+            if self.play_start_at_beginning {
+                return None;
+            }
             let frame = raw_selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;
@@ -1484,6 +1489,9 @@ impl EditorView {
         let selection = self.time_selection?;
         let viewport_end = viewport.end()?;
         if selection.anchor_frame == selection.end_frame {
+            if self.play_start_at_beginning {
+                return None;
+            }
             let frame = selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;
