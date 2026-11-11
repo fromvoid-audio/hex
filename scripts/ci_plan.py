@@ -214,6 +214,15 @@ UI_DEFAULT_LIB_UNIT_MODULES = {
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
+# Both library test configurations compile the clip-edge debug witnesses.
+UI_FEATURE_EQUIVALENT_TEST_CFGS = {
+    "src/editor/clip_boundary.rs": '#[cfg(not(any(test, feature = "ui-test-support")))]',
+}
+UI_UNIT_TIER_TEST_CFGS = frozenset({
+    '#[cfg(all(test, feature = "ui-unit-tier"))]',
+    '#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]',
+})
+
 
 def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
     """Affected packages with a reviewed feature test configuration.
@@ -232,16 +241,18 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
         directory = root / Path(package["manifest"]).parent
         needle = f'feature = "{feature}"'
         unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package["name"] == "hex-ui" else {}
+        equivalent_tests = UI_FEATURE_EQUIVALENT_TEST_CFGS if package["name"] == "hex-ui" else {}
         gated = any("not(" in line and needle in line
                     and (line.strip() != UI_DEFAULT_LIB_UNIT_CFG
                          or source.relative_to(directory).as_posix() not in unit_sources)
+                    and line.strip() != equivalent_tests.get(source.relative_to(directory).as_posix())
                     for source in directory.rglob("*.rs") if source.is_file()
                     for line in source.read_text(errors="replace").splitlines())
         if package["name"] == "hex-ui" and "ui-unit-tier" in package["features"]:
             # Fail closed if the reviewed test-only companion ever gates
             # production code or gains an unreviewed expression.
             companion = 'feature = "ui-unit-tier"'
-            gated |= any(companion in line and line.strip() != '#[cfg(all(test, feature = "ui-unit-tier"))]'
+            gated |= any(companion in line and line.strip() not in UI_UNIT_TIER_TEST_CFGS
                          for source in directory.joinpath("src").rglob("*.rs") if source.is_file()
                          for line in source.read_text(errors="replace").splitlines())
         if not gated:
