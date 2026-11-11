@@ -1073,7 +1073,9 @@ public:
                 return kResultFalse;
             if(fault==125) queue->addRef();
         }
-        if(point_count || fault==83 || fault==84) {
+        // Emit an old processor observation one quantum after the edit that
+        // caused it, with no parameter input in that second quantum.
+        if(point_count || fault==83 || fault==84 || (fault==135 && block==1)) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=parameter_id(fault);
