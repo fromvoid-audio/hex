@@ -234,6 +234,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
     "src/editor/track_meters.rs": ("editor::track_meters::tests::",),
     "src/editor/missing_media.rs": ("editor::missing_media::tests::",),
+    "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
@@ -932,6 +933,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
     # when that source changes, including the grid's geometry consumers.
     if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
         filters.setdefault("hex-ui", set()).update({"editor::waveform_geometry::grid::", "editor::arrangement_map::model::"})
+    if "crates/hex-ui/src/editor/navigation_metrics.rs" in executable and "hex-ui" in tested:
+        # Keep the ignored profiler and a real rendered waveform ACK consumer.
+        filters.setdefault("hex-ui", set()).update((
+            "editor::clip_content_cache::profile::navigation::headless_navigation_framework_profile",
+            "editor::waveform::resize_tests::musical_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+        ))
     if "hex-ui" in tested and WAVEFORM_PAINT_GEOMETRY_CONSUMERS.intersection(executable):
         filters.setdefault("hex-ui", set()).add(WAVEFORM_PAINT_GEOMETRY_UNIT)
     # The theme source is compiled by path in each consumer. Run its own text

@@ -2776,6 +2776,36 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature), (consumer, feature))
                 self.assertNotIn("editor::browser::", feature)
 
+    def test_navigation_metrics_unit_keeps_profile_and_rendered_resize_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/navigation_metrics.rs"
+        unit = "editor::navigation_metrics::tests::"
+        profile = "editor::clip_content_cache::profile::navigation::headless_navigation_framework_profile"
+        resize = "editor::waveform::resize_tests::musical_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        filters = boundary["module_filters"]
+        self.assertEqual(filters, {owner: sorted(["editor::navigation_metrics::", profile, resize])})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [source]})}
+        unit_step = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(unit_step.requires_tests)
+        self.assertEqual(unit_step.argv,
+                         ("cargo", "test", "-p", owner, "--lib", "--locked", "--", unit))
+        self.assertNotIn("--features", unit_step.argv)
+        feature = steps["ui-feature-tests"]
+        self.assertFalse(feature.requires_tests)  # Required default units paired with support selection.
+        self.assertIn("ui-test-support", feature.argv)
+        for consumer in (profile, resize):
+            self.assertIn(consumer, feature.argv)
+        self.assertNotIn("--ignored", feature.argv)
+        self.assertNotIn("module-tests-hex-ui", steps)
+
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
