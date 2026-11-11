@@ -122,7 +122,10 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
     );
-    assert_eq!(original.payload().len(), 1728);
+    // Fine-Hz and pitch-keytracking each add four f32 values after the
+    // historical 1,728-byte payload; the proposal below is not a codec.
+    assert_eq!(original.payload().len(), 1760);
+    let original_bytes = original.payload().to_vec();
     assert_eq!(&original.payload()[288..292], &(-0.0f32).to_le_bytes());
     let mut proposal = payload::Payload {
         prefix: original.payload()[..380].try_into().unwrap(),
@@ -145,6 +148,7 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         }
     }
     assert_eq!(copied.mode_history, proposal.mode_history);
+    assert_eq!(original.payload(), original_bytes);
     assert_eq!(
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
@@ -235,7 +239,9 @@ fn actual_recipe_charge_and_owner_generation_boundary_identity_govern_admission(
     let pool = payload::PoolCapacity::allocated();
     let charge = size_of::<payload::Slot>() + payload::context_bytes();
     let limit = 2 * 1024 * 1024 / charge;
-    assert_eq!(limit, 425); // W10 authored asset metadata; unchanged 2MiB cap.
+    assert_eq!(limit, 423); // Current proposed context; unchanged 2 MiB cap.
+    assert!(limit * charge <= 2 * 1024 * 1024);
+    assert!((limit + 1) * charge > 2 * 1024 * 1024);
     let recipes: Vec<_> = (1..=limit as u64).map(recipe).collect();
     let mut input = empty(pool);
     input.recipes = &recipes;
