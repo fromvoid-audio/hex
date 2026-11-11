@@ -1,10 +1,10 @@
 //! One accepted loop intent, correlated with the existing worker FIFO.
 //! Section focus is a view-only consequence of its successful canonical install,
 //! guarded by the captured selection intent and current stable section scope.
-use super::{EditorView, LoopRegion, PendingLoop, Request};
+use super::{EditorView, LoopRegion, PendingLoop};
 use hex_project::Command;
 use hex_session::arrangement_seek::SectionLaunch;
-use hex_session::service::Event;
+use hex_session::service::{Event, Request};
 
 impl EditorView {
     pub(in crate::editor) fn pending_loop_region(&self) -> Option<LoopRegion> {
