@@ -1828,6 +1828,7 @@ impl Session {
         Ok(snapshot)
     }
 
+    #[allow(clippy::too_many_arguments)] // The overlay borrows existing resident custody through admission.
     pub(super) fn prepare_resident_preview(
         &self,
         command: Command,
@@ -1836,8 +1837,9 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: &Snapshot,
+        cancel: Option<&AtomicBool>,
     ) -> Result<(Arc<Project>, Snapshot), SessionError> {
-        let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
+        let inputs = self.resident_seek_inputs(admission, Some(current), cancel)?;
         let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
         let (_, prepared) = editor.execute_prepared_transition(command, |source, candidate| {
             let mut snapshot = inputs.prepare_transition(
@@ -1852,6 +1854,9 @@ impl Session {
                 context,
             )?;
             let project = Arc::new(candidate.clone());
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+                return Err(SessionError::Invalid("stretch audition cancelled"));
+            }
             let metadata = ResidentPublicationMetadata {
                 context,
                 device_preview: match identity {

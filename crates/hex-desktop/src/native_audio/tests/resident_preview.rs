@@ -29,6 +29,117 @@ type PluginFacts = crate::native_audio::plugins::FactsGate;
 enum PluginFacts {}
 
 #[test]
+fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
+    use hex_session::service::ArrangementStretchAudition;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, metadata) = h.applied(initial);
+    let before = imported.state.project.snapshot();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..438 {
+        h.render();
+    }
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+
+    let target = ArrangementStretchAudition {
+        context: metadata.context,
+        clip,
+        edge: hex_project::TrimEdge::Right,
+        frame: 24_000,
+    };
+    let advance = |h: &mut ResidentHarness, previous| {
+        let start = Instant::now();
+        loop {
+            h.pump();
+            let before = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
+            let pcm = h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break (revision, pcm);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "preview did not apply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 84_000,
+            ..target
+        }));
+    h.service.audition_arrangement_stretch(Some(target));
+    let (applied, pcm) = advance(&mut h, applied);
+    assert!(
+        pcm.iter().all(|f| *f == [0.0; 2]),
+        "latest held target is audible before release"
+    );
+    assert!(
+        h.service.try_event().is_err(),
+        "held preview does not edit the project"
+    );
+    h.service.audition_arrangement_stretch(None);
+    let (restored, pcm) = advance(&mut h, applied);
+    assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+
+    h.service.audition_arrangement_stretch(Some(target));
+    let (held, _) = advance(&mut h, restored);
+    h.service.finish_arrangement_stretch_audition();
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    let committed = h.run(Request::Edit(hex_project::Command::StretchAudioClipEdge {
+        clip,
+        edge: target.edge,
+        frame: target.frame,
+    }));
+    assert_eq!(committed.state.revision, imported.state.revision + 1);
+    assert_eq!(
+        committed.state.project.clip(clip).unwrap().duration(),
+        target.frame
+    );
+    h.service.audition_arrangement_stretch(None);
+    let (committed_audio, pcm) = advance(&mut h, held);
+    assert!(pcm.iter().all(|f| *f == [0.0; 2]));
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), before);
+    let (undone_audio, pcm) = advance(&mut h, committed_audio);
+    assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        committed.state.project.snapshot()
+    );
+    assert!(
+        advance(&mut h, undone_audio)
+            .1
+            .iter()
+            .all(|f| *f == [0.0; 2])
+    );
+}
+
+#[test]
 fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
 
