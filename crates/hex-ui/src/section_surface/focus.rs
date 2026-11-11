@@ -59,7 +59,7 @@ pub(crate) fn overlay(identity: ElementColor, chamfer: f32) -> Div {
     .inset_0()])
 }
 
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

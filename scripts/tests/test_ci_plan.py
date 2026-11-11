@@ -4187,9 +4187,9 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         unit = "section_surface::focus::geometry::"
+        theme_unit = "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments"
         consumers = [
             "editor::arrangement_focus::tests::only_selected_sections_in_q_focus_receive_the_pattern",
-            "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
         ]
         paths = [
             ("crates/hex-ui/src/section_surface/focus/geometry.rs", "section_surface::focus::geometry"),
@@ -4201,23 +4201,28 @@ class ModuleScopeTests(unittest.TestCase):
         modules = plan.module_paths(root / "crates/hex-ui/src")
         for path, module in paths:
             self.assertEqual(modules[(root / path).resolve()], module)
-            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            boundary = plan.boundary_selection(root, [path], inventory, [owner])
+            self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+            names = boundary["module_filters"][owner]
             if path == paths[0][0]:
-                self.assertEqual(names, sorted([unit, *consumers]))
+                self.assertEqual(names, sorted([unit, theme_unit, *consumers]))
             self.assertTrue(any(unit.startswith(selected) for selected in names),
                             f"{path} does not select {unit}: {names}")
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in names),
                                 f"{path} does not select {consumer}: {names}")
-            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
-                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
-                        "module_filters": {owner: names}}
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
                                       "boundary": boundary, "cargo_inventory": inventory,
                                       "paths": [path]})
             unit_step = next(step for step in steps if "unit_section" in step.argv)
             self.assertTrue(unit_step.requires_tests)
             self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            default = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+            self.assertTrue(default.requires_tests)
+            self.assertTrue(any(theme_unit.startswith(selected) for selected in default.argv))
+            focus = next(step for step in steps if step.step_id == "ui-consumer-track_group_focus")
+            self.assertTrue(focus.requires_tests)
+            self.assertIn("track_group_focus", focus.argv)
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
