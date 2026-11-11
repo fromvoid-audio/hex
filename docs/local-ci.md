@@ -250,14 +250,14 @@ original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
 selected Git once with `xcrun` and puts only that executable ahead of the
 original PATH for its child processes. Comprehensive full, release and health runs
 remain serial. Owner selections run through `scripts/python_shards.py`:
-one process per test from a shared work queue (up to 12 workers), which brings
+ordinary cases from the same module are batched up to eight per process in a
+shared work queue (up to 12 workers), which previously brought
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
-use at most two workers. Owner selections run them after ordinary tests.
-Discovery queues them after the first wave of ordinary batches and shares the
-same worker limit. The real Cargo fixture classes marked
-`__hex_shard_early__ = True` start as isolated cases in that first wave. Both modes report every
-result and include the time spent on every case.
+use at most two workers. Owner selections and discovery queue them after the
+first ordinary wave and share the same worker limit. The real Cargo fixture
+classes marked `__hex_shard_early__ = True` start as isolated cases in that
+first wave. Both modes report every result and include the time spent on every case.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,

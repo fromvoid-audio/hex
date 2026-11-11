@@ -3,14 +3,14 @@
 Usage: python3 scripts/python_shards.py [--workers N] [--discover | -- SELECTOR ...]
 
 Selectors are unittest names (modules, classes or test IDs) under scripts/tests.
-Owner selections run one case per process. Complete discovery batches small
-sets of ordinary cases to keep process startup from dominating. Every case runs
+Owner selections and discovery batch small sets of ordinary cases to keep
+process startup from dominating. Every case runs
 once and every process reports a unittest result. Tests cannot rely on sharing
 state with other cases in the same process.
 
-Methods marked `__hex_shard_bounded__ = True` use at most two workers. Owner
-selections finish ordinary cases first. Discovery queues the bounded lanes
-after its first wave of ordinary batches and shares the same worker limit.
+Methods marked `__hex_shard_bounded__ = True` use at most two workers. Both
+owner selections and discovery queue those lanes after the first ordinary wave
+and share the same worker limit.
 """
 from __future__ import annotations
 
@@ -139,17 +139,17 @@ def main(argv: list[str] | None = None) -> int:
     root = TESTS.parent.parent
 
     def run(tests: tuple[str, ...]) -> tuple[str, int, str]:
-        flags = ["-v"] if arguments.discover else []
+        flags = ["-v"] if arguments.discover or len(tests) > 1 else []
         result = subprocess.run([sys.executable, "-c", BOOTSTRAP, *flags, *tests], cwd=root,
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         label = tests[0] if len(tests) == 1 else f"{tests[0]} and {len(tests) - 1} more"
         return label, result.returncode, result.stdout
 
     failed = False
-    jobs = batches(cases, size=8 if arguments.discover else 1)
+    jobs = batches(cases, size=8)
     environment = discovery_environment() if arguments.discover else nullcontext(None)
     with environment as env:
-        for test, code, output in run_cases(jobs, workers, run, overlap_bounded=arguments.discover):
+        for test, code, output in run_cases(jobs, workers, run, overlap_bounded=True):
             # unittest reports on stderr; keep that stream for callers and logs.
             print(f"===== {test} (exit {code}) =====\n{output}", file=sys.stderr, flush=True)
             failed |= code != 0

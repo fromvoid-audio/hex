@@ -172,6 +172,12 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(shards.main(["--", "missing_shard_fixture.no_case"]), 1)
         self.assertIn("exit 1", output.getvalue())
 
+    def test_owner_selection_overlaps_bounded_cases_with_ordinary_work(self):
+        with patch.object(shards, "test_cases", return_value=[("fixture", True, False)]), \
+                patch.object(shards, "run_cases", return_value=[]) as schedule:
+            self.assertEqual(shards.main(["--workers", "3", "--", "fixture"]), 0)
+        self.assertTrue(schedule.call_args.kwargs["overlap_bounded"])
+
     def test_shard_cli_runs_both_groups_and_propagates_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -179,6 +185,7 @@ class SelectionTests(unittest.TestCase):
                 "import unittest\n"
                 "class Cases(unittest.TestCase):\n"
                 "    def test_plain(self): pass\n"
+                "    def test_plain_second(self): pass\n"
                 "    def test_bounded(self): self.fail('expected')\n"
                 "    test_bounded.__hex_shard_bounded__ = True\n"
             )
@@ -186,7 +193,9 @@ class SelectionTests(unittest.TestCase):
             with patch.dict(os.environ, {"PYTHONPATH": directory}), patch.object(sys, "path", [directory, *sys.path]):
                 with redirect_stderr(output):
                     self.assertEqual(shards.main(["--workers", "3", "--", "shard_fixture"]), 1)
-            self.assertIn("shard_fixture.Cases.test_plain (exit 0)", output.getvalue())
+            self.assertIn("shard_fixture.Cases.test_plain and 1 more (exit 0)", output.getvalue())
+            self.assertIn("test_plain (shard_fixture.Cases) ... ok", output.getvalue())
+            self.assertIn("test_plain_second (shard_fixture.Cases) ... ok", output.getvalue())
             self.assertIn("shard_fixture.Cases.test_bounded (exit 1)", output.getvalue())
             sys.modules.pop("shard_fixture", None)
 
