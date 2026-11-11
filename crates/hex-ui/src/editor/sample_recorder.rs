@@ -2,10 +2,7 @@
 //! owns project-scoped arm intent and the displayed recent list. The native
 //! output confirms PCM and the dedicated worker owns the file operations.
 
-use super::{
-    EditorView,
-    waveform::{button, toggle_button_with_style},
-};
+use super::{EditorView, waveform::toggle_button_with_style};
 use crate::theme;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
 use hex_audio::sample_recording::{self, End, OutputCaptureId, Phase, Source, Take};
@@ -72,12 +69,8 @@ struct Row {
 
 // The waveform adapter uses an icon-width hit target. Recorder labels
 // need their own text-sized surfaces, including their horizontal padding.
-fn recorder_button(
-    label: &'static str,
-    tooltip: &'static str,
-    id: (&'static str, u64),
-) -> Stateful<Div> {
-    button(label, tooltip, id)
+fn button(label: &'static str, tooltip: &'static str, id: (&'static str, u64)) -> Stateful<Div> {
+    super::waveform::button(label, tooltip, id)
         .w_auto()
         .px_1()
         .whitespace_nowrap()
@@ -181,7 +174,7 @@ impl EditorView {
         } else {
             "recorder"
         };
-        recorder_button(
+        button(
             label,
             "switch spectrum and recorder",
             ("sample-recorder-mode", 0),
@@ -368,7 +361,7 @@ impl EditorView {
                     )
                     .child(self.sample_recorder_mode_button(cx))
                     .child(
-                        recorder_button(
+                        button(
                             if phase.is_some() { "stop" } else { "record" },
                             "start or stop sample recording",
                             ("sample-record", 0),

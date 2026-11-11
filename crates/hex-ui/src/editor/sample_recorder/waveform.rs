@@ -1,6 +1,6 @@
 //! View and gesture state for auditioning an immutable take.
 
-use super::{EditorView, Row, button, recorder_button, selection::Range};
+use super::{EditorView, Row, button, selection::Range};
 use crate::theme;
 use gpui::{
     Bounds, Context, Div, Modifiers, MouseButton, Pixels, Point, canvas, div, fill, point,
@@ -388,7 +388,7 @@ impl EditorView {
                 hex_session::service::text::verbatim(&wave.name),
             )))
             .child(
-                recorder_button(
+                button(
                     if playing { "stop audition" } else { "audition" },
                     "play or stop the selected range",
                     ("take-audition", 0),
@@ -396,7 +396,7 @@ impl EditorView {
                 .on_click(cx.listener(|view, _, _, cx| view.play_take_range(cx))),
             )
             .child(
-                recorder_button(
+                button(
                     if wave.repeat { "loop on" } else { "loop off" },
                     "toggle loop audition",
                     ("take-loop", 0),
@@ -410,7 +410,7 @@ impl EditorView {
                 })),
             )
             .child(
-                recorder_button(
+                button(
                     if wave.snap { "snap on" } else { "snap off" },
                     if wave.take.timing.is_empty() {
                         "snap uses project tempo · shift adjusts freely"
@@ -427,7 +427,7 @@ impl EditorView {
                 })),
             )
             .children([true, false].map(|inward| {
-                button(
+                super::super::waveform::button(
                     if inward { "+" } else { "−" },
                     "zoom waveform",
                     ("take-zoom", u64::from(inward)),

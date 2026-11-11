@@ -1,7 +1,7 @@
 //! Prepare the selected take excerpt off the UI thread. Only a completed
 //! excerpt can be offered to Hex's existing audio-file drag receivers.
 
-use super::{EditorView, recorder_button, selection::Range, waveform::take_source};
+use super::{EditorView, button, selection::Range, waveform::take_source};
 use crate::editor::{
     browser::BrowserAudioDragGhost,
     drag::{BrowserAudioDrag, copy_cursor},
@@ -166,7 +166,7 @@ impl EditorView {
                 return None;
             }
             return Some(
-                recorder_button(
+                button(
                     "prepare drag",
                     "prepare the selected range to drag",
                     ("prepare-take-drag", 0),
@@ -176,7 +176,7 @@ impl EditorView {
         };
         let entity = cx.entity();
         Some(
-            recorder_button(
+            button(
                 "drag range",
                 "drag this exact range to arrangement or session",
                 ("take-excerpt-drag", 0),
