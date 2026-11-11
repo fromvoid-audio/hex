@@ -351,9 +351,8 @@ fn group_bottom_drag_distinguishes_append_from_the_outside_gap(cx: &mut TestAppC
         visual.simulate_mouse_move(outside, MouseButton::Left, modifiers);
         visual.run_until_parked();
         let outside_line = visual.debug_bounds("track-insertion-line").unwrap();
-        assert_eq!(
-            outside_line.origin.y + outside_line.size.height / 2.0,
-            boundary
+        assert!(
+            (outside_line.origin.y + outside_line.size.height / 2.0 - boundary).abs() <= px(1.0)
         );
         assert!(
             visual
@@ -367,14 +366,20 @@ fn group_bottom_drag_distinguishes_append_from_the_outside_gap(cx: &mut TestAppC
         let inside_line = visual
             .debug_bounds("track-group-end-insertion-line")
             .unwrap();
-        assert_eq!(inside_line.origin.y + inside_line.size.height, boundary);
-        assert_eq!(
-            inside_line.origin.x,
-            last_header.origin.x + px(super::track_hierarchy_indent::RAIL_WIDTH)
+        assert!((inside_line.origin.y + inside_line.size.height - boundary).abs() <= px(1.0));
+        assert!(
+            (inside_line.origin.x
+                - last_header.origin.x
+                - px(super::track_hierarchy_indent::RAIL_WIDTH))
+            .abs()
+                <= px(1.0)
         );
-        assert_eq!(
-            inside_line.origin.x + inside_line.size.width,
-            last_header.origin.x + last_header.size.width
+        assert!(
+            (inside_line.origin.x + inside_line.size.width
+                - last_header.origin.x
+                - last_header.size.width)
+                .abs()
+                <= px(1.0)
         );
 
         let (release, selector, painted) = if parent.is_some() {

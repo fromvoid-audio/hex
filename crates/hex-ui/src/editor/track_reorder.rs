@@ -406,11 +406,11 @@ impl EditorView {
                         last_child: None,
                     });
             }
-            // Leave the exact edge to the normal gap. Just inside the last
-            // visible child, prefer the innermost group closing at this edge.
+            // Keep the painted edge in the normal gap despite pixel rounding.
+            // Just above it, prefer the innermost group closing at this edge.
             if row_end <= bounds.top + bounds.height
                 && y >= row_end - (height * 0.25).min(10.0)
-                && y < row_end
+                && y < row_end - 1.0
             {
                 let next = self
                     .arrangement_track_index(index + 1)
