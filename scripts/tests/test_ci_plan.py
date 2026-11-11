@@ -2176,7 +2176,22 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         path = "crates/hex-ui/src/editor/pending_edit.rs"
         filters = plan.module_test_filters(root, [path], inventory, [owner])
-        self.assertEqual(filters, {owner: ["editor::pending_edit::"]})
+        pending = "editor::pending_edit::"
+        receipt_consumers = [
+            "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
+            "editor::fade_handles::ui_tests::real_refusal_retires_frozen_curve_with_its_canonical_state",
+        ]
+        expected_receipt_filters = sorted([pending, *receipt_consumers])
+        self.assertEqual(filters, {owner: expected_receipt_filters})
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        receipt_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        receipt_unit = receipt_steps["ui-unit-unit_editor_state"].argv
+        self.assertEqual(receipt_unit[receipt_unit.index("--") + 1:], (pending,))
+        receipt_support = receipt_steps["ui-feature-tests"].argv
+        self.assertEqual(receipt_support[receipt_support.index("--") + 1:],
+                         tuple(expected_receipt_filters))
         viewport = "editor::viewport::"
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
@@ -2253,6 +2268,7 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
                     if (name != recovery_integration and name not in timeline[:3]
+                            and name not in receipt_consumers
                             and (name not in METER_BOUNDARY or name == scale)):
                         self.assertIn(name, unit[0].argv)
                 if recovery in names:

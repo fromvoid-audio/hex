@@ -1038,6 +1038,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::waveform::resize_tests::plain_lower_fade_prefix_uses_the_same_raw_source_mapping",
                     "editor::trim::loop_ui_tests::clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body",
                 ))
+            if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
+                names.update((
+                    "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
+                    "editor::fade_handles::ui_tests::real_refusal_retires_frozen_curve_with_its_canonical_state",
+                ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
