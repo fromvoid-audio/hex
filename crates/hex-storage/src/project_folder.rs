@@ -69,9 +69,16 @@ impl Destination {
             Err(error) => return Err(error.into()),
         }
         let path = root.join(name);
-        if path.as_os_str().len() > crate::project_name::MAX_PROJECT_PATH_BYTES {
+        let path_bytes = path.as_os_str().len();
+        if path_bytes > crate::project_name::MAX_PROJECT_PATH_BYTES {
             return Err(StorageError::Invalid(
                 "project folder path exceeds the 4096-byte limit",
+            ));
+        }
+        #[cfg(unix)]
+        if path_bytes >= libc::PATH_MAX as usize {
+            return Err(StorageError::Invalid(
+                "project folder would make the saved path too long; choose a shorter name or location",
             ));
         }
         let folder = NewFolder {
@@ -379,6 +386,23 @@ mod tests {
         );
         assert!(!stage.exists());
         assert!(!files.0.join("Cancelled").exists());
+    }
+
+    #[test]
+    fn derived_path_must_fit_even_when_the_chosen_filename_fits() {
+        let files = Files::new();
+        let mut parent = files.0.clone();
+        let parent_length = libc::PATH_MAX as usize - 200;
+        while parent.as_os_str().len() < parent_length {
+            let count = (parent_length - parent.as_os_str().len() - 1).min(100);
+            parent.push("p".repeat(count.max(1)));
+            fs::create_dir(&parent).unwrap();
+        }
+        let chosen = parent.join(format!("{}.hex", "x".repeat(120)));
+        assert!(chosen.as_os_str().len() < libc::PATH_MAX as usize);
+        let error = Destination::prepare(chosen, false).err().unwrap();
+        assert!(error.to_string().contains("project folder"), "{error}");
+        assert!(fs::read_dir(parent).unwrap().next().is_none());
     }
 
     #[test]
