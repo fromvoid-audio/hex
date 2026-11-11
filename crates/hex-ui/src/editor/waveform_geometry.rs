@@ -486,10 +486,12 @@ pub(super) fn prepare_waveform_geometry(
                 let ranges = projection.ranges(start..end, waveform.source_frames());
                 aggregate_ranges(waveform, ranges.as_slice())
             }
-            WaveformMapping::Loop(projection) => projection.peaks(waveform, start..end),
+            WaveformMapping::Loop(projection) => {
+                projection.peaks_with_detail(waveform, start..end, detail_budget)
+            }
             WaveformMapping::Stretch(projection) => {
                 let ranges = projection.ranges(start..end, waveform.source_frames());
-                aggregate_ranges(waveform, ranges.as_slice())
+                aggregate_ranges_with_detail(waveform, ranges.as_slice(), detail_budget)
             }
             WaveformMapping::Prepared {
                 timeline_origin,
