@@ -4506,9 +4506,10 @@ class ModuleScopeTests(unittest.TestCase):
         slope = "editor::device_panel::eq_panel::slope::"
         group = "editor::device_panel::eq_panel::group_move::"
         gestures = "editor::device_panel::eq_panel::gestures::"
+        rendered_group = "editor::device_panel::tests::eq_ui_tests::marquee_tests::eq_group_drag_moves_every_selected_node_and_undoes_in_one_step"
         for path in ("group_move.rs", "gestures.rs"):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/eq_panel/" + path],
-                                                      inventory, [owner]), {owner: [gestures, group]})
+                                                      inventory, [owner]), {owner: sorted([gestures, group, rendered_group])})
         spectrum = "editor::device_panel::spectrum_display::"
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/spectrum_display.rs"],
                                                   inventory, [owner]), {owner: [spectrum]})
@@ -4538,6 +4539,28 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-device-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-device-unit" for step in health))
+
+    def test_eq_group_capacity_unit_keeps_rendered_undo_and_standalone_group_move(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::eq_panel::gestures::tests::"
+        witness = "editor::device_panel::tests::eq_ui_tests::marquee_tests::eq_group_drag_moves_every_selected_node_and_undoes_in_one_step"
+        for path in ("crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs",
+                     "crates/hex-ui/src/editor/device_panel/eq_panel/group_move.rs"):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                self.assertIn("editor::device_panel::eq_panel::group_move::", steps["ui-unit-unit_device"].argv)
+                self.assertIn(witness, steps["ui-feature-tests"].argv)
 
     def test_vst3_filesystem_cache_selects_support_without_default_or_projection_units(self):
         root = SCRIPTS.parent

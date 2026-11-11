@@ -265,6 +265,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
+    "src/editor/device_panel/eq_panel/gestures.rs": ("editor::device_panel::eq_panel::gestures::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
     "src/editor/arrangement_sections.rs": (
@@ -1203,6 +1204,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 "crates/hex-ui/src/editor/waveform_stretch/tests.rs",
             }.intersection(executable):
                 names.add("editor::waveform::resize_tests::shift_stretch_keeps_live_sample_varied_waveforms_visible")
+            if {
+                "crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs",
+                "crates/hex-ui/src/editor/device_panel/eq_panel/group_move.rs",
+            }.intersection(executable):
+                names.add("editor::device_panel::tests::eq_ui_tests::marquee_tests::eq_group_drag_moves_every_selected_node_and_undoes_in_one_step")
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
                     "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
