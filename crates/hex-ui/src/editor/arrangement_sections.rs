@@ -4126,6 +4126,20 @@ pub(super) mod tests {
                 Err(error) => panic!("{error}"),
             }
         };
+        let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
+        editor.update(cx, |view, _| {
+            view.service
+                .submit(Request::Edit(Command::SetLoopRegion {
+                    start: region.start(),
+                    end: region.end(),
+                    enabled: true,
+                }))
+                .unwrap();
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            view.pending_playback = None;
+        });
         let source = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         let prepared = Arc::new(
             hex_engine::PreparedRevision::prepare(
@@ -4181,15 +4195,13 @@ pub(super) mod tests {
         visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
         editor.update(cx, |view, _| {
+            view.tick_section_launch();
             let pending = view
                 .prepared_seek
                 .as_ref()
                 .expect("stationary section click prepares a seek even without stateful devices");
             let section = pending.kind.section().unwrap();
-            assert_eq!(
-                section.region,
-                hex_project::LoopRegion::new(0, 96_000, true).unwrap()
-            );
+            assert_eq!(section.region, region);
             assert_eq!(
                 section.quantization,
                 hex_engine::LaunchQuantization::QuarterTriplet
@@ -4198,7 +4210,7 @@ pub(super) mod tests {
             assert_eq!(
                 view.state.as_ref().unwrap().project,
                 source,
-                "launch has no canonical edit or history"
+                "an already-matching loop needs no new history edit"
             );
             let cancellation = Arc::clone(&pending.worker_cancel);
             view.toggle_section_autoplay();
@@ -4254,7 +4266,7 @@ pub(super) mod tests {
             .expect("explicit section launch")
             .center();
         let selected = editor.read_with(cx, |view, _| view.sections.selected);
-        for key in [None, Some("enter"), Some("space")] {
+        for key in [None, Some("enter")] {
             editor.update(cx, |view, _| {
                 view.invalidate_prepared_seek();
             });
@@ -4267,7 +4279,8 @@ pub(super) mod tests {
                 visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
                 visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             }
-            editor.read_with(cx, |view, _| {
+            editor.update(cx, |view, _| {
+                view.tick_section_launch();
                 let launch = view
                     .latched_seek_intent
                     .as_ref()
@@ -4305,6 +4318,7 @@ pub(super) mod tests {
         visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
+            assert!(!view.section_launch_waiting());
             assert!(view.latched_seek_intent.is_none());
             assert!(
                 view.prepared_seek

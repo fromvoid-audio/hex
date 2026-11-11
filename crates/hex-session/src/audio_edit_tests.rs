@@ -761,12 +761,45 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     assert_eq!(views[&group].offset, 0);
     assert_eq!(views[&group].waveform.source_frames(), 10_000);
     assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
+    let root_waveform = Arc::clone(&root.waveform);
     drop(views);
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
     renderer.play();
     let mut output = [[0.0; 2]; 257];
     renderer.render(&mut output).unwrap();
     assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+
+    let (_, muted) = session
+        .command_prepared_revision(
+            Command::EditClips {
+                clips: vec![group],
+                edit: hex_project::ClipEdit::Active { active: false },
+            },
+            Some(&cropped),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &session.audio_clip_waveforms.borrow()[&group]
+            .preview_root
+            .as_ref()
+            .unwrap()
+            .waveform,
+        &root_waveform,
+    ));
+    let mut renderer = hex_engine::Renderer::new(muted.arrangement());
+    renderer.play();
+    let mut samples = [[1.0; 2]; 257];
+    renderer.render(&mut samples).unwrap();
+    assert_eq!(samples, [[0.0; 2]; 257]);
+
+    let restored = session
+        .undo_prepared_revision(Some(&muted))
+        .unwrap()
+        .unwrap();
+    let mut renderer = hex_engine::Renderer::new(restored.arrangement());
+    renderer.play();
+    renderer.render(&mut samples).unwrap();
+    assert_eq!(samples, output);
 }
 
 #[test]

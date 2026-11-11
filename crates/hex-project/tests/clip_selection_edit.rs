@@ -102,6 +102,34 @@ fn edit(clips: &[ClipId], edit: ClipEdit) -> Command {
 }
 
 #[test]
+fn activation_is_atomic_and_leaves_alias_placements_independent() {
+    let (mut editor, [audio, _, midi, _]) = fixture();
+    let Created::Clips { first: alias, .. } = editor
+        .execute(Command::DuplicateAliasClips(vec![audio]))
+        .unwrap()
+    else {
+        panic!("alias")
+    };
+    let before = editor.project().clone();
+    let inactive = ClipEdit::Active { active: false };
+    assert!(
+        editor
+            .execute(edit(&[audio, audio, midi], inactive.clone()))
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    editor.execute(edit(&[audio, midi], inactive)).unwrap();
+    assert_eq!(editor.project().clip_active(audio), Some(false));
+    assert_eq!(editor.project().clip_active(midi), Some(false));
+    assert_eq!(editor.project().clip(alias), before.clip(alias));
+    let after = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+}
+
+#[test]
 fn heterogeneous_warp_members_converge_without_copying_markers_or_other_settings() {
     let (mut editor, [a, b, midi, untouched]) = fixture();
     let track = editor.project().tracks()[0].id();

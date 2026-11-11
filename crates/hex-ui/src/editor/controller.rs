@@ -1223,10 +1223,12 @@ impl EditorView {
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
                     visible_change |= self.retire_clip_gain();
+                    visible_change |= self.retire_clip_activation();
                     visible_change |= self.retire_pending_gain();
                     visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
+                    visible_change |= self.section_launch_after_loop.take().is_some();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -1284,6 +1286,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
         visible_change |= self.retire_abandoned_clip_gain();
+        visible_change |= self.retire_abandoned_clip_activation();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -1327,6 +1330,7 @@ impl EditorView {
         {
             self.invalidate_prepared_seek();
         }
+        visible_change |= self.tick_section_launch();
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
@@ -2326,6 +2330,7 @@ impl EditorView {
         self.fade_request_complete(&event);
         self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
+        self.clip_activation_complete(&event);
         self.gain_request_complete(&event);
         self.gain_take_request_complete(&event);
         self.device_automation_complete(&event);
@@ -3458,6 +3463,7 @@ impl EditorView {
                 &request,
                 Request::SaveCurrent
                     | Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrentWithFormatUpgrade { .. }
             );
         // An already-started recovery must finish while a picker/confirmation
@@ -3910,6 +3916,7 @@ impl EditorView {
 
     pub(super) fn seek_pending(&self) -> bool {
         if self.recovery.generation().is_some()
+            || self.section_launch_waiting()
             || self.prepared_seek.is_some()
             || self.latched_seek_intent.is_some()
             || self.retired_seek_result.is_some()
@@ -4198,6 +4205,7 @@ impl EditorView {
             return;
         }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
+            self.cancel_section_launch_wait();
             self.invalidate_prepared_seek();
         }
         if self.audio.is_none() {
@@ -4850,6 +4858,7 @@ impl EditorView {
         self.cancel_tuning_audition();
         self.stop_computer_keyboard();
         self.cancel_scrub();
+        self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();
@@ -5312,96 +5321,15 @@ fn allows_non_open_request(
 #[path = "controller/publication_unit_tests.rs"]
 mod publication_unit_tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "controller/session_action_unit_tests.rs"]
+mod session_action_unit_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        SessionTicketOutcome, allows_non_open_request, clear_rejected_scene_duplicate,
-        intent_desired_playing, queued_action_is_current, reconcile_session_receipt,
-    };
-    use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate};
+    use super::{SessionTicketOutcome, reconcile_session_receipt};
+    use hex_engine::PlaybackAction;
     use hex_engine::playback::Playback;
-    use hex_engine::{PlaybackAction, PlaybackCommand, SessionPlaybackCommand};
-    use hex_project::{Command, Created, Editor, Project};
-
-    use hex_session::service::Request;
-
-    #[test]
-    fn rejected_scene_duplicate_clears_only_its_completion_selection_intent() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 4).expect("editor");
-        let Created::Scene(scene) = editor
-            .execute(Command::AddScene {
-                name: "source".into(),
-            })
-            .expect("scene")
-        else {
-            panic!("scene creation returns a scene id")
-        };
-        let intent = || {
-            Some(PendingSceneDuplicate {
-                source_scene: scene,
-                project_generation: 3,
-                select_on_completion: true,
-            })
-        };
-        let mut pending = intent();
-
-        clear_rejected_scene_duplicate(
-            &mut pending,
-            &Request::Edit(Command::DuplicateScene(scene)),
-        );
-        assert!(pending.is_none());
-
-        let mut pending = intent();
-        clear_rejected_scene_duplicate(
-            &mut pending,
-            &Request::Edit(Command::MoveScene {
-                scene,
-                before: None,
-            }),
-        );
-        assert!(pending.is_some());
-    }
-
-    #[test]
-    fn project_edit_backpressure_preserves_transport_but_invalidates_session_actions() {
-        let project = Project::new(48_000).expect("project");
-        let transport = PendingPlaybackAction {
-            action: PlaybackAction::Transport(PlaybackCommand::Pause),
-            generation: 8,
-            revision: None,
-            intent_token: None,
-        };
-        let session = PendingPlaybackAction {
-            action: PlaybackAction::Session(SessionPlaybackCommand::StopAllClips {
-                quantization: hex_engine::LaunchQuantization::Immediate,
-            }),
-            generation: 8,
-            revision: Some(12),
-            intent_token: None,
-        };
-
-        assert!(queued_action_is_current(
-            transport,
-            true,
-            8,
-            Some(&project),
-            Some(12),
-        ));
-        assert!(!queued_action_is_current(
-            session,
-            true,
-            8,
-            Some(&project),
-            Some(12),
-        ));
-        assert!(!queued_action_is_current(
-            transport,
-            false,
-            9,
-            Some(&project),
-            Some(12),
-        ));
-    }
 
     #[test]
     fn earlier_session_rejection_is_not_reported_as_consumed() {
@@ -5438,48 +5366,6 @@ mod tests {
             .unwrap();
         callback.begin_block();
         control.reclaim();
-    }
-
-    #[test]
-    fn launch_and_transport_actions_have_explicit_play_intents() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 1).expect("editor");
-        let Created::Scene(scene) = editor
-            .execute(Command::AddScene {
-                name: "scene".into(),
-            })
-            .expect("scene")
-        else {
-            panic!("scene")
-        };
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::LaunchAndPlay(
-                SessionPlaybackCommand::LaunchScene {
-                    scene,
-                    quantization: hex_engine::LaunchQuantization::Immediate,
-                }
-            )),
-            Some(true)
-        );
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Play)),
-            Some(true)
-        );
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Pause)),
-            Some(false)
-        );
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Seek(1))),
-            None
-        );
-    }
-
-    #[test]
-    fn close_prompt_allows_only_owned_duplicate_continuations() {
-        assert!(allows_non_open_request(true, false, true));
-        assert!(!allows_non_open_request(true, false, false));
-        assert!(allows_non_open_request(false, false, false));
-        assert!(!allows_non_open_request(true, true, true));
     }
 }
 
@@ -5550,7 +5436,7 @@ mod tuning_audition_error_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod comparison_source_binding_tests {
     use super::super::audio_admission::{AdmissionState, AudioAdmissionStatus, ProjectRevision};
     use super::*;
@@ -5715,7 +5601,7 @@ mod comparison_source_binding_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod sampler_native_ui_protocol_tests {
     use super::*;
     #[cfg(feature = "ui-test-support")]
@@ -6334,35 +6220,6 @@ mod sampler_native_ui_protocol_tests {
     }
 
     #[test]
-    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
-        let context = hex_engine::AudioSourceContext {
-            project_generation: 4,
-            editor_revision: 7,
-        };
-        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
-        assert!(!relinquish_client_matches(
-            4,
-            Some(8),
-            Some(12),
-            12,
-            context
-        ));
-        assert!(!relinquish_client_matches(
-            4,
-            Some(7),
-            Some(13),
-            12,
-            context
-        ));
-        assert!(!relinquish_client_matches(
-            5,
-            Some(7),
-            Some(12),
-            12,
-            context
-        ));
-    }
-    #[test]
     fn native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion() {
         // UI protocol metadata only; actual native proof/PCM is covered by the
         // Service/Desktop eligible publication and callback integration probes.
@@ -6476,5 +6333,40 @@ mod sampler_native_ui_protocol_tests {
             .1,
             None
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod source_binding_unit_tests {
+    use super::relinquish_client_matches;
+
+    #[test]
+    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 4,
+            editor_revision: 7,
+        };
+        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(8),
+            Some(12),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(7),
+            Some(13),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            5,
+            Some(7),
+            Some(12),
+            12,
+            context
+        ));
     }
 }

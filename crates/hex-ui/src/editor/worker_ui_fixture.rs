@@ -72,7 +72,16 @@ pub(super) fn open(
     .unwrap();
     let mut current = receive(&service, &mut backend).state;
     for command in commands {
-        service.submit(Request::Edit(command)).unwrap();
+        let request = if matches!(command, hex_project::Command::AddArrangementSection { .. }) {
+            Request::EditArrangementSection {
+                project_generation: 0,
+                revision: current.revision,
+                command,
+            }
+        } else {
+            Request::Edit(command)
+        };
+        service.submit(request).unwrap();
         current = receive(&service, &mut backend).state;
     }
     let (handle, editor) = super::clip_drag_ui_test::editor_window(
@@ -154,24 +163,69 @@ impl WorkerUiFixture {
 mod tests {
     use super::super::arrangement_seek::SeekStage;
     use super::*;
-    use gpui::VisualTestContext;
+    use gpui::{Modifiers, MouseButton, VisualTestContext};
+    use hex_project::{BeatTime, Command, ElementColor, LoopRegion};
+    use std::sync::atomic::Ordering::Acquire;
 
     #[gpui::test]
-    fn worker_section_submission_waits_for_callback_ack_through_repaints(cx: &mut TestAppContext) {
+    fn section_button_uses_visible_loop_and_space_pauses_the_callback(cx: &mut TestAppContext) {
+        cx.update(super::super::bind_editor_keys);
+        let start = BeatTime::from_quarters(2).unwrap();
+        let end = BeatTime::from_quarters(3).unwrap();
+        let region = LoopRegion::new(48_000, 72_000, true).unwrap();
         let mut fixture = open(
             cx,
-            vec![hex_project::Command::AddTrack {
-                name: "arrangement".into(),
-            }],
+            vec![
+                Command::AddTrack {
+                    name: "arrangement".into(),
+                },
+                Command::AddArrangementSection {
+                    name: "section".into(),
+                    color: ElementColor::Blue,
+                    start,
+                    end,
+                },
+            ],
         );
         let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        let selector: &'static str = fixture.editor.read_with(&visual, |view, _| {
+            let id = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            Box::leak(format!("section-launch-{}", id.value()).into_boxed_str())
+        });
         fixture.editor.update(&mut visual, |view, cx| {
-            view.request_section_launch(hex_session::arrangement_seek::SectionLaunch {
-                region: hex_project::LoopRegion::new(256, 512, true).unwrap(),
-                quantization: hex_engine::LaunchQuantization::Immediate,
-            });
+            view.session_quantization = hex_engine::LaunchQuantization::Immediate;
             cx.notify();
         });
+        visual.run_until_parked();
+        let button = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let pending_bar = visual.debug_bounds("loop-rail-range").unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(state.project.loop_region().is_none());
+            assert_eq!(
+                super::super::loop_rail::displayed_region(view, state),
+                Some(region)
+            );
+            assert!(view.prepared_seek.is_none());
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let committed = fixture.editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state.as_ref().unwrap().project.loop_region() == Some(region)
+                    && view.applied_project_revision()
+                        == Some(view.state.as_ref().unwrap().revision)
+            });
+            if committed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "loop revision was not applied");
+            std::thread::yield_now();
+        }
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let published = fixture.editor.update(&mut visual, |view, cx| {
@@ -202,13 +256,7 @@ mod tests {
             visual.run_until_parked();
             fixture.editor.read_with(&visual, |view, _| {
                 assert!(view.prepared_seek.is_some());
-                assert_eq!(
-                    view.audio_status()
-                        .unwrap()
-                        .position
-                        .load(std::sync::atomic::Ordering::Acquire),
-                    0
-                );
+                assert_eq!(view.audio_status().unwrap().position.load(Acquire), 0);
             });
         }
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -217,15 +265,62 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("loop-rail-range"), Some(pending_bar));
         fixture.editor.read_with(&visual, |view, _| {
             assert!(view.prepared_seek.is_none());
+            let status = view.audio_status().unwrap();
+            assert_eq!(status.position.load(Acquire), region.start() + 64);
+            assert!(status.playing.load(Acquire));
+        });
+        visual.simulate_keystrokes("space");
+        // The callback finishes the transport declick before reporting Pause.
+        for _ in 0..3 {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        fixture.editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
             assert_eq!(
-                view.audio_status()
-                    .unwrap()
-                    .position
-                    .load(std::sync::atomic::Ordering::Acquire),
-                320
+                view.last_transport_command,
+                Some(hex_engine::PlaybackCommand::Pause)
             );
+            assert!(!view.audio_status().unwrap().playing.load(Acquire));
+            assert!(view.prepared_seek.is_none());
+        });
+        visual.simulate_keystrokes("space");
+        for _ in 0..400 {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        fixture.editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            let status = view.audio_status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert!((region.start()..region.end()).contains(&status.position.load(Acquire)));
+        });
+        visual.simulate_keystrokes("cmd-l");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let disabled = fixture.editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                let state = view.state.as_ref().unwrap();
+                state
+                    .project
+                    .loop_region()
+                    .is_some_and(|loop_region| !loop_region.enabled())
+                    && view.applied_project_revision() == Some(state.revision)
+            });
+            if disabled {
+                break;
+            }
+            assert!(Instant::now() < deadline, "disabled loop was not applied");
+            std::thread::yield_now();
+        }
+        for _ in 0..400 {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        fixture.editor.read_with(&visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert!(status.position.load(Acquire) >= region.end());
         });
         fixture.finish(cx);
     }

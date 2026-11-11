@@ -1,9 +1,10 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
 //! Selection is view state: `selected` drives the footer controls and a
-//! marquee `group` holds a multi-selection. A blank press creates a node;
-//! shift-drag draws a marquee, and shift-cmd toggles its hits. Shift-press on
-//! a node adds it to the group. Dragging a grouped
+//! marquee `group` holds a multi-selection. A blank click clears selection,
+//! a blank drag draws a marquee, and a double-click creates a node. Holding
+//! the second press lets the user position it. Shift-cmd toggles marquee hits.
+//! Shift-press on a node adds it to the group. Dragging a grouped
 //! node moves the group as one parameter-snapshot gesture, and removal deletes
 //! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
@@ -165,7 +166,7 @@ pub(super) fn render_body(
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
-            graph.set_marquee_enabled(true, cx);
+            graph.set_blank_marquee_enabled(true, cx);
             graph.set_backspace_removal(true);
             graph
         });
@@ -441,7 +442,7 @@ pub(super) fn render_body(
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click to add a node · option-drag to place and shape · shift-drag to select",
+            "double-click to add · hold second click to drag · drag empty space to select",
         ));
     }
     let body = bottom;

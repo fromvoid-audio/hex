@@ -43,6 +43,7 @@ pub(super) struct PendingKinds {
     fade: bool,
     locator_move: bool,
     clip_gain: bool,
+    clip_activation: bool,
     gain: bool,
     gain_take: bool,
     device_automation: bool,
@@ -108,6 +109,7 @@ impl EditorView {
                 fade: self.pending_fade_matches(request),
                 locator_move: self.locators.matches(request),
                 clip_gain: self.clip_gain_matches(request),
+                clip_activation: self.clip_activation_matches(request),
                 gain: self.pending_gain_matches(request),
                 gain_take: self.pending_gain_take_matches(request),
                 device_automation: self.pending_device_automation_matches(request),
@@ -222,6 +224,9 @@ impl EditorView {
         if kinds.clip_gain {
             self.clip_gain_submitted();
         }
+        if kinds.clip_activation {
+            self.clip_activation_submitted();
+        }
         if kinds.gain {
             self.gain_submitted();
         }
@@ -267,6 +272,7 @@ impl EditorView {
         if matches!(
             request,
             Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
@@ -335,6 +341,9 @@ impl EditorView {
         }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();
+        }
+        if kinds.clip_activation {
+            visible |= self.retire_clip_activation();
         }
         if kinds.gain {
             visible |= self.retire_pending_gain();

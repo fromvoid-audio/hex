@@ -1,6 +1,7 @@
 //! Thin Arrangement bounce routing; rendering/adoption belong to the worker.
 //! Plain `b` bounces the selection to new tracks; `cmd-b` also deactivates the
 //! bounced sources in the same adoption edit, matching contextual `c`/`0`.
+//! Shift selects one mixed bounce for a time range with either shortcut.
 //! `b` held at the release of an Arrangement clip drag drops a bounce of the
 //! dragged clips at the drop position instead of moving them.
 use super::{EditorMode, EditorView, drag::ClipDrag, drag::DropPreview};
@@ -117,7 +118,12 @@ impl EditorView {
         }
     }
 
-    pub(super) fn bounce_arrangement_selection(&mut self, window: &Window, mute_sources: bool) {
+    pub(super) fn bounce_arrangement_selection(
+        &mut self,
+        window: &Window,
+        mute_sources: bool,
+        merged: bool,
+    ) {
         if self.mode != EditorMode::Arrangement
             || !self.focus.is_focused(window)
             || self.computer_keyboard.enabled
@@ -142,9 +148,16 @@ impl EditorView {
                     Some("bounce time selection no longer belongs to current tracks".into());
                 return;
             };
-            hex_project::BounceTarget::Range(range)
+            if merged {
+                BounceTarget::MergedRange(range)
+            } else {
+                BounceTarget::Range(range)
+            }
+        } else if merged {
+            self.error = Some("select an arrangement time range to bounce to one track".into());
+            return;
         } else {
-            hex_project::BounceTarget::Clips(self.selected_clip_ids())
+            BounceTarget::Clips(self.selected_clip_ids())
         };
         self.start_arrangement_bounce(
             target,
@@ -244,6 +257,87 @@ impl EditorView {
 mod tests {
     use crate::editor::loop_selection_ui_test::{click, fixture_with_bounce_media, pump};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn rendered_shift_b_bounces_a_multitrack_range_to_one_track(cx: &mut TestAppContext) {
+        let (handle, editor, _, _, _files) = fixture_with_bounce_media(cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let (tracks, before) = editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(crate::editor::viewport::Viewport {
+                start: 0,
+                length: 96_000,
+            });
+            view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+            cx.notify();
+            let project = &view.state.as_ref().unwrap().project;
+            let tracks = project
+                .tracks()
+                .iter()
+                .map(hex_project::Track::id)
+                .collect::<Vec<_>>();
+            (tracks, project.snapshot().tracks)
+        });
+        visual.run_until_parked();
+        let lane_id = |index: usize| -> &'static str {
+            Box::leak(format!("arrangement-lane-{}", tracks[index].value()).into_boxed_str())
+        };
+        let audio_id = lane_id(0);
+        let midi_id = lane_id(1);
+        for mute in [false, true] {
+            let midi = visual.debug_bounds(midi_id).unwrap();
+            let audio = visual.debug_bounds(audio_id).unwrap();
+            let from = gpui::point(midi.origin.x + midi.size.width * 0.3, midi.center().y);
+            let to = gpui::point(audio.origin.x + audio.size.width * 0.85, audio.center().y);
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let range =
+                editor.read_with(&visual, |view, _| view.normalized_time_selection().unwrap());
+            assert_eq!(range.tracks(), tracks);
+            visual.simulate_keystrokes(if mute { "cmd-shift-b" } else { "shift-b" });
+            pump(&editor, &mut visual);
+            let after = editor.read_with(&visual, |view, _| {
+                assert!(view.error.is_none(), "{:?}", view.error);
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(project.tracks().len(), 3);
+                let [clip] = project.tracks()[2].clips() else {
+                    panic!("one bounced clip")
+                };
+                assert_eq!(
+                    (clip.start(), clip.duration()),
+                    (range.start(), range.duration())
+                );
+                assert_eq!(
+                    project.time_range_has_active_clips(&range).unwrap(),
+                    Some(!mute)
+                );
+                let snapshot = project.snapshot().tracks;
+                if !mute {
+                    assert_eq!(snapshot[..2], before);
+                }
+                snapshot
+            });
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.state.as_ref().unwrap().project.snapshot().tracks,
+                    before
+                );
+            });
+            if mute {
+                visual.simulate_keystrokes("cmd-shift-z");
+                pump(&editor, &mut visual);
+                editor.read_with(&visual, |view, _| {
+                    assert_eq!(
+                        view.state.as_ref().unwrap().project.snapshot().tracks,
+                        after
+                    );
+                });
+            }
+        }
+    }
 
     #[gpui::test]
     fn rendered_b_bounces_a_group_range_without_touching_the_source_rows(cx: &mut TestAppContext) {

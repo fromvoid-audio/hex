@@ -1114,6 +1114,7 @@ fn rendered_sampler_save_open(
         assert!(Instant::now() < end, "actual SaveNew picker did not open");
     }
     cx.simulate_new_path_selection(|_| Some(saved.clone()));
+    let saved = saved.with_extension("").join("saved.hex");
     // Publication on disk precedes the worker's completion event. Both are
     // required before another rendered action can safely use the saved project.
     while !saved.exists()

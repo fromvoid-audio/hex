@@ -10,7 +10,6 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
 use hex_audio::sample_recording::{self, End, OutputCaptureId, Phase, Source, Take};
 use std::{
-    path::PathBuf,
     sync::mpsc::{self, Receiver, TryRecvError},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -203,15 +202,15 @@ impl EditorView {
         if names.is_empty() {
             return Err("arm at least one source for sampling".into());
         }
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or("sample take storage is unavailable")?;
-        let root = hex_preferences::theme_preferences_path(&home).with_file_name("sample-takes");
+        let document = self
+            .state
+            .as_ref()
+            .and_then(|state| state.document_path.clone());
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
-        let directory = root.join(format!("take-{stamp}-{}", std::process::id()));
+        let name = format!("take-{stamp}-{}", std::process::id());
         let audio = self.audio.as_mut().ok_or("audio output is unavailable")?;
         let output = audio
             .control
@@ -225,8 +224,12 @@ impl EditorView {
         std::thread::Builder::new()
             .name("hex-sample-takes".into())
             .spawn(move || {
-                let result = std::fs::create_dir_all(root)
-                    .and_then(|()| sample_recording::write_takes(reader, &directory));
+                let result = hex_session::service::sample_take_root(document.as_deref())
+                    .map_err(std::io::Error::other)
+                    .and_then(|root| {
+                        std::fs::create_dir_all(&root)?;
+                        sample_recording::write_takes(reader, &root.join(name))
+                    });
                 let _ = complete.send(result);
             })
             .map_err(|e| e.to_string())?;

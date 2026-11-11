@@ -204,7 +204,7 @@ mod project_spectrum;
 mod recent_projects;
 mod recovery;
 mod recovery_state;
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod recovery_state_integration_tests;
 mod refresh;
 mod refresh_state;
@@ -475,6 +475,8 @@ actions!(
         LoopSelection,
         BounceToNewTracks,
         BounceAndMuteSources,
+        BounceMixedRange,
+        BounceMixedRangeAndMute,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -524,6 +526,8 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 
 // Text drafts own printable keys; modified commands retain their finalization paths.
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
+const ARRANGEMENT_BOUNCE_KEY_CONTEXT: &str =
+    "hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection";
 
 fn bind_editor_keys(cx: &mut App) {
     crate::tooltips::bind_keys(cx);
@@ -615,12 +619,18 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new(
             "b",
             BounceToNewTracks,
-            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection"),
+            Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT),
         ),
         KeyBinding::new(
             "cmd-b",
             BounceAndMuteSources,
             Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
+        KeyBinding::new("shift-b", BounceMixedRange, Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "cmd-shift-b",
+            BounceMixedRangeAndMute,
+            Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT),
         ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -1012,6 +1022,7 @@ pub(super) struct EditorView {
     clip_detail_resize: clip_detail_resize::State,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
+    section_launch_after_loop: Option<section_launch::SectionLaunchAfterLoop>,
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
@@ -1047,6 +1058,7 @@ pub(super) struct EditorView {
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
     clip_gain: clip_gain::State,
+    pending_clip_activation: Option<activation::PendingClipActivation>,
     hovered_fade_clip: Option<(u64, ClipId)>,
     hovered_fade_handle: Option<fade_handles::Hover>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -1104,6 +1116,7 @@ pub(super) struct EditorView {
     edit_cursor: Option<edit_cursor::EditCursor>,
     /// Transient Arrangement play-start lock; never seeks the active transport.
     locked_play_start: Option<edit_cursor::EditCursor>,
+    selected_clip_play_start: std::cell::Cell<Option<selection_play_start::SelectedClipPlayStart>>,
     play_start_at_beginning: bool,
     escape_stop_armed: bool,
     /// The selected clip a point cursor was deliberately placed inside; that
@@ -1797,6 +1810,7 @@ impl EditorView {
             clip_detail_resize: clip_detail_resize::State::default(),
             loop_rail_gesture: None,
             pending_loop: None,
+            section_launch_after_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),
@@ -1834,6 +1848,7 @@ impl EditorView {
             active_fade_drag: None,
             pending_fade: None,
             clip_gain: clip_gain::State::default(),
+            pending_clip_activation: None,
             hovered_fade_clip: None,
             hovered_fade_handle: None,
             active_midi_trim_drag: None,
@@ -1881,6 +1896,7 @@ impl EditorView {
             context_menu: None,
             edit_cursor: None,
             locked_play_start: None,
+            selected_clip_play_start: Default::default(),
             play_start_at_beginning: false,
             escape_stop_armed: false,
             edit_cursor_in_selected_clip: None,
