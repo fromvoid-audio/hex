@@ -256,7 +256,7 @@ pub(super) fn rectangle_part(edge: Option<TrimEdge>) -> RectanglePart {
         Some(TrimEdge::Right) => RectanglePart::Trailing,
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 fn take_pointer_down(
     pending: &mut Option<PointerDown>,
     generation: u64,
@@ -1701,7 +1701,7 @@ impl BrowserAudioDrag {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{
         ClipDrag, ClipPosition, DropState, LaneBounds, PointerDown, SnapGrid, candidate_position,
