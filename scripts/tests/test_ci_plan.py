@@ -3218,6 +3218,39 @@ class ModuleScopeTests(unittest.TestCase):
                 for name in windows:
                     self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_looped_clip_paint_units_keep_real_header_and_release_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_filters = (
+            "editor::clip_header_loop::tests::",
+            "editor::trim::loop_handles::tests::",
+        )
+        rendered = (
+            "editor::waveform::waveform_header_ui_test::looped_header_paints_canonical_visible_cycle_edges_at_two_zooms",
+            "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/clip_header_loop.rs",
+            "crates/hex-ui/src/editor/clip_loop_handles.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(unit.requires_tests)
+                for name in unit_filters:
+                    self.assertIn(name, unit.argv)
+                feature = steps["ui-feature-tests"].argv
+                for name in rendered:
+                    self.assertIn(name, feature)
+                self.assertNotIn("editor::", feature)
+
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
