@@ -256,6 +256,14 @@ impl EditorView {
         self.loop_start_over_clip = None;
     }
 
+    /// Make a locator the next stopped play start using ordinary point-cursor precedence.
+    pub(super) fn place_locator_play_start(&mut self, frame: u64) {
+        self.set_point_cursor(None, frame);
+        self.edit_cursor_in_selected_clip = None;
+        self.time_selection = None;
+        self.time_selection_project_scope = false;
+    }
+
     /// A held or released drag only paints a point. Commit its placement in
     /// the same receive as the canonical destination, so refusal or Escape
     /// naturally restores the original cursor. A later choice or lock wins.

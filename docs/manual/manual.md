@@ -598,6 +598,11 @@ on the arrangement grid. hold **command** to invert snapping. double-click the
 name to edit it, or select the locator and press **command+r**. clear the name to
 restore automatic naming. select a locator and press **backspace** to delete it.
 
+with the arrangement focused, **command+option+left** and **command+option+right**
+move to the previous or next locator. while stopped, they change the next play
+start without starting playback; while playing, they seek from the scheduled
+playhead and keep playback running. navigation stops at either end of the list.
+
 inside a section, locators use its colour and take names such as **verse.1** and
 **verse.2** from left to right. custom names still count in the sequence. outside
 sections, locators are grey and use names such as **locator 1**. section edits
@@ -1028,6 +1033,7 @@ the complete edit.
 | open project | command+o |
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
+| previous / next arrangement locator | command+option+left / command+option+right |
 | set loop from selection / toggle matching loop | l / w |
 | toggle active transport loop | command+l |
 | import audio | command+i |
