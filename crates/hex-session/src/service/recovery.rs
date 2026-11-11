@@ -220,6 +220,28 @@ pub(super) fn read_source(
     Ok((project, absolute_document_base(path)?, document))
 }
 
+fn validate_sampler_source_identity(project: &Project) -> Result<bool, String> {
+    let private_sampler =
+        hex_engine::native_device_resources::requires_private_sampler_sources(project);
+    if private_sampler
+        && project
+            .tracks()
+            .iter()
+            .filter_map(|track| track.instrument())
+            .filter(|device| device.state().type_id().as_str() == Ok("hex.instrument.sampler"))
+            .flat_map(|device| device.state().asset_references())
+            .any(|reference| {
+                !project.assets().any(|asset| {
+                    asset.id().value() == reference.asset.value()
+                        && asset.original_source().is_some()
+                })
+            })
+    {
+        return Err("sampler reopening requires qualified original source reconstruction and saved content identity".into());
+    }
+    Ok(private_sampler)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn open_source_with_limits(
     current: &Session,
@@ -250,6 +272,9 @@ pub(super) fn open_source_with_limits(
         }
         project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
     }
+    // Validate saved sampler identity before inspecting its media. The prepare
+    // boundary repeats this check because other callers enter it directly.
+    validate_sampler_source_identity(&project)?;
     project = with_missing_media_offline(project, &project_dir)?;
     let session = prepare_project(
         current,
@@ -279,23 +304,7 @@ pub(super) fn prepare_project(
     frame_allowance: u64,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Session, String> {
-    let private_sampler =
-        hex_engine::native_device_resources::requires_private_sampler_sources(&project);
-    if private_sampler
-        && project
-            .tracks()
-            .iter()
-            .filter_map(|t| t.instrument())
-            .filter(|d| d.state().type_id().as_str() == Ok("hex.instrument.sampler"))
-            .flat_map(|d| d.state().asset_references())
-            .any(|reference| {
-                !project.assets().any(|a| {
-                    a.id().value() == reference.asset.value() && a.original_source().is_some()
-                })
-            })
-    {
-        return Err("sampler reopening requires qualified original source reconstruction and saved content identity".into());
-    }
+    let private_sampler = validate_sampler_source_identity(&project)?;
     let has_originals = project.assets().any(|a| a.original_source().is_some());
     if (has_originals || private_sampler)
         && (mode != DocumentAudioMode::Resident || native.is_none())
