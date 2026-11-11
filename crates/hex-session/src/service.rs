@@ -2897,33 +2897,44 @@ fn run_worker(
         // Requests whose handler takes the stopped Arrangement lease first begin
         // it here; a live callback that has not answered parks the request and
         // returns this worker to its loop (see `stopped_arrangement`, #4544).
-        let fences_first = events.resident_publication_enabled()
+        let fence_recovery = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
-            && match &queued.request {
+        {
+            match &queued.request {
                 Request::EditArrangementSection {
                     project_generation: captured_generation,
                     revision: captured_revision,
                     command,
-                } => {
-                    *captured_generation == project_generation
-                        && *captured_revision == revision
-                        && arrangement_sections::is_command(command)
-                        && command.requires_section_publication()
+                } if *captured_generation == project_generation
+                    && *captured_revision == revision
+                    && arrangement_sections::is_command(command)
+                    && command.requires_section_publication() =>
+                {
+                    Some(true)
                 }
                 Request::Undo | Request::Redo => {
                     let redo = matches!(&queued.request, Request::Redo);
-                    !project_rate::history_needs_replacement(&session, redo)
-                        && (session.editor.next_history_requires_stopped_bounce(redo)
-                            || session.section_history_requires_publication(redo))
+                    if project_rate::history_needs_replacement(&session, redo) {
+                        None
+                    } else if session.editor.next_history_requires_stopped_bounce(redo) {
+                        Some(false)
+                    } else if session.section_history_requires_publication(redo) {
+                        Some(true)
+                    } else {
+                        None
+                    }
                 }
-                _ => false,
-            };
-        let queued = if fences_first {
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let queued = if let Some(recover) = fence_recovery {
             let source = hex_engine::AudioSourceContext {
                 project_generation,
                 editor_revision: revision,
             };
-            match events.defer_stopped_fence(queued, source) {
+            match events.defer_stopped_fence(queued, source, recover) {
                 Some(queued) => queued,
                 None => continue,
             }

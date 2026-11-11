@@ -2480,7 +2480,15 @@ impl Session {
             if let Some(position) = bounce_position {
                 inputs.publish_fenced_bounce(&mut snapshot, project, sink, context, position)?;
             } else if let Some(cursor) = stopped_cursor {
-                inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
+                let accepted = inputs.publish_stopped_section(
+                    &mut snapshot,
+                    project,
+                    sink,
+                    context,
+                    cursor,
+                )?;
+                sink.confirm_section_edit_recovery(context, accepted)
+                    .map_err(SessionError::NativeAudio)?;
             } else if section_transition {
                 // A changed tempo map or relocated instrument MIDI no longer
                 // refuses here: the callback's live handoff restarts audio at
@@ -2497,7 +2505,7 @@ impl Session {
                     })
                     .transpose()?;
                 let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
-                inputs.publish_tagged_with_loop(
+                let accepted = inputs.publish_tagged_with_loop(
                     &mut snapshot,
                     project,
                     sink,
@@ -2514,6 +2522,8 @@ impl Session {
                     ResidentPublicationPolicy::ArrangementEdit,
                     region,
                 )?;
+                sink.confirm_section_edit_recovery(context, accepted)
+                    .map_err(SessionError::NativeAudio)?;
             } else {
                 let accepted = inputs.publish(&mut snapshot, project, sink, context)?;
                 if plugin_parameter {

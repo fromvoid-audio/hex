@@ -1124,7 +1124,21 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        self.inner.begin_section_edit(context, allow_playing)
+        WorkerAudioSink::begin_section_edit(&mut self.inner, context, allow_playing)
+    }
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<(), String> {
+        self.inner.begin_recoverable_section_edit(context)
+    }
+    fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.inner
+            .confirm_section_edit_recovery(context, acceptance)
     }
     fn section_edit_ready(
         &mut self,

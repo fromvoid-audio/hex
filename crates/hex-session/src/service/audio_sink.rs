@@ -917,6 +917,23 @@ pub trait WorkerAudioSink: Send {
         Err("native arrangement edits are unavailable".into())
     }
     /// Callback-observed transport. None means the command prefix is pending.
+    /// A structural section edit can recover from a refused same-project
+    /// publication by fencing the exact runtime still installed on the output.
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        self.begin_section_edit(context, true)
+    }
+    /// A recovered section edit must reach its callback terminal before commit.
+    /// An ordinary section edit uses the existing publication contract.
+    fn confirm_section_edit_recovery(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
         None
     }
@@ -1401,13 +1418,14 @@ impl WorkerEvents {
         &mut self,
         queued: QueuedRequest,
         source: hex_engine::AudioSourceContext,
+        recover: bool,
     ) -> Option<QueuedRequest> {
         let sink = self
             .audio
             .as_mut()
             .filter(|audio| audio.resident_publication_enabled())
             .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
-        self.stopped_fence.defer(sink, queued, source)
+        self.stopped_fence.defer(sink, queued, source, recover)
     }
     /// The lease outcome resolved before dispatch for `source`, if any.
     pub(super) fn take_stopped_fence(
