@@ -12324,14 +12324,12 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             let region = LoopRegion::new(24_000, 48_000, true).unwrap();
-            let source = mutable_feedback_with_stateful_track_and_return();
-            let oracle = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+            let source = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
                 snapshot.loop_region = Some(region)
             });
-            assert!(source.arrangement().loop_region().is_none());
             // Section launches use the interactive Play-from law at the loop
             // start: no prefix replay, empty tails and chased held notes.
-            let mut expected = SessionPlayback::new(oracle).unwrap();
+            let mut expected = SessionPlayback::new(Arc::clone(&source)).unwrap();
             expected.play_from(24_000).unwrap();
             let mut history = SessionPlayback::new(Arc::clone(&expected.revision)).unwrap();
             history.apply(SessionPlaybackCommand::Play).unwrap();
@@ -12369,12 +12367,9 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
             assert_ne!(rendered, replayed, "prefix history is not reconstructed");
             assert_eq!(actual.arrangement_frame(), expected.arrangement_frame());
             assert_eq!(actual.performance_frame(), expected.performance_frame());
-            assert!(
-                source.arrangement().loop_region().is_none(),
-                "saved loop remains unchanged"
-            );
             let playback =
                 crate::playback::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.section_loop(), None);
             assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(
