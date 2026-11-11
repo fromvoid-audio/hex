@@ -3773,6 +3773,53 @@ class ModuleScopeTests(unittest.TestCase):
         for consumer in consumers:
             self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
+    def test_midi_trim_retained_window_unit_keeps_worker_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::tracks::midi_trim_unit_tests::"
+        test = "editor::tracks::midi_trim_unit_tests::split_midi_trim_preview_keeps_the_retained_source_window"
+        consumers = (
+            "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+            "editor::clip_drag_ui_test::rendered_midi_left_trim_keeps_source_note_timeline_position",
+        )
+        unit_source = "crates/hex-ui/src/editor/tracks/midi_trim_unit_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / unit_source).resolve()],
+                         "editor::tracks::midi_trim_unit_tests")
+        for source in ("crates/hex-ui/src/editor/tracks.rs", unit_source):
+            boundary = plan.boundary_selection(root, [source], inventory, [owner])
+            self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+            steps = {step.step_id: step for step in ci.planned_steps({
+                "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                "cargo_inventory": inventory, "paths": [source]})}
+            unit_step = steps["ui-default-lib-unit-tests"]
+            self.assertTrue(any(test.startswith(selected) or selected.startswith(test)
+                                or selected == unit for selected in unit_step.argv))
+            feature = steps["ui-feature-tests"]
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+        activation_source = "crates/hex-ui/src/editor/activation_ui_test.rs"
+        activation_boundary = plan.boundary_selection(root, [activation_source], inventory, [owner])
+        activation_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": activation_boundary,
+            "cargo_inventory": inventory, "paths": [activation_source]})}
+        self.assertIn("editor::activation_ui_test::", activation_steps["ui-feature-tests"].argv)
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests"
+                             for step in activation_steps.values()))
+
+        consumer_source = "crates/hex-ui/src/editor/clip_drag_ui_test.rs"
+        consumer_boundary = plan.boundary_selection(root, [consumer_source], inventory, [owner])
+        consumer_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": consumer_boundary,
+            "cargo_inventory": inventory, "paths": [consumer_source]})}
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(selected)
+                                for selected in consumer_steps["ui-feature-tests"].argv))
+
     def test_group_overlap_keeps_arrangement_and_audio_event_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
