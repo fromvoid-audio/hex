@@ -1106,6 +1106,7 @@ pub(super) struct EditorView {
     edit_cursor: Option<edit_cursor::EditCursor>,
     /// Transient Arrangement play-start lock; never seeks the active transport.
     locked_play_start: Option<edit_cursor::EditCursor>,
+    selected_clip_play_start: std::cell::Cell<Option<selection_play_start::SelectedClipPlayStart>>,
     play_start_at_beginning: bool,
     escape_stop_armed: bool,
     /// The selected clip a point cursor was deliberately placed inside; that
@@ -1885,6 +1886,7 @@ impl EditorView {
             context_menu: None,
             edit_cursor: None,
             locked_play_start: None,
+            selected_clip_play_start: Default::default(),
             play_start_at_beginning: false,
             escape_stop_armed: false,
             edit_cursor_in_selected_clip: None,

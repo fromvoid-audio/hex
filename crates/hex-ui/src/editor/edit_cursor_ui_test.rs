@@ -2784,9 +2784,7 @@ fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
-    cx: &mut TestAppContext,
-) {
+fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAppContext) {
     use hex_engine::playback::PlaybackCommand::PlayFrom;
     cx.update(super::bind_editor_keys);
     let (project, source, target, audio) = audio_project();
@@ -2821,7 +2819,11 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
         .beat_to_frame(BeatTime::ONE)
         .unwrap();
     assert!(midi_frame < 60_000 && midi_frame != BeatTime::ONE.raw());
-    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let project = model.project();
+    let midi_preview =
+        hex_engine::midi_clip_preview(project, project.midi_clip(midi).unwrap()).unwrap();
+    let preview = hex_engine::MidiArrangementPreview::from_clips(vec![midi_preview]).unwrap();
+    let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
@@ -2834,9 +2836,24 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
         });
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
-        let cursor_shown = visual.debug_bounds("edit-cursor-layer").is_some();
-        let command = editor.read_with(visual, |view, _| view.last_transport_command);
-        (command, cursor_shown)
+        editor.read_with(visual, |view, _| view.last_transport_command)
+    };
+    let markers = |visual: &mut VisualTestContext, frame, locked| {
+        let viewport = editor.read_with(visual, |view, _| {
+            view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+        });
+        let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
+        let expected = rail.left() + rail.size.width * viewport.fraction(frame).unwrap();
+        let selectors = if locked {
+            ["locked-play-start-top", "locked-play-start-bottom"]
+        } else {
+            ["time-marker-top-start", "time-marker-bottom-start"]
+        };
+        for selector in selectors {
+            let bounds = visual.debug_bounds(selector).unwrap();
+            assert_eq!(bounds.size.width, px(10.0));
+            assert!((f32::from(bounds.center().x - expected)).abs() < 1.0);
+        }
     };
 
     visual.update(|_, cx| {
@@ -2852,34 +2869,46 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
     });
     assert_eq!(
         play(&mut visual),
-        (Some(PlayFrom(73_000)), true),
+        Some(PlayFrom(73_000)),
         "no clip selection plays from the visible cursor"
     );
+    markers(&mut visual, 73_000, false);
 
-    visual.update(|window, cx| {
-        editor.update(cx, |view, cx| {
-            view.select_clip_header(source, audio, Modifiers::default(), window, cx)
-        })
-    });
+    super::loop_selection_ui_test::click(&mut visual, audio, false);
     assert_eq!(
         play(&mut visual),
-        (Some(PlayFrom(60_000)), false),
-        "one selected clip hides the cursor and plays from its start"
+        Some(PlayFrom(60_000)),
+        "one selected clip plays from its start"
     );
+    markers(&mut visual, 60_000, false);
 
-    visual.update(|window, cx| {
-        editor.update(cx, |view, cx| {
-            view.select_clip_header(target, midi, Modifiers::command(), window, cx)
-        })
-    });
+    let triangle = visual
+        .debug_bounds("time-marker-top-start")
+        .unwrap()
+        .center();
+    visual.simulate_click(triangle, Modifiers::default());
+    visual.run_until_parked();
+    markers(&mut visual, 60_000, true);
+
+    super::loop_selection_ui_test::click(&mut visual, midi, true);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_clip_ids().len(), 2);
     });
+    assert_eq!(play(&mut visual), Some(PlayFrom(60_000)));
+    markers(&mut visual, 60_000, true);
+    assert!(visual.debug_bounds("time-marker-top-start").is_none());
+
+    let triangle = visual
+        .debug_bounds("locked-play-start-bottom")
+        .unwrap()
+        .center();
+    visual.simulate_click(triangle, Modifiers::default());
     assert_eq!(
         play(&mut visual),
-        (Some(PlayFrom(midi_frame)), false),
+        Some(PlayFrom(midi_frame)),
         "the earliest start wins across tracks, converting MIDI beats through the tempo map"
     );
+    markers(&mut visual, midi_frame, false);
 
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
@@ -2892,7 +2921,7 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
         })
     });
     assert_eq!(
-        play(&mut visual).0,
+        play(&mut visual),
         Some(PlayFrom(80_000)),
         "a time selection keeps its normalized start over selected clips"
     );
@@ -2905,9 +2934,10 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
     });
     assert_eq!(
         play(&mut visual),
-        (Some(PlayFrom(73_000)), true),
+        Some(PlayFrom(73_000)),
         "a cursor placed inside the selected clip stays visible and keeps its frame"
     );
+    markers(&mut visual, 73_000, false);
 
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
@@ -2918,9 +2948,34 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
     });
     assert_eq!(
         play(&mut visual),
-        (Some(PlayFrom(73_000)), true),
+        Some(PlayFrom(73_000)),
         "clearing the clip selection restores the cursor and its play start"
     );
+    markers(&mut visual, 73_000, false);
+
+    editor.update(&mut visual, |view, _| view.edit_cursor = None);
+    super::loop_selection_ui_test::click(&mut visual, midi, false);
+    assert_eq!(play(&mut visual), Some(PlayFrom(midi_frame)));
+    markers(&mut visual, midi_frame, false);
+
+    super::loop_selection_ui_test::click(&mut visual, audio, false);
+    markers(&mut visual, 60_000, false);
+    model
+        .execute(Command::MoveClip {
+            clip: audio,
+            track: source,
+            start: 84_000,
+        })
+        .unwrap();
+    editor.update(&mut visual, |view, cx| {
+        let state = Arc::make_mut(view.state.as_mut().unwrap());
+        state.project = Arc::new(model.project().clone());
+        state.revision += 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(play(&mut visual), Some(PlayFrom(84_000)));
+    markers(&mut visual, 84_000, false);
 }
 
 #[gpui::test]
