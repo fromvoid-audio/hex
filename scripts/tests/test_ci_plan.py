@@ -4113,6 +4113,40 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn("output_meter::", parent[owner])
         self.assertIn("editor::output_meter_ui_test::", parent[owner])
 
+    def test_waveform_cache_identity_keeps_profile_and_render_witnesses(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        rendered_consumers = (
+            "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+            "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+        )
+        profiler = "editor::clip_content_cache::profile::navigation::headless_navigation_framework_profile"
+        cases = (
+            ("crates/hex-ui/src/editor/waveform_geometry.rs", True,
+             (*rendered_consumers, profiler)),
+            ("crates/hex-ui/src/editor/clip_content_profile.rs", False, (profiler,)),
+        )
+        for path, runs_unit, consumers in cases:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                if runs_unit:
+                    default = steps["ui-default-lib-unit-tests"]
+                    self.assertIn("editor::waveform_geometry::tests::", default.argv)
+                    self.assertTrue(default.requires_tests)
+                else:
+                    self.assertNotIn("ui-default-lib-unit-tests", steps)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
     def test_waveform_grid_selects_unit_geometry_and_rendered_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

@@ -7,13 +7,38 @@ use hex_widgets::{
     WaveformEnvelopeMode, WaveformStroke,
 };
 #[cfg(test)]
-use std::hint::black_box;
+use std::{cell::Cell, hint::black_box};
 use std::{collections::VecDeque, sync::Arc};
 
 use super::waveform::{
     aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail, fraction_u64,
     peak_vertical_bounds, timeline_source_ranges_at,
 };
+
+#[cfg(test)]
+thread_local! {
+    static REFERENCE_STEREO: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) struct ReferenceStereo(bool);
+
+#[cfg(test)]
+pub(super) fn use_reference_stereo(reference: bool) -> ReferenceStereo {
+    ReferenceStereo(REFERENCE_STEREO.with(|state| state.replace(reference)))
+}
+
+#[cfg(test)]
+fn reference_stereo() -> bool {
+    REFERENCE_STEREO.with(Cell::get)
+}
+
+#[cfg(test)]
+impl Drop for ReferenceStereo {
+    fn drop(&mut self) {
+        REFERENCE_STEREO.with(|state| state.set(self.0));
+    }
+}
 
 // A fitted dense viewport has 350 small audio clips while using only a few
 // thousand columns. Retain that working set without lifting the geometry budget.
@@ -39,7 +64,7 @@ struct WaveformGeometryEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WaveformGeometryKey {
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(test)]
     reference_stereo: bool,
     mapping: WaveformMappingKey,
     visible_start: u64,
@@ -406,8 +431,8 @@ fn waveform_geometry_key(
         },
     };
     WaveformGeometryKey {
-        #[cfg(all(test, feature = "ui-test-support"))]
-        reference_stereo: super::navigation_metrics::reference_stereo(),
+        #[cfg(test)]
+        reference_stereo: reference_stereo(),
         mapping,
         visible_start,
         visible_end,
@@ -814,10 +839,9 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "ui-test-support")]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn comparison_cache_identity_is_scoped_and_restored() {
-        use crate::editor::navigation_metrics::{reference_stereo, use_reference_stereo};
         assert!(!reference_stereo());
         let current = key(0, bounds());
         {
