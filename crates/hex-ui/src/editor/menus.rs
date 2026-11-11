@@ -85,7 +85,7 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
     ]
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 
