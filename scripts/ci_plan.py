@@ -254,6 +254,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
+    "src/editor/shortcut_tests.rs": ("editor::shortcut_tests::",),
     "src/editor/scrub_tests.rs": ("editor::scrub::tests::latest_target_replaces_moves_and_release_survives_an_in_flight_destination",),
     "src/editor/sample_recorder/beat_guides.rs": ("editor::sample_recorder::beat_guides::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
@@ -512,6 +513,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::shortcut_tests::": (
+        "editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus",
+    ),
     "editor::zoom_fit::tests::": ("editor::zoom_fit::unit_tests::",),
     "editor::browser::ui_test::": ("editor::browser::unit_tests::",),
     "editor::browser::ui_test::scrollbar_ui_tests::": (
