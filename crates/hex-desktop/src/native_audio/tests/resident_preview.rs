@@ -650,11 +650,11 @@ struct PublicationProbe {
     busy: SyncSender<()>,
 }
 impl WorkerAudioSink for ResidentSink {
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        input: hex_session::service::PluginStateSaveInput<'_>,
+        input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
-        self.inner.capture_plugin_states_for_save(input)
+        self.inner.capture_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.inner.begin_request(cancellation);

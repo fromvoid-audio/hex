@@ -1286,11 +1286,11 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> hex_session::service::ResidentPublicationReadiness {
         NativeAudioSink::resident_publication_readiness(self)
     }
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        input: hex_session::service::PluginStateSaveInput<'_>,
+        input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
-        self.capture_plugin_save(input)
+        self.capture_current_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.request_cancellation = Some(cancellation);
