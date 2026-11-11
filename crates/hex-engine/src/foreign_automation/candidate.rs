@@ -10,17 +10,11 @@ pub(crate) enum PreparationError {
     Program(Invalid),
 }
 
-impl From<Error> for PreparationError {
-    fn from(error: Error) -> Self {
-        Self::Source(error)
-    }
-}
-
-impl From<PreparationError> for Error {
-    fn from(error: PreparationError) -> Self {
-        match error {
-            PreparationError::Source(error) => error,
-            PreparationError::Program(_) => Self::UnsupportedGraph,
+impl PreparationError {
+    pub(crate) fn into_storage(self) -> Error {
+        match self {
+            Self::Source(error) => error,
+            Self::Program(_) => Error::UnsupportedGraph,
         }
     }
 }
@@ -136,10 +130,11 @@ pub(crate) fn prepare_device(
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
 ) -> Result<Option<hex_lattice::PreparedForeignAutomation>, PreparationError> {
-    let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())?
+    let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())
+        .map_err(PreparationError::Source)?
     else {
         return if has_authored(device) {
-            Err(Error::UnsupportedGraph.into())
+            Err(PreparationError::Source(Error::UnsupportedGraph))
         } else {
             Ok(None)
         };
@@ -155,10 +150,11 @@ pub(crate) fn prepare_device(
     let Some(program) = program else {
         return Ok(None);
     };
-    let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
+    let overflow = || PreparationError::Source(Error::Overflow);
+    let bytes = program.backing_bytes().ok_or_else(overflow)?;
     hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
         .map(Some)
-        .map_err(|_| Error::Overflow.into())
+        .map_err(|_| overflow())
 }
 
 pub(crate) fn exact_source<'a>(
