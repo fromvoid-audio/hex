@@ -242,6 +242,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/missing_media.rs": ("editor::missing_media::tests::",),
     "src/editor/display_error.rs": ("editor::display_error::tests::",),
     "src/editor/audio_unavailable.rs": ("editor::audio_unavailable::tests::",),
+    "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),

@@ -3754,23 +3754,33 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         source = "crates/hex-ui/src/editor/tracks/group_overlap.rs"
         unit = "editor::tracks::group_overlap::"
+        paint = "crates/hex-ui/src/editor/audio_event_editor/paint.rs"
+        paint_unit = ("editor::audio_event_editor::paint::tests::"
+                      "replacement_accents_follow_occupied_victims_and_range_overwrite_semantics")
         consumers = [
             "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
             "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
-            "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
             "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
         ]
-        names = plan.module_test_filters(root, [source], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([unit, *consumers])})
-        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
-                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
-                    "module_filters": names}
-        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
-                                  "cargo_inventory": inventory, "paths": [source]})
-        self.assertTrue(any(unit in step.argv and step.requires_tests
-                            for step in steps if "unit_editor_logic" in step.argv))
-        self.assertTrue(any(all(name in step.argv for name in consumers)
-                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in (source, paint):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                if path == source:
+                    self.assertEqual(boundary["module_filters"],
+                                     {owner: sorted([unit, paint_unit, *consumers])})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                standalone = steps["ui-unit-unit_editor_logic"]
+                self.assertIn(unit, standalone.argv)
+                self.assertTrue(standalone.requires_tests)
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertTrue(any(paint_unit.startswith(prefix) for prefix in default.argv))
+                feature = steps["ui-feature-tests"].argv
+                self.assertTrue(all(any(name.startswith(prefix) for prefix in feature) for name in consumers))
+                self.assertNotIn("editor::", feature)
         for path in ("tracks.rs", "group_drag_ui_test.rs", "audio_event_editor/paint.rs",
                      "audio_event_editor/workflow_tests.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
