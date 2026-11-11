@@ -3964,6 +3964,34 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     f"{consumer} missing from {feature_args}")
 
+    def test_arrangement_loop_rail_units_keep_render_and_pending_ack(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::loop_rail::tests::"
+        consumers = (
+            "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end",
+            "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
+            "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
+            "editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs",
+        )
+        for file in ("loop_rail.rs", "loop_rail/review_ui_tests.rs", "loop_rail/pending_ui_tests.rs"):
+            with self.subTest(file=file):
+                path = "crates/hex-ui/src/editor/" + file
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                for name in consumers:
+                    self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_midi_loop_display_cohort_routes_source_and_consumer_changes(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
