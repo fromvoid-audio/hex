@@ -2341,10 +2341,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                                  "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                                   "editor::controller::session_feedback::",
                                   "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
-                                  "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents",
-                                  "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                                   "editor::delete_ui_tests::",
                                   "editor::device_panel::eq_panel::axes::",
                                   "editor::device_panel::eq_panel::response::",
@@ -3869,8 +3869,10 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::session_navigation::"
         window = "editor::session_navigation_ui_test::"
-        related = ["editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents",
-                   "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+        related = ["editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                   "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                   "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+                   "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
                    "editor::delete_ui_tests::",
                    "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
                    "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
@@ -3883,12 +3885,30 @@ class ModuleScopeTests(unittest.TestCase):
                                   "section_surface::focus::geometry::",
                                   "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
                                   "section_surface::geometry::"]})
-        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
-                    "single_run": {owner: "ui-test-support"}, "module_filters": {owner: [unit, window]}}
+        action_cases = (
+            "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+            "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+            "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+            "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
+        )
+        path = "crates/hex-ui/src/editor/session_navigation_ui_test.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
-        self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertIn(window, feature.argv)
+        self.assertIn("editor::session_grid::tests::", feature.argv)
+        self.assertIn(
+            "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+            feature.argv,
+        )
+        for consumer in (
+            "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+            "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+            "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
+        ):
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature.argv))
 
     def test_controller_correlation_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
@@ -4311,6 +4331,33 @@ class ModuleScopeTests(unittest.TestCase):
         ):
             self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args))
 
+    def test_controller_session_action_owner_keeps_real_worker_and_callback_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::session_action_unit_tests::"
+        consumers = (
+            "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+            "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+            "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+            "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/controller.rs",
+            "crates/hex-ui/src/editor/controller/session_action_unit_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -4318,6 +4365,7 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::controller::publication_unit_tests::"
+        session_action_unit = "editor::controller::session_action_unit_tests::"
         consumers = (
             "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
             "editor::controller::comparison_source_binding_tests::comparison_exact_source_maps_verified_observations_without_status_oscillation_or_old_ack_promotion",
@@ -4337,6 +4385,10 @@ class ModuleScopeTests(unittest.TestCase):
                     "cargo_inventory": inventory, "paths": [path]})}
                 unit_args = steps["ui-default-lib-unit-tests"].argv
                 self.assertIn(unit, unit_args)
+                if module == "controller.rs":
+                    self.assertIn(session_action_unit, unit_args)
+                else:
+                    self.assertNotIn(session_action_unit, unit_args)
                 self.assertNotIn("editor::controller::tests::", unit_args)
                 feature_args = steps["ui-feature-tests"].argv
                 for consumer in consumers:
@@ -4874,7 +4926,7 @@ class ModuleScopeTests(unittest.TestCase):
                             for consumer in consumers))
         action_consumers = [
             "editor::delete_ui_tests::",
-            "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+            "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
             "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
             "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
             "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
@@ -4940,7 +4992,7 @@ class ModuleScopeTests(unittest.TestCase):
         names = plan.module_test_filters(root, [source], inventory, [owner])
         self.assertEqual(plan.module_test_filters(root, [shim], inventory, [owner]), names)
         unit = "editor::session_grid::actions::"
-        intent = "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents"
+        intent = "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents"
         self.assertIn(unit, names[owner])
         self.assertIn(intent, names[owner])
         # The shared editor shim may register unknown modules: keep its package fallback.
@@ -4955,7 +5007,10 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn(unit, unit_step.argv)
         self.assertTrue(unit_step.requires_tests)
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-        self.assertIn(intent, feature.argv)
+        default_units = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertIn(intent, default_units.argv)
+        launch = "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action"
+        self.assertTrue(any(launch.startswith(prefix) for prefix in feature.argv))
         self.assertIn("editor::session_grid::tests::", feature.argv)
 
     def test_session_grid_quantization_keeps_unit_parent_and_ui_coverage(self):
@@ -4969,8 +5024,8 @@ class ModuleScopeTests(unittest.TestCase):
         delete = "editor::delete_ui_tests::"
         launch = ("editor::device_panel::tests::device_comparison_tests::"
                   "device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack")
-        queued = "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions"
-        intent = "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents"
+        queued = "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions"
+        intent = "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents"
         navigation = "editor::session_navigation_ui_test::"
         navigation_unit = "editor::session_navigation::"
         menu = ("editor::context_menu::tests::"
@@ -5000,7 +5055,10 @@ class ModuleScopeTests(unittest.TestCase):
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
         self.assertTrue(any("editor::session_grid::" in step.argv for step in steps
                             if step.step_id == "ui-feature-tests"))
-        self.assertTrue(all(test in feature.argv for test in (delete, launch, queued, intent, navigation, menu)))
+        default_units = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
+        self.assertIn(queued, default_units.argv)
+        self.assertIn(intent, default_units.argv)
+        self.assertTrue(all(test in feature.argv for test in (delete, launch, navigation, menu)))
         for path in ("delete_ui_tests.rs", "controller.rs", "session_navigation_ui_test.rs",
                      "context_menu.rs",
                      "device_panel/tests/device_comparison_tests.rs"):
