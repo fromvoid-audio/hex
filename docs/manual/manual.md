@@ -292,8 +292,11 @@ section snapping; **control** remains an alias, including during marker-only edi
 release outside the section lane to accept the last valid preview, or press **escape**
 to cancel.
 
-turn on **section autoplay and loop** in the top toolbar, then click the body of
-an arrange section to play it repeatedly. the launch dropdown beside it also
+click a section's play button, or turn on **section autoplay and loop** in the
+top toolbar and click a section body. hex sets the arrange loop marker to that
+section, turns the loop on and starts playback at the section start.
+**enter** launches the focused section button. **space** controls play and
+pause even while the button has focus. the launch dropdown in the toolbar also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
 **1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
@@ -306,16 +309,16 @@ as it is ready. a stopped transport starts immediately. clicking another section
 replaces the pending launch. stop or turning autoplay off cancels a pending
 launch; turning autoplay off leaves current music playing.
 
-this section loop is temporary and does not change the saved project loop or
-undo history. a project edit, normal loop change, or other replacement of the
-playback graph restores the project's loop. autoplay stays armed for the next
-section click. modifier clicks, renaming and dragging keep their editing actions.
+the loop marker controls repetition after the launch. turn the loop off or move
+its edges to change what repeats. the marker is saved with the project and
+changing it is undoable. autoplay stays armed for the next section click.
+modifier clicks, renaming and dragging keep their editing actions.
 at narrow window widths the top toolbar uses two compact lines to keep every
 control, the full view name and audio status visible.
 section playback currently requires resident audio mode and an applied arrange
-playback graph. verified streaming mode is unavailable for this control. a section
-past the bounded arrangement preroll range, or a source that exceeds existing
-runtime storage or midi density limits, is refused while current playback continues.
+playback graph. verified streaming mode is unavailable for this control. a source
+that exceeds runtime storage or midi density limits is refused while current
+playback continues.
 
 hold **2** to force time selection over arrange clips, audio events, piano-roll
 notes or velocity bars, even with midi draw mode enabled. release **2** to return

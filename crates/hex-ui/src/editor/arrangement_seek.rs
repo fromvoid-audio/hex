@@ -531,6 +531,15 @@ impl EditorView {
         &mut self,
         section: hex_session::arrangement_seek::SectionLaunch,
     ) {
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            != Some(section.region)
+        {
+            self.error = Some("section launch requires its enabled arrangement loop".into());
+            return;
+        }
         self.request_prepared_seek_with_kind(
             section.region.start(),
             true,
@@ -614,7 +623,8 @@ impl EditorView {
                 .map(|seek| seek.start_playing),
             self.latched_seek_intent
                 .as_ref()
-                .map(|intent| intent.start_playing),
+                .map(|intent| intent.start_playing)
+                .or_else(|| self.section_launch_waiting().then_some(true)),
         )
     }
 
@@ -661,7 +671,8 @@ impl EditorView {
             self.play_intent.desired_playing(actual_playing),
             self.latched_seek_intent
                 .as_ref()
-                .map(|intent| intent.start_playing),
+                .map(|intent| intent.start_playing)
+                .or_else(|| self.section_launch_waiting().then_some(true)),
             self.prepared_seek
                 .as_ref()
                 .filter(|seek| !seek.cancelled)
@@ -1200,6 +1211,7 @@ impl EditorView {
     }
 
     pub(super) fn invalidate_prepared_seek(&mut self) {
+        self.section_launch_after_loop = None;
         self.latched_seek_intent = None;
         let Some(mut pending) = self.prepared_seek.take() else {
             self.service.invalidate_arrangement_seek();
