@@ -2861,6 +2861,42 @@ class ModuleScopeTests(unittest.TestCase):
                         root, [source + "tests/" + module + ".rs"], inventory, [owner])
                     self.assertTrue(any(unit.startswith(prefix) for prefix in reverse[owner]))
 
+    def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_cases = (
+            "editor::arrangement_audio_panel::tests::controls_map_to_typed_clip_edits_and_loop_toggle",
+            "editor::arrangement_audio_panel::tests::gain_steps_use_db_units_and_refuse_the_bounds",
+            "editor::arrangement_audio_panel::tests::invalid_edges_and_overflow_refuse_without_partial_command",
+            "editor::arrangement_audio_panel::tests::review_play_start_uses_retained_source_looping_independent_of_placement_mode",
+            "editor::arrangement_audio_panel::controls::tests::",
+        )
+        windows = (
+            "editor::arrangement_audio_panel::controls::pitch_ui_tests::pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen",
+            "editor::arrangement_audio_panel::controls::pitch_ui_tests::pitch_release_keeps_its_draft_until_accepted_or_refused_ack",
+            "editor::arrangement_audio_panel::controls::ui_tests::clip_slider_cancel_and_frozen_release_wait_for_own_terminal",
+            "editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_ordinary_trim_real_worker_control",
+            "editor::arrangement_audio_panel::tests::review_placed_mode_only_change_invalidates_captured_control",
+        )
+        for path in ("arrangement_audio_panel.rs", "arrangement_audio_panel/controls.rs",
+                     "arrangement_audio_panel/pitch_ui_tests.rs"):
+            with self.subTest(path=path):
+                source = "crates/hex-ui/src/editor/" + path
+                names = plan.module_test_filters(root, [source], inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                for name in unit_cases:
+                    self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-default-lib-unit-tests"].argv))
+                for name in windows:
+                    self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
