@@ -2747,6 +2747,35 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn("ui-default-standalone-tests", steps)
         self.assertEqual(sum(target in step.argv for step in steps.values()), 1)
 
+    def test_browser_history_units_keep_source_and_navigation_witnesses(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        consumers = (
+            "editor::browser::ui_test::browser_history_ui_test::browser_history_typing_coalesces_until_navigation_and_branch_clears_forward",
+            "editor::browser::ui_test::browser_history_ui_test::browser_history_toolbar_restores_source_without_preview_or_import",
+            "editor::browser::ui_test::browser_history_ui_test::browser_history_removed_or_hidden_source_fallback_does_not_push_or_clear_forward",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/browser/history.rs",
+            "crates/hex-ui/src/editor/browser_history_ui_test.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertIn("editor::browser::history::tests::", unit.argv)
+                self.assertTrue(unit.requires_tests)
+                feature = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature), (consumer, feature))
+                self.assertNotIn("editor::browser::", feature)
+
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

@@ -228,6 +228,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/selection.rs": ("editor::selection::tests::",),
     "src/editor/clip_header_loop.rs": ("editor::clip_header_loop::tests::",),
     "src/editor/clip_loop_handles.rs": ("editor::trim::loop_handles::tests::",),
+    "src/editor/browser/history.rs": ("editor::browser::history::tests::",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
@@ -1084,6 +1085,16 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 ))
             if "crates/hex-ui/src/editor/track_meters.rs" in executable:
                 names.add("editor::track_layout_ui_test::track_meter_uses_own_peak_and_stays_inside_compact_header")
+            if {
+                "crates/hex-ui/src/editor/browser/history.rs",
+                "crates/hex-ui/src/editor/browser_history_ui_test.rs",
+            }.intersection(executable):
+                names.update((
+                    "editor::browser::history::tests::",
+                    "editor::browser::ui_test::browser_history_ui_test::browser_history_typing_coalesces_until_navigation_and_branch_clears_forward",
+                    "editor::browser::ui_test::browser_history_ui_test::browser_history_toolbar_restores_source_without_preview_or_import",
+                    "editor::browser::ui_test::browser_history_ui_test::browser_history_removed_or_hidden_source_fallback_does_not_push_or_clear_forward",
+                ))
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
                     "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
