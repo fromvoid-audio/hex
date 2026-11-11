@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES = {
+    "src/editor/loop_rail.rs": "editor::loop_rail::tests::",
     "src/editor/controller.rs": CONTROLLER_PUBLICATION_UNIT,
     "src/editor/arrangement_audio_panel.rs": "editor::arrangement_audio_panel::tests::",
     "src/editor/arrangement_audio_panel/controls.rs": "editor::arrangement_audio_panel::controls::tests::",
@@ -495,6 +496,11 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
                      "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                      "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget"},
+                    {"editor::loop_rail::tests::",
+                     "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end",
+                     "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
+                     "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
+                     "editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs"},
                     {"editor::device_panel::operator_panel::tests::",
                      "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
                      "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
