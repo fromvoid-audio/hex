@@ -231,6 +231,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
+    "src/editor/track_meters.rs": ("editor::track_meters::tests::",),
     "src/editor/missing_media.rs": ("editor::missing_media::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
@@ -1081,6 +1082,8 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::waveform::waveform_header_ui_test::looped_header_paints_canonical_visible_cycle_edges_at_two_zooms",
                     "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
                 ))
+            if "crates/hex-ui/src/editor/track_meters.rs" in executable:
+                names.add("editor::track_layout_ui_test::track_meter_uses_own_peak_and_stays_inside_compact_header")
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
                     "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
