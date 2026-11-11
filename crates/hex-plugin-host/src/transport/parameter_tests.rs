@@ -9,6 +9,54 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn dense_effect_conceals_one_reply_without_dropping_input_parameters() {
+    let (control, mut callback, mut worker) =
+        dense_effect_channel_from_completed_prefix(BINDING, 4, 0).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    for block in 0..4 {
+        callback.begin_physical_callback(4).unwrap();
+        let reply = callback
+            .stage_effect_segment(
+                0,
+                &[[block as f32 + 1.0; 2]; 4],
+                &[],
+                &[],
+                &mut output,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+                Some(DenseParameterLane {
+                    id: 7,
+                    normalized: &[block as f64 * 0.25; 4],
+                }),
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(reply.concealed_output, (block == 2).then_some((0, 4)));
+        assert_eq!(
+            output,
+            if block == 3 {
+                [[2.0; 2]; 4]
+            } else {
+                [[0.0; 2]; 4]
+            }
+        );
+        if block == 2 {
+            for sequence in 0..=2 {
+                let request = worker.receive_request().unwrap().unwrap();
+                assert_eq!(request.block.sequence, sequence);
+                let lane = request.dense_parameter.as_ref().unwrap().lane();
+                assert_eq!(lane.normalized, &[sequence as f64 * 0.25; 4]);
+                worker.complete(request.block).unwrap();
+            }
+        }
+    }
+    assert!(!control.is_revoked());
+}
+
+#[test]
 fn dense_input_retains_each_sample_through_physical_and_timing_cuts() {
     let (control, mut callback, mut worker) =
         dense_effect_channel_from_completed_prefix(BINDING, MAX_FRAMES as u16, 0).unwrap();

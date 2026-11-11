@@ -952,7 +952,7 @@ impl NativeEffectCallback {
                 normalized: lane.normalized,
             }),
         );
-        if result.is_err() {
+        let Ok(reply) = result else {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
@@ -963,6 +963,12 @@ impl NativeEffectCallback {
                 }
             }
             return Err(DeviceContractError::ForeignProcessingFailed);
+        };
+        if let Some((start, end)) = reply.concealed_output {
+            // The transport still owns this epoch. Replace just the missing
+            // wet samples with the same latency-aligned dry history used for
+            // bypass. An instrument's dry history is already silence.
+            frames[start..end].copy_from_slice(&self.dry_output[start..end]);
         }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.

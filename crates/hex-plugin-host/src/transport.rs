@@ -10,9 +10,10 @@
 //! staged across contiguous graph segments until the complete physical callback
 //! passes final host conversion; only then may it reach a worker.
 //! Malformed output or saturation revokes the entire one-shot exchange.
-//! Native instruments may conceal one missing reply with silence and discard
-//! its late output. No stale-buffer replay, waiting, waking, allocation or
-//! DSP rollback occurs.
+//! Native PCM workers may conceal one missing reply and discard its late
+//! output. The audio host uses aligned dry input for effects and silence for
+//! instruments. No stale-buffer replay, waiting, waking, allocation or DSP
+//! rollback occurs.
 
 type Frame = [f32; 2];
 use crate::protocol::{EditorPerforms, EditorRestorations};
@@ -809,6 +810,9 @@ struct Stage {
 pub struct SegmentReply {
     pub events: Events,
     pub parameters: Parameters,
+    /// Half-open segment-relative span with a concealed PCM reply, if any.
+    /// It carries no accepted parameter or editor metadata.
+    pub concealed_output: Option<(usize, usize)>,
 }
 
 /// Callback endpoint. Install before native callback reservation; return the
@@ -817,7 +821,7 @@ pub struct Callback {
     binding: Binding,
     quantum: u16,
     first_reply_sequence: u64,
-    conceal_instrument_gap: bool,
+    conceal_output_gap: bool,
     requests: Producer<InputRequest>,
     replies: Consumer<OutputReply>,
     revoked: Arc<Revocation>,
@@ -867,10 +871,11 @@ pub fn channel_from_completed_prefix(
     channel_with_policy(binding, quantum, completed_blocks, false)
 }
 
-/// The native instrument wire carries PCM and parameter observations but no
-/// output MIDI. A single deadline miss can leave one quantum silent while
-/// preserving ordered input and the fixed 2Q alignment of subsequent replies.
-pub fn instrument_channel_from_completed_prefix(
+/// The native instance wire carries PCM and parameter observations, with no
+/// output MIDI. A single deadline miss conceals one quantum while preserving
+/// ordered input and the fixed 2Q alignment of subsequent replies. A late
+/// reply never acknowledges audio, editor gestures or manual parameters.
+pub fn native_pcm_channel_from_completed_prefix(
     binding: Binding,
     quantum: u16,
     completed_blocks: u64,
@@ -882,7 +887,7 @@ fn channel_with_policy(
     binding: Binding,
     quantum: u16,
     completed_blocks: u64,
-    conceal_instrument_gap: bool,
+    conceal_output_gap: bool,
 ) -> Result<(Control, Callback, Worker), Fault> {
     if !binding.is_valid() || quantum == 0 || usize::from(quantum) > MAX_FRAMES {
         return Err(Fault::Configuration);
@@ -903,7 +908,7 @@ fn channel_with_policy(
             binding,
             quantum,
             first_reply_sequence,
-            conceal_instrument_gap,
+            conceal_output_gap,
             requests: request_tx,
             replies: reply_rx,
             revoked: Arc::clone(&revoked),
@@ -1256,6 +1261,7 @@ impl Callback {
         let mut result = SegmentReply {
             events: Events::default(),
             parameters: Parameters::default(),
+            concealed_output: None,
         };
         let mut event_index = 0;
         let mut parameter_index = 0;
@@ -1295,7 +1301,7 @@ impl Callback {
                         &self.revoked,
                         self.binding,
                         self.quantum,
-                        self.conceal_instrument_gap,
+                        self.conceal_output_gap,
                         &mut stage.state,
                         sequence - 2,
                     )?;
@@ -1368,6 +1374,10 @@ impl Callback {
             }
             if sequence >= 2 {
                 *destination = stage.state.output.block.pcm[offset];
+                if stage.state.output_gap {
+                    let start = result.concealed_output.map_or(index, |(start, _)| start);
+                    result.concealed_output = Some((start, index + 1));
+                }
                 for event in stage
                     .state
                     .output
@@ -1509,12 +1519,12 @@ fn stage_reply(
     revoked: &Revocation,
     binding: Binding,
     quantum: u16,
-    conceal_instrument_gap: bool,
+    conceal_output_gap: bool,
     state: &mut State,
     expected: u64,
 ) -> Result<(), Fault> {
     let validate = |reply: &OutputReply, sequence| {
-        if conceal_instrument_gap && !reply.block.events.as_slice().is_empty() {
+        if conceal_output_gap && !reply.block.events.as_slice().is_empty() {
             return Err(Fault::InvalidEvents);
         }
         reply.valid(binding, quantum, sequence)
@@ -1534,7 +1544,7 @@ fn stage_reply(
             state.output = reply;
             state.output_gap = false;
         }
-        Err(_) if conceal_instrument_gap && !state.output_gap => {
+        Err(_) if conceal_output_gap && !state.output_gap => {
             state.output = OutputReply {
                 block: Block::empty(binding, quantum),
                 manual: None,
