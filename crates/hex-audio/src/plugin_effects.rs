@@ -469,6 +469,7 @@ impl NativeEffect {
                 dry_output: [[0.0; 2]; MAX_FRAMES],
                 dry,
                 dry_cursor: 0,
+                concealed_output: false,
                 tail,
                 bypass: bypass::BypassMix::default(),
             },
@@ -627,6 +628,7 @@ pub struct NativeEffectCallback {
     dry_output: [[f32; 2]; MAX_FRAMES],
     dry: Vec<[f32; 2]>,
     dry_cursor: usize,
+    concealed_output: bool,
     tail: tail::TailDrain,
     bypass: bypass::BypassMix,
 }
@@ -644,6 +646,7 @@ impl NativeEffectCallback {
     /// segments. A chunk/subsegment length is not the physical callback extent.
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {
         self.transport.begin_physical_callback(frames)?;
+        self.concealed_output = false;
         self.tail.begin();
         Ok(())
     }
@@ -756,6 +759,7 @@ impl NativeEffectCallback {
             dry_output: [[0.0; 2]; MAX_FRAMES],
             dry: vec![[0.0; 2]; latency as usize],
             dry_cursor: 0,
+            concealed_output: false,
             tail: tail::TailDrain::new(0, latency),
             bypass: bypass::BypassMix::default(),
         }
@@ -952,7 +956,7 @@ impl NativeEffectCallback {
                 normalized: lane.normalized,
             }),
         );
-        if result.is_err() {
+        let Ok(reply) = result else {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
@@ -963,6 +967,13 @@ impl NativeEffectCallback {
                 }
             }
             return Err(DeviceContractError::ForeignProcessingFailed);
+        };
+        if let Some((start, end)) = reply.concealed_output {
+            // The transport still owns this epoch. Replace just the missing
+            // wet samples with the same latency-aligned dry history used for
+            // bypass. An instrument's dry history is already silence.
+            frames[start..end].copy_from_slice(&self.dry_output[start..end]);
+            self.concealed_output = true;
         }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
