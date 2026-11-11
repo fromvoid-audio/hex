@@ -40,6 +40,11 @@ name = "unit_editor_logic"
 path = "tests/unit_editor_logic.rs"
 required-features = ["ui-unit-tier"]
 
+[[test]]
+name = "midi_pressure_boundary"
+path = "tests/midi_pressure_boundary.rs"
+required-features = ["ui-test-support"]
+
 [dependencies]
 # UI-only random result selection; already pinned in the workspace lock graph.
 fastrand = "=2.5.0"

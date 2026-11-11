@@ -207,6 +207,43 @@ class ScopeTests(unittest.TestCase):
                     self.assertEqual(step.argv[step.argv.index("--features") + 1],
                                      ci.ci_plan.UI_UNIT_FEATURES[target])
 
+
+    def test_ui_library_and_midi_pressure_feature_targets_are_disjoint(self):
+        for scope in ("full", "ui"):
+            with self.subTest(scope=scope):
+                steps = {step.step_id: step for step in ci.planned_steps({"scope": scope})}
+                self.assertIn("--lib", steps["ui-feature-tests"].argv)
+                self.assertNotIn("--test", steps["ui-feature-tests"].argv)
+                self.assertEqual(steps["ui-midi-pressure-boundary-tests"].argv,
+                                 ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
+                                  "--test", "midi_pressure_boundary", "--locked"))
+                self.assertTrue(steps["ui-midi-pressure-boundary-tests"].requires_tests)
+                self.assertIn("--doc", steps["ui-feature-doctests"].argv)
+                self.assertIn("--example", steps["device-gallery-tests"].argv)
+                self.assertNotIn("ui-default-standalone-tests", steps)
+
+        health = {"python": False, "workspace_inputs": False, "packages": ["hex-ui"]}
+        steps = {step.step_id: step for step in ci.planned_steps({"scope": "rust", "health": health})}
+        self.assertEqual(steps["health-tests"].argv, ("cargo", "test", "-p", "hex-ui", "--locked"))
+        self.assertFalse(any("midi_pressure_boundary" in step.argv for step in steps.values()))
+
+    def test_hex_ui_standalone_targets_require_the_reviewed_features(self):
+        root = SCRIPTS.parent
+        metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
+        ui = next(package for package in plan.cargo_inventory(metadata, root) if package["name"] == "hex-ui")
+        by_feature = {}
+        for target in ui["targets"]:
+            if target["kind"] == ["test"]:
+                features = tuple(target.get("required-features", ()))
+                by_feature.setdefault(features, set()).add(target["name"])
+        self.assertEqual(by_feature, {
+            (): {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
+                 "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"},
+            ("ui-unit-tier",): set(plan.UI_UNIT_FEATURES),
+            ("ui-test-support",): {"midi_pressure_boundary"},
+        })
+
     def test_shared_theme_selects_unit_and_path_consumer_configurations(self):
         root = SCRIPTS.parent
         inventory = [
@@ -2108,7 +2145,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "boundary": boundary, "cargo_inventory": inventory,
                                   "paths": ["crates/hex-ui/src/lib.rs"]})
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-        self.assertNotIn("--lib", feature.argv)
+        self.assertIn("--lib", feature.argv)
         self.assertNotIn("--test", feature.argv)
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in steps))
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in steps))
@@ -2436,6 +2473,7 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(any(module.startswith(selected) for selected in feature_suite.argv))
             consumer = [step for step in steps if step.step_id == "ui-consumer-" + target]
             self.assertEqual(len(consumer), 1)
+            self.assertEqual(sum(target in step.argv for step in steps), 1)
             self.assertTrue(consumer[0].requires_tests)
             self.assertEqual(consumer[0].argv,
                              ("cargo", "test", "-p", owner, "--features", "ui-test-support",
@@ -2458,7 +2496,7 @@ class ModuleScopeTests(unittest.TestCase):
         unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
                                             "boundary": boundary, "cargo_inventory": inventory,
                                             "paths": ["crates/hex-ui/src/editor/user_errors.rs"]})
-        self.assertFalse(any(step.step_id == "ui-consumer-" + target for step in unrelated_steps))
+        self.assertFalse(any(target in step.argv for step in unrelated_steps))
 
         full = {"kind": "packages", "tests": [], "test_packages": [owner],
                 "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
@@ -2468,7 +2506,24 @@ class ModuleScopeTests(unittest.TestCase):
                                       "paths": []})
         self.assertFalse(any(step.step_id == "ui-consumer-" + target for step in full_steps))
         full_suite = next(step for step in full_steps if step.step_id == "ui-feature-tests")
+        self.assertIn("--lib", full_suite.argv)
         self.assertNotIn("--test", full_suite.argv)
+        self.assertEqual(sum(target in step.argv for step in full_steps), 1)
+        standalone = next(step for step in full_steps if step.step_id == "ui-default-standalone-tests")
+        self.assertEqual({standalone.argv[i + 1] for i, arg in enumerate(standalone.argv) if arg == "--test"},
+                         {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
+                          "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"})
+        self.assertNotIn("--features", standalone.argv)
+        self.assertTrue(any(step.step_id == "single-run-doctests" for step in full_steps))
+        self.assertTrue(any(step.step_id == "ui-feature-doctests" for step in full_steps))
+
+        full["single_run"] = {}
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": full,
+            "cargo_inventory": inventory, "paths": []})}
+        self.assertEqual(steps["affected-tests"].argv, ("cargo", "test", "-p", owner, "--locked"))
+        self.assertNotIn("ui-default-standalone-tests", steps)
+        self.assertEqual(sum(target in step.argv for step in steps.values()), 1)
 
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
