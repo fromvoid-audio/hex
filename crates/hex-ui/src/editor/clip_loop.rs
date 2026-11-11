@@ -66,11 +66,11 @@ impl EditorView {
     }
 
     pub(super) fn settle_released_play_start_audition(&self, clip: ClipId) {
-        if !self
+        if self
             .clip_loop
             .pending
             .as_ref()
-            .is_some_and(|p| p.clip == clip)
+            .is_none_or(|p| p.clip != clip)
         {
             self.service.retire_arrangement_play_start_audition();
         }
