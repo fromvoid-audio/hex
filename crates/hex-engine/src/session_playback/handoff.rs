@@ -75,6 +75,23 @@ fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> 
     matches(old, new) && matches(new, old)
 }
 
+fn appended_foreign_effect(
+    new: &[hex_lattice::PreparedRuntimeInstance],
+    old: &[hex_lattice::PreparedRuntimeInstance],
+) -> bool {
+    new.split_last().is_some_and(|(appended, prefix)| {
+        prefix.len() == old.len()
+            && matches!(
+                appended.definition,
+                Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+            )
+            && prefix
+                .iter()
+                .zip(old)
+                .all(|(new, old)| new.device_id == old.device_id)
+    })
+}
+
 /// One physical foreign endpoint cannot process both current input and an old
 /// tail in the same callback. Fresh local scalar history cannot reset or clone
 /// that external source. Compare exact bindings, including root and epoch,
@@ -894,17 +911,38 @@ impl SessionPlayback {
         if relocate && source_transfer.is_some() && new_loop_region != old_loop_region {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
+        let same_periodic_timing =
+            previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
         let compatible_instrument_loop_edit = same_base_timing
             && new_loop_region != old_loop_region
-            && previous.anchor.is_none()
-            && foreign_handoff.keeps_first_pass_loop_clock;
+            && ((same_periodic_timing && foreign_handoff.keeps_unautomated_loop_clock)
+                || (previous.anchor.is_none() && foreign_handoff.keeps_first_pass_loop_clock));
+        // A fresh compensation epoch can start at the same running cursor
+        // when the timing map and loop are unchanged.
+        let running_restart =
+            relocate && previous.playing && mapped_main_clock && same_periodic_timing;
+        // A newly appended hosted effect can require fresh delay rings. The
+        // same-clock restart keeps the Arrangement cursor, worker binding and
+        // accepted gate deadlines even while the local PCM history refills.
+        let keep_foreign_gates = foreign_handoff.requires_clock_continuity
+            && running_restart
+            && !force_restart
+            && source_transfer.is_none()
+            && self
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .zip(previous.revision.arrangement().tracks())
+                .any(|(new, old)| {
+                    new.canonical_track_id() == old.canonical_track_id()
+                        && appended_foreign_effect(&new.device_chain, &old.device_chain)
+                });
         if foreign_handoff.requires_clock_continuity
             && (force_restart
-                || relocate
+                || (relocate && !keep_foreign_gates)
                 || (!compatible_instrument_loop_edit
-                    && (!mapped_main_clock
-                        || previous.periodic_tempo()
-                            != self.periodic_tempo_at(previous.arrangement_frame))))
+                    && (!mapped_main_clock || !same_periodic_timing)))
         {
             return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
         }
@@ -934,16 +972,8 @@ impl SessionPlayback {
         } else {
             None
         };
-        // Running: the same law at the next block boundary, but the transport
-        // clock, loop pass and Session launches continue unchanged. Audio
-        // restarts there (tails/PDC empty, gate-active notes chased); the user
-        // never has to stop. A changed tempo map or loop keeps its refusal.
-        let running_restart = relocate
-            && previous.playing
-            && mapped_main_clock
-            && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
-        // A changed tempo map or loop cannot keep the running clock: restart
-        // as a Play-from at the musically equivalent frame instead.
+        // A changed timing map or loop relocates a fresh audio epoch to the
+        // musically equivalent frame as a Play-from.
         let running_relocate = relocate && previous.playing && !running_restart;
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
@@ -1122,7 +1152,7 @@ impl SessionPlayback {
             self.foreign_arrangement.inherit_handoff(
                 &mut previous.foreign_arrangement,
                 foreign_handoff,
-                false,
+                keep_foreign_gates,
             );
             return Ok(SessionHandoffReport {
                 cancelled_pending,
