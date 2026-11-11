@@ -54,7 +54,8 @@ impl EditorView {
     fn audition_volume(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let entity = cx.entity();
         let owner = entity.entity_id();
-        let handle_top = 2.0 + (1.0 - self.browser.audition_gain) * 16.0;
+        let style = theme::control_style();
+        let gain = self.browser.audition_gain;
         div()
             .id("browser-audition-volume")
             .debug_selector(|| "browser-audition-volume".to_owned())
@@ -62,8 +63,9 @@ impl EditorView {
             .w(px(16.0))
             .h(px(AUDITION_ROW_HEIGHT))
             .flex_shrink_0()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+            .overflow_hidden()
+            .bg(rgb(style.rail))
+            .hover(move |rail| rail.bg(rgb(style.hover)))
             .cursor_pointer()
             .tooltip(|_, cx| super::layout::browser_label_tooltip("sample audition volume", cx))
             .on_mouse_down(
@@ -72,21 +74,19 @@ impl EditorView {
             )
             .child(
                 div()
+                    .debug_selector(|| "browser-audition-volume-fill".to_owned())
                     .absolute()
-                    .left(px(7.0))
-                    .top(px(2.0))
-                    .w(px(2.0))
-                    .h(px(18.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
+                    .bottom_0()
+                    .w_full()
+                    .h(relative(gain))
+                    .bg(rgb(style.numeric_fill)),
             )
             .child(
                 div()
                     .absolute()
-                    .left(px(3.0))
-                    .top(px(handle_top))
-                    .w(px(10.0))
-                    .h(px(2.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                    .inset_0()
+                    .border_1()
+                    .border_color(rgb(style.border)),
             )
             .child(
                 canvas(

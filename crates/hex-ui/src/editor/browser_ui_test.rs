@@ -3190,11 +3190,20 @@ fn browser_audition_volume_drag_preserves_playback_position_and_selection_level(
     });
     visual.run_until_parked();
     let volume = visual.debug_bounds("browser-audition-volume").unwrap();
+    assert_eq!(
+        visual.debug_bounds("browser-audition-volume-fill"),
+        Some(volume)
+    );
     let down = volume.center();
     let quieter = down + point(px(0.0), px(11.0));
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(quieter, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
+    let fill = visual.debug_bounds("browser-audition-volume-fill").unwrap();
+    assert_eq!(fill.left(), volume.left());
+    assert_eq!(fill.right(), volume.right());
+    assert_eq!(fill.bottom(), volume.bottom());
+    assert_eq!(fill.size.height, volume.size.height / 2.0);
     visual.simulate_mouse_up(quieter, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.browser.audition_gain, 0.5);
