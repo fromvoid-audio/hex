@@ -227,6 +227,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/trim.rs": ("editor::trim::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
+    "src/editor/device_panel/utility_panel.rs": ("editor::device_panel::utility_panel::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
@@ -594,7 +595,10 @@ UI_MODULE_TEST_DEPENDENCIES = {
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
+UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
+                      "editor::device_panel::tests::utility_gain_is_presented_in_db_and_typed_values_remain_linear_canonical",
+                      "editor::device_panel::tests::utility_default_width_and_audio_readouts_use_reference_units"},
+                    {"editor::tempo_input::value::",
                       "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
                       "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
                       "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
