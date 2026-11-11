@@ -3870,6 +3870,67 @@ class ModuleScopeTests(unittest.TestCase):
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
 
+    def test_midi_loop_display_cohort_routes_source_and_consumer_changes(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_roots = ["editor::midi_loop_notes::tests::",
+                      "editor::midi_ruler::geometry_tests::",
+                      "editor::midi_ruler::loop_brace::tests::"]
+        consumers = [
+            "editor::midi_loop_notes::tests::rendered_long_loop_paints_every_repeat_without_a_sample_badge",
+            "editor::midi_loop_notes::tests::rendered_tiled_loop_paints_one_sprite_per_visible_tile",
+            "editor::midi_loop_notes::tests::rendered_long_loop_trim_preview_paints_every_visible_repeat",
+            "editor::midi_ruler::tests::marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_state",
+            "editor::midi_ruler::tests::marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement",
+            "editor::midi_ruler::loop_tests::loop_capture_cancel_and_stale_frame_preserve_source_and_transport",
+            "editor::midi_ruler::loop_tests::console_loop_resize_enable_and_roundtrip_leave_arrangement_source_unchanged",
+        ]
+        routes = {
+            "crates/hex-ui/src/editor/midi_loop_notes.rs": "editor::midi_loop_notes",
+            "crates/hex-ui/src/editor/midi_ruler.rs": "editor::midi_ruler",
+            "crates/hex-ui/src/editor/midi_loop.rs": "editor::midi_ruler::loop_brace",
+            "crates/hex-ui/src/editor/midi_ruler_ui_tests.rs": "editor::midi_ruler::tests",
+            "crates/hex-ui/src/editor/midi_loop_ui_tests.rs": "editor::midi_ruler::loop_tests",
+        }
+        module_paths = plan.module_paths(root / "crates/hex-ui/src")
+        for path, expected_module in routes.items():
+            with self.subTest(path=path):
+                self.assertEqual(module_paths[(root / path).resolve()], expected_module)
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                selected = names[owner]
+                self.assertTrue(all(any(root_name.startswith(name) or name.startswith(root_name)
+                                         for name in selected) for root_name in unit_roots), selected)
+                self.assertTrue(all(any(consumer.startswith(name) for name in selected) for consumer in consumers), selected)
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertEqual(unit.argv, ("cargo", "test", "-p", "hex-ui", "--lib", "--locked",
+                                             "--", *unit_roots))
+                self.assertTrue(unit.requires_tests)
+                feature = steps["ui-feature-tests"].argv
+                self.assertIn("--lib", feature)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in feature))
+
+        unrelated = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": unrelated}
+        unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                            "boundary": boundary, "cargo_inventory": inventory,
+                                            "paths": ["crates/hex-ui/src/editor/user_errors.rs"]})
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in unrelated_steps))
+        self.assertFalse(any(any(consumer.startswith(arg) for arg in step.argv) for step in unrelated_steps
+                             for consumer in consumers))
+
     def test_midi_cue_timing_selects_unit_and_real_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
