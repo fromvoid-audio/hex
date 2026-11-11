@@ -502,7 +502,11 @@ fn event_grid_paints_over_opaque_audio_at_full_and_zoomed_extents(cx: &mut TestA
         assert!(grid.top() >= body.top() + px(22.0));
         let frame = editor.read_with(&visual, |v, _| {
             let root = v.event_context().unwrap().1;
-            let viewport = v.event_project_viewport(&root).unwrap();
+            let viewport = v
+                .event_project_window(&root)
+                .unwrap()
+                .visible_unsigned()
+                .unwrap();
             super::super::musical_time::grid_lines(
                 &v.state.as_ref().unwrap().project,
                 viewport,
@@ -555,6 +559,32 @@ fn event_pointer_matches_arrangement_and_retains_move_and_trim_targets(cx: &mut 
         visual.run_until_parked();
         assert_eq!(visual.rendered_cursor_style(), Some(expected));
     }
+}
+
+#[gpui::test]
+fn x_deletes_the_focused_audio_event_range(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = point(
+        bounds.origin.x + bounds.size.width * 0.25,
+        bounds.origin.y + px(10.0),
+    );
+    let up = point(bounds.origin.x + bounds.size.width * 0.75, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let range = editor.read_with(&visual, |view, _| view.audio_event_editor.range.unwrap());
+    editor.update(&mut visual, |view, _| view.close_prompt_open = true);
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.last_enqueued_edit.is_none())
+    });
+    editor.update(&mut visual, |view, _| view.close_prompt_open = false);
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |view, _| assert!(matches!(view.last_enqueued_edit, Some(Command::EditAudioEvents { clip: id, operation: AudioEventEdit::Delete { start, end } }) if id == clip && (start, end) == range)));
 }
 
 #[gpui::test]
@@ -858,7 +888,10 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
         )
     });
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx,|view,_|assert!(matches!(view.last_enqueued_edit,Some(Command::EditAudioEvents{clip:id,operation:AudioEventEdit::Move{event:1,start}}) if id==clip && start==36000)));
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(view.last_enqueued_edit,
+            Some(Command::EditAudioEvents { clip: id, operation: AudioEventEdit::Place { event: 1, start: 36000 } }) if id == clip));
+    });
 }
 
 #[gpui::test]
@@ -999,7 +1032,9 @@ fn closing_events_releases_focus_and_gesture(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mut TestAppContext) {
+fn cropped_legacy_range_moves_stay_bounded_and_free_event_nudge_uses_canonical_placement(
+    cx: &mut TestAppContext,
+) {
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     editor.update(cx, |view, cx| {
         let state = view.state.as_ref().unwrap();
@@ -1087,6 +1122,7 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
                 origin_x: origin,
                 moved: false,
                 kind,
+                placement: None,
                 operation: None,
             });
             view.event_update_pointer(x, false);
@@ -1127,11 +1163,11 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
             matches!(
                 view.last_enqueued_edit,
                 Some(Command::EditAudioEvents {
-                    operation: AudioEventEdit::Move { start: 48000, .. },
+                    operation: AudioEventEdit::Place { start: 48001, .. },
                     ..
                 })
             ),
-            "nudge escaped crop: {:?}",
+            "a proved fixed-frame nudge may move beyond the cropped clip window: {:?}",
             view.last_enqueued_edit
         );
     });
@@ -1472,7 +1508,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
             before
         );
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.audio_event_editor.viewport, Some(prior))
     });
@@ -1482,7 +1518,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert!(v.audio_event_editor.fit_back.is_none())
     });
@@ -1492,7 +1528,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("z x");
+    visual.simulate_keystrokes("z v");
     editor.read_with(&visual, |v, _| {
         assert!(
             v.audio_event_editor.viewport.is_none(),
@@ -1567,11 +1603,15 @@ fn loop_brace_matches_retained_source_coordinates_during_zoom_and_pan(cx: &mut T
         assert_eq!((body.left(), body.size.width), (bar.left(), bar.size.width));
         let a = visual.debug_bounds("audio-loop-start-marker").unwrap();
         let b = visual.debug_bounds("audio-loop-end-marker").unwrap();
+        // Layout rounds the independently positioned edges to physical pixels.
+        let pixel = 1.0 / visual.update(|window, _| window.scale_factor());
         assert!(
-            (f32::from(a.left() - bar.left()) - f32::from(bar.size.width) * first).abs() < 0.05
+            (f32::from(a.left() - bar.left()) - f32::from(bar.size.width) * first).abs() <= pixel,
+            "bar={bar:?} a={a:?} first={first}"
         );
         assert!(
-            (f32::from(b.right() - bar.left()) - f32::from(bar.size.width) * last).abs() < 0.05
+            (f32::from(b.right() - bar.left()) - f32::from(bar.size.width) * last).abs() <= pixel,
+            "bar={bar:?} b={b:?} last={last}"
         );
     }
 }
@@ -1646,17 +1686,36 @@ fn wheel_navigation_anchors_pointer_and_keeps_tabs_independent(cx: &mut TestAppC
     let painted = visual
         .debug_bounds("audio-source-visible-waveform")
         .unwrap();
-    assert!((marker.left() - (body.left() + body.size.width * 0.8)).abs() < px(2.0));
+    assert!((marker.left() - (body.left() + body.size.width * 0.9)).abs() < px(2.0));
+    assert!((painted.left() - (body.left() + body.size.width * 0.1)).abs() < px(2.0));
     assert!((painted.size.width - body.size.width * 0.8).abs() < px(2.0));
     editor.update(&mut visual, |v, cx| {
         assert_eq!(v.audio_source_viewport().length, 120_000);
+        assert_eq!(v.audio_source_viewport().start, -12_000);
         assert_eq!(v.audio_event_editor.viewport, Some(events));
-        v.event_pan(true);
-        v.event_pan(true);
-        assert!(v.audio_source_viewport().start >= 96_000);
+        v.event_pan(false);
+        v.event_pan(false);
+        assert_eq!(v.audio_source_viewport().start, -132_000);
         assert!(v.event_fit_selection(false));
         assert!(v.event_fit_selection(true));
-        assert!(v.audio_source_viewport().start >= 96_000);
+        assert_eq!(v.audio_source_viewport().start, -132_000);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("audio-source-visible-waveform")
+            .is_none()
+    );
+    assert!(visual.debug_bounds("source-start-marker").is_none());
+    editor.update(&mut visual, |v, cx| {
+        for _ in 0..12 {
+            v.event_pan(true);
+        }
+        assert!(v.audio_source_viewport().start > 96_000 * 4);
+        assert!(v.event_fit_selection(false));
+        assert!(v.event_fit_selection(true));
+        assert!(v.audio_source_viewport().start > 96_000 * 4);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert!(v.last_enqueued_edit.is_none());
         cx.notify();
@@ -1714,7 +1773,7 @@ fn navigation_rejects_bad_wheel_and_held_input_and_resets_on_source_replacement(
         v.project_generation += 1;
         v.sync_audio_navigation();
         assert!(v.audio_event_editor.source_view);
-        assert_eq!(v.audio_source_viewport(), Viewport::fit(96_000));
+        assert_eq!(v.audio_source_viewport(), Viewport::fit(96_000).into());
         assert!(v.audio_event_editor.viewport.is_none());
         assert!(v.audio_event_editor.source_fit_back.is_none());
         assert!(v.last_enqueued_edit.is_none());

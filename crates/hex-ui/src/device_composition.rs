@@ -5,8 +5,9 @@ use crate::theme::{self, DeviceStyleRole};
 use gpui::{Div, IntoElement, SharedString, div, prelude::*, px, rgb};
 use hex_widgets::{DeviceLayout, DeviceSectionSurface, device_compact_section, device_layout};
 
-/// The accepted native device body, below the shared fourteen-pixel header.
-pub(crate) const BODY_HEIGHT: f32 = 168.0;
+/// Every native device uses one 200 px host, including its left header and outline.
+pub(crate) const FRAME_HEIGHT: f32 = 200.0;
+pub(crate) const BODY_HEIGHT: f32 = FRAME_HEIGHT - 2.0 * hex_widgets::DEVICE_FRAME_BORDER_WIDTH;
 pub(crate) const GENERIC_FRAME_WIDTH: f32 = 286.0;
 pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 1040.0;
 pub(crate) const UTILITY_FRAME_WIDTH: f32 = 144.0;
@@ -16,11 +17,15 @@ pub(crate) const DELAY_FRAME_WIDTH: f32 = 500.0;
 pub(crate) const LIMITER_FRAME_WIDTH: f32 = 300.0;
 pub(crate) const COMPRESSOR_FRAME_WIDTH: f32 = 326.0;
 pub(crate) const OVERDRIVE_FRAME_WIDTH: f32 = 174.0;
+pub(crate) const RATTLE_FRAME_WIDTH: f32 = 168.0;
 pub(crate) const GATE_FRAME_WIDTH: f32 = 142.0;
 pub(crate) const REVERB_FRAME_WIDTH: f32 = 608.0;
 pub(crate) const AUTO_PAN_FRAME_WIDTH: f32 = 144.0;
-pub(crate) const VECTOR_SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
-pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 340.0;
+pub(crate) const VECTOR_SHELL_WIDTH: f32 = 160.0;
+pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 220.0;
+pub(crate) const VECTOR_ADVANCED_DETAIL_WIDTH: f32 = 340.0;
+pub(crate) const VECTOR_OPTIONS_WIDTH: f32 = 80.0;
+pub(crate) const VECTOR_WAVEFORM_WIDTH: f32 = 220.0;
 pub(crate) const VECTOR_PREVIEW_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + 148.0;
 pub(crate) const VECTOR_WIDTH: f32 =
     VECTOR_SHELL_WIDTH + VECTOR_DETAIL_WIDTH + VECTOR_PREVIEW_WIDTH + 30.0;
@@ -205,10 +210,10 @@ pub(crate) fn three_pane(
 }
 
 /// Stable Vector inspector and tab slots; the owner retains focus and page state.
-pub(crate) fn tabbed_detail(detail: impl IntoElement, tabs: impl IntoElement) -> Div {
+pub(crate) fn tabbed_detail(detail: impl IntoElement, tabs: impl IntoElement, width: f32) -> Div {
     hex_widgets::device_display(theme::device_style(DeviceStyleRole::Layout))
         .flex_1()
-        .w(px(VECTOR_DETAIL_WIDTH))
+        .w(px(width))
         .min_w_0()
         .h_full()
         .child(detail)
@@ -217,7 +222,7 @@ pub(crate) fn tabbed_detail(detail: impl IntoElement, tabs: impl IntoElement) ->
                 .absolute()
                 .top(px(86.0))
                 .left_0()
-                .w_full()
+                .w(px(VECTOR_DETAIL_WIDTH))
                 .px(px(4.0))
                 .child(tabs),
         )

@@ -131,7 +131,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|s| s.revision == context.scene.revision)
-            && self.piano_beat_start.raw() == context.scene.start
+            && self.piano_beat_start == context.scene.start
             && self.piano_beat_span.raw() == context.scene.span
             && self.midi_selection.epoch() == context.selection_epoch
             && self

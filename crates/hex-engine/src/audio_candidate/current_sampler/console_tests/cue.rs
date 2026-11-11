@@ -1,7 +1,7 @@
 use super::*;
 use crate::{LaunchQuantization, PlaybackAction, SessionMidiOrigin, SessionPlaybackCommand};
 
-fn looping_source(
+pub(super) fn looping_source(
     notes: &[(BeatTime, BeatTime, u8, u8)],
     voices: u8,
 ) -> (
@@ -69,7 +69,7 @@ fn looping_source(
     }
     (editor, asset, track, clip)
 }
-fn source() -> crate::OwnedAudioSource {
+pub(super) fn source() -> crate::OwnedAudioSource {
     crate::OwnedAudioSource::try_resident(
         8000,
         vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]],
@@ -80,6 +80,8 @@ fn source() -> crate::OwnedAudioSource {
 
 #[test]
 fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with_literal_pcm() {
+    // The outgoing incarnation's release starts at the cue frame.
+    let release = release_frames(2.0 / 16000.0) as usize;
     let mut results = Vec::new();
     for held in [false, true] {
         let (editor, asset, track, clip) = looping_source(
@@ -155,7 +157,7 @@ fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with
                 .test_apply_action(PlaybackAction::Transport(crate::PlaybackCommand::Play))
                 .unwrap();
         }
-        let mut pcm = [[0.0; 2]; 8];
+        let mut pcm = vec![[0.0; 2]; release + 6];
         owner.test_render(&mut pcm[..1]).unwrap();
         assert_eq!(
             owner
@@ -178,7 +180,7 @@ fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with
                 .test_current_sampler_route_proofs(0),
             Some((2, 1, 0))
         );
-        assert!(pcm[2..].iter().flatten().any(|v| v.abs() > 1e-5));
+        assert!(pcm[release..].iter().flatten().any(|v| v.abs() > 1e-5));
         let generation = owner
             .inner
             .runtime
@@ -213,14 +215,17 @@ fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with
         cell.cleanup_on_control().unwrap();
     }
     assert_eq!(
-        results[0][2..],
-        results[1][2..],
+        results[0][release..],
+        results[1][release..],
         "after bounded outgoing release, same literal cued sampler PCM and exact velocity37"
     );
 }
 
 #[test]
-fn current_sampler_cue_release_reservation_refusal_preserves_incarnation_proofs_and_next_pcm() {
+fn current_sampler_cue_steals_survivor_releases_for_a_full_incoming_voice_set() {
+    // 32 voices: 16 held survivors plus 16 incoming exceeded the old
+    // held+releasing reservation. Survivors all release at the cut, and the
+    // stealing sampler reuses their slots, so only the incoming 16 need room.
     let mut notes = Vec::new();
     for pitch in 60..76 {
         notes.push((BeatTime::ZERO, BeatTime::ONE, pitch, 93));
@@ -229,62 +234,50 @@ fn current_sampler_cue_release_reservation_refusal_preserves_incarnation_proofs_
         notes.push((BeatTime::ONE, BeatTime::ONE, pitch, 37));
     }
     let (editor, asset, track, clip) = looping_source(&notes, 32);
-    let mut tested = prepare(editor.project(), vec![(asset, source())]);
-    let mut oracle = prepare(editor.project(), vec![(asset, source())]);
-    for cell in [&mut tested, &mut oracle] {
-        let owner = cell.owner_on_control().unwrap();
-        owner
-            .test_apply_action(PlaybackAction::LaunchAndPlay(
-                SessionPlaybackCommand::LaunchClip {
-                    clip,
-                    quantization: LaunchQuantization::Immediate,
-                },
-            ))
-            .unwrap();
-        owner.test_render(&mut [[0.0; 2]; 3]).unwrap();
-    }
-    let owner = tested.owner_on_control().unwrap();
+    let mut cell = prepare(editor.project(), vec![(asset, source())]);
+    let owner = cell.owner_on_control().unwrap();
+    owner
+        .test_apply_action(PlaybackAction::LaunchAndPlay(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    owner.test_render(&mut [[0.0; 2]; 3]).unwrap();
     let playback = &owner.inner.runtime.as_ref().unwrap().playback;
-    let before = playback.session_route_status(0).unwrap();
     let generation = playback.session_route_state_generation();
-    let proofs = playback.test_current_sampler_route_proofs(0);
-    assert_eq!(proofs, Some((1, 16, 0)));
+    assert_eq!(
+        playback.test_current_sampler_route_proofs(0),
+        Some((1, 16, 0))
+    );
+    owner
+        .test_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::CueMidiClip {
+                track,
+                clip,
+                source_beat: BeatTime::ONE,
+                expected_route_generation: generation,
+            },
+        ))
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    owner.test_render(&mut pcm[..1]).unwrap();
     assert_eq!(
         owner
             .inner
             .runtime
-            .as_mut()
+            .as_ref()
             .unwrap()
-            .apply_action(PlaybackAction::Session(
-                SessionPlaybackCommand::CueMidiClip {
-                    track,
-                    clip,
-                    source_beat: BeatTime::ONE,
-                    expected_route_generation: generation
-                }
-            )),
-        Err(crate::PlaybackActionError::Session(
-            crate::SessionPlaybackError::ReleaseBankFull
-        ))
+            .playback
+            .test_current_sampler_route_proofs(0),
+        Some((2, 16, 16)),
+        "16 incoming voices are held while the 16 released proofs keep their deadlines"
     );
-    let playback = &owner.inner.runtime.as_ref().unwrap().playback;
-    assert_eq!(playback.session_route_status(0).unwrap(), before);
-    assert_eq!(playback.session_route_state_generation(), generation);
-    assert_eq!(playback.test_current_sampler_route_proofs(0), proofs);
-    let mut actual = [[0.0; 2]; 64];
-    let mut expected = actual;
-    owner.test_render(&mut actual).unwrap();
-    oracle
-        .owner_on_control()
-        .unwrap()
-        .test_render(&mut expected)
-        .unwrap();
-    assert_eq!(
-        actual, expected,
-        "failed incoming+survivor reservation cannot cut old deadlines or mutate DSP"
-    );
-    tested.cleanup_on_control().unwrap();
-    oracle.cleanup_on_control().unwrap();
+    owner.test_render(&mut pcm[1..]).unwrap();
+    assert!(pcm.iter().flatten().all(|v| v.is_finite()));
+    assert!(pcm[1..].iter().flatten().any(|v| v.abs() > 1e-5));
+    cell.cleanup_on_control().unwrap();
 }
 
 #[test]

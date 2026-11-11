@@ -24,9 +24,11 @@ pub(super) struct State {
     toggle: Option<Entity<Toggle>>,
     toggle_subscription: Option<Subscription>,
 }
+mod hidden_tracks;
+mod interval;
 #[path = "arrangement_focus/visibility.rs"]
 mod visibility;
-pub(super) use visibility::track_intersects_sections;
+pub(super) use interval::track_intersects_sections;
 
 impl State {
     pub(super) fn observe_active_track(&mut self, active: Option<TrackId>) {
@@ -62,6 +64,19 @@ impl State {
     }
 }
 impl EditorView {
+    pub(super) fn decorate_focused_track_row(
+        &self,
+        index: usize,
+        track: TrackId,
+        scale: f32,
+        row: Div,
+    ) -> Div {
+        hidden_tracks::row(&self.arrangement_focus.projection, index, track, scale, row)
+    }
+    pub(super) fn decorate_focused_empty_tracks(&self, scale: f32, content: Div) -> Div {
+        hidden_tracks::empty(&self.arrangement_focus.projection, scale, content)
+    }
+
     pub(super) fn arrangement_focus_ranges(&self) -> Rc<[(u64, u64)]> {
         Rc::clone(&self.arrangement_focus.projection.ranges)
     }

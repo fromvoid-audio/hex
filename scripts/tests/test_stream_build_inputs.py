@@ -1,5 +1,6 @@
 """Run the actual source-observation script with pinned files and config refusals."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,12 +9,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from test_local_ci import install_delivery_source_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("stream_input_ci", ROOT / "scripts/local-ci.py")
 ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ci
-SPEC.loader.exec_module(ci)
+source = (ROOT / "scripts/local-ci.py").read_bytes()
+ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+exec(compile(source, str(ROOT / "scripts/local-ci.py"), "exec", dont_inherit=True), ci.__dict__)
 
 
 class StreamBuildInputsTests(unittest.TestCase):
@@ -22,6 +26,7 @@ class StreamBuildInputsTests(unittest.TestCase):
             root = Path(temporary)
             compiler = root / "compiler"
             (compiler / "src").mkdir(parents=True)
+            install_delivery_source_fixture(compiler)
             (compiler / ".gitignore").write_text('/target/\n/artifacts/\n')
             (compiler / "Cargo.toml").write_text('[package]\nname="stream-build-observer"\nversion="0.1.0"\nedition="2024"\n[dependencies]\nsha2="=0.10.9"\n')
             (compiler / "src/main.rs").write_bytes((ROOT / "crates/hex-stream/build.rs").read_bytes())

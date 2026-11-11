@@ -1789,3 +1789,135 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
     });
 }
+
+#[gpui::test]
+fn alias_group_drag_selects_worker_births_and_survives_delayed_ack(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "alias destination".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let (track, before) = editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        (p.tracks()[1].id(), p.snapshot())
+    });
+    let target = begin_group(&mut visual, &clips);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let target = point(target.x, lane.center().y);
+    let alias = Modifiers {
+        alt: true,
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_modifiers_change(alias);
+    visual.simulate_mouse_move(target, MouseButton::Left, alias);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("clip-alias-drag-indicator").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, alias);
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.pending_clip_move.is_some()));
+    assert!(visual.debug_bounds("clip-alias-drag-indicator").is_some());
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(v.pending_clip_move.is_none());
+        let p = &v.state.as_ref().unwrap().project;
+        let copies = v.selected_clip_ids();
+        assert_eq!(copies.len(), clips.len());
+        for (original, copy) in clips.iter().zip(copies.iter()) {
+            assert!(p.clip(*original).is_some());
+            assert!(p.clip(*copy).is_some());
+            assert!(p.clip_alias(*original).is_some());
+            assert_eq!(p.clip_alias(*original), p.clip_alias(*copy));
+        }
+        p.snapshot()
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let mut expected = before.clone();
+        expected.next_id = v.state.as_ref().unwrap().project.snapshot().next_id;
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+    });
+}
+
+#[gpui::test]
+fn alias_drag_to_new_track_keeps_insertion_preview_and_selects_birth(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "destination".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let (source, next) = editor.read_with(&visual, |v, _| {
+        let tracks = v.state.as_ref().unwrap().project.tracks();
+        (tracks[0].id(), tracks[1].id())
+    });
+    click(&mut visual, clips[0], false);
+    let surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clips[0].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let next_lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", next.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let down = surface.center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let target = point(
+        lane.origin.x + lane.size.width * 0.73,
+        (lane.origin.y + lane.size.height + next_lane.origin.y) / 2.0,
+    );
+    let alias = Modifiers {
+        alt: true,
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_move(target, MouseButton::Left, alias);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insert-preview").is_some());
+    assert!(visual.debug_bounds("clip-alias-drag-indicator").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, alias);
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.pending_clip_move.is_some()));
+    assert!(visual.debug_bounds("track-insert-preview").is_some());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let p = &v.state.as_ref().unwrap().project;
+        let ids = v.selected_clip_ids();
+        assert_eq!(ids.len(), 1);
+        assert_ne!(ids[0], clips[0]);
+        assert!(p.clip_alias(clips[0]).is_some());
+        assert_eq!(p.clip_alias(clips[0]), p.clip_alias(ids[0]));
+        assert_eq!(p.tracks().len(), 3);
+        assert!(p.tracks()[1].clips().iter().any(|c| c.id() == ids[0]));
+    });
+}

@@ -6,6 +6,14 @@ use super::EditorView;
 use hex_project::{LoopRegion, SectionId};
 use hex_session::arrangement_seek::SectionLaunch;
 
+gpui::actions!(hex_section_launch, [ActivateSectionLaunch]);
+pub(super) fn bind_keys(cx: &mut gpui::App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("enter", ActivateSectionLaunch, Some("hex_section_launch")),
+        gpui::KeyBinding::new("space", ActivateSectionLaunch, Some("hex_section_launch")),
+    ]);
+}
+
 impl EditorView {
     pub(super) fn toggle_section_autoplay(&mut self) {
         self.section_autoplay = !self.section_autoplay;
@@ -13,11 +21,11 @@ impl EditorView {
             && (self
                 .prepared_seek
                 .as_ref()
-                .is_some_and(|seek| seek.section.is_some())
+                .is_some_and(|seek| seek.kind.section().is_some())
                 || self
                     .latched_seek_intent
                     .as_ref()
-                    .is_some_and(|seek| seek.section.is_some()))
+                    .is_some_and(|seek| seek.kind.section().is_some()))
         {
             self.invalidate_prepared_seek();
         }
@@ -33,6 +41,11 @@ impl EditorView {
         if !self.section_autoplay {
             return;
         }
+        self.launch_arrangement_section_once(id);
+    }
+
+    /// Explicit momentary action, independent of header-click autoplay mode.
+    pub(super) fn launch_arrangement_section_once(&mut self, id: SectionId) {
         let region = (|| {
             let state = self.state.as_ref().ok_or("section source is unavailable")?;
             let section = state
@@ -58,3 +71,7 @@ impl EditorView {
         }
     }
 }
+
+#[path = "section_launch/geometry.rs"]
+mod geometry;
+pub(super) use geometry::{ACTION_LEFT, ACTION_SIZE, ACTION_TOP, action_bounds};

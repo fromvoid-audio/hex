@@ -56,6 +56,12 @@ pub(super) struct BandPass {
     low: Biquad,
 }
 impl BandPass {
+    /// Preserve coefficients, but never duplicate the donor's signal memory.
+    pub(super) fn without_signal_memory(mut self) -> Self {
+        self.high.z = [0.0; 2];
+        self.low.z = [0.0; 2];
+        self
+    }
     pub(super) fn tune(&mut self, frequency: f64, width: f64, rate: u32) {
         let span = 2.0_f64.powf(width * 0.5);
         self.high.tune(frequency / span, rate, true);

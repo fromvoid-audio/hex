@@ -35,7 +35,7 @@ pub(in crate::editor) fn curves(frame: &SpectrumFrame, x: impl Fn(f32) -> f32) -
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     #[test]

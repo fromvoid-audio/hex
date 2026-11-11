@@ -1,4 +1,10 @@
 //! Original zero-lookahead, linked-peak hysteresis gate.
+//!
+//! Shared parameter delivery stages all six controls together. A return above
+//! threshold refuses the frame before coefficients, detector history or PCM
+//! change. Time-control changes retain history and restart only the affected
+//! active attack/release ramp; authored values use the existing gate envelope.
+mod automation;
 
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
@@ -15,6 +21,17 @@ pub const GATE_STATE_VERSION: u32 = 1;
 const STATE_BYTES: usize = 24;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
+/// Shortest internal hold, whatever the hold control says (Pulse #4107).
+///
+/// The detector is the instantaneous linked peak, so a low-frequency tone
+/// dips below the return level around every zero crossing. With no hold the
+/// gate closed there and chattered. Holding at least 5 ms rides through those
+/// dips (a sine at amplitude `a` stays below return `r` for
+/// `2 asin(r / a) / omega`, about 4.75 ms at 40 Hz just above a 5 dB
+/// hysteresis), so the hold control's range below 5 ms acts as 5 ms. Lower
+/// tones, or a return level close to the threshold, can still exceed it.
+/// This is a hex decision, not a measured reference behaviour.
+const MIN_HOLD_MS: f32 = 5.0;
 
 pub mod parameter {
     use hex_lattice_contract::ParameterId;
@@ -106,6 +123,56 @@ struct GateSettings {
     release_ms: f32,
 }
 
+const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
+    hex_lattice_contract::ParameterSemantics {
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+        ..crate::parameter_binding::SCALAR_ENVELOPE
+    };
+const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[0],
+        MODULATED_SCALAR,
+        |c| c.threshold_db,
+        |c, v| c.threshold_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[1],
+        MODULATED_SCALAR,
+        |c| c.return_db,
+        |c, v| c.return_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[2],
+        MODULATED_SCALAR,
+        |c| c.floor_db,
+        |c, v| c.floor_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[3],
+        hex_lattice_contract::ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..MODULATED_SCALAR
+        },
+        |c| c.attack_ms,
+        |c, v| c.attack_ms = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[4],
+        MODULATED_SCALAR,
+        |c| c.hold_ms,
+        |c, v| c.hold_ms = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[5],
+        hex_lattice_contract::ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..MODULATED_SCALAR
+        },
+        |c| c.release_ms,
+        |c, v| c.release_ms = v,
+    ),
+];
+
 impl Default for GateSettings {
     fn default() -> Self {
         Self {
@@ -192,6 +259,17 @@ pub struct GateDefinition;
 
 pub static GATE_DEFINITION: GateDefinition = GateDefinition;
 
+impl GateDefinition {
+    /// Prepare the asset-free inline factory for sealed native ownership.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedGate, DeviceContractError> {
+        PreparedGate::new(state, rate, parameters)
+    }
+}
+
 impl NativeDeviceMetadata for GateDefinition {
     fn type_id(&self) -> DeviceTypeId {
         GATE_TYPE_ID
@@ -220,16 +298,7 @@ impl NativeDeviceMetadata for GateDefinition {
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = decode(state)?;
-        let value = match id {
-            parameter::THRESHOLD => settings.threshold_db,
-            parameter::RETURN => settings.return_db,
-            parameter::FLOOR => settings.floor_db,
-            parameter::ATTACK => settings.attack_ms,
-            parameter::HOLD => settings.hold_ms,
-            parameter::RELEASE => settings.release_ms,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        };
-        Ok(ParameterValue::Float(value))
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&settings))
     }
     fn patch_parameter(
         &self,
@@ -238,28 +307,49 @@ impl NativeDeviceMetadata for GateDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        let ParameterValue::Float(value) = value else {
-            return Err(DeviceContractError::InvalidParameterValue);
-        };
-        match id {
-            parameter::THRESHOLD => settings.threshold_db = value,
-            parameter::RETURN => settings.return_db = value,
-            parameter::FLOOR => settings.floor_db = value,
-            parameter::ATTACK => settings.attack_ms = value,
-            parameter::HOLD => settings.hold_ms = value,
-            parameter::RELEASE => settings.release_ms = value,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        }
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
         encode(settings)
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        Ok(Some(
+            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
+        ))
     }
 }
 
 impl NativeDeviceDefinition for GateDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<PreparedGate>())
+    }
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)
+            .is_ok_and(|b| b.declares_arrangement_automation()))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(PreparedGate::new(state, context.sample_rate, parameters)?),
+            )),
+        })
+    }
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -279,24 +369,11 @@ impl NativeDeviceDefinition for GateDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        let settings = decode(state)?;
-        let attack_frames = checked_frames(settings.attack_ms, sample_rate, false)?;
-        let hold_frames = checked_frames(settings.hold_ms, sample_rate, true)?;
-        let release_frames = checked_frames(settings.release_ms, sample_rate, false)?;
-        Ok(Some(Box::new(PreparedGate {
-            settings,
-            sample_rate,
-            threshold: db_to_gain(settings.threshold_db)?,
-            return_level: db_to_gain(settings.return_db)?,
-            floor_gain: db_to_gain(settings.floor_db)?,
-            attack_frames,
-            hold_frames,
-            release_frames,
-        })))
+        Ok(Some(Box::new(PreparedGate::new(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
 }
 
@@ -307,14 +384,7 @@ fn db_to_gain(db: f32) -> Result<f64, DeviceContractError> {
         .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
-fn checked_frames(
-    milliseconds: f32,
-    sample_rate: u32,
-    allow_zero: bool,
-) -> Result<u32, DeviceContractError> {
-    if allow_zero && milliseconds == 0.0 {
-        return Ok(0);
-    }
+fn checked_frames(milliseconds: f32, sample_rate: u32) -> Result<u32, DeviceContractError> {
     let frames = (f64::from(milliseconds) * f64::from(sample_rate) / 1_000.0).ceil();
     if !frames.is_finite() || frames < 1.0 || frames > f64::from(u32::MAX) {
         return Err(DeviceContractError::InvalidParameterValue);
@@ -322,7 +392,10 @@ fn checked_frames(
     Ok(frames as u32)
 }
 
-struct PreparedGate {
+/// Closed Gate factory with no indirect storage.
+#[derive(Clone, Copy)]
+pub struct PreparedGate {
+    admitted: [bool; 6],
     settings: GateSettings,
     sample_rate: u32,
     threshold: f64,
@@ -334,6 +407,35 @@ struct PreparedGate {
 }
 
 impl PreparedNativeProcessor for PreparedGate {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.supports(id)
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        self.supports(id)
+            .then(|| {
+                crate::parameter_binding::binding(&BINDINGS, id)
+                    .ok()
+                    .map(|b| b.descriptor)
+            })
+            .flatten()
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        crate::parameter_binding::binding(&BINDINGS, id)
+            .ok()
+            .filter(|binding| {
+                self.supports(id)
+                    && binding.semantics.modulation
+                        == hex_lattice_contract::ParameterModulation::SampleRate
+            })
+            .map(|binding| binding.semantics)
+    }
+
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -341,7 +443,9 @@ impl PreparedNativeProcessor for PreparedGate {
         std::mem::size_of::<GateRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(GateRuntime {
+        let runtime = GateRuntime {
+            base: *self,
+            controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             settings: self.settings,
             sample_rate: self.sample_rate,
             threshold: self.threshold,
@@ -356,7 +460,9 @@ impl PreparedNativeProcessor for PreparedGate {
             ramp_target: self.floor_gain,
             ramp_step: 0.0,
             ramp_remaining: 0,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -376,7 +482,10 @@ struct GateHistory {
     ramp_remaining: u32,
 }
 
-struct GateRuntime {
+/// Exact inline runtime recognized by the sealed constructor's storage ledger.
+pub struct GateRuntime {
+    base: PreparedGate,
+    controls: crate::parameter_binding::Controls<GateSettings, 6>,
     settings: GateSettings,
     sample_rate: u32,
     threshold: f64,
@@ -466,18 +575,13 @@ impl GateRuntime {
             }
         } else if self.open {
             if peak <= self.return_level {
-                if self.hold_frames == 0 {
+                // `hold_frames` is at least `MIN_HOLD_MS`, never zero.
+                if self.hold_elapsed < self.hold_frames {
+                    self.hold_elapsed += 1;
+                } else {
                     self.open = false;
                     self.hold_elapsed = 0;
                     self.start_ramp(self.floor_gain, self.release_frames);
-                } else {
-                    if self.hold_elapsed < self.hold_frames {
-                        self.hold_elapsed += 1;
-                    } else {
-                        self.open = false;
-                        self.hold_elapsed = 0;
-                        self.start_ramp(self.floor_gain, self.release_frames);
-                    }
                 }
             } else {
                 self.hold_elapsed = 0;
@@ -490,6 +594,31 @@ impl GateRuntime {
 }
 
 impl NativeProcessorRuntime for GateRuntime {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.base.supports(id)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, true)
+    }
+    fn supports_detached_source_rejoin(&self) -> bool {
+        true
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -511,6 +640,14 @@ impl NativeProcessorRuntime for GateRuntime {
         }
     }
     fn reset(&mut self) {
+        self.controls.reset();
+        self.settings = self.base.settings;
+        self.threshold = self.base.threshold;
+        self.return_level = self.base.return_level;
+        self.floor_gain = self.base.floor_gain;
+        self.attack_frames = self.base.attack_frames;
+        self.hold_frames = self.base.hold_frames;
+        self.release_frames = self.base.release_frames;
         self.reset_history();
     }
     fn is_quiescent(&self) -> bool {
@@ -530,20 +667,21 @@ impl NativeProcessorRuntime for GateRuntime {
         else {
             return;
         };
-        let old_settings = previous.settings;
         self.set_history(previous.history());
-        if self.settings == old_settings {
-            return;
-        }
-        let attack_changed = self.settings.attack_ms != old_settings.attack_ms;
-        let release_changed = self.settings.release_ms != old_settings.release_ms;
-        let floor_changed = self.settings.floor_db != old_settings.floor_db;
-        if self.open && attack_changed && self.ramp_remaining > 0 && self.ramp_target == 1.0 {
-            self.start_ramp(1.0, self.attack_frames);
-        } else if !self.open && (floor_changed || (release_changed && self.ramp_remaining > 0)) {
-            self.start_ramp(self.floor_gain, self.release_frames);
+        if self.base.admitted.iter().any(|&v| v) && previous.base.admitted.iter().any(|&v| v) {
+            self.controls.inherit(&previous.controls);
+            self.settings = previous.settings;
+            self.threshold = previous.threshold;
+            self.return_level = previous.return_level;
+            self.floor_gain = previous.floor_gain;
+            self.attack_frames = previous.attack_frames;
+            self.hold_frames = previous.hold_frames;
+            self.release_frames = previous.release_frames;
+        } else {
+            self.retarget_envelope(previous.settings);
         }
     }
+
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()

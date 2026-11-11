@@ -1,23 +1,42 @@
 //! One nonwaiting controller query through the original serialized reader.
 //! SDK getters run on the helper main lane while ordinary processing continues.
 use super::*;
-use protocol::{ParameterPageProgress, ParameterPageQuery};
+use protocol::{ControllerRequest, ParameterPageProgress, ParameterPageQuery};
+
+mod automation;
+pub use automation::{AuthoredParameterExtensionProgress, AuthoredParameterMetadata};
 
 #[derive(Clone, Copy)]
 pub(super) struct PendingPage {
     operation: u64,
-    query: ParameterPageQuery,
+    query: ControllerRequest,
     until: Instant,
+    authored: Option<automation::AuthoredTarget>,
 }
 impl Prepared {
     /// Admit one bounded metadata page or read-only SDK conversion. This exchange returns
     /// pending without waiting for a controller getter. A second begin refuses
     /// without disturbing the first query; rows never identify edit targets.
     pub fn begin_parameter_page_on_worker(&mut self, query: ParameterPageQuery) -> Result<()> {
+        self.begin_controller_request_on_worker(query.into())
+    }
+    /// Includes the editor toggle on the same one-request lane and source.
+    pub fn begin_controller_request_on_worker(&mut self, query: ControllerRequest) -> Result<()> {
+        self.begin_controller_request_until(query, end_after(self.limits.startup)?)
+    }
+
+    fn begin_controller_request_until(
+        &mut self,
+        query: ControllerRequest,
+        until: Instant,
+    ) -> Result<()> {
         query.validate()?;
         self.require_live_epoch()?;
         if self.parameter_page.is_some() {
             return Err(Error::Protocol("controller page is still pending"));
+        }
+        if Instant::now() >= until {
+            return Err(Error::Timeout);
         }
         let operation = self
             .parameter_page_sequence
@@ -26,7 +45,8 @@ impl Prepared {
         let pending = PendingPage {
             operation,
             query,
-            until: end_after(self.limits.startup)?,
+            until,
+            authored: None,
         };
         match self.parameter_page_exchange(pending, false) {
             Ok(ParameterPageProgress::Pending) => {
@@ -44,6 +64,16 @@ impl Prepared {
     /// processor fault. A completed page owns bounded copied data only and
     /// grants no canonical edit, SDK object, source custody or publication.
     pub fn poll_parameter_page_on_worker(&mut self) -> Result<ParameterPageProgress> {
+        if self
+            .parameter_page
+            .is_some_and(|page| page.authored.is_some())
+        {
+            return Err(Error::Protocol("authored parameter extension is pending"));
+        }
+        self.poll_parameter_page()
+    }
+
+    fn poll_parameter_page(&mut self) -> Result<ParameterPageProgress> {
         self.require_live_epoch()?;
         let pending = self
             .parameter_page
@@ -98,7 +128,7 @@ impl Prepared {
                 self.config.binding,
             )?));
         }
-        if self.packet.magic() != b"HXVIMD01" {
+        if self.packet.magic() != b"HXVIMD03" {
             return Err(Error::Protocol("missing controller page acknowledgement"));
         }
         let result = protocol::parameter_page(

@@ -101,7 +101,7 @@ fn saved_tempo_and_fragmentary_meter_edits_preserve_frame_audio_through_history(
     );
     assert_eq!(editor.project().tracks()[0].clips(), clips);
     assert_eq!(fixture.render(editor.project(), "mapped"), baseline);
-    assert!(editor.undo());
+    assert!(editor.try_undo().unwrap());
     assert_eq!(
         editor
             .project()
@@ -111,6 +111,6 @@ fn saved_tempo_and_fragmentary_meter_edits_preserve_frame_audio_through_history(
         112_000
     );
     assert_eq!(fixture.render(editor.project(), "undo"), baseline);
-    assert!(editor.redo());
+    assert!(editor.try_redo().unwrap());
     assert_eq!(fixture.render(editor.project(), "redo"), baseline);
 }

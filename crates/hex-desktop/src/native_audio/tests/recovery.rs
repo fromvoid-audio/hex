@@ -50,6 +50,7 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         };
         assert_eq!(project_generation, source.context().project_generation);
         assert_eq!(restart_request, Some(17));
+        let error = error.to_string();
         assert_eq!(error, error.to_lowercase());
         assert!(error.contains("save your project and restart hex"));
         assert!(!sink.open_pending);
@@ -57,6 +58,25 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         sink.poll();
         assert!(receiver.try_recv().is_err());
         assert_eq!(attempts.load(Acquire), 1); // no retry or new output
+        // #4132: a later manual restart cannot clear a latched failure; it is
+        // refused with the same recovery path and never opens an output.
+        sink.request_open(Some(48000), Some(18));
+        sink.poll();
+        let EditorAudioEvent::Unavailable {
+            restart_request,
+            error,
+            ..
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected the latched failure again");
+        };
+        assert_eq!(restart_request, Some(18));
+        assert!(
+            error
+                .to_string()
+                .contains("save your project and restart hex")
+        );
+        assert_eq!(attempts.load(Acquire), 1);
         assert!(Arc::ptr_eq(sink.desired.as_ref().unwrap(), &source));
     }
 }
@@ -121,7 +141,11 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
     };
     assert_eq!(project_generation, current.context().project_generation);
     assert_eq!(restart_request, None);
-    assert!(error.starts_with("audio resource cleanup failed"));
+    assert!(
+        error
+            .to_string()
+            .starts_with("audio resource cleanup failed")
+    );
     assert!(Arc::ptr_eq(sink.desired.as_ref().unwrap(), &current));
     assert!(receiver.try_recv().is_err());
 }
@@ -177,6 +201,62 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
     ));
     assert!(!sink.open_pending);
     drop(audio);
+    drop(backend);
+    sink.close();
+}
+
+#[test]
+fn restart_on_a_device_at_another_rate_reports_a_typed_recoverable_mismatch() {
+    let service = Service::new(48_000, 16, 0).unwrap();
+    let source = next_source(&service);
+    let (events, receiver) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    // The fake factory's device negotiates 44.1 kHz for a 48 kHz project.
+    let (output, backend) = loop {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(44_100) {
+            Ok(opened) => break opened,
+            Err(error) if error == "audio output is open or still shutting down" => {
+                assert!(
+                    Instant::now() < deadline,
+                    "prior fixture output did not retire"
+                );
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let mut output = Some(output);
+    sink.output_factory = Some(Box::new(move |_| Ok(output.take())));
+    sink.lifecycle_status = Some(|| None);
+    sink.canonical_changed(source.clone());
+    let generation = source.context().project_generation;
+    WorkerAudioSink::restart_audio(&mut sink, generation, 9).unwrap();
+    sink.poll_open();
+    assert!(!sink.open_pending);
+    assert!(
+        sink.output.is_none(),
+        "a mismatched output is never exposed"
+    );
+    sink.deliver_open();
+    sink.flush_events();
+    let EditorAudioEvent::Unavailable {
+        project_generation,
+        restart_request,
+        error,
+    } = receiver.try_recv().unwrap()
+    else {
+        panic!("expected the typed rate mismatch");
+    };
+    assert_eq!(project_generation, generation);
+    assert_eq!(restart_request, Some(9));
+    assert_eq!(
+        error,
+        hex_audio::OutputOpenError::RateMismatch(hex_audio::RateMismatch {
+            device_hz: 44_100,
+            project_hz: 48_000,
+        })
+    );
     drop(backend);
     sink.close();
 }
