@@ -2968,9 +2968,23 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
         })
         .unwrap();
     editor.update(&mut visual, |view, cx| {
-        let state = Arc::make_mut(view.state.as_mut().unwrap());
-        state.project = Arc::new(model.project().clone());
-        state.revision += 1;
+        let before = view.state.as_ref().unwrap();
+        view.state = Some(Arc::new(super::ViewState {
+            canonical_audio_source: None,
+            comparison_audio: None,
+            project: Arc::new(model.project().clone()),
+            waveforms: Default::default(),
+            source_overviews: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: Arc::clone(&before.midi_preview),
+            gain_preview: before.gain_preview.clone(),
+            timeline_frames: before.timeline_frames,
+            can_undo: true,
+            can_redo: false,
+            revision: before.revision + 1,
+            unsaved: true,
+            document_path: None,
+        }));
         cx.notify();
     });
     visual.run_until_parked();
