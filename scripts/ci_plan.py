@@ -229,6 +229,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/device_panel/utility_panel.rs": ("editor::device_panel::utility_panel::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
+    "src/editor/controller_input.rs": ("editor::controller_input::tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/section_surface/focus.rs": ("section_surface::focus::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
