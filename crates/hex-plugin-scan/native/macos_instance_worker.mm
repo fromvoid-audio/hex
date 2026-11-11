@@ -682,11 +682,12 @@ int main(int argc,char** argv) {
                                     text(info.title);text(info.shortTitle);text(info.units);
                                     wire::number(body,(value.formatted?1:0)|(value.default_formatted?2:0),1);
                                     text(value.display);text(value.default_display);
+                                    wire::number(body,value.editor_sequence,8);
                                 }
                                 for(const auto byte:parameter_page.descriptor_signature) wire::number(body,byte,1);
                             }
                         } else wire::number(body,0,1);
-                        if(!wire::send(channel,"HXVIMD02",body)) return false;
+                        if(!wire::send(channel,"HXVIMD03",body)) return false;
                         if(complete) page_stage.store(PageIdle,std::memory_order_release);
                         return true;
                     };

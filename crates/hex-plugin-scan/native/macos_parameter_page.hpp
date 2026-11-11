@@ -36,6 +36,7 @@ struct ControllerConversion {
 };
 struct ControllerParameter {
     ParameterInfo info{};
+    uint64 editor_sequence=0;
     ParamValue normalized=0;
     double plain=0,default_plain=0;
     String128 display{},default_display{};
@@ -137,6 +138,8 @@ inline bool controller_page(IEditController* controller,const ParameterSnapshot*
     for(size_t index=first;index<result.total && result.count<result.parameters.size();++index) {
         auto& parameter=result.parameters[result.count];
         parameter.info=snapshot->parameters[index].info;
+        // Same main-lane observation as the value and its formatted text.
+        parameter.editor_sequence=snapshot->parameters[index].editor_sequence;
         if(!controller_text(parameter.info.title) || !controller_text(parameter.info.shortTitle) ||
             !controller_text(parameter.info.units)) return false;
         const auto id=parameter.info.id;

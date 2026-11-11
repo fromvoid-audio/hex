@@ -1226,6 +1226,7 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
         automation_class: Some([2; 16]),
         page_first: 0,
         metadata_revision: 1,
+        editor_sequence: 0,
     };
     let (generation, revision) = editor.update(&mut visual, |view, cx| {
         let state = view.state.as_ref().unwrap();
@@ -1928,6 +1929,7 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
         automation_class: Some([2; 16]),
         page_first: 0,
         metadata_revision: 1,
+        editor_sequence: 0,
     };
     editor.update(&mut visual, |view, _| {
         view.selected_track = Some(track);

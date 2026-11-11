@@ -26,6 +26,8 @@ pub struct PluginParameterRow {
     pub automation_class: Option<[u8; 16]>,
     pub page_first: u16,
     pub metadata_revision: u64,
+    /// Same-source native gesture watermark for value presentation only.
+    pub editor_sequence: u64,
 }
 
 pub struct PluginParameterResult {

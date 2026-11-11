@@ -128,7 +128,7 @@ impl Prepared {
                 self.config.binding,
             )?));
         }
-        if self.packet.magic() != b"HXVIMD02" {
+        if self.packet.magic() != b"HXVIMD03" {
             return Err(Error::Protocol("missing controller page acknowledgement"));
         }
         let result = protocol::parameter_page(
