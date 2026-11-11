@@ -138,7 +138,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};

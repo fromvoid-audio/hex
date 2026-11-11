@@ -453,6 +453,18 @@ int main(int argc,char** argv) {
                         const auto index=last_editor_edit(id);
                         return index<applying_edit_count?applying_edits[index].sequence:0;
                     };
+                    // An output-only observation can echo a preceding quantum.
+                    // Keep the sequence of the last input for each parameter
+                    // until a later input replaces it. Inventory refreshes
+                    // preserve the sorted ID set, including across epochs.
+                    std::array<uint64,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
+                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input) -> std::optional<uint64> {
+                        const auto* info=processing_parameters.find(id);
+                        if(!info) return std::nullopt;
+                        auto& sequence=feedback_sequences[info-processing_parameters.parameters.data()];
+                        if(input) sequence=*input;
+                        return sequence;
+                    };
                     const auto conflicts_with_prior_cohort=[&](const hex_instance::EditEvent& event) {
                         const auto index=last_editor_edit(event.id);
                         return index<applying_edit_count && applying_edits[index].cohort!=event.cohort;
@@ -550,6 +562,20 @@ int main(int argc,char** argv) {
                         }
                         return !remaining_group;
                     };
+                    const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback) {
+                        // All offsets are zero. Processor output wins over its
+                        // corresponding input without losing that input's origin.
+                        for(const auto* changes : {&parameter_input,&parameter_output}) {
+                            for(size_t n=0;n<changes->size();++n) {
+                                hex_instance::ParameterPoint point{};
+                                if(!changes->point(n,point)) return false;
+                                const auto sequence=feedback_sequence(point.id,changes==&parameter_input?
+                                    std::optional<uint64>{staged_editor_sequence(point.id)}:std::nullopt);
+                                if(!sequence || !feedback.put(point.id,point.normalized,*sequence)) return false;
+                            }
+                        }
+                        return true;
+                    };
                     const auto flush_idle_editor=[&] {
                         // Leave a full receipt batch for its reader to consume.
                         // The next poll can apply another fixed-size batch.
@@ -567,15 +593,7 @@ int main(int argc,char** argv) {
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             if(!input_returned || !output_returned) {error(channel,&*config,Processing);std::_Exit(Processing);}
                             if(result!=hex_instance::FlushResult::Applied) return false;
-                            // All offsets are zero. Mirror the processor's
-                            // returned value over the input value for each ID.
-                            for(const auto* changes : {&parameter_input,&parameter_output}) {
-                                for(size_t n=0;n<changes->size();++n) {
-                                    hex_instance::ParameterPoint point{};
-                                    if(!changes->point(n,point) || !processing_parameters.find(point.id)) return false;
-                                    if(!parameter_feedback.put(point.id,point.normalized,staged_editor_sequence(point.id))) return false;
-                                }
-                            }
+                            if(!mirror_flushed_parameters(parameter_feedback)) return false;
                             instance.publish_parameter_feedback(parameter_feedback);
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
@@ -603,15 +621,7 @@ int main(int argc,char** argv) {
                         if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) return Processing;
                         flushed_values={};
-                        for(size_t n=0;n<parameter_input.size();++n) {
-                            hex_instance::ParameterPoint point{};
-                            valid=parameter_input.point(n,point) && flushed_values.put(point.id,point.normalized,staged_editor_sequence(point.id)) && valid;
-                        }
-                        for(size_t n=0;n<parameter_output.size();++n) {
-                            hex_instance::ParameterPoint point{};
-                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) || !flushed_values.put(point.id,point.normalized,staged_editor_sequence(point.id))) valid=false;
-                        }
-                        if(!valid) return ProtocolFailure;
+                        if(!mirror_flushed_parameters(flushed_values)) return ProtocolFailure;
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         {
                             std::unique_lock<std::mutex> lock(startup_mutex);
@@ -722,8 +732,9 @@ int main(int argc,char** argv) {
                         if(!processed || !parameters_returned || !notes_returned) return false;
                         for(size_t index=0;index<parameter_output.size();++index) {
                             hex_instance::ParameterPoint point{};
-                            if(!parameter_output.point(index,point) || !processing_parameters.find(point.id) ||
-                                !parameter_feedback.put(point.id,point.normalized)) return false;
+                            if(!parameter_output.point(index,point)) return false;
+                            const auto sequence=feedback_sequence(point.id,std::nullopt);
+                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) return false;
                         }
                         return true;
                     };
@@ -947,7 +958,6 @@ int main(int argc,char** argv) {
                         // copied exchange and its reply remain one quantum.
                         packet.reply_parameter_count=0;
                         size_t next_note=0,next_parameter=0;
-                        std::array<bool,hex_instance::HOST_EDIT_COUNT> editor_value_replaced{};
                         for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
                             const size_t first=slice?packet.timing_changes[slice-1].offset:0;
                             const size_t end=slice<packet.timing_change_count?packet.timing_changes[slice].offset:packet.frames;
@@ -1013,16 +1023,12 @@ int main(int argc,char** argv) {
                                     (outgoing==parameter_output.size() || input_point.offset<=output_point.offset);
                                 const auto point=use_input?input_point:output_point;
                                 if(use_input) ++incoming;else ++outgoing;
-                                const auto edit=last_editor_edit(point.id);
-                                uint64 editor_sequence=0;
-                                if(edit<applying_edit_count) {
-                                    // Editor input is staged at quantum offset zero. A later
-                                    // authored point takes ownership, including across slices.
-                                    if(use_input && (first || point.offset)) editor_value_replaced[edit]=true;
-                                    if(!editor_value_replaced[edit]) editor_sequence=applying_edits[edit].sequence;
-                                }
-                                if(!processing_parameters.find(point.id) ||
-                                    !parameter_feedback.put(point.id,point.normalized,editor_sequence)) valid=false;
+                                // Native edits enter at quantum offset zero.
+                                // A later authored input replaces the sequence.
+                                std::optional<uint64> input_sequence;
+                                if(use_input) input_sequence=first || point.offset?0:staged_editor_sequence(point.id);
+                                const auto sequence=feedback_sequence(point.id,input_sequence);
+                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;

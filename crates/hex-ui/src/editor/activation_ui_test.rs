@@ -85,8 +85,27 @@ fn activation_c_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut Tes
         );
     });
     for (key, expected) in [("c", false), ("0", true)] {
+        let headers = [audio, midi].map(|clip| {
+            let selector: &'static str =
+                Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+            (selector, visual.rendered_background(selector).unwrap())
+        });
         visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.clip_active(audio), Some(!expected));
+            assert_eq!(p.clip_active(midi), Some(!expected));
+        });
+        let pending = headers.map(|(selector, before)| {
+            let after = visual.rendered_background(selector).unwrap();
+            assert_ne!(after, before);
+            (selector, after)
+        });
         pump(&editor, &mut visual);
+        for (selector, background) in pending {
+            assert_eq!(visual.rendered_background(selector), Some(background));
+        }
         editor.read_with(&visual, |v, _| {
             assert!(!v.automation_view.enabled);
             let p = &v.state.as_ref().unwrap().project;

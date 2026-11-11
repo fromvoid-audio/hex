@@ -1608,13 +1608,23 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
                 if !view.arm_drag_bounce() {
-                    view.bounce_arrangement_selection(window, false);
+                    view.bounce_arrangement_selection(window, false, false);
                 }
                 cx.notify();
             }))
             .on_action(
                 cx.trace(|view, _: &super::BounceAndMuteSources, window, cx| {
-                    view.bounce_arrangement_selection(window, true);
+                    view.bounce_arrangement_selection(window, true, false);
+                    cx.notify();
+                }),
+            )
+            .on_action(cx.trace(|view, _: &super::BounceMixedRange, window, cx| {
+                view.bounce_arrangement_selection(window, false, true);
+                cx.notify();
+            }))
+            .on_action(
+                cx.trace(|view, _: &super::BounceMixedRangeAndMute, window, cx| {
+                    view.bounce_arrangement_selection(window, true, true);
                     cx.notify();
                 }),
             )

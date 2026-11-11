@@ -68,6 +68,7 @@ pub(super) fn retire_failed_finalize_barriers(
     while let Some(request) = deferred.pop_front() {
         match request {
             Request::SaveNew(_)
+            | Request::SaveProjectAs { .. }
             | Request::SaveCurrent
             | Request::SaveCurrentWithFormatUpgrade { .. } => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,

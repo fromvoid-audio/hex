@@ -11,6 +11,9 @@ use hex_session::service::Request;
 use std::time::{Duration, Instant};
 
 const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
+const LOCK_PULSE_PERIOD_MS: u128 = 2_400;
+// A slow marker pulse needs at most 20 repaints per second.
+const LOCK_PULSE_STEP_MS: u128 = 50;
 const POINT_CLICK_SLOP_PX: f64 = 2.0;
 
 #[derive(Clone, Copy)]
@@ -69,6 +72,19 @@ impl EditCursor {
     pub(super) fn color(&self) -> u32 {
         self.pulse_color
     }
+
+    fn pulse_locked_marker(&mut self, now: Instant) -> bool {
+        let elapsed = now
+            .saturating_duration_since(self.pulse_started)
+            .as_millis();
+        let step = (elapsed % LOCK_PULSE_PERIOD_MS) / LOCK_PULSE_STEP_MS;
+        let phase = (step * LOCK_PULSE_STEP_MS) as f32 / LOCK_PULSE_PERIOD_MS as f32;
+        let blend = (1.0 - (phase * std::f32::consts::TAU).cos()) * 0.5;
+        let color = theme::locked_time_position_marker_color(blend);
+        let changed = self.pulse_color != color;
+        self.pulse_color = color;
+        changed
+    }
 }
 
 impl EditorView {
@@ -89,8 +105,12 @@ impl EditorView {
     }
 
     pub(super) fn update_locked_play_start_from_point(&mut self) {
-        if self.locked_play_start.is_some() {
-            self.locked_play_start = self.edit_cursor;
+        if let Some(locked) = self.locked_play_start {
+            self.locked_play_start = self.edit_cursor.map(|point| EditCursor {
+                pulse_color: locked.pulse_color,
+                pulse_started: locked.pulse_started,
+                ..point
+            });
         }
     }
 
@@ -132,9 +152,23 @@ impl EditorView {
         if self.valid_locked_play_start().is_some() {
             self.locked_play_start = None;
         } else if self.normalized_time_selection().is_none() {
-            self.locked_play_start = self
-                .edit_cursor
-                .filter(|cursor| self.cursor_is_current(*cursor));
+            // A clip's triangle locks its transport frame independently of
+            // the retained point cursor, without creating a clip edit target.
+            let point = self
+                .selected_clip
+                .and_then(|_| self.selected_arrangement_play_start())
+                .map(|_| {
+                    EditCursor::new(None, self.playback_start_frame(), self.project_generation)
+                })
+                .or_else(|| {
+                    self.edit_cursor
+                        .filter(|cursor| self.cursor_is_current(*cursor))
+                });
+            self.locked_play_start = point.map(|point| EditCursor {
+                pulse_color: theme::locked_time_position_marker_color(0.0),
+                pulse_started: Instant::now(),
+                ..point
+            });
         }
         cx.notify();
     }
@@ -353,6 +387,14 @@ impl EditorView {
         {
             return self.cancel_time_selection_gesture();
         }
+        // The locked triangles can outlive the point cursor or coexist with
+        // range endpoints. Update them together from one elapsed-time phase.
+        let lock_changed = self.mode == EditorMode::Arrangement
+            && !self.play_start_at_beginning
+            && self
+                .locked_play_start
+                .as_mut()
+                .is_some_and(|locked| locked.pulse_locked_marker(now));
         if self.time_selection_project_scope {
             let first_last = self.state.as_ref().and_then(|state| {
                 Some((
@@ -378,7 +420,7 @@ impl EditorView {
             }
         }
         let Some(cursor) = &mut self.edit_cursor else {
-            return self.cancel_time_selection_gesture();
+            return self.cancel_time_selection_gesture() || lock_changed;
         };
         if self
             .state
@@ -408,18 +450,19 @@ impl EditorView {
             .time_selection
             .is_some_and(|selection| selection.anchor_frame != selection.end_frame)
         {
-            return false;
+            return lock_changed;
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
         // A point cursor hidden behind a rectangle play start needs no pulse either.
-        self.mode == EditorMode::Arrangement
+        let point_changed = self.mode == EditorMode::Arrangement
             && !self.play_start_at_beginning
             && self.selected_arrangement_play_start().is_none()
             && self
                 .edit_cursor
                 .as_mut()
-                .is_some_and(|cursor| cursor.pulse(now))
+                .is_some_and(|cursor| cursor.pulse(now));
+        lock_changed || point_changed
     }
 
     /// Paint the same live range bounds above the loop rail and at the bottom
@@ -438,10 +481,18 @@ impl EditorView {
             .filter(|cursor| cursor.generation == self.project_generation);
         let cursor = cursor.or(locked);
         let reset = self.play_start_at_beginning && guide.is_none();
+        let selection_start =
+            if reset || guide.is_some() || (cursor.is_none() && self.selected_clip.is_none()) {
+                None
+            } else {
+                self.selected_arrangement_play_start()
+            };
+        let clip_start = selection_start.filter(|_| self.selected_clip.is_some());
         let cursor_frame = cursor
             .map(|cursor| cursor.frame)
             .or(guide)
-            .or(reset.then_some(0))?;
+            .or(reset.then_some(0))
+            .or(clip_start)?;
         let (start, end) = self
             .time_selection
             .map_or((cursor_frame, cursor_frame), |selection| {
@@ -454,12 +505,7 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
-        if !reset
-            && guide.is_none()
-            && locked.is_none()
-            && start == end
-            && self.selected_arrangement_play_start().is_some()
-        {
+        if locked.is_none() && start == end && selection_start.is_some() && clip_start.is_none() {
             return None;
         }
         let mut markers = Vec::new();
@@ -494,11 +540,15 @@ impl EditorView {
         {
             markers.push(marker.into_any_element());
         }
-        let point = locked.or_else(|| {
-            (guide.is_none() && start == end && self.selected_arrangement_play_start().is_none())
-                .then_some(cursor)
-                .flatten()
-        });
+        let point_frame = if let Some(locked) = locked {
+            Some(locked.frame)
+        } else if guide.is_some() || start != end {
+            None
+        } else if selection_start.is_some() {
+            clip_start.map(|_| self.playback_start_frame())
+        } else {
+            cursor.map(|cursor| cursor.frame)
+        };
         if reset
             && let Some(marker) = viewport.fraction(0).and_then(|position| {
                 time_position_marker(
@@ -513,8 +563,8 @@ impl EditorView {
             markers.push(marker.into_any_element());
         }
         if !reset
-            && let Some(point) = point
-            && let Some(marker) = viewport.fraction(point.frame).and_then(|position| {
+            && let Some(frame) = point_frame
+            && let Some(marker) = viewport.fraction(frame).and_then(|position| {
                 time_position_marker(
                     if locked.is_some() {
                         format!("locked-play-start-{edge_name}").into()
@@ -524,11 +574,7 @@ impl EditorView {
                     position,
                     Endpoint::Point,
                     edge,
-                    if locked.is_some() {
-                        theme::locked_time_position_marker_color()
-                    } else {
-                        theme::time_position_marker_color()
-                    },
+                    locked.map_or_else(theme::time_position_marker_color, |point| point.color()),
                 )
             })
         {
@@ -559,7 +605,7 @@ impl EditorView {
             && start == end
             && let (Some(locked), Some(cursor)) = (locked, cursor)
             && cursor.frame != locked.frame
-            && self.selected_arrangement_play_start().is_none()
+            && selection_start.is_none()
             && let Some(marker) = viewport.fraction(cursor.frame).and_then(|position| {
                 time_position_marker(
                     format!("time-marker-{edge_name}-start").into(),

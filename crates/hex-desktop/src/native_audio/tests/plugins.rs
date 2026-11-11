@@ -4,6 +4,7 @@ mod editor_recording;
 mod first_effect_take;
 mod installed_edits;
 mod instruments;
+mod offline_bounce;
 mod performance_profile;
 mod state;
 mod ui;
@@ -1515,7 +1516,8 @@ fn installed_vst3_effect_inserts_and_renders_in_desktop_audio_graph() {
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(rate, 8192)));
     let (applied, _) = h.applied(applied);
-    let mut insertion = request(&imported.state, PluginEffectDestination::Main);
+    let track = imported.state.project.tracks()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
     insertion.selection =
         installed_selection(&catalog, &bundle, hex_plugin_catalog::PluginRole::Effect);
     h.service
@@ -1524,7 +1526,11 @@ fn installed_vst3_effect_inserts_and_renders_in_desktop_audio_graph() {
     let accepted = terminal(&mut h);
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
     assert!(accepted.plugin_effect_complete[0].accepted);
-    let device = &accepted.state.project.main_devices()[0];
+    let target = &accepted.state.project.tracks()[0];
+    assert_eq!(target.id(), track);
+    assert!(accepted.state.project.main_devices().is_empty());
+    assert_eq!(target.devices().len(), 1);
+    let device = &target.devices()[0];
     let state = hex_plugin_state::decode(device.state()).unwrap();
     assert!(state.component.is_some());
     h.applied(applied);

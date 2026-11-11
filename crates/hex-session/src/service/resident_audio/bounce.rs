@@ -172,10 +172,7 @@ pub(in crate::service) fn bounce_arrangement(
                 restoring_plugin_state: false,
                 preparing_edit: false,
             };
-            if in_place && offline_input.requires_plugin_profile() {
-                return Err("vst3 instrument bounce requires new tracks".into());
-            }
-            let offline = sink.prepare_offline_bounce(offline_input)?;
+            let offline = sink.prepare_offline_bounce(offline_input, control)?;
             let mut isolated = inputs
                 .prepare_with_gain(
                     project,
@@ -226,30 +223,7 @@ pub(in crate::service) fn bounce_arrangement(
             .files;
             Ok((isolated, files, offline))
         },
-        |path, (isolated, files, offline), item, tails, control| {
-            if let Some(mut offline) = offline {
-                if isolated
-                    .prepared
-                    .arrangement_stream_sources()
-                    .next()
-                    .is_some()
-                {
-                    return Err("vst3 bounce with streamed audio sources is unavailable".into());
-                }
-                return hex_export::render_arrangement_bounce_with_foreign(
-                    path,
-                    isolated.prepared,
-                    Some(&isolated.resources),
-                    item.start,
-                    item.end - item.start,
-                    tails,
-                    control,
-                    None,
-                    offline.as_mut(),
-                )
-                .map(|report| report.frames)
-                .map_err(|e| e.to_string());
-            }
+        |path, (isolated, files, mut offline), item, tails, control| {
             crate::arrangement_bounce::streamed::render(
                 path,
                 crate::arrangement_bounce::streamed::BounceRevision {
@@ -262,6 +236,9 @@ pub(in crate::service) fn bounce_arrangement(
                 tails,
                 control,
                 streamed,
+                offline
+                    .as_deref_mut()
+                    .map(|source| source as &mut dyn hex_export::ForeignBounceRenderer),
             )
         },
         |session, prepared, files| {

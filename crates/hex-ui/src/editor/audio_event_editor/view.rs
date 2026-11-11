@@ -433,13 +433,18 @@ pub(in crate::editor) fn view(
                     .left(px(7.0))
                     .right(px(7.0))
                     .h(px(4.0))
-                    .cursor(gpui::CursorStyle::ResizeUpDown)
-                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+                    .when(view.option_held, |style| {
+                        style
+                            .cursor(gpui::CursorStyle::ResizeUpDown)
+                            .hover(|style| {
+                                style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            })
+                    })
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control("event gain"),
                             name: format!(
-                                "gain {:+.1} db · drag down to reduce · shift for fine",
+                                "gain {:+.1} db · option-drag · shift for fine",
                                 f64::from(gain) / 1000.0
                             ),
                         })
@@ -723,7 +728,8 @@ pub(in crate::editor) fn view(
                     && (offset - x(hit.end)).abs() <= 6.0
                 {
                     Kind::Trailing(hit)
-                } else if !view.audio_event_editor.fade_key_held
+                } else if event.modifiers.alt
+                    && !view.audio_event_editor.fade_key_held
                     && (EVENT_RULER_HEIGHT..EVENT_RULER_HEIGHT + 5.0).contains(&local_y)
                 {
                     let target = if let Some((path, id)) = view

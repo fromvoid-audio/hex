@@ -100,6 +100,8 @@ mod plugin_effect;
 mod plugin_parameters;
 mod plugin_recording;
 mod plugin_state_save;
+mod project_save;
+pub use project_save::sample_take_root;
 mod recording_barrier;
 pub use plugin_parameters::{
     PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
@@ -863,6 +865,8 @@ pub enum Request {
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
         options: crate::import_batch::AudioImportOptions,
+        /// A single browser Enter import captured while Arrangement is playing.
+        audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
     },
     ImportToTrack {
         path: PathBuf,
@@ -949,6 +953,11 @@ pub enum Request {
     Undo,
     Redo,
     SaveNew(PathBuf),
+    /// Desktop Save As with project-folder placement and managed samples.
+    SaveProjectAs {
+        path: PathBuf,
+        replace_existing: bool,
+    },
     SaveCurrent,
     /// Explicit user consent to lose older-reader compatibility through a schema
     /// upgrade or document growth. Bound to the selected document and project
@@ -1082,6 +1091,7 @@ impl Request {
                 | Request::LoadFirstSampler { .. }
                 | Request::Redo
                 | Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
@@ -1112,9 +1122,34 @@ impl Request {
                 context,
                 control: Arc::clone(&control),
                 options: Default::default(),
+                audition_timing: None,
             },
             control,
         ))
+    }
+
+    /// Preserve the captured authored frame while monitoring the imported
+    /// source from its beginning on the applied output's clock.
+    pub fn browser_audio_batch(
+        path: PathBuf,
+        track: hex_project::TrackId,
+        start: u64,
+        context: AudioBatchContext,
+        audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
+    ) -> Result<(Self, Arc<AudioBatchControl>), String> {
+        let (mut request, control) = Self::audio_batch(
+            vec![path],
+            AudioBatchDestination::Track { track, start },
+            context,
+        )?;
+        if let Self::ImportAudioBatch {
+            audition_timing: captured,
+            ..
+        } = &mut request
+        {
+            *captured = audition_timing;
+        }
+        Ok((request, control))
     }
 
     pub fn is_project_open(&self) -> bool {
@@ -1743,6 +1778,7 @@ impl Service {
         if !matches!(
             request,
             Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) || correlation.request_id == 0
@@ -2103,35 +2139,39 @@ fn save_document_as(
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let outcome = hex_storage::save_new_with_outcome(&path, project).map_err(lower)?;
-            let commit = match outcome.warning {
-                Some(warning) => SaveCurrentCommit {
-                    dirty: true,
-                    status: "project was published, but durability could not be confirmed".into(),
-                    error: Some(format!(
-                        "complete project was published at {}, but could not {}: {}",
-                        hex_storage::text::verbatim(outcome.path.display()),
-                        warning.operation,
-                        warning.source
-                    )),
-                },
-                None => SaveCurrentCommit {
-                    dirty: false,
-                    status: save_status::SAVED.into(),
-                    error: None,
-                },
-            };
-            Ok((
-                DocumentHandle {
-                    path: outcome.path,
-                    token: outcome.token,
-                },
-                commit,
-            ))
+            Ok(bind_new_save(outcome))
         }
         Err(error) => Err(hex_storage::text::lowercase_outside_verbatim(
             &error.to_string(),
         )),
     }
+}
+
+fn bind_new_save(outcome: hex_storage::SaveNewOutcome) -> (DocumentHandle, SaveCurrentCommit) {
+    let commit = match outcome.warning {
+        Some(warning) => SaveCurrentCommit {
+            dirty: true,
+            status: "project was published, but durability could not be confirmed".into(),
+            error: Some(format!(
+                "complete project was published at {}, but could not {}: {}",
+                hex_storage::text::verbatim(outcome.path.display()),
+                warning.operation,
+                warning.source
+            )),
+        },
+        None => SaveCurrentCommit {
+            dirty: false,
+            status: save_status::SAVED.into(),
+            error: None,
+        },
+    };
+    (
+        DocumentHandle {
+            path: outcome.path,
+            token: outcome.token,
+        },
+        commit,
+    )
 }
 
 /// Binds the replaced document and reports the save. A durability warning
@@ -2790,6 +2830,7 @@ fn run_worker(
             && matches!(
                 &queued.request,
                 Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrent
                     | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Undo
@@ -4258,6 +4299,7 @@ fn run_worker(
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrent
                     | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Export(_)
@@ -4296,6 +4338,7 @@ fn run_worker(
             if matches!(
                 &request,
                 Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrent
                     | Request::SaveCurrentWithFormatUpgrade { .. }
             ) {
@@ -4340,6 +4383,7 @@ fn run_worker(
             if matches!(
                 &request,
                 Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrent
                     | Request::SaveCurrentWithFormatUpgrade { .. }
             ) {
@@ -4459,6 +4503,17 @@ fn run_worker(
                     } else {
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
+                                if let Some(retired) = device_gesture.retire_mixer_gain_on_restart()
+                                {
+                                    if resident_preview
+                                        .as_ref()
+                                        .and_then(resident_preview::Preview::device_identity)
+                                        .is_some_and(|preview| preview.key == retired.key)
+                                    {
+                                        resident_preview = None;
+                                    }
+                                    gesture_ack = Some(retired);
+                                }
                                 status = Some("restarting audio".into());
                                 let context = hex_engine::AudioSourceContext {
                                     project_generation,
@@ -4554,7 +4609,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             None,
                         );
-                        device_gesture.handle_prepared(
+                        let mut outcome = device_gesture.handle_prepared(
                             &mut session,
                             gesture,
                             compiled.as_ref().map(|(_, artifact)| artifact),
@@ -4609,7 +4664,16 @@ fn run_worker(
                                     admission,
                                 )
                             },
-                        )
+                        );
+                        if !deferred
+                            && resident_preview
+                                .as_ref()
+                                .and_then(resident_preview::Preview::device_identity)
+                                .is_none_or(|preview| preview.key != outcome.ack.key)
+                        {
+                            device_gesture.retire_unpublished_mixer_terminal(&mut outcome.ack);
+                        }
+                        outcome
                     } else {
                         device_gesture.handle(
                             &mut session,
@@ -5237,8 +5301,19 @@ fn run_worker(
                     context,
                     control,
                     options,
+                    audition_timing,
                 } => {
                     audio_batch_complete = Some(Arc::clone(&control));
+                    let audition = match destination {
+                        AudioBatchDestination::Track { track, start } if paths.len() == 1 => {
+                            audition_timing.map(|timing| resident_audio::ImportPlayback::Browser {
+                                track,
+                                start,
+                                timing,
+                            })
+                        }
+                        _ => None,
+                    };
                     let actual = AudioBatchContext {
                         project_generation,
                         revision,
@@ -5268,8 +5343,8 @@ fn run_worker(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),
                                     |input, admit| {
-                                        let snapshot = resident_audio::prepare_import(input,
-                                            hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) }, sink, admission, resident_snapshot.as_ref(), admit)?;
+                                        let snapshot = resident_audio::prepare_import_playback(input,
+                                            hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) }, sink, admission, resident_snapshot.as_ref(), audition.unwrap_or(resident_audio::ImportPlayback::Normal), admit)?;
                                         let prepared = Arc::clone(&snapshot.prepared);
                                         imported_resident = Some(snapshot);
                                         Ok(prepared)
@@ -7170,16 +7245,8 @@ fn run_worker(
                     } else if control.is_cancelled() {
                         Err("bounce cancelled".into())
                     } else {
-                        recovery
-                            .clone()
-                            .map(Ok)
-                            .unwrap_or_else(untitled_recovery_path)
-                            .and_then(|path| {
-                                let root = path
-                                    .parent()
-                                    .and_then(Path::parent)
-                                    .ok_or("bounce media folder unavailable")?
-                                    .join("media/bounces");
+                        project_save::bounce_directory(document.as_ref(), recovery.as_deref())
+                            .and_then(|root| {
                                 if let Some(sink) = events.resident_audio() {
                                     let context = hex_engine::AudioSourceContext {
                                         project_generation,
@@ -7248,12 +7315,7 @@ fn run_worker(
                     {
                         Err("clip conversion canceled · project changed".to_owned())
                     } else if to_audio {
-                        untitled_recovery_path().and_then(|path| {
-                            let root = path
-                                .parent()
-                                .and_then(Path::parent)
-                                .ok_or("bounce media folder is unavailable")?
-                                .join("media/bounces");
+                        project_save::bounce_directory(document.as_ref(), recovery.as_deref()).and_then(|root| {
                             if let Some(sink) = events.resident_audio() {
                                 return resident_audio::bounce_clip(
                                     &mut session,
@@ -7615,8 +7677,16 @@ fn run_worker(
                         ))
                     }
                 },
-                Request::SaveNew(path) => {
+                request @ (Request::SaveNew(_) | Request::SaveProjectAs { .. }) => {
                     save_complete = true;
+                    let (path, folder_layout) = match request {
+                        Request::SaveNew(path) => (path, None),
+                        Request::SaveProjectAs {
+                            path,
+                            replace_existing,
+                        } => (path, Some(replace_existing)),
+                        _ => continue,
+                    };
                     // Earlier source intent may cancel the edit ahead of Save,
                     // but FIFO still saves its resulting canonical project.
                     // Only a new intent during this capture cancels this Save.
@@ -7646,7 +7716,17 @@ fn run_worker(
                                         .into(),
                                 );
                             }
-                            Ok(path) => match save_document_as(path, &project) {
+                            Ok(path) => match if let Some(replace_existing) = folder_layout {
+                                project_save::save_as(
+                                    path,
+                                    replace_existing,
+                                    project,
+                                    recovery.as_deref(),
+                                    &save_cancellation,
+                                )
+                            } else {
+                                save_document_as(path, &project)
+                            } {
                                 Ok((handle, commit)) => {
                                     document = Some(handle);
                                     unsaved = commit.dirty;
@@ -7709,7 +7789,15 @@ fn run_worker(
                             events.sampler_edit_audio(),
                         )
                     };
-                    match (document.as_mut(), save_project) {
+                    let image = save_project.and_then(|project| {
+                        let handle = document.as_ref().ok_or("project has no file path")?;
+                        project_save::Image::for_document(
+                            project,
+                            &handle.path,
+                            recovery.as_deref(),
+                        )
+                    });
+                    match (document.as_mut(), image) {
                         (None, _) => {
                             error =
                                 Some("cannot save current project before it has a file path".into())
@@ -7718,47 +7806,56 @@ fn run_worker(
                         (Some(_), Ok(_)) if stale_consent => {
                             error = Some("project changed · format upgrade cancelled".into());
                         }
-                        (Some(handle), Ok(project))
-                            if !consent && handle.token.requires_schema_upgrade_for(&project) =>
+                        (Some(handle), Ok(image))
+                            if !consent
+                                && handle.token.requires_schema_upgrade_for(&image.project) =>
                         {
                             save_confirmation_required = true;
                             error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
                         }
-                        (Some(handle), Ok(project)) => {
+                        (Some(handle), Ok(image)) => {
                             match hex_storage::prepare_replacement_within(
                                 &handle.path,
                                 &handle.token,
-                                &project,
+                                &image.project,
                                 events.legacy_reader_limit(),
                             ) {
                                 Ok(prepared) if !consent && prepared.requires_confirmation() => {
                                     save_confirmation_required = true;
                                     error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
                                 }
-                                Ok(prepared) => match prepared.publish() {
-                                    Ok(outcome) => {
-                                        let commit = apply_current_save_outcome(handle, outcome);
-                                        unsaved = commit.dirty;
-                                        status = Some(commit.status);
-                                        error = commit.error;
-                                        state = view_state_bound(
-                                            &session,
-                                            Arc::clone(&midi_preview),
-                                            revision,
-                                            project_generation,
-                                            unsaved,
-                                            document.as_ref().map(|current| current.path.as_path()),
-                                            state.canonical_audio_source.as_ref().map(|source| {
-                                                (Arc::clone(source), state.comparison_audio.clone())
-                                            }),
-                                        );
+                                Ok(prepared) => {
+                                    match image.collect(&save_cancellation).and_then(|()| {
+                                        prepared.publish().map_err(project_save::display)
+                                    }) {
+                                        Ok(outcome) => {
+                                            let commit =
+                                                apply_current_save_outcome(handle, outcome);
+                                            unsaved = commit.dirty;
+                                            status = Some(commit.status);
+                                            error = commit.error;
+                                            state = view_state_bound(
+                                                &session,
+                                                Arc::clone(&midi_preview),
+                                                revision,
+                                                project_generation,
+                                                unsaved,
+                                                document
+                                                    .as_ref()
+                                                    .map(|current| current.path.as_path()),
+                                                state.canonical_audio_source.as_ref().map(
+                                                    |source| {
+                                                        (
+                                                            Arc::clone(source),
+                                                            state.comparison_audio.clone(),
+                                                        )
+                                                    },
+                                                ),
+                                            );
+                                        }
+                                        Err(reason) => error = Some(reason),
                                     }
-                                    Err(reason) => {
-                                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                                            &reason.to_string(),
-                                        ))
-                                    }
-                                },
+                                }
                                 Err(reason) => {
                                     error = Some(hex_storage::text::lowercase_outside_verbatim(
                                         &reason.to_string(),

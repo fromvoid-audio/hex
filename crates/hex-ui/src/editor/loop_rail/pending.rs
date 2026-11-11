@@ -3,6 +3,7 @@
 //! guarded by the captured selection intent and current stable section scope.
 use super::{EditorView, LoopRegion, PendingLoop, Request};
 use hex_project::Command;
+use hex_session::arrangement_seek::SectionLaunch;
 use hex_session::service::Event;
 
 impl EditorView {
@@ -53,6 +54,7 @@ impl EditorView {
             remaining: None,
             focus_intent: None,
             start_intent: None,
+            launch: None,
         });
         if !self.enqueue(Request::Edit(Command::SetLoopRegion {
             start: region.start(),
@@ -60,6 +62,24 @@ impl EditorView {
             enabled: region.enabled(),
         })) {
             self.pending_loop = None;
+        }
+    }
+
+    pub(in crate::editor) fn submit_section_launch_loop(&mut self, launch: SectionLaunch) {
+        self.submit_loop_preview(self.project_generation, launch.region);
+        if let Some(pending) = self.pending_loop.as_mut() {
+            pending.launch = Some(launch);
+        }
+    }
+
+    pub(in crate::editor) fn pending_loop_launch(&self) -> bool {
+        self.pending_loop
+            .is_some_and(|pending| pending.launch.is_some())
+    }
+
+    pub(in crate::editor) fn cancel_pending_loop_launch(&mut self) {
+        if let Some(pending) = self.pending_loop.as_mut() {
+            pending.launch = None;
         }
     }
 
@@ -95,6 +115,12 @@ impl EditorView {
         let Some(pending) = self.pending_loop.take() else {
             return;
         };
+        if succeeded
+            && pending.generation == self.project_generation
+            && let Some(launch) = pending.launch
+        {
+            self.section_loop_committed(launch);
+        }
         if succeeded
             && pending.generation == self.project_generation
             && pending.start_intent.is_some()

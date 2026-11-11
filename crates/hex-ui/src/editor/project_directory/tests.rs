@@ -203,16 +203,24 @@ fn project_directory_successful_save_open_and_restart_share_one_native_folder(
         cx.pending_save_options(),
         Some((PathBuf::from("."), Some("untitled.hex".into())))
     );
-    let first = save_folder.join("First Take.hex");
+    let first = save_folder.join("First Take/First Take.hex");
+    let project_folder = first.parent().unwrap().to_path_buf();
     cx.simulate_new_path_selection(|_| Some(save_folder.join("First Take")));
     saved(&mut visual, &editor, &first);
+    assert!(project_folder.join("samples").is_dir());
+    let version = project_folder.join("Version 2.hex");
+    save_as(&mut visual, &editor, false);
+    cx.simulate_new_path_selection(|_| Some(version.clone()));
+    saved(&mut visual, &editor, &version);
+    assert!(first.is_file() && version.is_file());
+    assert!(!project_folder.join("Version 2").exists());
     flush(&editor, &mut visual);
     assert_eq!(
         hex_preferences::load_project_directory(&owned.preferences()).unwrap(),
-        Some(save_folder.clone())
+        Some(project_folder.clone())
     );
     open(&mut visual, &editor);
-    assert_eq!(cx.pending_open_directory(), Some(Some(save_folder)));
+    assert_eq!(cx.pending_open_directory(), Some(Some(project_folder)));
     cx.simulate_paths_selection(Some(vec![target.clone()]));
     pump(&editor, &mut visual, |view| {
         settled(view)
@@ -423,7 +431,8 @@ fn project_directory_invalid_preferences_still_open_default_and_preserve_bytes(
     let destination = owned.folder("Actual Successful Save").join("Take.hex");
     save_as(&mut visual, &editor, true);
     cx.simulate_new_path_selection(|_| Some(destination.clone()));
-    saved(&mut visual, &editor, &destination);
+    let project = destination.with_extension("").join("Take.hex");
+    saved(&mut visual, &editor, &project);
     flush(&editor, &mut visual);
     assert_eq!(
         std::fs::read(owned.preferences()).unwrap(),
@@ -488,12 +497,17 @@ fn project_directory_owned_writer_persists_latest_success_after_view_drop(cx: &m
     });
     save_as(&mut visual, &editor, true);
     cx.simulate_new_path_selection(|_| Some(first.clone()));
-    saved(&mut visual, &editor, &first);
+    saved(
+        &mut visual,
+        &editor,
+        &first.with_extension("").join("One.hex"),
+    );
     pump(&editor, &mut visual, |_| {
         gate.reached.load(Ordering::Acquire)
     });
     save_as(&mut visual, &editor, false);
     cx.simulate_new_path_selection(|_| Some(latest.clone()));
+    let latest = latest.with_extension("").join("Two.hex");
     saved(&mut visual, &editor, &latest);
     let writes = editor.read_with(&visual, |view, _| {
         Arc::clone(&view.project_directory.writes)
