@@ -3,6 +3,7 @@
 //! guarded by the captured selection intent and current stable section scope.
 use super::{EditorView, LoopRegion, PendingLoop, Request};
 use hex_project::Command;
+use hex_session::arrangement_seek::SectionLaunch;
 use hex_session::service::Event;
 
 impl EditorView {
@@ -52,6 +53,8 @@ impl EditorView {
             region,
             remaining: None,
             focus_intent: None,
+            start_intent: None,
+            launch: None,
         });
         if !self.enqueue(Request::Edit(Command::SetLoopRegion {
             start: region.start(),
@@ -62,12 +65,43 @@ impl EditorView {
         }
     }
 
-    pub(in crate::editor) fn submit_section_loop_preview(&mut self, region: LoopRegion) {
+    pub(in crate::editor) fn submit_section_launch_loop(&mut self, launch: SectionLaunch) {
+        self.submit_loop_preview(self.project_generation, launch.region);
+        if let Some(pending) = self.pending_loop.as_mut() {
+            pending.launch = Some(launch);
+        }
+    }
+
+    pub(in crate::editor) fn pending_loop_launch(&self) -> bool {
+        self.pending_loop
+            .is_some_and(|pending| pending.launch.is_some())
+    }
+
+    pub(in crate::editor) fn cancel_pending_loop_launch(&mut self) {
+        if let Some(pending) = self.pending_loop.as_mut() {
+            pending.launch = None;
+        }
+    }
+
+    pub(in crate::editor) fn submit_selection_loop_preview(
+        &mut self,
+        region: LoopRegion,
+        section: bool,
+    ) {
         let intent = self.selection_intent_epoch;
         self.submit_loop_preview(self.project_generation, region);
         if let Some(pending) = self.pending_loop.as_mut() {
-            pending.focus_intent = intent;
+            pending.start_intent = intent;
+            if section {
+                pending.focus_intent = intent;
+            }
         }
+    }
+
+    pub(in crate::editor) fn pending_selection_loop_has_newer_intent(&self) -> bool {
+        self.pending_loop.is_some_and(|pending| {
+            pending.start_intent.is_some() && pending.start_intent != self.selection_intent_epoch
+        })
     }
 
     pub(in crate::editor) fn cancel_pending_loop_focus(&mut self) {
@@ -81,6 +115,25 @@ impl EditorView {
         let Some(pending) = self.pending_loop.take() else {
             return;
         };
+        if succeeded
+            && pending.generation == self.project_generation
+            && let Some(launch) = pending.launch
+        {
+            self.section_loop_committed(launch);
+        }
+        if succeeded
+            && pending.generation == self.project_generation
+            && pending.start_intent.is_some()
+            && pending.start_intent == self.selection_intent_epoch
+            && self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.loop_region())
+                == Some(pending.region)
+            && let Some(epoch) = pending.start_intent
+        {
+            self.selection_loop_start = Some((epoch, pending.region));
+        }
         if !succeeded
             || pending.generation != self.project_generation
             || pending.focus_intent.is_none()

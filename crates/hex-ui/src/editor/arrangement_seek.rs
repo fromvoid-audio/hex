@@ -1,4 +1,4 @@
-//! Admission helpers for stateful Arrangement seeks (empty-tail interactive law).
+//! Admission helpers for fresh, explicit history-preserving and section seeks.
 //!
 //! Preroll runs on the session service worker. This module only validates the
 //! exact source and captures a control-side runtime fence; it never prepares a
@@ -12,7 +12,6 @@ use hex_engine::{PreparedRevision, SessionCapabilityStatus};
 use hex_project::Project;
 use hex_session::arrangement_seek::{
     ArrangementSeekMode, ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError,
-    MAX_SEEK_WORK_FRAMES,
 };
 use hex_session::service::DevicePreviewIdentity;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -54,9 +53,34 @@ impl SeekAudioControl for Client {
     }
 }
 
+/// One start law retained through intent, deferral and exact acknowledgement.
+/// History and section launches cannot be combined.
+#[derive(Clone, Copy)]
+pub(super) enum SeekKind {
+    Fresh,
+    History,
+    Section(hex_session::arrangement_seek::SectionLaunch),
+}
+
+impl SeekKind {
+    pub(super) fn section(self) -> Option<hex_session::arrangement_seek::SectionLaunch> {
+        match self {
+            Self::Section(section) => Some(section),
+            _ => None,
+        }
+    }
+    pub(super) fn mode(self) -> ArrangementSeekMode {
+        match self {
+            Self::Fresh => ArrangementSeekMode::Interactive,
+            Self::History => ArrangementSeekMode::HistoryPreservingInteractive,
+            Self::Section(section) => ArrangementSeekMode::SectionLoop(section.region),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct SeekIntent {
-    pub section: Option<hex_session::arrangement_seek::SectionLaunch>,
+    pub kind: SeekKind,
     pub recovery_generation: Option<u64>,
     pub destination_frame: u64,
     pub start_playing: bool,
@@ -74,11 +98,10 @@ pub(super) enum SeekStage {
 }
 
 pub(super) struct PendingSeek {
-    pub section: Option<hex_session::arrangement_seek::SectionLaunch>,
+    pub kind: SeekKind,
     pub native_output_identity: Option<u64>,
     pub recovery_generation: Option<u64>,
     pub request_id: u64,
-    pub mode: ArrangementSeekMode,
     pub project_generation: u64,
     pub project_revision: u64,
     pub prepared_revision: Option<Arc<PreparedRevision>>,
@@ -96,7 +119,7 @@ pub(super) struct PendingSeek {
 impl PendingSeek {
     fn intent(&self) -> SeekIntent {
         SeekIntent {
-            section: self.section,
+            kind: self.kind,
             recovery_generation: self.recovery_generation,
             destination_frame: self.destination_frame,
             start_playing: self.start_playing,
@@ -109,7 +132,7 @@ impl PendingSeek {
 
     pub fn matches_result(&self, result: &ArrangementSeekResult) -> bool {
         result.request_id == self.request_id
-            && result.mode == self.mode
+            && result.mode == self.kind.mode()
             && result.generation == self.project_generation
             && result.revision == self.project_revision
             && self
@@ -119,10 +142,6 @@ impl PendingSeek {
             && result.destination_frame == self.destination_frame
             && result.work_budget_frames == self.work_budget_frames
             && result.start_playing == self.start_playing
-            && matches!(
-                self.mode,
-                ArrangementSeekMode::Interactive | ArrangementSeekMode::SectionLoop(_)
-            )
     }
 
     pub fn defers_replacement(&self) -> bool {
@@ -146,19 +165,25 @@ fn seek_source_matches(
 }
 
 impl SeekIntent {
+    fn work_budget_frames(&self) -> u64 {
+        if matches!(self.kind, SeekKind::History) {
+            hex_session::arrangement_seek::MAX_SEEK_WORK_FRAMES
+        } else {
+            self.destination_frame
+        }
+    }
+
     pub fn spec(&self) -> Option<ArrangementSeekSpec> {
         let prepared = self.prepared_revision.as_ref()?;
-        (self.destination_frame <= MAX_SEEK_WORK_FRAMES).then(|| ArrangementSeekSpec {
-            mode: self
-                .section
-                .map_or(ArrangementSeekMode::Interactive, |section| {
-                    ArrangementSeekMode::SectionLoop(section.region)
-                }),
+        // Only explicit history replay spends the ordinary work ceiling.
+        // Fresh/section laws retain their existing destination semantics.
+        Some(ArrangementSeekSpec {
+            mode: self.kind.mode(),
             generation: self.project_generation,
             revision: self.project_revision,
             prepared_revision: Arc::clone(prepared),
             destination_frame: self.destination_frame,
-            work_budget_frames: self.destination_frame,
+            work_budget_frames: self.work_budget_frames(),
             start_playing: self.start_playing,
         })
     }
@@ -167,21 +192,16 @@ impl SeekIntent {
 impl PendingSeek {
     pub fn from_intent(request_id: u64, intent: &SeekIntent, fence: FreshRuntimeFence) -> Self {
         Self {
-            section: intent.section,
+            kind: intent.kind,
             request_id,
             native_output_identity: None,
             recovery_generation: intent.recovery_generation,
-            mode: intent
-                .section
-                .map_or(ArrangementSeekMode::Interactive, |section| {
-                    ArrangementSeekMode::SectionLoop(section.region)
-                }),
             project_generation: intent.project_generation,
             project_revision: intent.project_revision,
             prepared_revision: intent.prepared_revision.clone(),
             device_preview_identity: intent.device_preview_identity,
             destination_frame: intent.destination_frame,
-            work_budget_frames: intent.destination_frame,
+            work_budget_frames: intent.work_budget_frames(),
             start_playing: intent.start_playing,
             fence,
             stage: SeekStage::Preparing,
@@ -306,9 +326,13 @@ fn verified_audio_candidate_is_current(context: VerifiedSeekCandidateContext) ->
         && context.applied_project_revision == Some(context.current_project_revision)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 #[path = "arrangement_seek_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "arrangement_seek_unit_tests.rs"]
+mod unit_tests;
 
 use super::{EditorView, PendingPlayback};
 use hex_engine::playback::PlaybackHandoffRejection;
@@ -496,22 +520,41 @@ impl EditorView {
     }
 
     pub(super) fn request_prepared_seek(&mut self, destination_frame: u64, start_playing: bool) {
-        self.request_prepared_seek_with_section(destination_frame, start_playing, None);
+        self.request_prepared_seek_with_kind(destination_frame, start_playing, SeekKind::Fresh);
+    }
+
+    pub(super) fn request_history_playback(&mut self, frame: u64) {
+        self.request_prepared_seek_with_kind(frame, true, SeekKind::History);
     }
 
     pub(super) fn request_section_launch(
         &mut self,
         section: hex_session::arrangement_seek::SectionLaunch,
     ) {
-        self.request_prepared_seek_with_section(section.region.start(), true, Some(section));
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            != Some(section.region)
+        {
+            self.error = Some("section launch requires its enabled arrangement loop".into());
+            return;
+        }
+        self.request_prepared_seek_with_kind(
+            section.region.start(),
+            true,
+            SeekKind::Section(section),
+        );
     }
 
-    fn request_prepared_seek_with_section(
+    fn request_prepared_seek_with_kind(
         &mut self,
         destination_frame: u64,
         start_playing: bool,
-        section: Option<hex_session::arrangement_seek::SectionLaunch>,
+        kind: SeekKind,
     ) {
+        let section = kind.section();
+        self.wake_poll();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some(
                 if section.is_some() {
@@ -523,11 +566,13 @@ impl EditorView {
             );
             return;
         }
-        let Some((prepared_revision, audio_revision, project_revision)) = (if section.is_some() {
-            self.current_section_source()
-        } else {
-            self.current_preroll_source()
-        }) else {
+        let Some((prepared_revision, audio_revision, project_revision)) =
+            (if section.is_some() || matches!(kind, SeekKind::History) {
+                self.current_section_source()
+            } else {
+                self.current_preroll_source()
+            })
+        else {
             self.error = Some(
                 if section.is_some() {
                     "section playback source is unavailable"
@@ -539,7 +584,7 @@ impl EditorView {
             return;
         };
         let intent = super::arrangement_seek::SeekIntent {
-            section,
+            kind,
             recovery_generation: None,
             destination_frame,
             start_playing,
@@ -548,12 +593,8 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
-        if intent.section.is_some() && self.prepared_seek.is_some() {
+        if intent.kind.section().is_some() && self.prepared_seek.is_some() {
             self.invalidate_prepared_seek();
-        }
-        if intent.destination_frame > MAX_SEEK_WORK_FRAMES {
-            self.error = Some("seek exceeds the bounded arrangement preroll range".into());
-            return;
         }
         if self.retired_seek_result.is_some() {
             latch_latest_intent(&mut self.latched_seek_intent, intent);
@@ -582,7 +623,8 @@ impl EditorView {
                 .map(|seek| seek.start_playing),
             self.latched_seek_intent
                 .as_ref()
-                .map(|intent| intent.start_playing),
+                .map(|intent| intent.start_playing)
+                .or_else(|| self.section_launch_waiting().then_some(true)),
         )
     }
 
@@ -598,14 +640,13 @@ impl EditorView {
             || self.retired_seek_result.is_some()
             || self.latched_seek_intent.is_some()
             || self.recovery.seek_needed(true) != Some(position)
-            || position > MAX_SEEK_WORK_FRAMES
         {
             return None;
         }
         let (prepared_revision, audio_revision, project_revision) =
             self.current_preroll_source()?;
         let intent = SeekIntent {
-            section: None,
+            kind: SeekKind::Fresh,
             recovery_generation: Some(generation),
             destination_frame: position,
             start_playing: false,
@@ -630,7 +671,8 @@ impl EditorView {
             self.play_intent.desired_playing(actual_playing),
             self.latched_seek_intent
                 .as_ref()
-                .map(|intent| intent.start_playing),
+                .map(|intent| intent.start_playing)
+                .or_else(|| self.section_launch_waiting().then_some(true)),
             self.prepared_seek
                 .as_ref()
                 .filter(|seek| !seek.cancelled)
@@ -691,7 +733,7 @@ impl EditorView {
             return;
         }
         let Some(spec) = intent.spec() else {
-            self.error = Some("seek exceeds the bounded arrangement preroll range".into());
+            self.error = Some("arrangement seek requires a prepared graph".into());
             return;
         };
         match self.service.request_arrangement_seek(spec) {
@@ -699,7 +741,7 @@ impl EditorView {
                 self.prepared_seek = Some(super::arrangement_seek::PendingSeek::from_intent(
                     request_id, &intent, fence,
                 ));
-                self.status = if intent.section.is_some() {
+                self.status = if intent.kind.section().is_some() {
                     "preparing section launch"
                 } else {
                     "preparing arrangement seek"
@@ -715,9 +757,11 @@ impl EditorView {
             }
             Err(error) => {
                 self.error = Some(
-                    format!("could not prepare arrangement seek: {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "could not prepare arrangement seek · {}",
+                        super::user_errors::seek_submit(&error)
+                    )
+                    .into(),
                 );
             }
         }
@@ -739,12 +783,17 @@ impl EditorView {
         let mut pending = PendingSeek::from_intent(request_id, &intent, fence);
         pending.native_output_identity = Some(output_identity);
         let request = hex_session::service::ResidentArrangementSeekIntent {
+            history: if matches!(intent.kind, SeekKind::History) {
+                hex_session::service::ResidentSeekHistory::Preserve
+            } else {
+                hex_session::service::ResidentSeekHistory::Fresh
+            },
             request_id,
             project_generation: intent.project_generation,
             project_revision: intent.project_revision,
             destination_frame: intent.destination_frame,
             start_playing: intent.start_playing,
-            section: intent.section,
+            section: intent.kind.section(),
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity,
                 active_audio_revision: fence.expected_active_revision(),
@@ -760,7 +809,7 @@ impl EditorView {
             Ok(()) => {
                 self.seek_request_serial = request_id;
                 self.prepared_seek = Some(pending);
-                self.status = if intent.section.is_some() {
+                self.status = if intent.kind.section().is_some() {
                     "preparing section launch"
                 } else {
                     "preparing arrangement seek"
@@ -774,8 +823,8 @@ impl EditorView {
             Err(hex_session::service::SubmitError::Closed(_)) => {
                 self.error = Some("arrangement seek worker is unavailable".into());
             }
-            Err(hex_session::service::SubmitError::Busy(_)) => {
-                self.error = Some("arrangement seek worker is busy".into());
+            Err(hex_session::service::SubmitError::Busy(_, reason)) => {
+                self.error = Some(super::user_errors::busy(reason).into());
             }
         }
     }
@@ -803,7 +852,7 @@ impl EditorView {
                 == Some(output_identity) =>
             {
                 pending.stage = SeekStage::Published { audio_revision };
-                if pending.section.is_some() {
+                if pending.kind.section().is_some() {
                     self.status = "section launch queued".into();
                 }
                 self.recovery
@@ -912,12 +961,11 @@ impl EditorView {
             .prepared_seek
             .as_mut()
             .filter(|pending| pending.cancellation_retry)
+            && let Some(audio) = self.audio.as_ref()
         {
-            if let Some(audio) = self.audio.as_ref() {
-                let result = cancel_published_seek(Some(&audio.control), pending);
-                pending.cancellation_retry = result == Some(FreshRuntimeCancellationResult::Busy);
-                changed = !pending.cancellation_retry;
-            }
+            let result = cancel_published_seek(Some(&audio.control), pending);
+            pending.cancellation_retry = result == Some(FreshRuntimeCancellationResult::Busy);
+            changed = !pending.cancellation_retry;
         }
         if let Some(result) = self.retired_seek_result.take() {
             changed |= self.retire_seek_result(result);
@@ -928,11 +976,13 @@ impl EditorView {
         if self.prepared_seek.is_none()
             && let Some(intent) = self.latched_seek_intent.take()
         {
-            if let Some((_, audio_revision, _)) = if intent.section.is_some() {
-                self.current_section_source()
-            } else {
-                self.current_preroll_source()
-            } {
+            if let Some((_, audio_revision, _)) =
+                if intent.kind.section().is_some() || matches!(intent.kind, SeekKind::History) {
+                    self.current_section_source()
+                } else {
+                    self.current_preroll_source()
+                }
+            {
                 self.admit_prepared_seek(intent, audio_revision);
                 changed = true;
             } else {
@@ -1025,9 +1075,12 @@ impl EditorView {
             Err(error) => {
                 self.prepared_seek = None;
                 self.error = Some(
-                    format!("arrangement seek failed: {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "arrangement seek failed · {}",
+                        super::user_errors::seek_preparation(&error)
+                    )
+                    .to_lowercase()
+                    .into(),
                 );
                 changed = true;
             }
@@ -1158,6 +1211,7 @@ impl EditorView {
     }
 
     pub(super) fn invalidate_prepared_seek(&mut self) {
+        self.section_launch_after_loop = None;
         self.latched_seek_intent = None;
         let Some(mut pending) = self.prepared_seek.take() else {
             self.service.invalidate_arrangement_seek();
@@ -1192,7 +1246,7 @@ impl EditorView {
                 {
                     self.retire_seek_result(ArrangementSeekResult {
                         request_id: pending.request_id,
-                        mode: pending.mode,
+                        mode: pending.kind.mode(),
                         generation: pending.project_generation,
                         revision: pending.project_revision,
                         prepared_revision,
@@ -1314,7 +1368,7 @@ pub(super) fn resolve_prepared_seek_terminal(
         return false;
     }
     let cancelled = pending.cancelled;
-    let section = pending.section.is_some();
+    let section = pending.kind.section().is_some();
     *pending_seek = None;
     if rejected && !cancelled {
         let reason = rejected_revision

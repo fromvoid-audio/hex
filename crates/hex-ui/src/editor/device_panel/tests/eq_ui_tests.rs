@@ -31,15 +31,29 @@ fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let device = state.project.track(track).unwrap().devices()[0].id();
     (service, state, track, device)
 }
-/// Option on a blank press keeps the held create-and-shape gesture; a plain
-/// blank drag draws the marquee and a plain click creates.
-const OPTION_CREATE: Modifiers = Modifiers {
-    control: false,
-    alt: true,
-    shift: false,
-    platform: false,
-    function: false,
-};
+/// Dispatch both clicks through the graph, leaving the second press held.
+fn eq_double_click_down(visual: &mut VisualTestContext, position: gpui::Point<gpui::Pixels>) {
+    let modifiers = Modifiers::default();
+    visual.simulate_click(position, modifiers);
+    visual.simulate_event(gpui::MouseDownEvent {
+        position,
+        modifiers,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+}
+
+pub(super) fn eq_double_click(visual: &mut VisualTestContext, position: gpui::Point<gpui::Pixels>) {
+    eq_double_click_down(visual, position);
+    visual.simulate_event(gpui::MouseUpEvent {
+        position,
+        modifiers: Modifiers::default(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+}
+
 fn read(view: &EditorView, device: DeviceId) -> EqState {
     EqState::decode(
         view.state
@@ -82,6 +96,7 @@ fn seed_existing_lane(
             })
             .unwrap();
         let request = Request::Edit(Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state,
             expected_variant,
@@ -159,6 +174,15 @@ fn assert_action_label_fits(
 
 #[gpui::test]
 fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "backspace");
+}
+
+#[gpui::test]
+fn eq_x_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "x");
+}
+
+fn eq_remove_key_history(cx: &mut TestAppContext, key: &str) {
     cx.update(super::super::super::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, device) = fixture(false);
@@ -167,7 +191,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(position, Modifiers::default());
+    eq_double_click(&mut visual, position);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -178,7 +202,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
     let position = plot(&mut visual, device, 0.5, 0.5);
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     pump_until(&editor, cx, |view| {
         settled(view)
             && (view.state.as_ref().unwrap().project.track(track).is_none()
@@ -196,7 +220,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
             "node removal atomically removes its automation"
         );
     });
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
@@ -259,7 +283,7 @@ fn eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local(cx: &mut Te
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(position, Modifiers::default());
+    eq_double_click(&mut visual, position);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -294,7 +318,7 @@ fn eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local(cx: &mut Te
     // A held creation is a preview, not a removable canonical node. The key
     // must neither commit that preview nor escape into editor deletion.
     let blank = plot(&mut visual, device, 0.8, 0.6);
-    visual.simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
+    eq_double_click_down(&mut visual, blank);
     visual.simulate_keystrokes("backspace escape");
     visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, settled);
@@ -309,7 +333,7 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(position, Modifiers::default());
+    eq_double_click(&mut visual, position);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -425,7 +449,7 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
 }
 
 #[gpui::test]
-fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
+fn eq_double_click_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
     creation_history_and_round_trip(cx, CreationOwner::Track);
 }
 
@@ -545,7 +569,7 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
             "actual {hint} creation indicator before press"
         );
         let moved = plot(&mut visual, device, 0.6, 0.7);
-        visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+        eq_double_click_down(&mut visual, start);
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         assert!(
@@ -714,7 +738,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     let start = plot(&mut visual, device, origin[0], origin[1]);
     let moved = plot(&mut visual, device, 0.4, 0.7);
     for cancellation in 0..3 {
-        visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+        eq_double_click_down(&mut visual, start);
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         match cancellation {
             0 => visual.simulate_keystrokes("escape"),
@@ -738,7 +762,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
         });
     }
     // Other in-flight UI work cannot discard a creation's reserved terminal.
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     editor.update(cx, |view, _| view.worker_requests_pending = 1);
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
@@ -755,7 +779,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     initial_next = editor.read_with(cx, |view, _| {
         view.state.as_ref().unwrap().project.next_identity()
     });
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     // A canonical edit during the held preview invalidates its expected state.
     editor.update(cx, |v, _| {
@@ -780,7 +804,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
         assert!(settled(v));
     });
     // The cancelled capture does not poison the next independent press.
-    visual.simulate_click(start, Modifiers::default());
+    eq_double_click(&mut visual, start);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 1
     });
@@ -800,7 +824,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
         .debug_bounds(selector("eq-response", device))
         .unwrap();
     let outside = point(bounds.right() + px(12.0), bounds.center().y);
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |v| {
@@ -812,7 +836,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
         assert!((state.nodes[0].frequency_hz - 20000.0).abs() < 0.1);
     });
     visual.run_until_parked();
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     // The EQ source is unchanged, but another identity reservation invalidates
     // the provisional ID. It must never be rebased onto a replacement ID.
     editor.update(cx, |v, _| {
@@ -827,7 +851,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(editor.read_with(cx, |v, _| read(v, device).nodes.len()), 1);
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     editor.update(cx, |v, cx| {
         v.project_generation += 1;
         cx.notify();
@@ -850,21 +874,7 @@ fn eq_rendered_creation_drag_preserves_existing_lanes_and_history(cx: &mut TestA
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let location = plot(&mut visual, device, 0.4, 0.5);
-    visual.simulate_click(location, Modifiers::default());
-    // The second press can arrive before the worker publishes the first node.
-    visual.simulate_event(gpui::MouseDownEvent {
-        position: location,
-        modifiers: Modifiers::default(),
-        button: MouseButton::Left,
-        click_count: 2,
-        first_mouse: false,
-    });
-    visual.simulate_event(gpui::MouseUpEvent {
-        position: location,
-        modifiers: Modifiers::default(),
-        button: MouseButton::Left,
-        click_count: 2,
-    });
+    eq_double_click(&mut visual, location);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 1
     });
@@ -918,7 +928,7 @@ fn eq_rendered_creation_drag_preserves_existing_lanes_and_history(cx: &mut TestA
     });
     visual.run_until_parked();
     let replacement_position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(replacement_position, Modifiers::default());
+    eq_double_click(&mut visual, replacement_position);
     editor.read_with(cx, |view, _| {
         assert!(
             view.device_panel.message.is_none(),
@@ -948,7 +958,7 @@ fn eq_rendered_creation_drag_preserves_existing_lanes_and_history(cx: &mut TestA
         settled(v) && read(v, device).nodes.is_empty()
     });
     visual.run_until_parked();
-    visual.simulate_click(replacement_position, Modifiers::default());
+    eq_double_click(&mut visual, replacement_position);
     editor.read_with(cx, |view, _| {
         assert!(
             view.device_panel.message.is_none(),
@@ -1034,7 +1044,7 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let location = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(location, Modifiers::default());
+    eq_double_click(&mut visual, location);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 1
     });
@@ -1051,7 +1061,7 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
     let id = editor.read_with(cx, |v, _| read(v, device).nodes[0].id);
     // A second node must not steal the first node's stable parameter bindings.
     let second_position = plot(&mut visual, device, 0.8, 0.7);
-    visual.simulate_click(second_position, Modifiers::default());
+    eq_double_click(&mut visual, second_position);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1238,7 +1248,7 @@ fn eq_notch_hover_matches_creation_and_node_priority_at_narrow_and_wide_sizes(
                 visual.rendered_cursor_style(),
                 Some(gpui::CursorStyle::Crosshair)
             );
-            visual.simulate_click(start, Modifiers::default());
+            eq_double_click(&mut visual, start);
             pump_until(&editor, cx, |v| {
                 settled(v) && read(v, device).nodes.len() == 1
             });

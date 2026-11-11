@@ -74,19 +74,14 @@ fn reservation() -> crate::ResidentNativeReservation {
     }
 }
 fn event(s: &Service) -> Event {
-    let end = Instant::now() + Duration::from_secs(5);
-    loop {
-        match s.try_event() {
-            Ok(e) => return e,
-            Err(TryRecvError::Empty) if Instant::now() < end => {
-                thread::sleep(Duration::from_millis(1))
-            }
-            Err(e) => panic!("worker event {e}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match s.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 fn export_event(s: &Service) -> ExportEvent {
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + crate::test_wait::HANG_BOUND;
     loop {
         match s.try_export_event() {
             Ok(e) => return e,
@@ -185,6 +180,7 @@ fn sampler_service_real_mono_stereo_assign_and_controlled_file_pcm() {
                 frames: Some(12),
                 signal: hex_export::ExportSignal::Main,
                 control,
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -211,12 +207,14 @@ fn sampler_service_real_mono_stereo_assign_and_controlled_file_pcm() {
         } else {
             left
         };
-        assert_eq!(
-            pcm,
-            left.into_iter()
+        assert_pcm_near(
+            &pcm,
+            &left
+                .into_iter()
                 .zip(right)
                 .map(|(l, r)| [l, r])
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "controlled file pcm",
         );
         service
             .submit(Request::RestorePlayback { generation: 7 })
@@ -245,6 +243,7 @@ fn queue_export(service: &Service, files: &Files, control: hex_export::ExportCon
             frames: Some(12),
             signal: hex_export::ExportSignal::Main,
             control,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         })
         .unwrap();
@@ -310,13 +309,13 @@ fn captured_sampler_survives_new_and_ordinary_open_and_capability_persists() {
     release.send(()).unwrap();
     assert!(export_event(&service).result.is_ok());
     let bytes = fs::read(&files.output).unwrap();
-    assert_eq!(&bytes[44..52], &[0, 16, 0, 224, 0, 40, 0, 240]);
+    assert_pcm_bytes_near(&bytes[44..52], &[0, 16, 0, 224, 0, 40, 0, 240]);
     // The next real export uses the new document's mono source, after the old
     // terminal is drained by control rather than by resource-bearing UI events.
     queue_export(&service, &second, hex_export::ExportControl::default());
     assert!(export_event(&service).result.is_ok());
     let bytes = fs::read(&second.output).unwrap();
-    assert_eq!(&bytes[44..52], &[0, 16, 0, 16, 0, 40, 0, 40]);
+    assert_pcm_bytes_near(&bytes[44..52], &[0, 16, 0, 16, 0, 40, 0, 40]);
 }
 
 #[test]
@@ -347,7 +346,7 @@ fn terminal_reclaims_on_idle_control_without_ui_export_polling() {
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
-    let worker_id = service._worker.thread().id();
+    let worker_id = service.worker.as_ref().unwrap().thread().id();
     let (_observer, dropped) =
         hex_engine::native_device_resources::control_drop_probe::observe(worker_id);
     assign(&service, files.source.clone());
@@ -376,7 +375,7 @@ fn dropping_service_is_prompt_and_joined_control_reclaims_blocked_export_source(
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
-    let worker_id = service._worker.thread().id();
+    let worker_id = service.worker.as_ref().unwrap().thread().id();
     let (_observer, dropped) =
         hex_engine::native_device_resources::control_drop_probe::observe(worker_id);
     assign(&service, files.source.clone());
@@ -602,6 +601,7 @@ fn sampler_unsupported_history_and_ranges_refuse_without_public_source_escape() 
                 frames: Some(12),
                 signal,
                 control: hex_export::ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -675,6 +675,7 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
         files.source.clone(),
         None,
         Admission::default(),
+        &mut Default::default(),
     )
     .unwrap();
     let saved = files.source.parent().unwrap().join("media.hex");
@@ -788,6 +789,7 @@ fn ordinary_import_cannot_spend_frames_still_owned_by_captured_export() {
                         crate::import_batch_decode::AudioBatchControl::new(2).unwrap(),
                     ),
                     options: Default::default(),
+                    audition_timing: None,
                 },
             };
             service.submit(request).unwrap();
@@ -898,13 +900,31 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
         },
     ] {
         fresh.native_reservation.as_mut().unwrap().storage = limits;
-        assert!(import(&mut fresh, files.source.clone(), None, admission).is_err());
+        assert!(
+            import(
+                &mut fresh,
+                files.source.clone(),
+                None,
+                admission,
+                &mut Default::default()
+            )
+            .is_err()
+        );
         assert_eq!(fresh.project().assets().count(), 0);
         assert!(!fresh.can_undo());
         assert_eq!(fresh.resident_frames(), 0);
     }
     fresh.native_reservation.as_mut().unwrap().storage = exact;
-    assert!(import(&mut fresh, files.source.clone(), None, admission).is_ok());
+    assert!(
+        import(
+            &mut fresh,
+            files.source.clone(),
+            None,
+            admission,
+            &mut Default::default()
+        )
+        .is_ok()
+    );
     assert_eq!(fresh.project().assets().count(), 1);
     assert!(fresh.can_undo());
 }
@@ -941,9 +961,9 @@ fn private_sampler_edit_refuses_unverified_media_metadata_before_history_commit(
             assert_eq!(result.state.can_redo, before.state.can_redo);
             queue_export(&service, &files, hex_export::ExportControl::default());
             assert!(export_event(&service).result.is_ok());
-            assert_eq!(
+            assert_pcm_bytes_near(
                 &fs::read(&files.output).unwrap()[44..52],
-                &[0, 16, 0, 16, 0, 40, 0, 40]
+                &[0, 16, 0, 16, 0, 40, 0, 40],
             );
         }
     }
@@ -952,4 +972,32 @@ fn private_sampler_edit_refuses_unverified_media_metadata_before_history_commit(
         [true, true],
         "generic Edit must not invent decoded media custody"
     );
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither: compare decoded stereo frames
+/// within one LSB of the plain-rounding expectation.
+pub(super) fn assert_pcm_near(actual: &[[i16; 2]], expected: &[[i16; 2]], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}");
+    for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+        assert!(
+            (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+            "{context}: {actual:?} not within one lsb of {expected:?}"
+        );
+    }
+}
+
+/// Same comparison for raw little-endian PCM16 stereo bytes.
+fn assert_pcm_bytes_near(actual: &[u8], expected: &[u8]) {
+    let decode = |bytes: &[u8]| {
+        bytes
+            .chunks_exact(4)
+            .map(|f| {
+                [
+                    i16::from_le_bytes([f[0], f[1]]),
+                    i16::from_le_bytes([f[2], f[3]]),
+                ]
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_pcm_near(&decode(actual), &decode(expected), "pcm bytes");
 }

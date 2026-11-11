@@ -612,10 +612,10 @@ fn midi_actual_independent_all_channel_cc_oracle_and_partition_equivalence() {
         .enumerate()
         .map(|(i, v)| {
             for e in &r.blocks[0].events {
-                if let InputEvent::Midi { offset, data, .. } = e {
-                    if *offset == i as u32 {
-                        gain = 2.0 * f64::from(data[2]) / 127.0;
-                    }
+                if let InputEvent::Midi { offset, data, .. } = e
+                    && *offset == i as u32
+                {
+                    gain = 2.0 * f64::from(data[2]) / 127.0;
                 }
             }
             (f64::from(*v) * gain) as f32

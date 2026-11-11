@@ -1,8 +1,85 @@
-//! Workspace navigation leaves focused controls and modal editors in charge of Tab.
+//! Workspace panel composition and navigation preserve local control ownership.
 use super::{EditorMode, EditorView};
-use gpui::{Context, KeyDownEvent, Modifiers, Window};
+use crate::theme;
+use gpui::{Context, Div, KeyDownEvent, Modifiers, MouseUpEvent, Window, div, prelude::*, px, rgb};
+
+pub(super) const PANEL_GUTTER: f32 = 3.0;
 
 impl EditorView {
+    /// Actual main-panel content width, after the browser, gutter and surround.
+    pub(super) fn workspace_body_width(&self, window: &Window) -> f32 {
+        (f32::from(window.bounds().size.width)
+            - self.browser_content_width(window)
+            - PANEL_GUTTER
+            - 2.0 * hex_widgets::PANEL_FRAME_INSET)
+            .max(0.0)
+    }
+
+    pub(super) fn workspace_panel_chrome(&self) -> f32 {
+        let frame_and_gap = 2.0 * hex_widgets::PANEL_FRAME_INSET + PANEL_GUTTER;
+        frame_and_gap * if self.clip_view_open { 2.0 } else { 1.0 }
+    }
+
+    pub(super) fn render_workspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        clip_view: Div,
+    ) -> Div {
+        let content = self.project_spectrum_panel(window, cx);
+        let console = self.mode == EditorMode::Session;
+        let main = if console {
+            self.session_grid(window, cx)
+        } else {
+            self.arrangement(window, cx)
+        };
+        let main = hex_widgets::panel_frame(theme::workspace_panel_style(), main)
+            .debug_selector(|| "workspace-main-panel".into())
+            .flex_1()
+            .min_h_0()
+            .mt(px(PANEL_GUTTER))
+            .mb(px(if self.clip_view_open {
+                PANEL_GUTTER
+            } else {
+                0.0
+            }));
+        let clip_view = if self.clip_view_open {
+            hex_widgets::panel_frame(theme::workspace_panel_style(), clip_view)
+                .debug_selector(|| "workspace-editor-panel".into())
+                .flex_shrink_0()
+        } else {
+            clip_view
+        };
+        let workspace_content = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(content)
+            .child(main)
+            .child(clip_view)
+            .child(self.mixer_strip(cx, console))
+            .child(self.routing_controls(cx));
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .gap(px(PANEL_GUTTER))
+            .bg(rgb(theme::workspace_gutter_fill()))
+            .child(
+                self.browser_view(window, cx)
+                    .debug_selector(|| "resize-browser-hit-region".to_owned())
+                    .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                        if view.finish_trim_pointer_release(event, true, window, cx) {
+                            cx.stop_active_drag(window);
+                            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                            cx.stop_propagation();
+                        }
+                    })),
+            )
+            .child(workspace_content.flex_1().min_w_0())
+    }
+
     pub(super) fn workspace_view_name(&self) -> &'static str {
         match self.mode {
             EditorMode::Arrangement => "arrange view",
@@ -49,7 +126,7 @@ impl EditorView {
             || self.project_spectrum.resize_is_active()
             || self.clip_detail_resize.is_active()
             || self.device_panel.navigation.is_active()
-            || self.clip_paint_gesture.is_some()
+            || self.clip_paint_held()
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()

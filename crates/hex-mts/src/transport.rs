@@ -1,7 +1,7 @@
 use mts_esp_master_adapter::{Error, Master, TuningPublication};
 
 pub(super) trait Transport {
-    fn acquire(&mut self) -> Result<(), Error>;
+    fn acquire(&mut self, recover: bool) -> Result<(), Error>;
     fn release(&mut self);
     fn publish(&mut self, publication: &TuningPublication);
     fn clients(&self) -> Result<u32, Error>;
@@ -12,8 +12,12 @@ pub(super) struct Native {
     master: Option<Master>,
 }
 impl Transport for Native {
-    fn acquire(&mut self) -> Result<(), Error> {
-        self.master = Some(Master::register()?);
+    fn acquire(&mut self, recover: bool) -> Result<(), Error> {
+        self.master = Some(if recover {
+            Master::recover()?
+        } else {
+            Master::register()?
+        });
         Ok(())
     }
     fn release(&mut self) {

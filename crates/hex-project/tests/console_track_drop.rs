@@ -72,6 +72,7 @@ fn audio_column_and_first_scene_are_one_prepared_history_edge_with_no_default_de
     let original = e.project().clip(clip).unwrap().clone();
     let Created::Track(destination) = e
         .execute(Command::CopyArrangementAudioClipToNewSessionTrack {
+            initial_gain: Some(0.25),
             source: clip,
             before_track: Some(source_track),
             scene: SessionSceneTarget::Insert { before: None },
@@ -81,6 +82,7 @@ fn audio_column_and_first_scene_are_one_prepared_history_edge_with_no_default_de
         panic!("destination")
     };
     assert_eq!(e.project().tracks()[0].id(), destination);
+    assert_eq!(e.project().track(destination).unwrap().gain(), 0.25);
     let row = e.project().scenes()[0].id();
     let Some(SessionCellContent::Audio(copied)) = e.project().session_cell(destination, row) else {
         panic!("audio")
@@ -164,6 +166,7 @@ fn midi_column_preserves_source_loop_volume_and_existing_source_cell_with_fresh_
     let original = e.project().midi_clip(clip).unwrap().clone();
     let Created::Track(destination) = e
         .execute(Command::CopyArrangementMidiToNewSessionTrack {
+            initial_gain: Some(0.25),
             source: clip,
             before_track: None,
             scene: SessionSceneTarget::Existing(row),
@@ -173,6 +176,7 @@ fn midi_column_preserves_source_loop_volume_and_existing_source_cell_with_fresh_
         panic!("destination")
     };
     assert_eq!(e.project().tracks().last().unwrap().id(), destination);
+    assert_eq!(e.project().track(destination).unwrap().gain(), 0.25);
     assert!(matches!(
         e.project().session_cell(owner, row),
         Some(SessionCellContent::Stop)
@@ -243,6 +247,7 @@ fn new_column_inserts_a_scene_at_its_stable_anchor_without_replacing_existing_ce
     .unwrap();
     let Created::Track(destination) = e
         .execute(Command::CopyArrangementAudioClipToNewSessionTrack {
+            initial_gain: None,
             source: clip,
             before_track: None,
             scene: SessionSceneTarget::Insert { before: Some(last) },
@@ -275,6 +280,7 @@ fn failed_preparation_preserves_all_ids_project_and_redo_after_private_track_and
     let before = e.project().clone();
     let result = e.execute_prepared(
         Command::CopyArrangementAudioClipToNewSessionTrack {
+            initial_gain: Some(0.25),
             source: clip,
             before_track: None,
             scene: SessionSceneTarget::Insert { before: None },
@@ -282,6 +288,7 @@ fn failed_preparation_preserves_all_ids_project_and_redo_after_private_track_and
         |candidate| {
             assert_eq!(candidate.tracks().len(), before.tracks().len() + 1);
             assert_eq!(candidate.scenes().len(), 1);
+            assert_eq!(candidate.tracks().last().unwrap().gain(), 0.25);
             Err::<(), _>(Invalid("admission refused"))
         },
     );
@@ -289,6 +296,46 @@ fn failed_preparation_preserves_all_ids_project_and_redo_after_private_track_and
     assert_eq!(e.project(), &before);
     assert!(e.can_redo());
     assert!(e.redo());
+}
+
+#[test]
+fn invalid_column_gain_does_not_create_a_track_scene_or_history() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let owner = track(&mut e, "source");
+    let audio = audio(&mut e, owner);
+    let Created::Clip(midi) = e
+        .execute(Command::PlaceMidiClip {
+            track: owner,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi")
+    };
+    let before = e.project().clone();
+    for gain in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+        for midi_source in [false, true] {
+            let scene = SessionSceneTarget::Insert { before: None };
+            let command = if midi_source {
+                Command::CopyArrangementMidiToNewSessionTrack {
+                    source: midi,
+                    before_track: None,
+                    scene,
+                    initial_gain: Some(gain),
+                }
+            } else {
+                Command::CopyArrangementAudioClipToNewSessionTrack {
+                    source: audio,
+                    before_track: None,
+                    scene,
+                    initial_gain: Some(gain),
+                }
+            };
+            assert!(e.execute(command).is_err());
+            assert_eq!(e.project(), &before);
+        }
+    }
 }
 
 #[test]
@@ -317,6 +364,7 @@ fn stale_anchors_wrong_source_kind_and_transformed_audio_refuse_without_partial_
         let before = e.project().clone();
         assert!(
             e.execute(Command::CopyArrangementAudioClipToNewSessionTrack {
+                initial_gain: None,
                 source: clip,
                 before_track,
                 scene
@@ -328,6 +376,7 @@ fn stale_anchors_wrong_source_kind_and_transformed_audio_refuse_without_partial_
     let before = e.project().clone();
     assert!(
         e.execute(Command::CopyArrangementMidiToNewSessionTrack {
+            initial_gain: None,
             source: clip,
             before_track: None,
             scene: SessionSceneTarget::Insert { before: None }
@@ -343,6 +392,7 @@ fn stale_anchors_wrong_source_kind_and_transformed_audio_refuse_without_partial_
     let before = e.project().clone();
     assert!(
         e.execute(Command::CopyArrangementAudioClipToNewSessionTrack {
+            initial_gain: None,
             source: clip,
             before_track: None,
             scene: SessionSceneTarget::Insert { before: None }

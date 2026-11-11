@@ -138,7 +138,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
@@ -362,8 +362,8 @@ mod ui_tests {
             .expect("mapped");
             assert!(expected.0 > 0 && expected.1 > expected.0);
             assert_eq!(
-                (view.piano_beat_start.raw(), view.piano_beat_span.raw()),
-                (expected.0, expected.1 - expected.0)
+                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (i128::from(expected.0), expected.1 - expected.0)
             );
         });
     }

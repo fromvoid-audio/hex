@@ -97,13 +97,47 @@ fn limits() -> DraftReadLimits {
     }
 }
 
+fn open_written(path: &Path) -> CompletedAutomationTake {
+    #[cfg(unix)]
+    let _released = super::super::super::tests::wait_for_shared_lock(
+        path,
+        std::time::Duration::from_millis(250),
+    )
+    .unwrap();
+    CompletedAutomationTake::open_on_control(path, limits()).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn retained_writer_descriptor_blocks_completed_take_open_until_released() {
+    let files = Files::new();
+    let path = files.path("retained-writer");
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer
+        .finish(DraftTerminal::Finished(DraftClock {
+            performance_frame: 0,
+            content_frame: 0,
+            loop_pass: 0,
+        }))
+        .unwrap();
+    let retained = writer.file.try_clone().unwrap();
+    drop(writer);
+    let error = CompletedAutomationTake::open_on_control(&path, limits())
+        .err()
+        .unwrap();
+    assert!(matches!(error, TakeOpenError::Busy(_)), "{error}");
+    drop(retained);
+    assert!(CompletedAutomationTake::open_on_control(&path, limits()).is_ok());
+}
+
 #[test]
 fn lean_transfer_releases_token_preserves_lock_and_resumes_the_same_cursor() {
     let files = Files::new();
     let path = files.path("lean");
     write(&path, 2, &events(0.75));
     let original = fs::read(&path).unwrap();
-    let mut full = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let mut full = open_written(&path);
     let token = full.core.source.source_token_weak();
     assert!(token.upgrade().is_some());
     let owner = Arc::downgrade(&full.core.cursor_owner);
@@ -173,7 +207,7 @@ fn identity_is_the_validated_terminal_chain_and_exact_length_for_both_formats() 
         let path = files.path(&format!("identity-{version}"));
         write(&path, version, &events(0.25));
         let bytes = fs::read(&path).unwrap();
-        let full = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+        let full = open_written(&path);
         let identity = full.content_identity();
         assert_eq!(identity.version(), version);
         assert_eq!(identity.file_bytes(), bytes.len() as u64);
@@ -196,12 +230,7 @@ fn identity_is_the_validated_terminal_chain_and_exact_length_for_both_formats() 
         drop(prepared);
         let changed = files.path(&format!("changed-{version}"));
         write(&changed, version, &events(0.75));
-        assert_ne!(
-            CompletedAutomationTake::open_on_control(&changed, limits())
-                .unwrap()
-                .content_identity(),
-            identity
-        );
+        assert_ne!(open_written(&changed).content_identity(), identity);
     }
 }
 
@@ -210,7 +239,7 @@ fn lean_layout_exhaustively_reports_actual_path_tempo_and_shared_data() {
     let files = Files::new();
     let path = files.path("layout");
     write(&path, 2, &events(0.5));
-    let mut full = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let mut full = open_written(&path);
     full.core.source.reader.records.path.reserve(37);
     let path_capacity = full.core.source.reader.records.path.capacity();
     let group = Arc::as_ptr(&full.core.cursor_owner) as usize;
@@ -249,7 +278,7 @@ fn lean_source_keeps_identity_and_refuses_post_transfer_record_damage() {
     let files = Files::new();
     let path = files.path("damage");
     write(&path, 2, &events(0.5));
-    let full = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let full = open_written(&path);
     let mut prepared = full.into_prepared_on_control().unwrap();
     let identity = prepared.content_identity();
     let bytes = fs::read(&path).unwrap();

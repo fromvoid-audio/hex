@@ -17,7 +17,10 @@ fn reservation() -> crate::ResidentNativeReservation {
     }
 }
 fn receive(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn insertion(state: &ViewState) -> PluginEffectInsertion {
     PluginEffectInsertion {
@@ -34,6 +37,7 @@ fn insertion(state: &ViewState) -> PluginEffectInsertion {
         },
         destination: PluginEffectDestination::Main,
         before: None,
+        track_device_name: None,
         control: Arc::new(PluginEffectControl::default()),
     }
 }
@@ -186,6 +190,42 @@ fn invalid_plugin_metadata_and_stale_context_never_reach_native_preparation() {
     }
     assert_eq!(observed.plugin_preparations.load(Ordering::Acquire), 0);
     assert!(observed.plugin_terminals.lock().unwrap().is_empty());
+}
+
+#[test]
+fn stale_vst3_drop_placement_never_starts_native_preparation() {
+    let (service, observed, _) = service();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "target".into(),
+        }))
+        .unwrap();
+    let original = receive(&service);
+    let track = original.state.project.tracks()[0].id();
+    let request = insertion(&original.state);
+    let fresh = original.state.project.next_identity();
+    for (track_identity, gain) in [(fresh + 1, 0.25), (fresh, f32::NAN)] {
+        let mut request = request.clone();
+        request.control = Arc::new(PluginEffectControl::default());
+        request.destination = PluginEffectDestination::NewTrack {
+            before_track: Some(track),
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            gain,
+            track_identity,
+        };
+        service
+            .submit(Request::InsertPluginEffect(request))
+            .unwrap();
+        let refused = receive(&service);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("vst3 track insertion target is no longer available"),
+        );
+        assert_eq!(refused.state.project, original.state.project);
+        assert_eq!(refused.state.revision, original.state.revision);
+        assert!(!refused.plugin_effect_complete[0].accepted);
+    }
+    assert_eq!(observed.plugin_preparations.load(Ordering::Acquire), 0);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Transient musical input quantization. UI resolves adaptive steps before async
 //! work; recordings and imports retain this immutable control-side snapshot.
-//! This is not saved project state, a launch scheduler or an audio-thread API.
+//! This is not saved project state or a launch scheduler. The forward lookup
+//! also serves the live monitor at publication and performs no allocation.
 use super::{BeatTime, MAX_METER_POINTS, MeterMap, TempoMap};
 use crate::Invalid;
 
@@ -190,6 +191,68 @@ impl ResolvedInputGrid {
         }
         tempo.beat_to_frame(self.snap_beat(tempo, tempo.frame_to_beat(frame)?)?)
     }
+
+    /// Find the first usable landmark at or after an output frame. Unlike
+    /// authored input snapping, live monitoring cannot play into the past.
+    pub fn next_frame(&self, tempo: &TempoMap, frame: u64) -> Result<u64, Invalid> {
+        if self.is_off() {
+            return Ok(frame);
+        }
+        let candidate = self.next_segment_frame(tempo, frame)?;
+        let Some(visible) = &self.visible else {
+            return Ok(candidate);
+        };
+        if candidate < visible.start || frame >= visible.end {
+            return Ok(candidate);
+        }
+        for &beat in &visible.beats {
+            let candidate = tempo.beat_to_frame(beat)?;
+            if (frame.max(visible.start)..visible.end).contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        self.next_segment_frame(tempo, visible.end)
+    }
+
+    fn next_segment_frame(&self, tempo: &TempoMap, threshold: u64) -> Result<u64, Invalid> {
+        let beat = tempo.frame_to_beat(threshold)?;
+        let current = self
+            .segments
+            .partition_point(|segment| segment.origin <= beat)
+            .saturating_sub(1);
+        for segment in &self.segments[current..current.saturating_add(2).min(self.segments.len())] {
+            let index = beat.raw().saturating_sub(segment.origin.raw()) / segment.step.raw();
+            for step in [Some(index), index.checked_add(1)].into_iter().flatten() {
+                let Some(raw) = step
+                    .checked_mul(segment.step.raw())
+                    .and_then(|offset| segment.origin.raw().checked_add(offset))
+                else {
+                    continue;
+                };
+                if segment.end.is_some_and(|end| raw >= end.raw()) {
+                    break;
+                }
+                let candidate = tempo.beat_to_frame(BeatTime::from_raw(raw))?;
+                if candidate >= threshold {
+                    return Ok(candidate);
+                }
+            }
+        }
+        Err(Invalid("input grid has no future representable landmark"))
+    }
+
+    /// Actual heap custody, excluding the inline value already charged by its owner.
+    pub fn retained_bytes(&self) -> Option<usize> {
+        self.segments
+            .capacity()
+            .checked_mul(std::mem::size_of::<MusicalGridSegment>())?
+            .checked_add(
+                self.visible
+                    .as_ref()
+                    .map_or(0, |visible| visible.beats.capacity())
+                    .checked_mul(std::mem::size_of::<BeatTime>())?,
+            )
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +282,28 @@ mod tests {
             ResolvedInputGrid::off().snap_frame(&tempo, 12_345).unwrap(),
             12_345
         );
+    }
+    #[test]
+    fn forward_monitor_grid_preserves_nearest_authored_placement() {
+        let tempo = TempoMap::constant(48_000, super::super::Tempo::DEFAULT).unwrap();
+        let meter = MeterMap::new(vec![
+            MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME),
+            MeterPoint::new(BeatTime::from_ratio(5, 4).unwrap(), Meter::COMMON_TIME),
+        ])
+        .unwrap();
+        let grid = ResolvedInputGrid::fixed(&meter, BeatTime::ONE).unwrap();
+        assert_eq!(grid.snap_frame(&tempo, 25_000).unwrap(), 24_000);
+        assert_eq!(grid.next_frame(&tempo, 24_000).unwrap(), 24_000);
+        assert_eq!(grid.next_frame(&tempo, 25_000).unwrap(), 30_000);
+        assert_eq!(grid.next_frame(&tempo, 30_001).unwrap(), 54_000);
+        assert_eq!(
+            ResolvedInputGrid::off().next_frame(&tempo, 25_000).unwrap(),
+            25_000
+        );
+        let adaptive = grid
+            .with_visible_landmarks(0, 42_000, vec![BeatTime::ZERO, BeatTime::ONE])
+            .unwrap();
+        assert_eq!(adaptive.next_frame(&tempo, 24_001).unwrap(), 54_000);
     }
     #[test]
     fn invalid_partitions_and_overflow_are_explicit() {

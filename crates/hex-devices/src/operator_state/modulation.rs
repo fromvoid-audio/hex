@@ -156,7 +156,7 @@ impl Settings {
     pub fn read(self, id: ParameterId) -> Option<ParameterValue> {
         let i = id.value().checked_sub(FIRST)? as usize;
         let word = *self.0.get(i)?;
-        Some(if i % 2 == 0 {
+        Some(if i.is_multiple_of(2) {
             ParameterValue::Choice(word)
         } else {
             ParameterValue::Float(f32::from_bits(word))

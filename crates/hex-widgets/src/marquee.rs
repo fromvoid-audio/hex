@@ -3,11 +3,11 @@
 //! membership as view state; this module owns only the pixel rectangle, the
 //! click/drag threshold, inclusive hit-testing, modifier policy and painting.
 //!
-//! Gesture law, following Live: a blank click keeps its owner's meaning (add a
-//! point, or clear the selection); a blank press that moves at least
-//! [`MARQUEE_DRAG_THRESHOLD`] pixels becomes a marquee instead. Shift adds the
-//! hits to the selection present at the press; Cmd toggles them; otherwise the
-//! hits replace it. Cancelling restores the selection present at the press.
+//! The owner chooses which blank presses can start a marquee. It becomes one
+//! after moving at least [`MARQUEE_DRAG_THRESHOLD`] pixels. Shift can reserve
+//! marquee selection on surfaces that add points on a plain click. The EQ
+//! reserves double-click for creation and uses plain drag for marquee. Owners
+//! capture modifiers at press time and restore the selection on cancellation.
 use gpui::{Bounds, Modifiers, PathBuilder, Pixels, Window, point, px, rgb, rgba};
 
 /// Pixel distance a blank press must travel before it becomes a marquee.
@@ -16,20 +16,24 @@ pub const MARQUEE_DRAG_THRESHOLD: f32 = 3.0;
 /// How marquee hits combine with the selection present at the press.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarqueeMode {
+    /// The hits become the selection.
     Replace,
-    /// Shift: union with the press-time selection.
+    /// Union with the press-time selection.
     Add,
-    /// Cmd: symmetric difference with the press-time selection.
+    /// Shift+Cmd: symmetric difference with the press-time selection.
     Toggle,
 }
 
 impl MarqueeMode {
-    /// Cmd wins over Shift, matching the per-point toggle convention.
+    /// Whether a blank press starts a marquee on a Shift-only surface.
+    pub fn starts(modifiers: Modifiers) -> bool {
+        modifiers.shift
+    }
+
+    /// Mode for a marquee started by [`Self::starts`]; Cmd toggles.
     pub fn from_modifiers(modifiers: Modifiers) -> Self {
         if modifiers.platform {
             Self::Toggle
-        } else if modifiers.shift {
-            Self::Add
         } else {
             Self::Replace
         }
@@ -204,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn modifiers_choose_replace_add_or_toggle_against_press_time_selection() {
+    fn only_shift_starts_a_marquee_and_cmd_toggles_against_press_time_selection() {
         let shift = Modifiers {
             shift: true,
             ..Modifiers::default()
@@ -213,12 +217,10 @@ mod tests {
             platform: true,
             ..Modifiers::default()
         };
-        assert_eq!(
-            MarqueeMode::from_modifiers(Modifiers::default()),
-            MarqueeMode::Replace
-        );
-        assert_eq!(MarqueeMode::from_modifiers(shift), MarqueeMode::Add);
-        assert_eq!(MarqueeMode::from_modifiers(cmd), MarqueeMode::Toggle);
+        assert!(!MarqueeMode::starts(Modifiers::default()));
+        assert!(!MarqueeMode::starts(cmd));
+        assert!(MarqueeMode::starts(shift));
+        assert_eq!(MarqueeMode::from_modifiers(shift), MarqueeMode::Replace);
         assert_eq!(
             MarqueeMode::from_modifiers(Modifiers {
                 shift: true,

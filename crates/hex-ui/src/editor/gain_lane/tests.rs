@@ -38,109 +38,123 @@ fn project() -> (Project, TrackId, TrackId) {
         .unwrap();
     (editor.project().clone(), a, b)
 }
-#[test]
-fn occupied_move_refuses_complete_candidate_without_losing_either_authored_point() {
-    let original = vec![point(1, 0.5), point(2, 1.5)];
-    assert!(replacement(&original, Some(BeatTime::from_raw(1)), point(2, 0.25)).is_err());
-    assert_eq!(original[0].gain, 0.5);
-    assert_eq!(original[1].gain, 1.5);
-    let moved = replacement(&original, Some(BeatTime::from_raw(1)), point(3, 0.25)).unwrap();
-    let (project, id, _) = project();
-    let mut editor = Editor::new(project, 8).unwrap();
-    let before = editor.project().clone();
-    editor
-        .execute(Command::ReplaceTrackGainEnvelope {
-            track: id,
-            points: moved.clone(),
-        })
-        .unwrap();
-    assert_eq!(editor.project().track(id).unwrap().gain_envelope(), moved);
-    assert!(editor.undo());
-    assert_eq!(editor.project(), &before);
-}
-#[test]
-fn free_geometry_preserves_raw_keys_and_snap_respects_time_viewport() {
-    let (project, _, _) = project();
-    let viewport = Viewport {
-        start: 24000,
-        length: 48000,
-    };
-    let rect = [100.0, 20.0, 200.0, 40.0];
-    assert_eq!(
-        pointer_beat(
-            &project,
-            super::super::musical_time::SnapGrid::Off,
-            viewport,
-            rect,
-            200.0
-        )
-        .unwrap(),
-        BeatTime::from_quarters(2).unwrap()
-    );
-    assert_eq!(pointer_gain(rect, 20.0), 2.0);
-    assert_eq!(pointer_gain(rect, 60.0), 0.0);
-    assert_eq!(pointer_gain(rect, 40.0), 1.0);
-    let raw = BeatTime::from_raw(2);
-    let mut lane = GainLane {
-        track: Some(project.tracks()[0].id()),
-        selected: Some(raw),
-        ..Default::default()
-    };
-    lane.reconcile(0, 1, &project, false);
-    assert_eq!(lane.selected, Some(raw));
-}
-#[test]
-fn generation_revision_and_owner_changes_cancel_drafts_without_reinterpreting_ids() {
-    let (project, a, b) = project();
-    let draft = Draft {
-        generation: 0,
-        revision: 1,
-        track: a,
-        from: Some(BeatTime::from_raw(1)),
-        point: point(1, 0.75),
-        pointer: None,
-    };
-    for (generation, revision, replaced) in [(1, 1, false), (0, 2, false), (0, 1, true)] {
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn occupied_move_refuses_complete_candidate_without_losing_either_authored_point() {
+        let original = vec![point(1, 0.5), point(2, 1.5)];
+        assert!(replacement(&original, Some(BeatTime::from_raw(1)), point(2, 0.25)).is_err());
+        assert_eq!(original[0].gain, 0.5);
+        assert_eq!(original[1].gain, 1.5);
+        let moved = replacement(&original, Some(BeatTime::from_raw(1)), point(3, 0.25)).unwrap();
+        let (project, id, _) = project();
+        let mut editor = Editor::new(project, 8).unwrap();
+        let before = editor.project().clone();
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track: id,
+                points: moved.clone(),
+            })
+            .unwrap();
+        assert_eq!(editor.project().track(id).unwrap().gain_envelope(), moved);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+    }
+
+    #[test]
+    fn free_geometry_preserves_raw_keys_and_snap_respects_time_viewport() {
+        let (project, _, _) = project();
+        let viewport = Viewport {
+            start: 24000,
+            length: 48000,
+        };
+        let rect = [100.0, 20.0, 200.0, 40.0];
+        assert_eq!(
+            pointer_beat(
+                &project,
+                super::super::super::musical_time::SnapGrid::Off,
+                viewport,
+                rect,
+                200.0
+            )
+            .unwrap(),
+            BeatTime::from_quarters(2).unwrap()
+        );
+        assert_eq!(pointer_gain(rect, 20.0), 2.0);
+        assert_eq!(pointer_gain(rect, 60.0), 0.0);
+        assert_eq!(pointer_gain(rect, 40.0), 1.0);
+        let raw = BeatTime::from_raw(2);
+        let mut lane = GainLane {
+            track: Some(project.tracks()[0].id()),
+            selected: Some(raw),
+            ..Default::default()
+        };
+        lane.reconcile(0, 1, &project, false);
+        assert_eq!(lane.selected, Some(raw));
+    }
+
+    #[test]
+    fn generation_revision_and_owner_changes_cancel_drafts_without_reinterpreting_ids() {
+        let (project, a, b) = project();
+        let draft = Draft {
+            generation: 0,
+            revision: 1,
+            track: a,
+            from: Some(BeatTime::from_raw(1)),
+            point: point(1, 0.75),
+            pointer: None,
+        };
+        for (generation, revision, replaced) in [(1, 1, false), (0, 2, false), (0, 1, true)] {
+            let mut lane = GainLane {
+                track: Some(a),
+                draft: Some(draft),
+                ..Default::default()
+            };
+            lane.reconcile(generation, revision, &project, replaced);
+            assert!(lane.draft.is_none());
+        }
         let mut lane = GainLane {
             track: Some(a),
             draft: Some(draft),
             ..Default::default()
         };
-        lane.reconcile(generation, revision, &project, replaced);
+        lane.change_owner(b, &project);
+        assert_eq!(lane.track, Some(b));
         assert!(lane.draft.is_none());
     }
-    let mut lane = GainLane {
-        track: Some(a),
-        draft: Some(draft),
-        ..Default::default()
-    };
-    lane.change_owner(b, &project);
-    assert_eq!(lane.track, Some(b));
-    assert!(lane.draft.is_none());
+
+    #[test]
+    fn presentation_distinguishes_local_drafts_canonical_pending_and_exact_applied_revision() {
+        assert_eq!(
+            presentation(None, true, true, 7, Some(7)),
+            "draft · not applied"
+        );
+        assert!(
+            presentation(None, false, true, 7, Some(6)).contains("canonical revision unchanged")
+        );
+        assert!(presentation(None, false, false, 7, Some(6)).contains("application pending"));
+        assert!(
+            presentation(None, false, false, 7, Some(7)).contains("curve is a prepared preview")
+        );
+        assert_eq!(
+            presentation(Some("occupied beat"), true, false, 7, None),
+            "occupied beat"
+        );
+    }
 }
 
-#[test]
-fn presentation_distinguishes_local_drafts_canonical_pending_and_exact_applied_revision() {
-    assert_eq!(
-        presentation(None, true, true, 7, Some(7)),
-        "draft · not applied"
-    );
-    assert!(presentation(None, false, true, 7, Some(6)).contains("canonical revision unchanged"));
-    assert!(presentation(None, false, false, 7, Some(6)).contains("application pending"));
-    assert!(presentation(None, false, false, 7, Some(7)).contains("curve is a prepared preview"));
-    assert_eq!(
-        presentation(Some("occupied beat"), true, false, 7, None),
-        "occupied beat"
-    );
-}
 #[cfg(feature = "ui-test-support")]
-mod native {
+pub(in crate::editor) mod native {
     use super::*;
     use gpui::{
         Modifiers, MouseButton, TestAppContext, VisualTestContext, point as gpui_point, px, size,
     };
     use std::sync::Arc;
-    fn window(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
+    pub(in crate::editor) fn window(
+        cx: &mut TestAppContext,
+    ) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
         cx.update(super::super::super::bind_editor_keys);
         let (project, track, _) = project();
         let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
@@ -399,6 +413,139 @@ mod native {
             assert_eq!(view.worker_requests_pending, 1);
         });
     }
+
+    #[gpui::test]
+    fn unrelated_edit_refuses_during_gain_gesture_but_release_commits(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual.debug_bounds("gain-lane-plot").unwrap().center();
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        entity.update(&mut visual, |view, _| {
+            assert!(view.gain_lane.draft.is_some());
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_lane.draft.is_some());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(
+                view.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("gain point gesture")
+            );
+        });
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        entity.update(&mut visual, |view, _| {
+            assert!(view.gain_lane.draft.is_none());
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn unrelated_edit_preserves_numeric_gain_text_and_valid_commit(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual
+            .debug_bounds("gain-point-value-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_numeric_editing(cx));
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_numeric_editing(cx));
+            let generation = view.project_generation;
+            let revision = view.state.as_ref().unwrap().revision;
+            assert!(
+                !view.enqueue(hex_session::service::Request::DeviceAutomationControl {
+                    project_generation: generation,
+                    revision,
+                    edit: hex_session::service::DeviceAutomationControlEdit::Reenable,
+                })
+            );
+            use hex_session::service::{Request, TruncatedImportRecovery};
+            use hex_session::tuning_gesture::TuningLibraryOperation;
+            let requests = [
+                Request::RecoverTruncatedImport(
+                    TruncatedImportRecovery::new(Request::Import("fixture.wav".into())).unwrap(),
+                ),
+                Request::ReorderTracks {
+                    project_generation: generation,
+                    revision,
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    before: None,
+                },
+                Request::AddNativeDevice {
+                    track,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: Box::new(
+                        hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap(),
+                    ),
+                    before: None,
+                },
+                Request::BounceArrangement {
+                    project_generation: generation,
+                    revision,
+                    target: hex_project::BounceTarget::Track(track),
+                    in_place: true,
+                    adoption: hex_project::BounceAdoption::NewTracks,
+                    control: hex_session::service::ExportControl::default(),
+                },
+                Request::TuningLibrary {
+                    project_generation: generation,
+                    revision,
+                    operation_id: 1,
+                    operation: TuningLibraryOperation::Load { slot: 0 },
+                },
+                Request::Undo,
+                Request::Redo,
+            ];
+            for request in requests {
+                let request_name = std::mem::discriminant(&request);
+                assert!(!view.enqueue(request), "admitted {request_name:?}");
+                assert_eq!(
+                    view.error.as_deref(),
+                    Some("finish or cancel the numeric draft before editing")
+                );
+            }
+            view.begin_device_gesture(
+                hex_session::device_gesture::GestureTarget::TrackGain { track },
+                hex_lattice_contract::ParameterValue::Float(1.0),
+            )
+            .unwrap();
+            assert!(!view.enqueue_device_barrier(Request::Undo));
+            assert!(view.device_gesture_barriers.is_empty());
+            assert!(!view.device_gesture.has_pending_terminal());
+            view.device_gesture.reset();
+            assert_eq!(
+                view.gain_lane
+                    .gain
+                    .as_ref()
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .display_text(),
+                "invalid"
+            );
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("75");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
+        });
+    }
     #[gpui::test]
     fn header_a_opens_selected_lane_and_retains_operable_rows(cx: &mut TestAppContext) {
         let (handle, entity, track) = window(cx);
@@ -613,8 +760,16 @@ mod native {
             }));
             let state = view.state.as_ref().unwrap();
             assert_eq!(preview_gain(state, track, 0), Some(0.25));
-            assert_eq!(preview_gain(state, track, 24000), Some(0.8));
-            assert_eq!(preview_gain(state, track, 2400000), Some(0.25));
+            // Read-only paint follows playback's 5 ms Touch and rejoin ramps.
+            // Authored targets remain unchanged, but their first frame is no
+            // longer an instantaneous jump to the final gain.
+            let first = preview_gain(state, track, 24000).unwrap();
+            let middle = preview_gain(state, track, 24119).unwrap();
+            assert!(0.25 < first && first < middle && middle < 0.8);
+            assert_eq!(preview_gain(state, track, 24239), Some(0.8));
+            let released = preview_gain(state, track, 2400000).unwrap();
+            assert!(0.25 < released && released < 0.8);
+            assert_eq!(preview_gain(state, track, 2400239), Some(0.25));
             assert!(
                 view.visible_viewport(content_extent)
                     .fraction(2400000)

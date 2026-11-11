@@ -19,7 +19,10 @@ mod effect;
 mod endpoints;
 mod epoch;
 pub(super) mod ordinary;
+mod parameter_extension;
+mod program;
 mod references;
+mod state_approval;
 pub(crate) use ordinary::OrdinaryNativeReferences;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
@@ -132,7 +135,10 @@ struct Slot {
     starting: bool,
     retiring: bool,
     facts: Option<hex_plugin_host::protocol::Facts>,
-    presentation: Option<hex_plugin_host::protocol::Presentation>,
+    presentation: Option<(
+        hex_plugin_host::protocol::Presentation,
+        hex_plugin_host::protocol::PresentationPlan,
+    )>,
     processor: Option<hex_lattice::PreparedForeignProcessor>,
     cancellation: Option<Cancellation>,
     cancellation_requested: bool,
@@ -244,6 +250,8 @@ enum Owner {
 #[derive(Default)]
 struct Execution {
     owner: Option<Owner>,
+    // Unique source facts survive only the original quiescence/resume carrier.
+    renewal: Option<crate::plugin_effects::NativeEffectRenewal>,
     error: Option<hex_plugin_host::Error>,
     cleanup_error: Option<hex_plugin_host::Error>,
     // Constructor refusals retain their original cause in the actual owner
@@ -557,7 +565,7 @@ impl Custody {
             },
             _ if slot.presentation.is_some() => NativeSourcePreparationProgress::Prepared {
                 facts: slot.facts?,
-                presentation: slot.presentation?,
+                presentation: slot.presentation?.0,
             },
             Phase::Reserved => NativeSourcePreparationProgress::Preparing,
             _ => NativeSourcePreparationProgress::Facts(slot.facts?),
@@ -691,6 +699,7 @@ impl Custody {
                         // is allocated and disposal custody stays in the owner.
                         cell.take_constructor_cause();
                         drop(cell.owner.take());
+                        cell.renewal = None;
                         drop(cancellation);
                     }
                     Ok(disposed)
@@ -825,6 +834,21 @@ fn native_pool_preflight(
 }
 
 impl CandidateRoot {
+    pub(crate) fn has_vacant_native_source_slots(&self, needed: usize) -> bool {
+        self.0.eligible.bank.try_lock().is_ok_and(|bank| {
+            !bank.closing
+                && bank.sources.limits.is_some()
+                && bank
+                    .sources
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.phase == Phase::Vacant)
+                    .take(needed)
+                    .count()
+                    == needed
+        })
+    }
+
     fn require_native_source_control_open(&self) -> Result<(), &'static str> {
         let bank = lock(&self.0.bank);
         if bank.closing || bank.retiring {
@@ -891,28 +915,65 @@ impl CandidateRoot {
         )
     }
     pub(crate) fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
-        let work = self.0.eligible.work.try_lock().ok()?;
-        let bank = self.0.eligible.bank.try_lock().ok()?;
-        let index = bank.sources.index(binding)?;
-        let slot = bank.sources.slots.get(index)?;
+        self.with_native_source_endpoint(binding, |loaned, endpoint| {
+            (loaned, endpoint.transport_is_live_on_control())
+        })
+    }
+
+    pub(crate) fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_failure_diagnostic_on_control()
+        })?
+    }
+    fn with_native_source_endpoint<T>(
+        &self,
+        binding: Binding,
+        read: impl FnOnce(bool, NativeEffectReference<'_>) -> T,
+    ) -> Option<T> {
+        self.try_with_native_source_endpoint(binding, read).ok()
+    }
+    fn try_with_native_source_endpoint<T>(
+        &self,
+        binding: Binding,
+        read: impl FnOnce(bool, NativeEffectReference<'_>) -> T,
+    ) -> Result<T, &'static str> {
+        let work = self
+            .0
+            .eligible
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let bank = self
+            .0
+            .eligible
+            .bank
+            .try_lock()
+            .map_err(|_| "native source is busy")?;
+        let index = bank.sources.index(binding).ok_or("native source differs")?;
+        let slot = bank
+            .sources
+            .slots
+            .get(index)
+            .ok_or("native source differs")?;
         if bank.closing
             || slot.phase != Phase::Accepted
             || slot.retiring
             || slot.starting
             || slot.cancellation_requested
         {
-            return None;
+            return Err("native source is not active");
         }
-        let live = match work.sources.cells.get(index)?.owner.as_ref()? {
-            Owner::Effect(effect) => {
-                NativeEffectReference::Unsplit(effect).transport_is_live_on_control()
-            }
-            Owner::Loaned(control) => {
-                NativeEffectReference::Loaned(control).transport_is_live_on_control()
-            }
-            _ => return None,
+        let endpoint = match work
+            .sources
+            .cells
+            .get(index)
+            .and_then(|cell| cell.owner.as_ref())
+        {
+            Some(Owner::Effect(effect)) => NativeEffectReference::Unsplit(effect),
+            Some(Owner::Loaned(control)) => NativeEffectReference::Loaned(control),
+            _ => return Err("native effect source is unavailable"),
         };
-        Some((slot.endpoint_loaned, live))
+        Ok(read(slot.endpoint_loaned, endpoint))
     }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {
