@@ -136,7 +136,7 @@ pub(in crate::editor) fn project_interval(
     Some((x(start), x(end)))
 }
 
-#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]
 pub(in crate::editor) mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, IDENTITY_CONVERSION, Tempo};
@@ -184,7 +184,7 @@ pub(in crate::editor) mod tests {
             .unwrap();
         editor.project().clone()
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn canonical_rows_convert_midi_tempo_and_focus_without_changing_project() {
         let project = project();
@@ -209,7 +209,7 @@ pub(in crate::editor) mod tests {
         );
         assert_eq!(project.snapshot(), before);
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn overlapping_ranges_merge_but_adjacent_clips_remain_distinct() {
         let mut row = vec![
@@ -224,7 +224,7 @@ pub(in crate::editor) mod tests {
             vec![Interval { start: 0, end: 6 }, Interval { start: 6, end: 9 }]
         );
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn exact_view_projection_clips_and_rejects_invalid_geometry() {
         let viewport = Viewport {
@@ -289,7 +289,7 @@ pub(in crate::editor) mod tests {
             None
         );
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn cache_reuses_pan_independent_data_and_invalidates_owner_context() {
         let project = project();
@@ -308,7 +308,7 @@ pub(in crate::editor) mod tests {
         assert!(!Rc::ptr_eq(&third, &fourth));
         assert!(project_rows(&Project::new(48_000).unwrap(), &[], None).is_empty());
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn revisioned_edits_and_undo_restore_canonical_ranges() {
         let mut model = Editor::new(project(), 8).unwrap();
@@ -332,7 +332,7 @@ pub(in crate::editor) mod tests {
         assert_eq!(recolored.rows, restored.rows);
         assert!(!Rc::ptr_eq(&recolored, &restored));
     }
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn dense_projects_are_bounded_without_losing_the_bottom_track() {
         let mut model = Editor::new(Project::new(48_000).unwrap(), 64).unwrap();

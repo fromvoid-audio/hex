@@ -1414,6 +1414,61 @@ class SingleRunFeatureTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in steps))
 
+    def test_live_hex_ui_plans_keep_the_test_tier_split(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        def planned_for(path):
+            boundary = plan.boundary_selection(root, [path], inventory, [owner])
+            self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+            return {step.step_id: step for step in ci.planned_steps({
+                "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                "cargo_inventory": inventory, "paths": [path]})}
+
+        scoped = planned_for("crates/hex-ui/src/editor/device_panel/operator_panel/filter_response.rs")
+        self.assertNotIn("module-tests-hex-ui", scoped)
+        self.assertIn("editor::device_panel::operator_panel::filter_response::tests::",
+                      scoped["ui-default-lib-unit-tests"].argv)
+        self.assertIn("editor::device_panel::tests::operator_filter_response_tests::filter_curve_keeps_released_parameter_preview_across_completed_repaints",
+                      scoped["ui-feature-tests"].argv)
+
+        whole = planned_for("crates/hex-ui/Cargo.toml")
+        self.assertNotIn("affected-tests", whole)
+        for name in ("ui-default-lib-unit-tests", "ui-default-standalone-tests",
+                     "ui-feature-tests", "ui-midi-pressure-boundary-tests", "ui-feature-doctests"):
+            self.assertIn(name, whole)
+        self.assertTrue(any("unit_editor_logic" in step.argv for step in whole.values()))
+
+    def test_ui_test_cfg_exceptions_keep_unknown_gates_conservative(self):
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            editor = root / "crates/hex-ui/src/editor"
+            editor.mkdir(parents=True)
+            witness = editor / "clip_boundary.rs"
+            witness.write_text(
+                '#[cfg(not(any(test, feature = "ui-test-support")))]\nfn production_edge() {}\n')
+            fixture = editor / "fixture.rs"
+            fixture.write_text(
+                '#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]\n'
+                'fn fixture() {}\n')
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory),
+                             {owner: "ui-test-support"})
+            unknown = editor / "unknown.rs"
+            unknown.write_text(witness.read_text())
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+            unknown.unlink()
+            fixture.write_text('#[cfg(feature = "ui-unit-tier")]\nfn production() {}\n')
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+            fixture.unlink()
+            witness.write_text('#[cfg(not(feature = "ui-test-support"))]\nfn production_edge() {}\n')
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
+
     def test_ui_default_lib_unit_cfg_exception_is_exact_and_local(self):
         inventory = [{"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
