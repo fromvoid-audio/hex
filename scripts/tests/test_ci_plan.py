@@ -4893,6 +4893,35 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
                 self.assertNotIn("editor::", feature)
 
+    def test_truncated_import_intent_keeps_real_recovery_prompt(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/truncated_import.rs"
+        unit = "editor::truncated_import::unit_tests::"
+        witness = "editor::truncated_import::tests::confirming_the_prompt_recovers_exactly_the_readable_frames"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertEqual(default.argv[default.argv.index("--") + 1:], (unit,))
+        feature = steps["ui-feature-tests"].argv
+        self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
+        fixture = "crates/hex-ui/src/editor/truncated_import_tests.rs"
+        fixture_boundary = plan.boundary_selection(root, [fixture], inventory, [owner])
+        fixture_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": fixture_boundary,
+            "cargo_inventory": inventory, "paths": [fixture]})}
+        self.assertNotIn("ui-default-lib-unit-tests", fixture_steps)
+        self.assertTrue(any(witness.startswith(prefix) for prefix in fixture_steps["ui-feature-tests"].argv))
+
     def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
