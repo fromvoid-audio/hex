@@ -3870,6 +3870,51 @@ class ModuleScopeTests(unittest.TestCase):
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
 
+    def test_browser_scalar_controls_keep_unit_and_native_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        controls = (
+            ("audition", "audition_geometry", (
+                "editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus",
+                "editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport",
+            )),
+            ("random", "random_rank", (
+                "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
+                "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged",
+            )),
+            ("scrollbar", "scrollbar_geometry", (
+                "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+                "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture",
+            )),
+        )
+        for runtime, helper, consumers in controls:
+            unit = f"editor::browser::{helper}::"
+            for module in (runtime, helper):
+                path = f"crates/hex-ui/src/editor/browser/{module}.rs"
+                with self.subTest(path=path):
+                    boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                    self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                    self.assertNotIn("editor::browser::", boundary["module_filters"][owner])
+                    steps = {step.step_id: step for step in ci.planned_steps({
+                        "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                        "cargo_inventory": inventory, "paths": [path]})}
+                    unit_step = steps["ui-unit-unit_editor_logic"]
+                    self.assertIn(unit, unit_step.argv)
+                    self.assertTrue(unit_step.requires_tests)
+                    for consumer in consumers:
+                        self.assertIn(consumer, steps["ui-feature-tests"].argv)
+
+        consumer_paths = ("browser_ui_test.rs", "browser_random_ui_test.rs",
+                          "browser_scrollbar_ui_test.rs")
+        for path, (_, helper, _) in zip(consumer_paths, controls):
+            path = "crates/hex-ui/src/editor/" + path
+            with self.subTest(path=path):
+                names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+                self.assertIn(f"editor::browser::{helper}::", names)
+
     def test_midi_loop_display_cohort_routes_source_and_consumer_changes(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
