@@ -234,16 +234,22 @@ fn device_d_refuses_stale_cards_and_instruments_and_leaves_nested_text_alone(
         .unwrap()
         .descriptor
         .id;
-    let (handle, editor) = actor_editor_window(cx, service, state.clone(), track);
+    let newer = apply(
+        &service,
+        Request::Edit(Command::RenameTrack {
+            track,
+            name: "newer revision".into(),
+        }),
+    )
+    .state;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1800.0), px(800.0)));
     visual.run_until_parked();
     click_device(&mut visual, effect, Modifiers::default());
     // Advance the view revision without repainting the focused card.
     visual.update(|window, cx| {
-        editor.update(cx, |view, _| {
-            Arc::make_mut(view.state.as_mut().unwrap()).revision += 1
-        });
+        editor.update(cx, |view, _| view.state = Some(newer.clone()));
         window.dispatch_action(Box::new(keyboard::DuplicateDevices), cx);
         editor.update(cx, |view, cx| {
             assert!(settled(view));
@@ -251,7 +257,6 @@ fn device_d_refuses_stale_cards_and_instruments_and_leaves_nested_text_alone(
                 view.error.as_deref(),
                 Some("device copy canceled · selection changed")
             );
-            view.state = Some(state.clone());
             cx.notify();
         });
     });
@@ -278,7 +283,7 @@ fn device_d_refuses_stale_cards_and_instruments_and_leaves_nested_text_alone(
         };
         assert_eq!(entity.read(cx).display_text(), "1d");
         assert!(settled(view));
-        assert_eq!(view.state.as_ref().unwrap().revision, state.revision);
+        assert_eq!(view.state.as_ref().unwrap().revision, newer.revision);
     });
 }
 
