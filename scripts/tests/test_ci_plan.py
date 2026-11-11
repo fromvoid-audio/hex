@@ -5226,6 +5226,37 @@ class ModuleScopeTests(unittest.TestCase):
                     standalone = steps["ui-unit-unit_editor_logic"].argv
                     self.assertTrue(any("editor::session_audio_panel::playhead::".startswith(name) for name in standalone))
 
+    def test_edit_cursor_pulse_unit_keeps_rendered_cursor_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::edit_cursor::tests::"
+        consumers = (
+            "editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_e_uses_it_offline",
+            "editor::edit_cursor_ui_test::completed_time_selection_survives_idle_ticks_and_remains_rendered",
+            "editor::edit_cursor_ui_test::space_restarts_from_selection_then_edit_cursor_and_respects_focus",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/edit_cursor.rs",
+            "crates/hex-ui/src/editor/edit_cursor_ui_test.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, default)
+                feature = steps["ui-feature-tests"].argv
+                self.assertNotIn("editor::", feature)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+                    if path.endswith("/edit_cursor.rs"):
+                        self.assertIn(consumer, feature)
+
     def test_console_return_paging_units_keep_rendered_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
