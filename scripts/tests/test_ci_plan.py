@@ -3218,6 +3218,12 @@ class ModuleScopeTests(unittest.TestCase):
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag.rs"], inventory, [owner])
         self.assertEqual(parent, {owner: sorted([
             "editor::drag::", worker, "editor::tracks::group_overlap::",
+            "editor::drag_autoscroll::tests::",
+            "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+            "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
             "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
             "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
         ])})
