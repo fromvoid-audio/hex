@@ -128,13 +128,30 @@ impl EditorView {
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
             let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), window, cx);
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, cx);
+            return self.arrangement_surface(upper, returns, main, None, cx);
         };
         self.sync_track_layout(state.project.tracks());
-        let clip_move_guide = self.displayed_clip_move_guide_frame();
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let clip_move_guide = self.displayed_clip_move_guide_frame(viewport);
+        let guide_line = clip_move_guide
+            .and_then(|frame| viewport.fraction(frame))
+            .map(|position| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right(px(self.track_header_width()))
+                    .children([vertical_timeline_guide(
+                        "clip-move-guide-line",
+                        position,
+                        theme::time_position_marker_color(),
+                        1.0 / window.scale_factor().max(1.0),
+                    )])
+            });
         let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
-            let empty_viewport = self.visible_viewport(state.timeline_frames);
+            let empty_viewport = viewport;
             self.refresh_locators(&state, empty_viewport);
             let grid = super::musical_time::grid_lines(
                 &state.project,
@@ -220,10 +237,9 @@ impl EditorView {
                 cx,
             );
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, cx);
+            return self.arrangement_surface(upper, returns, main, guide_line, cx);
         }
 
-        let viewport = self.visible_viewport(state.timeline_frames);
         self.refresh_locators(&state, viewport);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
@@ -316,7 +332,7 @@ impl EditorView {
             ));
         let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);
         let returns = self.return_tracks_view(cx);
-        self.arrangement_surface(upper, returns, main, cx)
+        self.arrangement_surface(upper, returns, main, guide_line, cx)
     }
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -772,12 +788,14 @@ impl EditorView {
         upper: Div,
         returns: impl IntoElement,
         main: Div,
+        clip_move_guide: Option<Div>,
         cx: &mut Context<Self>,
     ) -> Div {
         let entity = cx.entity();
         let clip_entity = entity.clone();
         let device_entity = entity.clone();
         div()
+            .debug_selector(|| "arrangement-surface".into())
             .relative()
             .flex_1()
             .min_h_0()
@@ -787,6 +805,7 @@ impl EditorView {
             .child(returns)
             .child(main)
             .child(self.arrangement_playback_layer(cx))
+            .children(clip_move_guide)
             .child(self.track_resize_events(cx))
             .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
@@ -1196,6 +1215,18 @@ pub(super) fn timeline_grid_elements(
         .collect()
 }
 
+fn vertical_timeline_guide(name: &'static str, position: f32, color: u32, width: f32) -> Div {
+    div()
+        .debug_selector(move || name.into())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(px(width))
+        .when(position == 1.0, |d| d.right_0())
+        .when(position != 1.0, |d| d.left(relative(position)))
+        .bg(rgb(color))
+}
+
 fn loop_guides(state: &ViewState, view: &EditorView, viewport: Viewport, header_width: f32) -> Div {
     let region = super::loop_rail::displayed_region(view, state);
     let mut layer = div()
@@ -1219,18 +1250,9 @@ fn loop_guides(state: &ViewState, view: &EditorView, viewport: Viewport, header_
         ] {
             if (viewport.start..=end).contains(&frame) {
                 let position = (frame - viewport.start) as f64 / viewport.length as f64;
-                layer = layer.child(
-                    div()
-                        .debug_selector(move || name.into())
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(1.0))
-                        .when(position == 1.0, |d| d.right_0())
-                        .when(position != 1.0, |d| d.left(relative(position as f32)))
-                        .bg(rgb(color))
-                        .opacity(if region.enabled() { 0.94 } else { 0.62 }),
-                );
+                layer =
+                    layer.children([vertical_timeline_guide(name, position as f32, color, 1.0)
+                        .opacity(if region.enabled() { 0.94 } else { 0.62 })]);
             }
         }
     }

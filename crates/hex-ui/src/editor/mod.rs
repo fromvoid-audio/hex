@@ -1109,6 +1109,9 @@ pub(super) struct EditorView {
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_arrangement_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
+    /// An acknowledged drop places a point independently of the clip or Main
+    /// selection. A new selection intent ends that precedence.
+    clip_drop_cursor_epoch: Option<u64>,
     /// The selected clip whose in-clip cursor a loop enable retired; the loop
     /// start then keeps outranking that clip's play start until a new click.
     loop_start_over_clip: Option<ClipId>,
@@ -1881,6 +1884,7 @@ impl EditorView {
             play_start_at_beginning: false,
             escape_stop_armed: false,
             edit_cursor_in_selected_clip: None,
+            clip_drop_cursor_epoch: None,
             loop_start_over_clip: None,
             selection_loop_start: None,
             detail_context: None,
