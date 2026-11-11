@@ -1503,6 +1503,46 @@ class SingleRunFeatureTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in steps))
 
+    def test_clip_selection_unit_tier_routes_owner_and_mixed_fixture_consumers(self):
+        root = SCRIPTS.parent
+        paths = (
+            "crates/hex-ui/src/editor/clip_selection.rs",
+            "crates/hex-ui/src/editor/clip_selection_unit_tests.rs",
+            "crates/hex-ui/src/editor/clip_selection_test_fixture.rs",
+        )
+        inventory = [{"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        native_consumers = (
+            "editor::clip_selection::tests::additive_clip_clicks_toggle_members_and_shift_on_other_track_starts_new_anchor",
+            "editor::clip_selection::tests::same_primary_membership_change_repaints_retained_audio_and_midi",
+            "editor::clip_selection::tests::shift_header_click_selects_five_mixed_clips_and_keeps_reverse_repeated_anchor",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, ["hex-ui"])
+                self.assertEqual(boundary["single_run"], {"hex-ui": "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": ["hex-ui"], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertEqual(default.argv[default.argv.index("--") + 1:],
+                                 ("editor::clip_selection::unit_tests::",))
+                feature = steps["ui-feature-tests"].argv
+                filters = feature[feature.index("--") + 1:]
+                self.assertNotIn("editor::", filters)
+                self.assertTrue(any(name.startswith("editor::clip_selection::") for name in filters))
+                if path in (paths[0], paths[2]):
+                    for consumer in native_consumers:
+                        self.assertTrue(any(consumer.startswith(name) for name in filters),
+                                        (path, consumer, filters))
+        unit_source = (root / paths[1]).read_text()
+        fixture_source = (root / paths[2]).read_text()
+        self.assertIn("additive_range_on_another_track_preserves_toggle_fallback", unit_source)
+        self.assertIn("Command::PlaceMidiClip", fixture_source)
+        self.assertIn("Command::PlaceClip", fixture_source)
+
     def test_default_lib_keeps_multiple_unit_modules_from_one_source(self):
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
