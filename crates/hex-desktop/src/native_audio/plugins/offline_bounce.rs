@@ -11,6 +11,7 @@ impl Plugins {
         &self,
         input: ResidentEffectPreparation<'_>,
         control: &ExportControl,
+        capacity: usize,
     ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
         if !input.requires_plugin_profile() {
             return Ok(None);
@@ -18,7 +19,7 @@ impl Plugins {
         let mut count = 0;
         input.visit_plugin_devices(|_, _, _| {
             count += 1;
-            if count > Hosting::MAX_OFFLINE_PROCESSORS {
+            if count > capacity {
                 return Err("offline vst3 processor limit reached".into());
             }
             Ok(())

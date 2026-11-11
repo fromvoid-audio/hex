@@ -63,9 +63,6 @@ pub struct Hosting {
     grouped_editor_callbacks: bool,
 }
 impl Hosting {
-    /// The compiler and endpoint set share this processor limit.
-    pub const MAX_OFFLINE_PROCESSORS: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
-
     /// Prepare a private offline source. Its reserved root is never admitted
     /// by the live output. The owner must join the instance before publishing.
     #[allow(clippy::too_many_arguments)] // Exact offline source, destination, and authored program.

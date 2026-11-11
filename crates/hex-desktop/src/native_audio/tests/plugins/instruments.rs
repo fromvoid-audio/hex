@@ -204,7 +204,7 @@ fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
     let undo = super::super::resident_sections::run_callback(&mut harness, Request::Undo);
     assert!(undo.error.is_none(), "{:?}", undo.error);
     let (applied, _) = harness.applied(applied);
-    assert_eq!(undo.state.project, before);
+    super::offline_bounce::assert_undone(&undo.state.project, &before);
     let redo = super::super::resident_sections::run_callback(&mut harness, Request::Redo);
     assert!(redo.error.is_none(), "{:?}", redo.error);
     harness.applied(applied);

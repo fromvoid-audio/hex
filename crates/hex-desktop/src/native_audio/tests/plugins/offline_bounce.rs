@@ -97,10 +97,13 @@ fn native_vst3_effect_chain_bounces_streamed_audio_with_compensated_pcm_and_hist
         .find(|row| row.id() != track)
         .unwrap();
     let expected = bounced_pcm(&copied.state.project, copy.clips()[0].asset());
-    // Each original fixture multiplies the first block by 0.5 and the next
-    // by 0.625. Both processors and both transport quanta must be accounted for.
-    assert_eq!(&expected[..256], &[[0.25 * 0.5 * 0.5; 2]; 256]);
-    assert_eq!(&expected[256..512], &[[0.25 * 0.625 * 0.625; 2]; 256]);
+    // The fixture's gain is 0.5 + 0.125 * block. The first bridge delays
+    // input to the second processor by two quanta, including its priming.
+    for (i, frame) in expected[..1024].iter().enumerate() {
+        let block = (i / 256) as f32;
+        let gain = (0.5 + 0.125 * block) * (0.75 + 0.125 * block);
+        assert_eq!(*frame, [0.25 * gain; 2], "processed sample at {i}");
+    }
 
     let baked = bounce(&mut h, copied.state.revision, true);
     assert!(baked.error.is_none(), "{:?}", baked.error);
@@ -117,15 +120,7 @@ fn native_vst3_effect_chain_bounces_streamed_audio_with_compensated_pcm_and_hist
     let undo = run_callback(&mut h, Request::Undo);
     assert!(undo.error.is_none(), "{:?}", undo.error);
     (applied, _) = h.applied(applied);
-    assert_eq!(undo.state.project, copied.state.project);
-    let redo = run_callback(&mut h, Request::Redo);
-    assert!(redo.error.is_none(), "{:?}", redo.error);
-    (applied, _) = h.applied(applied);
-    assert_eq!(redo.state.project, baked.state.project);
-
-    let undo = run_callback(&mut h, Request::Undo);
-    assert!(undo.error.is_none(), "{:?}", undo.error);
-    h.applied(applied);
+    assert_undone(&undo.state.project, &copied.state.project);
     let mut changed = fs::read(&path).unwrap();
     changed[44] ^= 1;
     fs::write(path, changed).unwrap();
@@ -140,6 +135,21 @@ fn native_vst3_effect_chain_bounces_streamed_audio_with_compensated_pcm_and_hist
     );
     assert_eq!(refused.state.project, undo.state.project);
     assert_eq!(refused.state.revision, undo.state.revision);
+    let redo = run_callback(&mut h, Request::Redo);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    h.applied(applied);
+    assert_eq!(redo.state.project, baked.state.project);
+}
+
+pub(super) fn assert_undone(actual: &hex_project::Project, before: &hex_project::Project) {
+    let mut before = before.snapshot();
+    let actual = actual.snapshot();
+    assert!(
+        actual.next_id >= before.next_id,
+        "history never reuses identities"
+    );
+    before.next_id = actual.next_id;
+    assert_eq!(actual, before);
 }
 
 fn bounced_pcm(
