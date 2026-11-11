@@ -12,12 +12,15 @@
 //!
 //! The dry path is delayed by exactly the declared [`LATENCY_FRAMES`], so a
 //! settled drive of zero returns the delayed input bit-exactly. Drive moves
-//! through a 20 ms one-pole smoother that snaps to its target. Each runtime owns
+//! through a 20 ms one-pole smoother that snaps to its target. The native host
+//! can supply a new drive target each frame, including sample-rate modulation. Each runtime owns
 //! its own noise generator with a fixed seed, so renders are deterministic and
 //! independent of block size. Non-finite input is silenced before it enters
 //! recursive history, recursive states flush denormals, and long exact silence
 //! clears every history, giving an explicit finite tail. No callback allocation,
 //! locks, logging, resources or project-schema changes are needed.
+//! The host keeps this same 11-frame latency during bypass, advancing ordinary
+//! processing/automation and finite-tail history behind an aligned dry ramp.
 //!
 //! This is an independent implementation from a behavioural description of a
 //! third-party device. It establishes no measured transfer function or parity
@@ -59,6 +62,7 @@ pub mod parameter {
 const SMOOTHED_ENVELOPE: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..crate::parameter_binding::SCALAR_ENVELOPE
     };
 const BINDINGS: [crate::parameter_binding::Binding<RattleSettings>; 1] =
@@ -344,6 +348,13 @@ impl PreparedRattle {
 }
 
 impl PreparedNativeProcessor for PreparedRattle {
+    // Keep the exact 11-frame dry delay and ordinary wet processing (including
+    // automation, noise/filter/envelope state and finite-tail guards) warm.
+    // The host owns the bounded dry history and transactional bypass ramp.
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
@@ -358,6 +369,12 @@ impl PreparedNativeProcessor for PreparedRattle {
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         self.supports(parameter)
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports(parameter).then_some(SMOOTHED_ENVELOPE)
     }
     fn runtime_version(&self) -> u32 {
         1

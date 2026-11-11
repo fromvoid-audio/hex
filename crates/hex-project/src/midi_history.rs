@@ -325,6 +325,18 @@ impl Plan {
                     },
                 }
             }
+            Command::UpdateMidiNotesWithSourceExtent { clip, notes } => Kind::Notes {
+                volume_range: None,
+                location: location(*clip)?,
+                source_length: Some(crate::midi::extended_update_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    notes,
+                )?),
+                edit: Notes::OverwriteUpdate {
+                    only: None,
+                    removed: 0,
+                },
+            },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 volume_range: None,
                 location: location(*clip)?,
@@ -1038,12 +1050,15 @@ fn same_shell(
         aliases,
         native_sources,
         arrangement_sections,
+        arrangement_locators,
         tuning,
         routing,
         audio_feeds,
         midi_routes,
+        sidechains,
         import_provenance,
         sample_rate,
+        sample_rate_mode,
         next_id: _,
         assets,
         tracks,
@@ -1054,7 +1069,11 @@ fn same_shell(
         main_devices,
         tempo_map,
         meter_map,
+        offline_assets,
     } = a;
+    if offline_assets != &b.offline_assets {
+        return false;
+    }
     let death = match kind {
         Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
         _ => None,
@@ -1096,12 +1115,15 @@ fn same_shell(
     if !aliases_match
         || native_sources != &b.native_sources
         || arrangement_sections != &b.arrangement_sections
+        || arrangement_locators != &b.arrangement_locators
         || tuning != &b.tuning
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds
         || midi_routes != &b.midi_routes
+        || sidechains != &b.sidechains
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
+        || sample_rate_mode != &b.sample_rate_mode
         || assets != &b.assets
         || returns != &b.returns
         || loop_region != &b.loop_region
@@ -1115,6 +1137,8 @@ fn same_shell(
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            group_output_mutes,
+            tags,
             kind,
             parent_group,
             color,
@@ -1128,6 +1152,7 @@ fn same_shell(
             soloed,
             devices,
             instrument,
+            retained_source_path,
             instrument_position,
             content,
             sends,
@@ -1145,6 +1170,8 @@ fn same_shell(
             && parent_group == &b.parent_group
             && color == &b.color
             && id == &b.id
+            && tags == &b.tags
+            && group_output_mutes == &b.group_output_mutes
             && name == &b.name
             && automatic_name == &b.automatic_name
             && gain == &b.gain
@@ -1153,6 +1180,7 @@ fn same_shell(
             && soloed == &b.soloed
             && devices == &b.devices
             && instrument == &b.instrument
+            && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
             && base == &b.gain_lane.base

@@ -140,6 +140,7 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
             previous.tail_suffix_starts[slot] = 0;
             previous.tail_mutable_instruments[slot] =
                 Some(crate::mutable_instrument::MutableInstrumentTail {
+                    sends: Default::default(),
                     track_id: track,
                     runtime,
                 });

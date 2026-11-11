@@ -390,6 +390,20 @@ fn shared_source_has_one_generator_and_preserves_both_local_chains_and_midi_bank
     assert_eq!(graph.tracks[1].devices.len(), 1);
     assert_eq!(compiled.tracks[0].instrument_latency, Some(5));
     assert_eq!(compiled.tracks[1].instrument_latency, Some(0));
+    // The shared generator belongs to its receiver. Both local chains still
+    // contribute independently, and the parallel contributor aligns to it.
+    let receiver = graph
+        .track_latency(0, compiled.tracks[0].instrument_position())
+        .unwrap();
+    let contributor = graph
+        .track_latency(1, compiled.tracks[1].instrument_position())
+        .unwrap();
+    assert_eq!((receiver.local_frames, receiver.arrival_frames), (8, 8));
+    assert_eq!(
+        (contributor.local_frames, contributor.arrival_frames),
+        (7, 7)
+    );
+    assert_eq!(contributor.default_route_delay_frames, 1);
     for (index, clip) in clips.iter().enumerate() {
         assert_eq!(
             compiled.tracks[index].instrument.as_ref().unwrap().spans[0].clip,
@@ -425,6 +439,28 @@ fn receiver_none_preserves_authored_midi_without_any_generator() {
             .iter()
             .all(|track| track.midi_clips()[0].notes().len() == 1)
     );
+}
+/// Pulse #4188: delay history copies by typed endpoints. A graph maps from
+/// itself, but dropping a latent generator moves the arrivals behind it, so
+/// its history must not map in either direction.
+#[test]
+fn history_mapping_refuses_a_removed_latent_generator() {
+    let (mut f, source, _) = shared_fixture();
+    let bound = compile(&f);
+    let bound = bound.signal_graph.as_ref().unwrap();
+    assert!(bound.pre_main_history_maps_from(bound));
+    f.editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    let unbound = compile(&f);
+    let unbound = unbound.signal_graph.as_ref().unwrap();
+    assert!(unbound.tracks.iter().all(|track| track.generator.is_none()));
+    assert!(!unbound.pre_main_compatible(bound));
+    assert!(!unbound.pre_main_history_maps_from(bound));
+    assert!(!bound.pre_main_history_maps_from(unbound));
 }
 #[test]
 fn duplicate_selected_root_for_one_shared_source_is_refused() {

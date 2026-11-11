@@ -157,13 +157,13 @@ fn terminal(
 ) -> hex_session::service::Event {
     let until = crate::test_wait::hang_deadline();
     loop {
-        if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
-            if event.request_complete {
-                return event;
-            }
-            // Deliberately withhold installation until the request terminal.
-            // The offline refusal fixture also retains its initial worker event.
+        if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event())
+            && event.request_complete
+        {
+            return event;
         }
+        // Deliberately withhold installation until the request terminal.
+        // The offline refusal fixture also retains its initial worker event.
         assert!(std::time::Instant::now() < until, "gain worker terminal");
         std::thread::yield_now();
     }

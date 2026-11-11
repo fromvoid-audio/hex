@@ -1,7 +1,335 @@
 //! Actual source-bound SDK parameter processing through the production Rust
 //! reader. Direct worker exchanges are not Root/callback delivery acceptance.
 use super::*;
+#[path = "parameters/editor_touch.rs"]
+mod editor_touch;
+use crate::protocol::{ParameterPageProgress, ParameterPageQuery};
 use crate::transport::{ParameterPoint, Parameters};
+
+fn change_fixture_latency(instance: &mut Prepared, value: f64) -> Result<Block> {
+    let mut block = request(instance.configuration(), 0);
+    block
+        .parameters
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: value,
+        })
+        .unwrap();
+    instance.exchange_on_worker(block)
+}
+
+fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
+    let until = Instant::now() + Duration::from_millis(500);
+    loop {
+        if let Some(pending) = instance
+            .poll_recovery_edits_on_worker()
+            .unwrap()
+            .pending_latency_restart
+        {
+            return pending;
+        }
+        assert!(Instant::now() < until, "latency restart was not observed");
+        thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_sparse_authored_request_delivers_the_full_point_capacity() {
+    use crate::transport::MAX_PARAMETER_POINTS;
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let mut input = request(instance.configuration(), 0);
+    for index in 0..MAX_PARAMETER_POINTS {
+        input
+            .parameters
+            .push(ParameterPoint {
+                frame: (index * 2) as u16,
+                id: 0,
+                normalized: if index % 2 == 0 { 0.75 } else { 0.125 },
+            })
+            .unwrap();
+    }
+    let reply = instance
+        .exchange_authored_on_worker(input, &metadata)
+        .unwrap();
+    for point in input.parameters.as_slice() {
+        let frame = usize::from(point.frame);
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (point.normalized * 2.0) as f32)
+        );
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
+    exercise_native_dense_request(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_reserved_dense_sidecar_reaches_the_original_armed_worker() {
+    exercise_native_dense_request(true);
+}
+
+fn exercise_native_dense_request(reserved: bool) {
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let input = request(instance.configuration(), 0);
+    let normalized: [f64; 256] =
+        std::array::from_fn(|frame| if frame % 2 == 0 { 0.75 } else { 0.125 });
+    let lane = crate::transport::DenseParameterLane {
+        id: 0,
+        normalized: &normalized,
+    };
+    let reply = if reserved {
+        use crate::transport::{
+            EffectSegmentOrigins, SegmentTiming, dense_effect_channel_from_completed_prefix,
+        };
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        let (_control, mut callback, mut worker) =
+            dense_effect_channel_from_completed_prefix(input.binding, input.frames, 0).unwrap();
+        callback.begin_physical_callback(256).unwrap();
+        callback
+            .stage_effect_segment(
+                0,
+                &input.pcm,
+                &[],
+                &[],
+                &mut [[0.0; 2]; 256],
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+                Some(lane),
+            )
+            .unwrap();
+        assert!(worker.receive_request().unwrap().is_none());
+        callback.finish(true).unwrap();
+        let request = worker.receive_request().unwrap().unwrap();
+        let reply = instance
+            .exchange_armed_dense_on_worker(
+                request.block,
+                request.dense_parameter.as_ref().unwrap().lane(),
+                None,
+                false,
+            )
+            .unwrap()
+            .block;
+        worker.complete(reply).unwrap();
+        reply
+    } else {
+        instance
+            .exchange_dense_authored_on_worker(input, &metadata, lane)
+            .unwrap()
+    };
+    for (frame, &normalized) in normalized.iter().enumerate() {
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (normalized * 2.0) as f32)
+        );
+    }
+    assert_eq!(
+        reply.parameters.as_slice(),
+        [ParameterPoint {
+            frame: 255,
+            id: 0,
+            normalized: 0.125
+        }]
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_latency_restart_survives_receipt_reads_and_newer_activation_request() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(104),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    assert!(
+        instance
+            .poll_recovery_edits_on_worker()
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
+    assert_eq!(instance.ready().algorithmic_latency_frames, 0);
+    change_fixture_latency(&mut instance, 0.75).unwrap();
+    let pending = wait_for_latency_restart(&mut instance);
+    assert_eq!(
+        instance
+            .poll_recovery_edits_on_worker()
+            .unwrap()
+            .pending_latency_restart,
+        Some(pending)
+    );
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    assert_eq!(stopped.facts().algorithmic_latency_frames, 0);
+    let mut stopped = stopped.reactivate_retained_on_control().unwrap();
+    assert_eq!(stopped.facts().algorithmic_latency_frames, 7);
+    assert!(
+        stopped
+            .poll_recovery_edits_on_control()
+            .unwrap()
+            .pending_latency_restart
+            .unwrap()
+            > pending,
+        "covering the old ordinal must retain a restart raised during activation"
+    );
+    let mut stopped = stopped.reactivate_retained_on_control().unwrap();
+    assert!(
+        stopped
+            .poll_recovery_edits_on_control()
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
+    let old = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: old.epoch + 1,
+                ..old
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.ready().algorithmic_latency_frames, 7);
+    let block = request(instance.configuration(), 1);
+    let reply = instance.exchange_on_worker(block).unwrap();
+    assert_eq!(&reply.pcm[..7], &[[0.0; 2]; 7]);
+    assert_ne!(reply.pcm[7], [0.0; 2]);
+    let terminal = instance
+        .stop_and_reap_on_control()
+        .unwrap()
+        .terminal
+        .unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (2, 16));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_latency_restart_requires_opt_in_and_rejects_mixed_io() {
+    for opted_in in [false, true] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(104),
+        )
+        .unwrap();
+        if opted_in {
+            instance.poll_recovery_edits_on_worker().unwrap();
+        }
+        let mut result =
+            change_fixture_latency(&mut instance, if opted_in { 0.25 } else { 0.75 }).map(|_| ());
+        let until = Instant::now() + Duration::from_millis(500);
+        while result.is_ok() {
+            assert!(
+                Instant::now() < until,
+                "unsupported restart was not refused"
+            );
+            result = instance.poll_parameter_edits_on_worker().map(|_| ());
+        }
+        let error = result.unwrap_err();
+        let expected = if opted_in {
+            "restart requires graph changes"
+        } else {
+            "recursive controller callback"
+        };
+        assert!(error.to_string().contains(expected), "{error:?}");
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_uncovered_latency_restart_cannot_resume_stale_facts() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(104),
+    )
+    .unwrap();
+    instance.poll_recovery_edits_on_worker().unwrap();
+    change_fixture_latency(&mut instance, 0.75).unwrap();
+    wait_for_latency_restart(&mut instance);
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let old = stopped.configuration().binding;
+    let Err(failure) = stopped.resume_retained_on_control(
+        Binding {
+            epoch: old.epoch + 1,
+            ..old
+        },
+        Some(options().presentation),
+    ) else {
+        panic!("stale latency must never acknowledge a resumed epoch");
+    };
+    assert!(matches!(failure.cause(), Error::Worker(15)), "{failure:?}");
+    let _ = failure.finish_on_control();
+    assert_eq!(
+        case.observation().unwrap()[8],
+        1,
+        "processing started only at startup"
+    );
+}
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
@@ -594,8 +922,356 @@ fn actual_sdk_ui_gestures_apply_on_original_worker_live_and_stopped_with_ordered
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_sdk_invalid_or_overflowing_ui_gestures_refuse_before_dsp() {
-    for variant in [86, 87, 88] {
+fn actual_sdk_editor_burst_drains_in_order_on_the_original_worker() {
+    for idle in [false, true] {
+        editor_burst_drains(idle);
+    }
+}
+
+fn editor_burst_drains(idle: bool) {
+    use crate::protocol::ParameterEditKind;
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(116),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(case.release(), b"emit one native editor burst").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut edits = Vec::new();
+    let mut next_block = 0;
+    while edits.len() < 14 {
+        let batch = if idle {
+            instance
+                .service_idle_editor_edits_on_worker()
+                .unwrap()
+                .edits
+        } else {
+            instance.poll_parameter_edits_on_worker().unwrap()
+        };
+        edits.extend_from_slice(batch.as_slice());
+        if !idle && batch.ready > 0 {
+            let input = request(instance.configuration(), next_block);
+            instance.exchange_on_worker(input).unwrap();
+            next_block += 1;
+        }
+        assert!(Instant::now() < until, "native editor burst must drain");
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 14);
+    for (index, edit) in edits.iter().enumerate() {
+        let expected = match index {
+            0 => (ParameterEditKind::Begin, 0.0),
+            13 => (ParameterEditKind::End, 0.0),
+            _ => (ParameterEditKind::Perform, 0.75),
+        };
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id),
+            (index as u64 + 1, 1, 7)
+        );
+        assert_eq!((edit.kind, edit.normalized), expected);
+    }
+    assert_eq!(instance.child_id_on_control(), child);
+    if idle {
+        assert!(edits.iter().all(|edit| edit.first_frame == 0));
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+            assert_eq!(*actual, input.map(|value| value * 1.5));
+        }
+    }
+    let paused = instance.quiesce_retained_on_control().unwrap();
+    let (paused, captured) = paused.capture_state_retained_on_control().unwrap();
+    assert_eq!(
+        &decode(&captured).unwrap().component.unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    assert!(paused.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_playback_does_not_replay_stale_editor_values() {
+    for authored in [false, true] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(135),
+        )
+        .unwrap();
+        fs::write(case.release(), b"finish the editor drag").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while instance.poll_parameter_edits_on_worker().unwrap().ready == 0 {
+            assert!(Instant::now() < until, "the drag must reach the worker");
+            thread::yield_now();
+        }
+        let mut input = request(instance.configuration(), 0);
+        if authored {
+            input
+                .parameters
+                .push(ParameterPoint {
+                    frame: 4,
+                    id: 7,
+                    normalized: 0.5,
+                })
+                .unwrap();
+        }
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: input.frames - 1,
+                id: 7,
+                normalized: if authored { 0.5 } else { 0.25 },
+            }]
+        );
+        let page = |instance: &mut Prepared| {
+            instance
+                .begin_parameter_page_on_worker(ParameterPageQuery::default())
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                match instance.poll_parameter_page_on_worker().unwrap() {
+                    ParameterPageProgress::Page(page) => return page.as_slice()[0],
+                    ParameterPageProgress::Pending => {
+                        assert!(Instant::now() < until, "controller feedback must settle");
+                        thread::yield_now();
+                    }
+                    other => panic!("expected a controller page, got {other:?}"),
+                }
+            }
+        };
+        let expected = if authored { 0.5 } else { 0.875 };
+        let first = page(&mut instance);
+        assert_eq!(first.normalized, expected);
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        let delayed = edits
+            .as_slice()
+            .iter()
+            .rev()
+            .find(|edit| edit.kind == protocol::ParameterEditKind::Perform)
+            .expect("delayed native Perform after the page");
+        assert_eq!(delayed.normalized, 0.25);
+        assert!(delayed.sequence < first.editor_sequence);
+        println!(
+            "controller page {}, delayed Perform {} at {}",
+            first.normalized, delayed.normalized, delayed.sequence
+        );
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
+    assert_saturated_editor_drags(87, 1);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_admits_five_drags_before_the_previous_gestures_drain() {
+    assert_saturated_editor_drags(131, 5);
+}
+
+fn assert_saturated_editor_drags(variant: u32, drags: usize) {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(variant),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(case.release(), b"emit a two-axis drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut edits: Vec<protocol::ParameterEdit> = Vec::new();
+    while edits.iter().filter(|edit| edit.kind == End).count() < 2 * drags {
+        let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+        edits.extend_from_slice(batch.edits.as_slice());
+        assert!(Instant::now() < until, "the entire drag must drain");
+        thread::yield_now();
+    }
+
+    assert_eq!(edits.len(), 64);
+    assert!(
+        edits
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    assert!(edits.iter().all(|edit| edit.first_frame == 0));
+    for (id, final_value, step) in [(7, 0.875, 0.09375), (11, 0.625, 0.0625)] {
+        let mut axis = edits.iter().filter(|edit| edit.id == id);
+        for drag in 0..drags {
+            let begin = axis.next().unwrap();
+            assert_eq!(begin.kind, Begin);
+            let mut final_perform = None;
+            loop {
+                let edit = axis.next().unwrap();
+                assert_eq!(edit.gesture, begin.sequence);
+                if edit.kind == End {
+                    break;
+                }
+                assert_eq!(edit.kind, Perform);
+                final_perform = Some(edit.normalized);
+            }
+            assert_eq!(
+                final_perform,
+                Some(final_value - (drags - 1 - drag) as f64 * step)
+            );
+        }
+        assert!(axis.next().is_none());
+    }
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    assert_eq!(instance.child_id_on_control(), child);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+        assert_eq!(*actual, input.map(|value| value * 1.75));
+    }
+    assert!(
+        instance
+            .quiesce_retained_on_control()
+            .unwrap()
+            .retire_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_drains_deferred_main_lane_objects_before_unload() {
+    let case = Case::new();
+    let events = case.root.join("module-events");
+    let event_path = events.clone();
+    let setup = case.setup_restore(134);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_INSTANCE_MODULE_EVENTS", event_path);
+        },
+    )
+    .unwrap();
+    fs::write(case.release(), b"trigger a controller timer").unwrap();
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        if fs::read(&events).unwrap() == b"ER" {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "the timer's deferred release must run while the worker is active"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    let retired = instance.stop_and_reap_on_control().unwrap();
+    assert!(retired.status.success());
+    let terminal = retired.terminal.unwrap();
+    assert!(terminal.closed && terminal.unloaded);
+    assert_eq!(fs::read(&events).unwrap(), b"ERCXT");
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_standalone_edits_keep_the_last_value_at_queue_capacity() {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(86),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(case.release(), b"emit standalone editor values").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut edits = Vec::new();
+    loop {
+        let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+        edits.extend_from_slice(batch.edits.as_slice());
+        if edits.windows(2).any(|pair| {
+            pair[0].kind == Perform && pair[0].normalized == 0.875 && pair[1].kind == End
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "the final standalone value must drain"
+        );
+        thread::yield_now();
+    }
+
+    assert_eq!(edits.len(), 63);
+    assert!(
+        edits
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    for gesture in edits.chunks_exact(3) {
+        assert_eq!(
+            [gesture[0].kind, gesture[1].kind, gesture[2].kind],
+            [Begin, Perform, End]
+        );
+        assert!(gesture.iter().all(|edit| {
+            edit.id == 7 && edit.gesture == gesture[0].sequence && edit.first_frame == 0
+        }));
+    }
+    assert_eq!(edits[1].normalized, 0.5, "keep the explicit gesture");
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    assert_eq!(instance.child_id_on_control(), child);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+        assert_eq!(*actual, input.map(|value| value * 1.75));
+    }
+    assert!(
+        instance
+            .quiesce_retained_on_control()
+            .unwrap()
+            .retire_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
+    for (variant, expected) in [
+        (88, "read-only edit parameter"),
+        (133, "invalid edit value"),
+    ] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
             &build(),
@@ -621,7 +1297,10 @@ fn actual_sdk_invalid_or_overflowing_ui_gestures_refuse_before_dsp() {
                             .all(|event| event.kind != protocol::ParameterEditKind::Perform)
                     );
                 }
-                Err(Error::Worker(11)) => break,
+                Err(error @ Error::Worker(code)) if crate::runtime_host_refusal(code) => {
+                    assert!(error.to_string().contains(expected), "{error:?}");
+                    break;
+                }
                 Err(error) => {
                     panic!("variant {variant}: expected actual HostControl refusal, got {error:?}")
                 }
@@ -644,6 +1323,46 @@ fn actual_sdk_invalid_or_overflowing_ui_gestures_refuse_before_dsp() {
             "invalid callbacks must not enter DSP"
         );
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_idle_feedback_refusal_identifies_controller_setter() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(132),
+    )
+    .unwrap();
+    std::fs::write(case.release(), b"emit editor value that the setter rejects").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        if let Err(error) = instance.service_idle_editor_edits_on_worker() {
+            break error;
+        }
+        assert!(Instant::now() < until, "controller refusal did not arrive");
+        thread::yield_now();
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("host refused controller feedback"),
+        "{message}"
+    );
+    assert!(
+        message.contains("controller rejected setParamNormalized"),
+        "{message}"
+    );
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    assert!(
+        !instance
+            .cancel_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
 }
 
 #[test]
@@ -728,23 +1447,16 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
     )
     .unwrap();
     let initial = instance.ready().initial_state.clone();
+    let child = instance.child_id_on_control();
     let stopped = instance.quiesce_retained_on_control().unwrap();
-    let mut failure = match stopped.capture_state_retained_on_control() {
-        Ok(_) => panic!("stopped capture changed during SDK read must refuse its snapshot"),
-        Err(failure) => failure,
-    };
-    assert!(matches!(failure.cause(), Error::Worker(6)));
-    let until = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(PreparationDisposal::Reaped(retired)) =
-            failure.poll_disposal_on_control().unwrap()
-        {
-            assert!(!retired.status.success());
-            break;
-        }
-        assert!(Instant::now() < until);
-        thread::yield_now();
-    }
+    let (stopped, result) = stopped
+        .capture_state_or_refusal_retained_while_on_control(|| false)
+        .unwrap();
+    assert!(matches!(
+        result,
+        Err(protocol::StateCaptureRefusal::StillChanging)
+    ));
+    assert_eq!(stopped.child_id_on_control(), child);
     assert_eq!(
         &decode(&initial).unwrap().component.unwrap()[8..12],
         &1.0_f32.to_le_bytes()
@@ -755,4 +1467,234 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
         (0, 0),
         "capture must not invent PCM or flush work"
     );
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receipts() {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    for (variant, raw_id, min_ready) in [(89, 0, 1), (135, 7, 4), (147, 7, 1)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        if variant == 147 {
+            let class = instance.configuration().identity.class;
+            let metadata = instance
+                .read_authored_parameter_metadata_on_control(class, &[7])
+                .unwrap();
+            instance
+                .arm_authored_parameter_metadata_on_control(metadata)
+                .unwrap();
+        }
+        let initial = request(instance.configuration(), 0);
+        let reply = instance.exchange_editor_on_worker(initial).unwrap();
+        assert!(reply.performs.as_slice().is_empty());
+        fs::write(case.release(), b"emit original editor performs").unwrap();
+        let mut ordinary = Vec::new();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let batch = instance.poll_parameter_edits_on_worker().unwrap();
+            ordinary.extend_from_slice(batch.as_slice());
+            if batch.ready >= min_ready {
+                break;
+            }
+            assert!(Instant::now() < until, "editor input was not queued");
+            thread::yield_now();
+        }
+        let mut effective = Vec::new();
+        let mut sequence = 1;
+        loop {
+            let mut input = request(instance.configuration(), sequence);
+            let authored = variant == 147 && sequence == 1;
+            if authored {
+                input
+                    .parameters
+                    .push(ParameterPoint {
+                        frame: 4,
+                        id: raw_id,
+                        normalized: 0.5,
+                    })
+                    .unwrap();
+            }
+            let reply = if authored {
+                instance
+                    .exchange_armed_authored_with_editor_on_worker(input, None)
+                    .unwrap()
+            } else {
+                instance.exchange_editor_on_worker(input).unwrap()
+            };
+            assert_eq!(
+                (
+                    reply.block.binding,
+                    reply.block.sequence,
+                    reply.block.first_frame
+                ),
+                (input.binding, sequence, sequence * 8),
+            );
+            let points = reply.performs.as_slice();
+            assert!(
+                points.len() <= 1,
+                "offset-zero duplicate was reported twice"
+            );
+            if let Some(point) = points.first() {
+                assert_eq!(point.id, raw_id);
+                let scale = 0.5 + sequence as f64 * 0.125;
+                for (offset, (sample, original)) in
+                    reply.block.pcm[..8].iter().zip(input.pcm).enumerate()
+                {
+                    // The fixture linearly interpolates from the actual
+                    // offset-zero editor point to the authored point at 4.
+                    let normalized = if authored {
+                        point.normalized + (0.5 - point.normalized) * offset.min(4) as f64 / 4.0
+                    } else {
+                        point.normalized
+                    };
+                    assert_eq!(
+                        *sample,
+                        original
+                            .map(|sample| (f64::from(sample) * scale * 4.0 * normalized) as f32),
+                        "variant {variant}, quantum {sequence}, offset {offset}"
+                    );
+                }
+                effective.push((*point, reply.block.first_frame));
+            }
+            let batch = instance.poll_parameter_edits_on_worker().unwrap();
+            ordinary.extend_from_slice(batch.as_slice());
+            if ordinary.last().is_some_and(|edit| edit.kind == End) {
+                break;
+            }
+            assert!(Instant::now() < until, "editor receipts did not finish");
+            sequence += 1;
+        }
+        assert_eq!(ordinary.first().unwrap().kind, Begin);
+        assert_eq!(ordinary.last().unwrap().kind, End);
+        assert_eq!(
+            ordinary.iter().filter(|edit| edit.kind == Perform).count(),
+            if variant == 135 { 13 } else { 1 }
+        );
+        assert_eq!(
+            effective.last().unwrap().0.normalized,
+            if variant == 135 { 0.875 } else { 0.75 }
+        );
+        if variant == 135 {
+            assert!(effective.len() < 13, "the fixture must exercise coalescing");
+        }
+        for (point, frame) in effective {
+            let last = ordinary
+                .iter()
+                .rev()
+                .find(|edit| edit.kind == Perform && edit.first_frame == frame && edit.id == raw_id)
+                .unwrap();
+            assert_eq!(
+                (last.sequence, last.gesture, last.normalized),
+                (point.sequence, point.gesture, point.normalized)
+            );
+        }
+        let input = request(instance.configuration(), sequence + 1);
+        assert!(
+            instance
+                .exchange_editor_on_worker(input)
+                .unwrap()
+                .performs
+                .as_slice()
+                .is_empty()
+        );
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn idle_and_ordinary_editor_input_is_not_replayed_as_opted_in_pcm() {
+    use crate::protocol::ParameterEditKind::End;
+    // The ordinary raw-zero profile deliberately refuses a live zero-frame
+    // exchange. The editor/automation coexistence profile admits idle flushes.
+    for (idle, variant) in [(false, 89), (true, 147)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        fs::write(case.release(), b"emit one editor value").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut sequence = 0;
+        loop {
+            let finished = if idle {
+                instance
+                    .service_idle_editor_edits_on_worker()
+                    .unwrap()
+                    .edits
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == End)
+            } else {
+                let input = request(instance.configuration(), sequence);
+                instance.exchange_on_worker(input).unwrap();
+                sequence += 1;
+                instance
+                    .poll_parameter_edits_on_worker()
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == End)
+            };
+            if finished {
+                break;
+            }
+            assert!(Instant::now() < until, "ordinary edit did not finish");
+            thread::yield_now();
+        }
+        let input = request(instance.configuration(), sequence);
+        let reply = instance.exchange_editor_on_worker(input).unwrap();
+        assert!(reply.performs.as_slice().is_empty());
+        let multiplier = 3.0 * (0.5 + sequence as f32 * 0.125);
+        for (sample, original) in reply.block.pcm[..8].iter().zip(input.pcm) {
+            assert_eq!(*sample, original.map(|sample| sample * multiplier));
+        }
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
 }

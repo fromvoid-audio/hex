@@ -55,9 +55,9 @@ fn fixture(
     let old = editor.project().clone();
     let mut snapshot = old.snapshot();
     for track in &mut snapshot.tracks {
-        for device in &mut track.devices {
-            device.bypassed = true;
-        }
+        // Removing the old chain detaches its audible history. Bypass keeps
+        // the same owner and ramps to dry instead.
+        track.devices.clear();
     }
     let candidate = Project::from_snapshot(snapshot)?;
     let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.3, -0.1]; 32])?)]);
@@ -180,7 +180,7 @@ fn main() -> Result<()> {
         return Err("profile arguments out of bounds".into());
     }
     println!(
-        "headless 32-frame resident source; bypass detaches active DC filters; one-second continuous old-chain PCM reference; preparation and owner drops excluded; no native deadline"
+        "headless 32-frame resident source; removing the device chain detaches active DC filters; one-second continuous old-chain PCM reference; preparation and owner drops excluded; no native deadline"
     );
     run(100, effects, block, 100)
 }

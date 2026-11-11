@@ -25,11 +25,12 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
     // Both queue allocations retain all slots, even when no blocks are queued.
     assert_eq!(
         storage.data_bytes,
-        2 * (QUEUE_CAPACITY * std::mem::size_of::<Block>()
-            + std::mem::size_of::<RingBuffer<Block>>())
-            + std::mem::size_of::<AtomicBool>()
+        QUEUE_CAPACITY * (std::mem::size_of::<InputRequest>() + std::mem::size_of::<OutputReply>())
+            + std::mem::size_of::<RingBuffer<InputRequest>>()
+            + std::mem::size_of::<RingBuffer<OutputReply>>()
+            + std::mem::size_of::<Revocation>()
     );
-    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 8));
     for _ in 0..4 {
         callback
             .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
@@ -51,6 +52,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         callback.fault().is_none(),
         "revocation is separate from a visited fault"
     );
+    assert_eq!(control.take_callback_fault(), None);
     drop(worker);
     assert_eq!(
         callback.constructor_storage_on_control(&control),
@@ -122,6 +124,7 @@ fn sample_timeline_latency_and_midi_survive_physical_callback_partitions() {
                     frame: offset as u16,
                     bytes: [0x90, 60, 100],
                     len: 3,
+                    note_id: None,
                 })
                 .collect();
             let mut output = vec![[99.0; 2]; size];
@@ -186,6 +189,94 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
     assert!(control.is_revoked());
     assert_eq!(worker.complete(late), Err(Fault::Revoked));
     assert!(callback.replies.is_empty());
+    callback.reject(Fault::Protocol);
+    assert_eq!(control.take_callback_fault(), Some(Fault::MissingOutput));
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 0,
+            worker_phase: DeadlineWorkerPhase::Processing,
+        })
+    );
+    assert_eq!(control.take_callback_fault(), None);
+    assert_eq!(callback.fault(), Some(Fault::MissingOutput));
+}
+
+#[test]
+fn deadline_observation_distinguishes_a_worker_that_has_not_picked_up_the_request() {
+    let (control, mut callback, _worker) = channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..2 {
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    assert_eq!(
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 37,
+            worker_phase: DeadlineWorkerPhase::AwaitingPickup,
+        })
+    );
+}
+
+#[test]
+fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let counts = allocation_counter::measure(|| {
+        for value in [1.0, 2.0, 3.0] {
+            callback.stage(&[[value; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+        for (sequence, value) in [(37, 1.0), (38, 2.0), (39, 3.0)] {
+            let reply = worker.receive().unwrap().unwrap();
+            assert_eq!(reply.sequence, sequence);
+            assert_eq!(reply.pcm[0], [value; 2]);
+            worker.complete(reply).unwrap();
+        }
+        for value in [2.0, 3.0] {
+            callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[value; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn native_instrument_revokes_after_two_consecutive_missed_replies() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..3 {
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    // The stale reply does not turn a second missed deadline into a success.
+    let late = worker.receive().unwrap().unwrap();
+    worker.complete(late).unwrap();
+    assert_eq!(
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert!(control.is_revoked());
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 1);
 }
 
 #[test]
@@ -213,6 +304,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     frame: 8,
                     bytes: [0x90, 60, 1],
                     len: 3,
+                    note_id: None,
                 })
                 .unwrap(),
             9 => reply
@@ -221,12 +313,30 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     frame: 0,
                     bytes: [0xf0, 0, 0],
                     len: 3,
+                    note_id: None,
                 })
                 .unwrap(),
             _ => unreachable!(),
         }
         // Deliberately bypass the original producer to test consumer validation.
-        worker.replies.push(reply).unwrap();
+        worker
+            .replies
+            .push(OutputReply {
+                editor: None,
+                block: reply,
+                manual: Some(ManualExchange {
+                    input: ManualParameterInput {
+                        operation: NonZeroU64::MIN,
+                        action: ManualParameterAction::Point(ParameterPoint {
+                            id: 0,
+                            frame: 0,
+                            normalized: 0.5,
+                        }),
+                    },
+                    origin: None,
+                }),
+            })
+            .unwrap();
         let expected = match case {
             7 => Fault::InvalidSamples,
             8 | 9 => Fault::InvalidEvents,
@@ -236,6 +346,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
             matches!(callback.stage(&[[1.0; 2]; 8], &[], &mut output), Err(fault) if fault == expected)
         );
         assert_eq!(output, [[0.0; 2]; 8]);
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
     }
 }
 
@@ -251,7 +362,14 @@ fn duplicate_and_out_of_order_replies_are_terminal() {
         let first = worker.receive().unwrap().unwrap();
         worker.complete(first).unwrap();
         if duplicate {
-            worker.replies.push(first).unwrap();
+            worker
+                .replies
+                .push(OutputReply {
+                    editor: None,
+                    block: first,
+                    manual: None,
+                })
+                .unwrap();
             callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
             callback.finish(true).unwrap();
         } else {
@@ -275,7 +393,9 @@ fn worker_enforces_single_inflight_and_exact_completion_before_next_receive() {
             .stage(&[[1.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
         callback.finish(true).unwrap();
-        let mut block = worker.receive().unwrap().unwrap();
+        let request = worker.receive_request().unwrap().unwrap();
+        assert!(!request.manual_origin_available);
+        let mut block = request.block;
         match case {
             0 => assert!(matches!(worker.receive(), Err(Fault::Protocol))),
             1 => {
@@ -309,20 +429,39 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         frame: 0,
                         bytes: [0x90, 200, 0],
                         len: 3,
+                        note_id: None,
                     }],
                     &mut output,
                 )
                 .err(),
             3 => {
                 for _ in 0..QUEUE_CAPACITY {
-                    callback.requests.push(Block::empty(BINDING, 8)).unwrap();
+                    callback
+                        .requests
+                        .push(InputRequest {
+                            block: Block::empty(BINDING, 8),
+                            parameter_capacity: MAX_PARAMETER_POINTS,
+                            authored_program: None,
+                            manual_origin: None,
+                            editor_scope: None,
+                        })
+                        .unwrap();
                 }
                 callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
                 callback.finish(true).err()
             }
             4 => {
                 for _ in 0..QUEUE_CAPACITY {
-                    callback.requests.push(Block::empty(BINDING, 8)).unwrap();
+                    callback
+                        .requests
+                        .push(InputRequest {
+                            block: Block::empty(BINDING, 8),
+                            parameter_capacity: MAX_PARAMETER_POINTS,
+                            authored_program: None,
+                            manual_origin: None,
+                            editor_scope: None,
+                        })
+                        .unwrap();
                 }
                 control.revoke();
                 assert!(matches!(worker.receive(), Err(Fault::Revoked)));
@@ -344,6 +483,10 @@ fn bounded_input_validation_and_queue_independent_stop() {
         );
         assert!(control.is_revoked());
         assert_eq!(output, [[0.0; 2]; 8]);
+        assert_eq!(
+            control.take_callback_fault(),
+            fault.filter(|&reason| reason != Fault::Revoked)
+        );
     }
     for q in [0, 257, u16::MAX] {
         assert!(matches!(channel(BINDING, q), Err(Fault::Configuration)));
@@ -445,6 +588,7 @@ fn graph_segments_preserve_physical_pcm_event_timeline_and_one_final_dispatch() 
             frame: (size - 1) as u16,
             bytes: [0x90, 61, 127],
             len: 3,
+            note_id: None,
         };
         let mut expected = vec![[9.0; 2]; size];
         let whole_events = whole.stage(&input, &[event], &mut expected).unwrap();
@@ -532,12 +676,39 @@ fn incomplete_overlapping_gapped_or_refused_graph_callbacks_never_dispatch() {
 }
 
 #[test]
+fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
+    for pause_cut in [3, 4] {
+        let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        callback.begin_physical_callback(8).unwrap();
+        callback
+            .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.end_staging_at_pause(pause_cut);
+        if pause_cut != 4 {
+            assert_eq!(callback.finish(true), Err(Fault::Protocol));
+            assert!(control.is_revoked());
+            continue;
+        }
+        callback.finish(true).unwrap();
+        assert!(worker.receive().unwrap().is_none());
+        callback
+            .stage(&[[0.5; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let input = worker.receive().unwrap().unwrap();
+        assert_eq!(input.pcm[..4], [[0.25; 2]; 4]);
+        assert_eq!(input.pcm[4..8], [[0.5; 2]; 4]);
+    }
+}
+
+#[test]
 fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
     let (control, mut callback, worker) = channel(BINDING, 8).unwrap();
     let event = MidiEvent {
         frame: 0,
         bytes: [0x90, 60, 127],
         len: 3,
+        note_id: None,
     };
     callback.begin_physical_callback(8).unwrap();
     callback
@@ -582,6 +753,211 @@ fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
         Err(Fault::InvalidEvents)
     ));
     assert!(worker.requests.is_empty());
+}
+
+#[test]
+fn stopped_partial_quantum_dispatches_play_context_before_the_coincident_note() {
+    let stopped = ProcessTiming {
+        arrangement_frame: 0,
+        playing: false,
+        arrangement_beat_raw: Some(0),
+        tempo_micro_bpm: None,
+        meter: Some((7, 8)),
+        cycle_beats_raw: None,
+    };
+    let playing = ProcessTiming {
+        playing: true,
+        ..stopped
+    };
+    let note = MidiEvent {
+        frame: 0,
+        bytes: [0x90, 60, 100],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(42),
+    };
+    // Keep the pair's control lease alive across both callback transactions.
+    let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let paused = ProcessTiming {
+        arrangement_frame: 2,
+        ..stopped
+    };
+    let mut stage = || {
+        callback.begin_physical_callback(3).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.0; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(false),
+                    at: |_| Some(stopped),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(worker.requests.is_empty());
+        callback.begin_physical_callback(5).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.0; 2]; 2],
+                &[note],
+                &[],
+                &mut [[0.0; 2]; 2],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |_| Some(playing),
+                },
+            )
+            .unwrap();
+        callback
+            .stage_segment_with_timing(
+                2,
+                &[[0.0; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(false),
+                    at: |_| Some(paused),
+                },
+            )
+            .unwrap();
+        assert!(worker.requests.is_empty());
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive().unwrap().unwrap();
+    assert_eq!(request.timing, Some(stopped));
+    assert_eq!(request.events.as_slice(), &[MidiEvent { frame: 3, ..note }]);
+    assert_eq!(
+        request.timing_changes.as_slice(),
+        &[
+            TimingChange {
+                frame: 3,
+                timing: playing
+            },
+            TimingChange {
+                frame: 5,
+                timing: paused
+            }
+        ]
+    );
+    let mut packet = Vec::new();
+    wire::write(&mut packet, &request).unwrap();
+    assert_eq!(&packet[4..6], &6_u16.to_le_bytes());
+    assert_eq!(packet[12], 2);
+    let decoded = wire::read(&mut packet.as_slice()).unwrap().unwrap();
+    assert_eq!(
+        decoded.timing_changes.as_slice(),
+        request.timing_changes.as_slice()
+    );
+    let first_change = wire::HEADER_BYTES + 8 * 8 + 12 + 40;
+    for (offset, value) in [
+        (12, 8),
+        (first_change, 0),
+        (first_change + 2, 1),
+        (first_change + 28, 2),
+    ] {
+        let mut malformed = packet.clone();
+        malformed[offset] = value;
+        assert!(
+            matches!(wire::read(&mut malformed.as_slice()), Err(error) if error.kind() == std::io::ErrorKind::InvalidData)
+        );
+    }
+}
+
+#[test]
+fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
+    let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let events: [MidiEvent; 160] = std::array::from_fn(|index| MidiEvent {
+        frame: 1,
+        bytes: [0x92, 60, 127],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(index as u32 + 1),
+    });
+    let mut stage = || {
+        callback.begin_physical_callback(8).unwrap();
+        for (index, events) in events.chunks_exact(events.len() / 2).enumerate() {
+            callback
+                .stage_segment(index * 4, &[[0.0; 2]; 4], events, &mut [[0.0; 2]; 4])
+                .unwrap();
+        }
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive().unwrap().unwrap();
+    assert_eq!(request.events.as_slice().len(), events.len());
+    for (index, event) in request.events.as_slice().iter().enumerate() {
+        assert_eq!(event.frame, if index < events.len() / 2 { 1 } else { 5 });
+        assert_eq!(event.note_id, events[index].note_id);
+    }
+    let mut packet = Vec::new();
+    wire::write(&mut packet, &request).unwrap();
+    let decoded = wire::read(&mut packet.as_slice()).unwrap().unwrap();
+    assert_eq!(decoded.events.as_slice(), request.events.as_slice());
+    let first_note_id = wire::HEADER_BYTES + 8 * 8 + 8;
+    packet[first_note_id..first_note_id + 4].fill(0);
+    assert!(
+        matches!(wire::read(&mut packet.as_slice()), Err(error) if error.kind() == std::io::ErrorKind::InvalidData)
+    );
+    assert_eq!(worker.complete(decoded), Err(Fault::InvalidEvents));
+    assert!(control.is_revoked());
+
+    // Even across accepted physical callbacks, one assembled quantum has a
+    // finite note budget and cannot switch to legacy events above its cap.
+    for (first, extra) in [
+        (&events[..], events[0]),
+        (
+            &events[..64],
+            MidiEvent {
+                note_id: None,
+                ..events[0]
+            },
+        ),
+    ] {
+        let (control, mut callback, worker) = channel(BINDING, 8).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 4], first, &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(matches!(
+            callback.stage(&[[0.0; 2]; 4], &[extra], &mut [[0.0; 2]; 4]),
+            Err(Fault::InvalidEvents)
+        ));
+        assert!(control.is_revoked());
+        assert!(worker.requests.is_empty());
+    }
 }
 
 #[cfg(feature = "allocation-probe")]
@@ -629,4 +1005,373 @@ fn graph_fragment_staging_final_acceptance_and_refusal_allocate_and_free_nothing
         (0, 0, 0, 0)
     );
     assert!(worker.requests.is_empty());
+}
+
+#[test]
+fn manual_marker_requires_the_aligned_accepted_physical_callback() {
+    for action in [
+        ManualParameterAction::Point(ParameterPoint {
+            id: 0,
+            frame: 0,
+            normalized: 0.75,
+        }),
+        ManualParameterAction::Release { parameter: 0 },
+    ] {
+        let input = ManualParameterInput {
+            operation: NonZeroU64::MIN,
+            action,
+        };
+        for host_accepts in [false, true] {
+            let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+            let mut position = 0;
+            let mut delivered = false;
+            for size in [3, 4, 6, 2, 4, 5, 8] {
+                let mut output = [[0.0; 2]; 8];
+                callback.begin_physical_callback(size).unwrap();
+                // The transport's first marked output is at position 16, which
+                // falls in the second render segment of a physical callback.
+                let split = size.min(1);
+                let mut stage = |offset, input: &[Frame], output: &mut [Frame]| {
+                    let origin = |index| {
+                        let frame = (position + offset + index) as u64;
+                        Some(ManualParameterOrigin {
+                            arrangement_frame: 127 + frame,
+                            performance_frame: 301 + frame,
+                            loop_pass: 2,
+                        })
+                    };
+                    callback
+                        .stage_effect_segment(
+                            offset,
+                            input,
+                            &[],
+                            &[],
+                            output,
+                            SegmentTiming {
+                                playing: None,
+                                at: |_| None,
+                            },
+                            EffectSegmentOrigins {
+                                authored: None,
+                                manual: Some(&origin),
+                            },
+                        )
+                        .unwrap();
+                };
+                stage(0, &[[1.0; 2]; 1][..split], &mut output[..split]);
+                if split < size {
+                    stage(split, &[[1.0; 2]; 8][split..size], &mut output[split..size]);
+                }
+                assert_eq!(callback.take_accepted_manual_parameter(), None);
+                let includes_marker = (position..position + size).contains(&16);
+                if includes_marker && !host_accepts {
+                    assert_eq!(callback.finish(false), Err(Fault::Protocol));
+                    assert_eq!(callback.take_accepted_manual_parameter(), None);
+                    assert!(control.is_revoked());
+                    break;
+                }
+                callback.finish(true).unwrap();
+                let accepted = callback.take_accepted_manual_parameter();
+                if includes_marker {
+                    assert_eq!(
+                        accepted,
+                        Some(AcceptedManualParameter {
+                            binding: BINDING,
+                            sequence: 0,
+                            first_frame: 0,
+                            callback_offset: (16 - position) as u16,
+                            input,
+                            origin: Some(ManualParameterOrigin {
+                                arrangement_frame: 127,
+                                performance_frame: 301,
+                                loop_pass: 2,
+                            }),
+                        })
+                    );
+                    assert_eq!(output[16 - position], [3.0; 2]);
+                    delivered = true;
+                } else {
+                    assert_eq!(accepted, None);
+                }
+                assert_eq!(callback.take_accepted_manual_parameter(), None);
+                if let Some(request) = worker.receive_request().unwrap() {
+                    assert!(request.manual_origin_available);
+                    let mut block = request.block;
+                    let marker = (block.sequence == 0).then_some(input);
+                    if marker.is_some() {
+                        block.pcm[..8].fill([3.0; 2]);
+                    }
+                    worker
+                        .complete_with_manual_parameter(block, marker)
+                        .unwrap();
+                }
+                position += size;
+            }
+            assert_eq!(delivered, host_accepts);
+        }
+    }
+}
+
+#[test]
+fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
+    let marker = ManualParameterInput {
+        operation: NonZeroU64::MIN,
+        action: ManualParameterAction::Point(ParameterPoint {
+            id: 7,
+            frame: 0,
+            normalized: 0.5,
+        }),
+    };
+    for action in [
+        ManualParameterAction::Point(ParameterPoint {
+            frame: 1,
+            ..marker.point().unwrap()
+        }),
+        ManualParameterAction::Point(ParameterPoint {
+            normalized: f64::NAN,
+            ..marker.point().unwrap()
+        }),
+        ManualParameterAction::Release {
+            parameter: u32::MAX,
+        },
+    ] {
+        let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let block = worker.receive().unwrap().unwrap();
+        assert_eq!(
+            worker.complete_with_manual_parameter(
+                block,
+                Some(ManualParameterInput { action, ..marker })
+            ),
+            Err(Fault::InvalidParameters)
+        );
+        assert!(callback.is_revoked());
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
+    }
+    let (_control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let stage = |callback: &mut Callback| {
+        let mut output = [[9.0; 2]; 8];
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
+        assert_eq!(output, [[0.0; 2]; 8]);
+    };
+    stage(&mut callback);
+    let late = worker.receive().unwrap().unwrap();
+    stage(&mut callback);
+    stage(&mut callback); // Exactly one concealed missing reply.
+    worker
+        .complete_with_manual_parameter(late, Some(marker))
+        .unwrap();
+    let on_time = worker.receive().unwrap().unwrap();
+    worker.complete(on_time).unwrap();
+    stage(&mut callback);
+}
+
+#[test]
+fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
+    use std::sync::{Barrier, atomic::AtomicBool};
+    let (control, _callback, _worker) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.received_program(), None);
+    let barrier = Barrier::new(2);
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let revoked = &control.revoked;
+        scope.spawn(|| {
+            for sequence in 0..32768 {
+                revoked
+                    .record_received_program(sequence, NonZeroU64::new(sequence + 17))
+                    .unwrap();
+                if sequence == 1024 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+            }
+            finished.store(true, Release);
+        });
+        barrier.wait();
+        assert_eq!(
+            control.received_program(),
+            Some(ReceivedProgram {
+                binding: BINDING,
+                sequence: 1024,
+                program: NonZeroU64::new(1041)
+            })
+        );
+        barrier.wait();
+        while !finished.load(Acquire) {
+            if let Some(snapshot) = control.received_program() {
+                assert_eq!(snapshot.binding, BINDING);
+                assert_eq!(snapshot.program.unwrap().get(), snapshot.sequence + 17);
+            }
+            std::hint::spin_loop();
+        }
+    });
+    assert_eq!(
+        control.received_program(),
+        Some(ReceivedProgram {
+            binding: BINDING,
+            sequence: 32767,
+            program: NonZeroU64::new(32784)
+        })
+    );
+    control
+        .revoked
+        .record_received_program(32768, None)
+        .unwrap();
+    assert_eq!(control.received_program().unwrap().program, None);
+    control.revoke();
+    assert_eq!(control.received_program(), None);
+}
+
+#[test]
+fn committed_quantum_is_published_only_after_accepted_callback() {
+    let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
+    let (other, _, _) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.committed_quantum(), None);
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.0; 2]; 3], &[], &mut output[..3])
+        .unwrap();
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "staging is not acceptance"
+    );
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.committed_quantum(),
+        Some(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::OpenUnprogrammed,
+        })
+    );
+    assert_eq!(
+        other.committed_quantum(),
+        None,
+        "equal binding does not share custody"
+    );
+    let serial = control.revoked.quantum_serial.load(Acquire);
+    callback
+        .stage(&[[0.0; 2]; 1], &[], &mut output[..1])
+        .unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.revoked.quantum_serial.load(Acquire),
+        serial,
+        "unchanged state need not republish"
+    );
+    callback
+        .stage(&[[0.0; 2]; 4], &[], &mut output[..4])
+        .unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.committed_quantum(),
+        Some(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::Closed,
+        })
+    );
+    callback
+        .stage(&[[0.0; 2]; 1], &[], &mut output[..1])
+        .unwrap();
+    assert!(callback.finish(false).is_err());
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "revoked callbacks grant no observation"
+    );
+}
+
+#[test]
+fn committed_quantum_snapshot_is_bounded_and_coherent() {
+    use std::sync::{Barrier, atomic::AtomicBool};
+    let (control, _callback, _) = channel(BINDING, 8).unwrap();
+    control.revoked.quantum_serial.store(1, Release);
+    control.revoked.quantum_program.store(99, Release);
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "an in-progress publication is unavailable"
+    );
+    control.revoked.quantum_serial.store(0, Release);
+    let barrier = Barrier::new(2);
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let revoked = &control.revoked;
+        scope.spawn(|| {
+            for index in 1_u64..=32_768 {
+                let state = if index.is_multiple_of(2) {
+                    CommittedQuantumState::Closed
+                } else {
+                    CommittedQuantumState::OpenProgram(NonZeroU64::MIN)
+                };
+                revoked.publish_quantum(state);
+                if index == 1024 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+            }
+            finished.store(true, Release);
+        });
+        barrier.wait();
+        assert_eq!(
+            control.committed_quantum().unwrap().state,
+            CommittedQuantumState::Closed
+        );
+        barrier.wait();
+        while !finished.load(Acquire) {
+            if let Some(snapshot) = control.committed_quantum() {
+                assert_eq!(snapshot.binding, BINDING);
+                assert!(matches!(
+                    snapshot.state,
+                    CommittedQuantumState::Closed
+                        | CommittedQuantumState::OpenProgram(NonZeroU64::MIN)
+                ));
+            }
+        }
+    });
+    control.revoked.quantum_serial.store(u64::MAX - 1, Release);
+    control
+        .revoked
+        .publish_quantum(CommittedQuantumState::OpenUnprogrammed);
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "serial exhaustion is not an acknowledgement"
+    );
+}
+
+#[test]
+#[ignore = "release-only callback timing observation"]
+fn callback_quantum_observation_timing() {
+    use std::time::Instant;
+
+    const QUANTUM: usize = 256;
+    const WARMUP: usize = 2_000;
+    const BLOCKS: usize = 20_000;
+    let (_control, mut callback, mut worker) = channel(BINDING, QUANTUM as u16).unwrap();
+    let input = [[0.25, -0.25]; QUANTUM];
+    let mut output = [[0.0; 2]; QUANTUM];
+    let mut elapsed = std::time::Duration::ZERO;
+    for block in 0..WARMUP + BLOCKS {
+        let start = Instant::now();
+        callback.stage(&input, &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        if block >= WARMUP {
+            elapsed += start.elapsed();
+        }
+        if let Some(reply) = worker.receive().unwrap() {
+            worker.complete(reply).unwrap();
+        }
+    }
+    std::hint::black_box(output);
+    println!(
+        "callback quantum: frames={QUANTUM} warmup={WARMUP} blocks={BLOCKS} ns_per_block={}",
+        elapsed.as_nanos() / BLOCKS as u128
+    );
 }

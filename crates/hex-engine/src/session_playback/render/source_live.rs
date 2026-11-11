@@ -12,6 +12,9 @@ impl SessionPlayback {
             .routes
             .iter()
             .position(|route| route.id == keyboard.track())?;
+        if !self.revision.source_routing().contributes(contributor) {
+            return None;
+        }
         self.revision.source_routing().receiver_index(contributor)
     }
 }
@@ -27,6 +30,7 @@ pub(super) fn render_source_live_input(
     output: &mut [Frame],
     timing: &crate::prepared_tempo::SessionTimingView<'_>,
     playing: bool,
+    parameter_values: Option<&dyn hex_lattice::NativeParameterAutomation>,
 ) -> Result<(), SessionPlaybackError> {
     if source.is_some() && output.len() > 256 {
         return Err(SessionPlaybackError::InvalidCommand);
@@ -78,6 +82,7 @@ pub(super) fn render_source_live_input(
                     Some(&source_clock),
                     &hex_lattice::EMPTY_DEVICE_RESOURCES,
                     None,
+                    parameter_values,
                 )
                 .map_err(|error| error.render_error())?;
         }

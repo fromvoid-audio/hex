@@ -49,6 +49,9 @@ fn sampler_control_error(error: hex_devices::sampler::control::ControlError) -> 
             SamplerParameter::Gain => "sampler gain must be between zero and four",
             SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
             SamplerParameter::LoopEnabled => "sampler loop must be off or on",
+            SamplerParameter::LoopCrossfadeMs => {
+                "sampler loop crossfade must be between zero and 10000 ms"
+            }
             SamplerParameter::StartFrame
             | SamplerParameter::EndFrame
             | SamplerParameter::LoopStartFrame
@@ -345,47 +348,24 @@ pub fn native_effect_frequency_response(
     sample_rate: u32,
     frequencies_hz: &[f32],
 ) -> Result<Option<Vec<[f32; 2]>>, Invalid> {
-    if frequencies_hz.is_empty()
-        || frequencies_hz.len() > 256
-        || frequencies_hz.iter().any(|frequency| {
-            !frequency.is_finite() || *frequency <= 0.0 || *frequency >= sample_rate as f32 * 0.5
-        })
-        || frequencies_hz.windows(2).any(|pair| pair[0] >= pair[1])
-    {
-        return Err(Invalid("invalid native response frequency range"));
-    }
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
-    let Some(processor) = registry
-        .prepare_processor(
-            state,
-            &hex_lattice::DevicePreparationContext {
-                sample_rate,
-                tuning: &hex_lattice::TuningTable::default(),
-                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            },
-        )
-        .map_err(|_| Invalid("native device response is unavailable"))?
-    else {
-        return Ok(None);
-    };
-    let mut response = Vec::new();
-    response
-        .try_reserve_exact(frequencies_hz.len())
-        .map_err(|_| Invalid("native device response allocation failed"))?;
-    for frequency in frequencies_hz {
-        let Some(magnitude) = processor.frequency_response_at_hz(*frequency) else {
-            return Ok(None);
-        };
-        if magnitude
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err(Invalid("native device response is invalid"));
-        }
-        response.push(magnitude);
-    }
-    Ok(Some(response))
+    hex_devices::native_effect_frequency_response(state, sample_rate, frequencies_hz)
+        .map_err(|error| Invalid(error.message()))
+}
+
+/// Authored Vector carrier-filter response from the provider's prepared law.
+/// Excludes oscillator/decimator transfer, live modulation and smoothing.
+/// Read-only control-side preparation; never call from an audio callback.
+pub fn native_operator_filter_frequency_response(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    frequencies_hz: &[f32],
+) -> Result<Vec<f32>, Invalid> {
+    hex_devices::operator_state::operator_filter_frequency_response(
+        state,
+        sample_rate,
+        frequencies_hz,
+    )
+    .map_err(|error| Invalid(error.message()))
 }
 
 /// Look up descriptors only in the explicitly selected class registry.
@@ -487,6 +467,28 @@ fn display_name(type_id: DeviceTypeId, name: Option<&str>) -> Result<String, Inv
 mod tests {
     use super::*;
     use hex_lattice_contract::ParameterKind;
+
+    #[test]
+    fn operator_filter_response_facade_uses_validated_instrument_state() {
+        let definition = &hex_devices::operator_state::OPERATOR_METADATA;
+        let state = definition.default_state().unwrap();
+        assert_eq!(
+            native_operator_filter_frequency_response(&state, 48_000, &[100.0, 1000.0]).unwrap(),
+            [1.0; 2]
+        );
+        let state = definition
+            .patch_parameter(
+                &state,
+                hex_lattice_contract::ParameterId::from_static(20_001),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let response =
+            native_operator_filter_frequency_response(&state, 48_000, &[100.0, 1000.0, 10_000.0])
+                .unwrap();
+        assert!(response[0] > response[1] && response[1] > response[2]);
+        assert!(native_operator_filter_frequency_response(&state, 48_000, &[0.0]).is_err());
+    }
 
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
@@ -636,7 +638,12 @@ mod tests {
                 .expect("eq8 response");
         assert!(response[1][0] > 1.9);
         assert!((response[1][1] - 1.0).abs() < 1e-6);
-        assert!(native_effect_frequency_response(&changed, 48_000, &[0.0]).is_err());
+        assert_eq!(
+            native_effect_frequency_response(&changed, 48_000, &[0.0])
+                .unwrap_err()
+                .0,
+            "invalid native response frequency range"
+        );
     }
 
     #[test]
@@ -743,7 +750,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 424);
+        assert_eq!(operator_view.parameters.len(), 432);
         let enables: Vec<_> = operator_view
             .parameters
             .iter()

@@ -1,8 +1,8 @@
 //! Audio clip loop brace in the event editor's retained-root viewport.
 //! Window input capture ends independently of the existing clip-loop receipt.
 use super::*;
-use crate::editor::audio_event_editor::editor_bounds;
-use crate::editor::{musical_time::SnapGrid, viewport::Viewport};
+use crate::editor::audio_event_editor::{editor_bounds, event_grid_origin};
+use crate::editor::{musical_time::SnapGrid, signed_frame_viewport::SignedFrameViewport};
 use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative};
 use hex_project::AudioClipEdit;
 
@@ -13,7 +13,7 @@ pub(super) struct Gesture {
     clip: ClipId,
     root: AudioClipEdit,
     clip_start: u64,
-    viewport: Viewport,
+    viewport: SignedFrameViewport,
     bounds: Bounds<Pixels>,
     start_edge: bool,
     down_x: f32,
@@ -139,14 +139,14 @@ impl EditorView {
             || self.detail_clip_id() != Some(g.clip)
             || self.edit_pending()
             || self.clip_loop.audio_bounds != Some(g.bounds)
-            || self.event_viewport(&g.root) != g.viewport
+            || self.event_frame_window(&g.root) != g.viewport
             || g.grid != self.audio_loop_grid()
         {
             return;
         }
         if (x - g.down_x).abs() >= 3.0 {
             let tempo = state.project.tempo_map();
-            let first = g.root.root_frame_at(editor_bounds(&g.root).0, tempo).ok();
+            let first = g.root.root_frame_at(event_grid_origin(&g.root), tempo).ok();
             let horizon = g
                 .root
                 .root_frame_at(g.root.domain.clock.length(), tempo)
@@ -170,21 +170,18 @@ impl EditorView {
                     + offset.clamp(-(u64::MAX as f64), u64::MAX as f64) as i128)
                     .clamp(0, i128::from(horizon)) as u64;
                 let absolute = i128::from(g.clip_start) + i128::from(raw) - i128::from(first);
-                let snapped = u64::try_from(absolute)
-                    .ok()
-                    .and_then(|candidate| {
-                        g.grid.with_platform_modifier(platform).snap_frame(
+                let snapped = self
+                    .event_project_window(&g.root)
+                    .and_then(|window| {
+                        g.grid.with_platform_modifier(platform).snap_signed_frame(
                             &state.project,
-                            candidate,
-                            Viewport {
-                                start: g.clip_start.saturating_add(g.viewport.start),
-                                length: g.viewport.length,
-                            },
+                            absolute,
+                            window,
                             width,
                         )
                     })
                     .map_or(raw, |frame| {
-                        (i128::from(first) + i128::from(frame) - i128::from(g.clip_start))
+                        (i128::from(first) + frame - i128::from(g.clip_start))
                             .clamp(0, i128::from(horizon)) as u64
                     });
                 if let Ok(position) = g.root.root_position_at(snapped, tempo) {
@@ -199,6 +196,34 @@ impl EditorView {
         }
         self.clip_loop.audio_gesture = Some(g);
     }
+    /// The Arrangement title shares the detail editor's held and released
+    /// cycle edit. Reuse its validated operation on just the displayed clip.
+    pub(in crate::editor) fn audio_header_loop_clip<'a>(
+        &'a self,
+        clip: &'a Clip,
+        state: &super::super::ViewState,
+    ) -> std::borrow::Cow<'a, Clip> {
+        if let Some(g) = self.clip_loop.audio_gesture.as_ref().filter(|g| {
+            g.clip == clip.id()
+                && g.generation == self.project_generation
+                && g.revision == state.revision
+                && g.preview != (g.root.view_start, g.root.view_end)
+        }) && let Some(asset) = state.project.asset(clip.asset())
+            && let Ok(preview) = hex_project::preview_audio_view_resize(
+                clip,
+                state.project.tempo_map(),
+                asset.playback_frames(),
+                AudioViewResizeOperation::CycleRange {
+                    start: g.preview.0,
+                    end: g.preview.1,
+                    looping: g.looping,
+                },
+            )
+        {
+            return std::borrow::Cow::Owned(preview);
+        }
+        std::borrow::Cow::Borrowed(self.pending_clip_loop_audio(clip.id()).unwrap_or(clip))
+    }
     pub(in crate::editor) fn audio_loop_ruler(
         &mut self,
         cx: &mut Context<Self>,
@@ -211,7 +236,7 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = state.revision;
         let root = clip.audio_event_root();
-        let viewport = self.event_viewport(&root);
+        let viewport = self.event_frame_window(&root);
         if self.clip_loop.audio_gesture.as_ref().is_some_and(|g| {
             g.generation != self.project_generation || g.revision != state.revision || g.clip != id
         }) {
@@ -248,9 +273,10 @@ impl EditorView {
             root.root_frame_at(value, state.project.tempo_map())
                 .ok()
                 .zip(first)
-                .map(|(frame, first)| {
-                    (frame as f64 - first as f64 - viewport.start as f64)
-                        / viewport.length.max(1) as f64
+                .and_then(|(frame, first)| {
+                    viewport
+                        .shifted(i128::from(first))?
+                        .fraction(i128::from(frame))
                 })
         };
         let (a, b) = (position(start), position(end));
@@ -339,7 +365,7 @@ impl EditorView {
                                     revision: state.revision,
                                     clip: id,
                                     preview: (root.view_start, root.view_end),
-                                    viewport: view.event_viewport(&root),
+                                    viewport: view.event_frame_window(&root),
                                     root,
                                     clip_start: clip.start(),
                                     bounds,

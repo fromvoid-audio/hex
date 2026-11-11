@@ -8,14 +8,17 @@ publish.workspace = true
 [dependencies]
 hex-tuning = { path = "../hex-tuning" }
 fs2 = "=0.4.3"
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "=1.0.151", features = ["float_roundtrip", "raw_value"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.190"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "=1.1.5", features = ["fs"] }
 
 [lints]
 workspace = true

@@ -18,6 +18,8 @@ impl Context {
 
 #[derive(Debug)]
 pub(super) struct Record {
+    pub level: crate::Level,
+    pub category: crate::Category,
     pub sequence: u64,
     pub unix_nanos: u128,
     pub elapsed_nanos: u128,
@@ -27,7 +29,9 @@ pub(super) struct Record {
 impl Record {
     pub fn line(&self) -> String {
         let mut line = format!(
-            "event unix_nanos={} elapsed_nanos={} sequence={} truncated={} original_bytes={} message=",
+            "event level={} category={} unix_nanos={} elapsed_nanos={} sequence={} truncated={} original_bytes={} message=",
+            self.level.as_str(),
+            self.category.as_str(),
             self.unix_nanos,
             self.elapsed_nanos,
             self.sequence,

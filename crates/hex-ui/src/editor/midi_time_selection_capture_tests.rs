@@ -1,7 +1,10 @@
 //! Actual source-local selection input on the three shared surfaces.
 use super::*;
 use crate::editor::{midi_canvas::creation_tests::fixture, test_environment::Environment};
-use gpui::{CursorStyle, Entity, Modifiers, Render, TestAppContext, VisualTestContext};
+use gpui::{
+    CursorStyle, Entity, KeyDownEvent, Keystroke, Modifiers, Render, TestAppContext,
+    VisualTestContext,
+};
 use std::{cell::Cell, rc::Rc, sync::Arc};
 struct Host {
     editor: Entity<EditorView>,
@@ -46,6 +49,15 @@ fn open(cx: &mut TestAppContext, selector: &'static str) -> Fixture {
     });
     visual.simulate_resize(size(px(1280.), px(800.)));
     visual.run_until_parked();
+    if selector != "midi-source-ruler" {
+        visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
+        visual.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("2").unwrap(),
+            is_held: false,
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.time_selection_key_held));
+    }
     let b = visual.debug_bounds(selector).unwrap();
     let at = |f| {
         point(
@@ -101,7 +113,11 @@ fn time_selection_owns_three_surfaces_and_releases_input_after_range(cx: &mut Te
         visual.run_until_parked();
         assert_eq!(
             visual.rendered_cursor_style(),
-            Some(CursorStyle::Crosshair),
+            Some(if surface != "midi-source-ruler" {
+                CursorStyle::IBeam
+            } else {
+                CursorStyle::Crosshair
+            }),
             "{surface}"
         );
         visual.simulate_mouse_up(
@@ -176,7 +192,7 @@ fn time_selection_loss_preserves_prior_range_without_stale_release(cx: &mut Test
                     cx.notify();
                 }),
                 "viewport" => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = hex_project::BeatTime::ONE;
+                    v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {

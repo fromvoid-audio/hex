@@ -11,6 +11,8 @@ workspace = true
 [features]
 # Peak-only construction/allocator probes; no native source authority.
 source-overview-test-support = []
+# Test-only, per-take writer failure injection; never enabled by default.
+recording-fault-test-support = []
 
 [dependencies]
 hex-storage = { path = "../hex-storage" }
