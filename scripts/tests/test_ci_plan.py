@@ -3561,6 +3561,33 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(all(name in step.argv for name in (worker, group))
                             for step in steps if step.step_id == "ui-feature-tests"))
 
+    def test_pending_clip_move_unit_keeps_real_move_and_group_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/pending_clip_move.rs"
+        unit = "editor::pending_clip_move::tests::"
+        consumers = (
+            "editor::clip_drag_ui_test::rendered_move_survives_same_revision_worker_work",
+            "editor::clip_drag_ui_test::rendered_move_real_refusal_retires_only_its_matching_fifo_terminal",
+            "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
+            "editor::drag::group_drag_ui_test::group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit",
+        )
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [source]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        feature = steps["ui-feature-tests"].argv
+        for consumer in consumers:
+            self.assertIn(consumer, feature)
+        self.assertNotIn("editor::", feature)
+
     def test_stretch_projection_retains_real_cache_consumer(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
