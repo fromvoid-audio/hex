@@ -275,6 +275,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/operator_panel/filter_response.rs": ("editor::device_panel::operator_panel::filter_response::tests::",),
     "src/editor/device_panel/operator_panel/harmonics.rs": ("editor::device_panel::operator_panel::harmonics::tests::",),
     "src/editor/drag.rs": ("editor::drag::tests::",),
+    "src/editor/tracks.rs": ("editor::tracks::midi_trim_unit_tests::",),
     "src/editor/pending_clip_move.rs": ("editor::pending_clip_move::tests::",),
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
     "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
@@ -521,6 +522,14 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::drag::group_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::trim::midi_left_extension_ui_tests::": ("editor::drag_autoscroll::tests::",),
     "editor::trim::": ("editor::drag_autoscroll::tests::",),
+    "editor::tracks::": (
+        "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+        "editor::clip_drag_ui_test::rendered_midi_left_trim_keeps_source_note_timeline_position",
+    ),
+    "editor::tracks::midi_trim_unit_tests::": (
+        "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+        "editor::clip_drag_ui_test::rendered_midi_left_trim_keeps_source_note_timeline_position",
+    ),
     "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::": ("editor::device_panel::eq_panel::tests::",),
