@@ -254,6 +254,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
+    "src/editor/scrub_tests.rs": ("editor::scrub::tests::latest_target_replaces_moves_and_release_survives_an_in_flight_destination",),
     "src/editor/sample_recorder/beat_guides.rs": ("editor::sample_recorder::beat_guides::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),

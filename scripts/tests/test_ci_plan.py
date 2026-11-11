@@ -4822,6 +4822,33 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
                 self.assertNotIn("editor::", feature)
 
+    def test_scrub_latest_target_keeps_real_ruler_input(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::scrub::tests::latest_target_replaces_moves_and_release_survives_an_in_flight_destination"
+        witness = "editor::scrub::tests::ui::actual_ruler_down_move_up_retains_only_final_target_until_seek_gate_opens"
+        for path in ('crates/hex-ui/src/editor/scrub_tests.rs', 'crates/hex-ui/src/editor/scrub.rs'):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                feature = steps["ui-feature-tests"].argv
+                self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+                self.assertNotIn("editor::", feature)
+
+        boundary["module_filters"] = {owner: [witness]}
+        rendered_only = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                         "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in rendered_only))
+
     def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
