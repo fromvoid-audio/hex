@@ -43,6 +43,25 @@ clippy, build or runner) at a time. A session's own worktree target may need
 Do not edit a checkout while a runner is using it: a changed tree marks the
 run stale, and Python self-tests that start scripts would test the edit.
 
+For cooperating sessions, wrap the entire command (including scripts that may
+spawn Cargo) in the shared slot:
+
+```sh
+python3 scripts/cargo-slot.py cargo test -p OWNER --locked
+python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
+```
+
+All participating Hex and Yield worktrees on the same user account must use the
+same `~/.cache/hex/cargo-slot.lock`. From a Yield worktree, invoke this wrapper
+by its absolute path in a Hex checkout. The wrapper waits for the slot and passes
+its open lock to the child, so killing the wrapper does not free it while the
+child retains the descriptor. Leave the lock file in place; an unlocked file is
+not a stale owner and must not be deleted. This is advisory, separate from the
+runner's target-custody lock, and cannot exclude direct Cargo commands or other
+scripts that do not participate. Check for nonparticipants and coordinate with
+their owners before starting; do not kill their work. `HEX_CARGO_SLOT_FILE` is
+for isolated tests: different values do not coordinate with each other.
+
 Reviewed check set template for a PR description:
 
 ```text
