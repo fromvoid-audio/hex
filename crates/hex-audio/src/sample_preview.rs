@@ -386,7 +386,7 @@ impl Control {
 
     /// Admit the next nonempty, contiguous window. The single input slot
     /// applies backpressure; retry a full submission after the callback runs.
-    /// At most 4096 output frames are owned by each submitted window.
+    /// Each window's PCM length and backing capacity are at most 4096 frames.
     pub fn publish_window(
         &mut self,
         generation: u64,
@@ -405,6 +405,7 @@ impl Control {
             && generation == self.generation.load(Acquire)
             && audio.sample_rate() == self.rate
             && (1..=MAX_WINDOW_FRAMES).contains(&length)
+            && audio.pcm_capacity_frames() <= MAX_WINDOW_FRAMES
             && self
                 .windows
                 .as_ref()
@@ -828,6 +829,16 @@ mod tests {
         assert_eq!(
             control
                 .publish_window(token, 0, pcm(0.5, MAX_WINDOW_FRAMES + 1))
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Invalid
+        );
+        let mut oversized = Vec::with_capacity(MAX_WINDOW_FRAMES + 1);
+        oversized.push([0.5, -0.5]);
+        let oversized = Audio::new(48_000, oversized).unwrap();
+        assert_eq!(
+            control
+                .publish_window(token, 0, oversized)
                 .unwrap_err()
                 .reason,
             WindowRefusalReason::Invalid
