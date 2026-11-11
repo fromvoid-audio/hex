@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
@@ -433,6 +434,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
+    "editor::trim::": ("editor::drag_autoscroll::tests::",),
     "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
@@ -928,6 +932,13 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             if any("editor::device_panel::device_meter::tests::".startswith(name) for name in names):
                 names.update((
                     "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
+                ))
+            if any("editor::drag_autoscroll::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+                    "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+                    "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+                    "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
                 ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
