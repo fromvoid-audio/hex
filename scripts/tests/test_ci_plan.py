@@ -3500,6 +3500,27 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_project_recovery_slot_unit_keeps_real_launch_isolation(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/project_recovery.rs"
+        unit = "editor::project_recovery::tests::"
+        witness = "editor::leftover_recovery::tests::launch_offers_each_untitled_leftover_and_sets_a_recovered_foreign_slot_aside"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        feature = steps["ui-feature-tests"].argv
+        self.assertTrue(any(witness.startswith(prefix) for prefix in feature))
+        self.assertNotIn("editor::", feature)
+
     def test_device_meter_units_keep_rendered_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

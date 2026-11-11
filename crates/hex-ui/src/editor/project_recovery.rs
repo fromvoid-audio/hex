@@ -215,7 +215,7 @@ fn own_untitled_source(slot: Option<&Path>) -> Result<ProjectSource, String> {
         .ok_or_else(|| "this window has no untitled recovery slot".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

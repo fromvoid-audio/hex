@@ -256,6 +256,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/project_recovery.rs": ("editor::project_recovery::tests::",),
     "src/editor/dialogs.rs": ("editor::dialogs::tests::",),
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
     "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
@@ -566,6 +567,9 @@ UI_MODULE_TEST_DEPENDENCIES = {
     ),
     "editor::midi_origin_view::": ("editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges",),
     "editor::midi_origin_view::tests::": ("editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges",),
+    "editor::project_recovery::": (
+        "editor::leftover_recovery::tests::launch_offers_each_untitled_leftover_and_sets_a_recovered_foreign_slot_aside",
+    ),
     "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
     "editor::drag::": ("editor::drag_autoscroll::tests::",),
