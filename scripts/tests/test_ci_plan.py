@@ -4426,6 +4426,52 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_native_automation_recording_units_keep_receipt_and_vst3_witnesses(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::native_automation_recording::unit_tests::",
+            "editor::native_automation_recording::editor_input::tests::",
+        )
+        consumers = (
+            "editor::native_automation_recording::tests::refused_and_lost_submissions_keep_delivered_receipts_until_recovery",
+            "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
+            "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
+        )
+        routes = (
+            "crates/hex-ui/src/editor/native_automation_recording.rs",
+            "crates/hex-ui/src/editor/native_automation_recording/editor_input.rs",
+            "crates/hex-ui/src/editor/native_automation_recording/unit_tests.rs",
+            "crates/hex-ui/src/editor/device_automation/host_tests.rs",
+        )
+        for path in routes:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(unit.requires_tests)
+                feature = steps["ui-feature-tests"]
+                feature_filters = feature.argv[feature.argv.index("--") + 1:]
+                for consumer in consumers:
+                    self.assertTrue(any(consumer == prefix or consumer.startswith(prefix)
+                                        for prefix in feature_filters),
+                                    f"{consumer} missing from {feature_filters}")
+                if "native_automation_recording" in path:
+                    self.assertTrue(any(any(prefix in arg for arg in unit.argv)
+                                        for prefix in unit_prefixes))
+                    self.assertFalse(any("unit_editor_logic" in step.argv for step in steps.values()))
+                    self.assertFalse(any("editor::save::tests::" in arg for arg in unit.argv))
+                else:
+                    self.assertIn("editor::device_automation::unit_tests::", unit.argv)
+                    for prefix in unit_prefixes:
+                        self.assertIn(prefix, unit.argv)
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
