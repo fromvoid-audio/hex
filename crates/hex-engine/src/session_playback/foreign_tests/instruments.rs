@@ -172,7 +172,8 @@ fn prepare_instruments(
         instrument_profile,
         epoch,
     };
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::delay::DelayDefinition];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     PreparedRevision::prepare_with_effect_registry(
         editor.project(),
@@ -1084,6 +1085,75 @@ fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
         endpoint.notes,
         [(
             frames_until_release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
+fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
+    let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 128).unwrap());
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::AddTrack {
+            name: "independent track".into(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 1024,
+            enabled: true,
+        })
+        .unwrap();
+    let original = prepare(&editor, identity, true).unwrap();
+    let mut deadline = None;
+    original.arrangement().tracks()[0]
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint
+        .render(&mut playing, &mut [[0.0; 2]; 1024])
+        .unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 32]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one onset after the wrap");
+    };
+    assert!(onset.on);
+    let onset = *onset;
+
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::delay::DelayDefinition.default_state().unwrap(),
+        })
+        .unwrap();
+    let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    edited.try_inherit_state_live_from(&mut playing).unwrap();
+    assert_eq!(edited.performance_frame(), 1056);
+    assert_eq!(edited.arrangement_frame(), 32);
+    assert!(edited.playing());
+    endpoint.render(&mut edited, &mut [[0.0; 2]; 8]).unwrap();
+    assert!(endpoint.notes.is_empty());
+
+    editor.execute(Command::Gain { track, gain: 0.5 }).unwrap();
+    let mut adjusted = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    adjusted.try_inherit_state_live_from(&mut edited).unwrap();
+    let release = usize::try_from(deadline.unwrap() - 40).unwrap();
+    endpoint
+        .render(&mut adjusted, &mut vec![[0.0; 2]; release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            release,
             hex_lattice::ForeignNote {
                 on: false,
                 velocity: 0,
