@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
@@ -922,6 +923,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::controller_input::hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history",
                     "editor::controller_input::hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest",
                     "editor::midi_canvas::audition_tests::configured_controller_keeps_its_root_during_note_and_marquee_audition",
+                ))
+            if any("editor::device_panel::device_meter::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
                 ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
