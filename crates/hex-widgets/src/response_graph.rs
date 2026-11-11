@@ -241,7 +241,7 @@ struct MarqueePress {
     last: Vec<u32>,
     mode: MarqueeMode,
     modifiers: Modifiers,
-    /// Legacy Shift presses can still create on release if they do not drag.
+    /// A Shift marquee press may create on release if it does not drag.
     create_on_click: Option<[f32; 2]>,
     active: bool,
 }

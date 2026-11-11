@@ -3,8 +3,8 @@
 //! Selection is view state: `selected` drives the footer controls and a
 //! marquee `group` holds a multi-selection. A blank click clears selection,
 //! a blank drag draws a marquee, and a double-click creates a node. Holding
-//! the second press lets the user position it. Shift-cmd toggles marquee hits. Shift-press on
-//! a node adds it to the group. Dragging a grouped
+//! the second press lets the user position it. Shift-cmd toggles marquee hits.
+//! Shift-press on a node adds it to the group. Dragging a grouped
 //! node moves the group as one parameter-snapshot gesture, and removal deletes
 //! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
@@ -442,7 +442,7 @@ pub(super) fn render_body(
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click to add a node · option-drag to place and shape · shift-drag to select",
+            "double-click to add · hold second click to drag · drag empty space to select",
         ));
     }
     let body = bottom;

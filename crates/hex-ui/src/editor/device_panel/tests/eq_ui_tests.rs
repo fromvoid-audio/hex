@@ -449,7 +449,7 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
 }
 
 #[gpui::test]
-fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
+fn eq_double_click_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
     creation_history_and_round_trip(cx, CreationOwner::Track);
 }
 
