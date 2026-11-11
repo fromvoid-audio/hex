@@ -3104,6 +3104,41 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_drag_autoscroll_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::drag_autoscroll::tests::"
+        consumers = (
+            "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+            "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+            "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint",
+            "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
+        )
+        for name in (
+            "crates/hex-ui/src/editor/drag_autoscroll.rs",
+            "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+            "crates/hex-ui/src/editor/resize_pan_tests.rs",
+            "crates/hex-ui/src/editor/trim.rs",
+            "crates/hex-ui/src/editor/drag.rs",
+            "crates/hex-ui/src/editor/group_drag_ui_test.rs",
+            "crates/hex-ui/src/editor/midi_left_extension_ui_tests.rs",
+        ):
+            with self.subTest(name=name):
+                boundary = plan.boundary_selection(root, [name], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [name]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
