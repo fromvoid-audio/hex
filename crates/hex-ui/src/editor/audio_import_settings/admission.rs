@@ -76,6 +76,7 @@ fn capture(
             context,
             control,
             mut options,
+            audition_timing,
         } => {
             if !matches!(destination, AudioBatchDestination::Console(_)) {
                 options.warp = warp;
@@ -86,6 +87,7 @@ fn capture(
                 context,
                 control,
                 options,
+                audition_timing,
             });
         }
         other if warp == AudioImportWarp::Off => return Ok(other),
