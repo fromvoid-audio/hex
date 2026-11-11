@@ -269,23 +269,32 @@ mod tests {
             .unwrap();
         let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
         let mut runtime = MutableInstrumentTrackRuntime::new(factory.as_ref(), 48000).unwrap();
+        let expected_ids: Vec<_> = [
+            2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27, 29, 30, 31,
+            32,
+        ]
+        .into_iter()
+        .map(ParameterId::from_static)
+        .collect();
+        assert_eq!(runtime.frozen_parameters.ids, expected_ids);
         assert_eq!(
             runtime.frozen_parameters.storage_bytes(),
-            FrozenParameters::quote(4)
+            FrozenParameters::quote(24)
         );
         assert_eq!(
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(factory.as_ref(), 48000),
             runtime
                 .declared_pair_bytes()
                 .checked_add(runtime.ledger_capacity_bytes().unwrap())
-                .and_then(|bytes| bytes.checked_add(FrozenParameters::quote(4).unwrap()))
+                .and_then(|bytes| bytes.checked_add(FrozenParameters::quote(24).unwrap()))
         );
         assert!(runtime.with_frozen_parameters(|_, _| ()).is_err());
         runtime.capture_tail_parameters().unwrap();
         let before = runtime.frozen_parameters.values.clone();
+        assert!(before.iter().all(Option::is_some));
         let failed: Result<(), ()> = runtime
             .with_frozen_parameters(|_, values| {
-                assert_eq!(values.unwrap().parameter_ids().len(), 4);
+                assert_eq!(values.unwrap().parameter_ids(), expected_ids);
                 Err(())
             })
             .unwrap();
@@ -294,10 +303,10 @@ mod tests {
         assert!(runtime.frozen_parameters.ready);
         runtime
             .with_frozen_parameters(|_, values| {
-                assert_eq!(
-                    values.unwrap().value_at(ParameterId::from_static(29), 0),
-                    before[0]
-                )
+                let values = values.unwrap();
+                for (id, expected) in expected_ids.iter().zip(&before) {
+                    assert_eq!(values.value_at(*id, 0), *expected);
+                }
             })
             .unwrap();
         let bytes = runtime.frozen_parameters.storage_bytes();
