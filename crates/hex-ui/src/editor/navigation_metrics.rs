@@ -40,7 +40,6 @@ struct State {
 thread_local! {
     // Diagnostic ablation in the ignored headless probe only. This is separate
     // from timer resets and is never compiled into the shipped renderer.
-    static REFERENCE_STEREO: Cell<bool> = const { Cell::new(false) };
     static WAVEFORMS_SUPPRESSED: Cell<bool> = const { Cell::new(false) };
     static STATE: Cell<State> = const { Cell::new(State {
         enabled: false,
@@ -64,22 +63,8 @@ impl Drop for WaveformSuppression {
     }
 }
 
-/// Scoped comparison identity; never compiled into the shipped renderer.
-pub(super) struct ReferenceStereo(bool);
-
-pub(super) fn use_reference_stereo(reference: bool) -> ReferenceStereo {
-    ReferenceStereo(REFERENCE_STEREO.with(|state| state.replace(reference)))
-}
-
-pub(super) fn reference_stereo() -> bool {
-    REFERENCE_STEREO.with(Cell::get)
-}
-
-impl Drop for ReferenceStereo {
-    fn drop(&mut self) {
-        REFERENCE_STEREO.with(|state| state.set(self.0));
-    }
-}
+/// Shared test-only cache identity scope used by the navigation profiler.
+pub(super) use super::waveform_geometry::use_reference_stereo;
 
 pub(super) fn reset(enabled: bool) {
     STATE.with(|state| {

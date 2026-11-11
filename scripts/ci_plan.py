@@ -1038,6 +1038,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
                     "editor::waveform::resize_tests::plain_lower_fade_prefix_uses_the_same_raw_source_mapping",
                     "editor::trim::loop_ui_tests::clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body",
+                    "editor::clip_content_cache::profile::navigation::headless_navigation_framework_profile",
                 ))
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
