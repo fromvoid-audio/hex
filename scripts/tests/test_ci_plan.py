@@ -2379,10 +2379,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::", "editor::group_overview::model::", "editor::group_overview::tests::",
-                                  "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths",
                                   "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::",
-                                  "editor::recent_projects::labels::", "editor::recent_projects::tests::",
+                                  "editor::recent_projects::labels::",
                                   "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                                   "editor::section_launch::geometry::",
@@ -5548,30 +5547,46 @@ class ModuleScopeTests(unittest.TestCase):
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        source = "crates/hex-ui/src/editor/recent_projects/labels.rs"
-        shim = "crates/hex-ui/tests/editor_logic_unit/recent_projects.rs"
         unit = "editor::recent_projects::labels::"
-        menu = "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"
-        mru = "editor::recent_projects::tests::"
-        names = plan.module_test_filters(root, [source], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([unit, menu, mru])})
-        self.assertEqual(plan.module_test_filters(root, [shim], inventory, [owner]), names)
+        menu_unit = "editor::menus::tests::"
+        menu_test = "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"
+        mru = "editor::recent_projects::tests::recent_menu_action_keeps_its_path_after_mru_reordering_and_obeys_open_guard"
+        closed_menu = "editor::dialogs::ui_tests::project_menu_without_active_or_after_closed_window_cannot_touch_another_editor"
+        paths = {
+            "crates/hex-ui/src/editor/recent_projects/labels.rs": [unit, menu_unit, mru, closed_menu],
+            "crates/hex-ui/tests/editor_logic_unit/recent_projects.rs": [unit],
+            "crates/hex-ui/src/editor/recent_projects.rs": [
+                "editor::recent_projects::", menu_unit, closed_menu],
+            "crates/hex-ui/src/editor/menus.rs": [
+                "editor::menus::", unit, mru, closed_menu],
+        }
+        for path, expected in paths.items():
+            with self.subTest(path=path):
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                self.assertEqual(names, {owner: sorted(expected)})
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                logic = steps["ui-unit-unit_editor_logic"]
+                self.assertTrue(logic.requires_tests)
+                self.assertTrue(any(unit.startswith(arg) or arg.startswith(unit) for arg in logic.argv),
+                                logic.argv)
+                if any(menu_unit.startswith(arg) or arg.startswith(menu_unit) for arg in names[owner]):
+                    default_lib = steps["ui-default-lib-unit-tests"]
+                    self.assertIn(menu_unit, default_lib.argv)
+                feature = steps["ui-feature-tests"].argv
+                self.assertNotIn(menu_test, feature)
+                self.assertEqual(any(mru.startswith(prefix) for prefix in feature), path != "crates/hex-ui/tests/editor_logic_unit/recent_projects.rs")
+                self.assertEqual(any(closed_menu.startswith(prefix) for prefix in feature), path != "crates/hex-ui/tests/editor_logic_unit/recent_projects.rs")
+
         self.assertEqual(plan.module_test_filters(
-            root, [source, "crates/hex-ui/tests/editor_logic_unit/editor.rs"], inventory, [owner]), {})
-        for path in (source, shim, "crates/hex-ui/src/editor/recent_projects.rs",
-                     "crates/hex-ui/src/editor/menus.rs"):
-            selected = plan.module_test_filters(root, [path], inventory, [owner])
-            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
-                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
-                        "module_filters": selected}
-            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
-                                      "cargo_inventory": inventory, "paths": [path]})
-            unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
-            self.assertTrue(unit_step.requires_tests)
-            self.assertTrue(any(unit.startswith(name) for name in unit_step.argv))
-            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-            for consumer in (menu, mru):
-                self.assertTrue(any(consumer.startswith(name) for name in feature.argv))
+            root, ["crates/hex-ui/src/editor/recent_projects/labels.rs",
+                  "crates/hex-ui/tests/editor_logic_unit/editor.rs"], inventory, [owner]), {})
+        logic_names = plan.module_test_filters(
+            root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner])[owner]
+        self.assertNotIn(menu_test, logic_names)
+        self.assertFalse(any(mru.startswith(name) or closed_menu.startswith(name) for name in logic_names))
 
     def test_guarded_session_launch_keeps_real_action_and_intent_consumers(self):
         root = SCRIPTS.parent
