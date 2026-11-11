@@ -11,7 +11,7 @@ use hex_lattice_contract::{
 };
 
 #[derive(Default)]
-pub(super) struct FrozenParameters {
+pub(crate) struct FrozenParameters {
     ids: Vec<ParameterId>,
     values: Vec<Option<ParameterValue>>,
     unclamped_target: Option<(ParameterId, f64)>,

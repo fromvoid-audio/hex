@@ -11,7 +11,7 @@ pub(crate) mod authored_gate;
 mod automation;
 pub(crate) mod frozen_parameters;
 mod live;
-mod output_trim;
+pub(crate) mod output_trim;
 #[cfg(test)]
 mod steal_tests;
 mod volume;
@@ -698,6 +698,14 @@ impl MutableInstrumentTrackRuntime {
     #[cfg(test)]
     pub(crate) fn runtime_pair_storage_bytes(&self) -> Option<usize> {
         self.pair.fixed_storage_pair_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn proof_auxiliary_storage_bytes(&self) -> Option<(usize, usize)> {
+        Some((
+            self.frozen_parameters.storage_bytes()?,
+            self.modulation_bytes()?,
+        ))
     }
 
     pub(crate) fn speculative_is_quiescent(&self) -> bool {

@@ -178,6 +178,8 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
         header: size_of::<payload::HostOwner>(),
         payload: 8192,
         ledgers: 128 * size_of::<crate::mutable_instrument::MutableOccurrence>(),
+        frozen: 0,
+        modulation: 0,
     };
     let owners = [owner];
     input = empty(pool);
@@ -195,6 +197,19 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input.active_effect_bytes = 1;
     assert_eq!(planner::plan(&input), Err(Refusal::Pair));
     input.active_effect_bytes = 0;
+    let modulation_one = [OwnerCharge {
+        modulation: 1,
+        ..owner
+    }];
+    input.active = &modulation_one;
+    assert!(planner::plan(&input).is_ok());
+    let modulation_over = [OwnerCharge {
+        modulation: 1,
+        ..owner
+    }; 256];
+    input.active = &modulation_over;
+    assert_eq!(planner::plan(&input), Err(Refusal::Pair));
+    input.active = &maximal;
     input.active_effects = 1;
     assert_eq!(planner::plan(&input), Err(Refusal::Processors));
     // The retained bank has its own declaration/count limit, independent of active.
@@ -231,6 +246,12 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     }];
     input = empty(pool);
     input.active = &overflow_owner;
+    assert_eq!(planner::plan(&input), Err(Refusal::Overflow));
+    let overflow_frozen = [OwnerCharge {
+        frozen: usize::MAX,
+        ..owner
+    }];
+    input.active = &overflow_frozen;
     assert_eq!(planner::plan(&input), Err(Refusal::Overflow));
 }
 
@@ -332,10 +353,34 @@ fn check_admitted_inventory_and_handoff_ownership(shape: Shape) {
         runtime.release_voice_count(),
     );
     let result = planner::plan(&input);
-    assert!(
-        result.is_ok() || result == Err(Refusal::Playback),
-        "unexpected proof refusal: {result:?}"
-    );
+    let active_declared = input.active_effect_bytes
+        + input
+            .active
+            .iter()
+            .map(|owner| owner.payload + owner.modulation)
+            .sum::<usize>();
+    let retained_declared = input.retained_effect_bytes
+        + input
+            .retained
+            .iter()
+            .map(|owner| owner.payload + owner.modulation)
+            .sum::<usize>();
+    let largest_owner = input
+        .active
+        .iter()
+        .chain(input.retained)
+        .map(|owner| owner.payload)
+        .max()
+        .unwrap_or(0);
+    if active_declared > 2 * 1024 * 1024 || retained_declared > 2 * 1024 * 1024 {
+        assert!(largest_owner <= 8192);
+        assert_eq!(result, Err(Refusal::Pair));
+    } else {
+        assert!(
+            result.is_ok() || result == Err(Refusal::Playback),
+            "unexpected proof refusal: {result:?}; active={active_declared} retained={retained_declared} largest_owner={largest_owner}"
+        );
+    }
     assert_eq!(
         before,
         (
@@ -516,6 +561,8 @@ fn namespace_generation_ledger_and_retained_slot_refusals_are_independent() {
         header: size_of::<payload::HostOwner>(),
         payload: size_of::<payload::Pair>(),
         ledgers: 0,
+        frozen: 0,
+        modulation: 0,
     }];
     input = empty(pool);
     input.active = &owner;
