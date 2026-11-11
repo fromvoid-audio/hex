@@ -1951,17 +1951,9 @@ fn device_selection_listener(
     })
 }
 
-fn vst3_status_body(
-    view: &mut EditorView,
-    device: &hex_project::Device,
-    cx: &mut Context<EditorView>,
-) -> Stateful<Div> {
-    let device_id = device.id();
-    if view.degraded_plugins.contains(device_id.value()) {
-        return vst3_degraded_body(device_id);
-    }
-    let foreign = view
-        .audible_playback
+fn audible_vst3_processor(view: &EditorView, device_id: DeviceId) -> Option<bool> {
+    let device = view.state.as_ref()?.project.device(device_id)?;
+    view.audible_playback
         .as_ref()
         .filter(|audible| audible.project_generation == view.project_generation)
         .filter(|audible| {
@@ -1974,8 +1966,19 @@ fn vst3_status_body(
         .and_then(|audible| audible.observation.as_ref())
         .and_then(|observation| {
             observation.foreign_processor(device_id.value(), device.state().type_id())
-        });
-    let (message, status) = match foreign {
+        })
+}
+
+fn vst3_status_body(
+    view: &mut EditorView,
+    device: &hex_project::Device,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let device_id = device.id();
+    if view.degraded_plugins.contains(device_id.value()) {
+        return vst3_degraded_body(device_id);
+    }
+    let (message, status) = match audible_vst3_processor(view, device_id) {
         Some(true) => {
             let body = vst3_parameters::body(view, device_id, cx);
             let body = div()
