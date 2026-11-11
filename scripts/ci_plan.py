@@ -436,6 +436,9 @@ UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 UI_MODULE_TEST_DEPENDENCIES = {
     "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag::group_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
+    "editor::trim::midi_left_extension_ui_tests::": ("editor::drag_autoscroll::tests::",),
     "editor::trim::": ("editor::drag_autoscroll::tests::",),
     "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
@@ -939,6 +942,8 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
                     "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
                     "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+                    "editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint",
+                    "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
                 ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))

@@ -3116,12 +3116,17 @@ class ModuleScopeTests(unittest.TestCase):
             "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
             "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
             "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint",
+            "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
         )
         for name in (
             "crates/hex-ui/src/editor/drag_autoscroll.rs",
             "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
             "crates/hex-ui/src/editor/resize_pan_tests.rs",
             "crates/hex-ui/src/editor/trim.rs",
+            "crates/hex-ui/src/editor/drag.rs",
+            "crates/hex-ui/src/editor/group_drag_ui_test.rs",
+            "crates/hex-ui/src/editor/midi_left_extension_ui_tests.rs",
         ):
             with self.subTest(name=name):
                 boundary = plan.boundary_selection(root, [name], inventory, [owner])
