@@ -40,7 +40,32 @@ pub(crate) fn isolated(
     let selected_is_receiver =
         selected_source.is_some_and(|source| source.receiver == Some(selected_track_id));
 
-    if matches!(target, BounceTarget::Range(_) | BounceTarget::Track(_))
+    if let BounceTarget::MergedRange(range) = target {
+        let range = project
+            .merged_bounce_range(range)
+            .map_err(|e| e.to_string())?;
+        let selected: std::collections::BTreeSet<_> =
+            range.tracks().iter().map(|id| id.value()).collect();
+        snapshot.tracks.retain(|track| selected.contains(&track.id));
+        snapshot.sidechains.retain(|route| {
+            snapshot
+                .tracks
+                .iter()
+                .any(|track| track.devices.iter().any(|device| device.id == route.device))
+        });
+        for track in &mut snapshot.tracks {
+            if track
+                .parent_group
+                .is_some_and(|parent| !selected.contains(&parent))
+            {
+                track.parent_group = None;
+            }
+            // The output has one unity mixer, so these tracks' own gain,
+            // pan, automation and mutes are part of the printed mix.
+            track.sends.clear();
+            track.soloed = false;
+        }
+    } else if matches!(target, BounceTarget::Range(_) | BounceTarget::Track(_))
         && project
             .track(item.track)
             .is_some_and(hex_project::Track::is_group)

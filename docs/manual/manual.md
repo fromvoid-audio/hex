@@ -343,6 +343,12 @@ original clip's start and length; drag its right edge out to reveal the tail. a 
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
+use **shift+b** on a time selection across tracks to render one mixed audio
+clip on a new track. the mix includes the selected tracks' devices, gain and
+pan, and includes each selected group's submix once. **command+shift+b** also
+deactivates the source clips inside the selected interval. one undo reverses
+the bounce and the deactivation together.
+
 select a time range on a group row to bounce its submix. **b** inserts an audio
 track beside the group and leaves the original tracks playing. **command+b** on
 one group row adds the same bounce and silences the original group's output
@@ -364,7 +370,7 @@ playing: the render runs while the song continues, then audio restarts at the cu
 baked clips, so release voices and effect tails cannot duplicate the baked tails. when stopped,
 hex keeps the stopped cursor. undo and redo of an in-place bounce follow the same rule.
 
-bounce writes float audio before the track mixer. mixer automation, sends, returns
+per-track bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
 removes the track's devices. it covers the entire track, regardless of a smaller
 clip or time selection. on a group, it prints the descendants' arrangement
@@ -1034,6 +1040,8 @@ the complete edit.
 | settings | command+, |
 | bounce selected material to a new track | b |
 | bounce to a new track and deactivate the sources | command+b |
+| bounce a time selection to one mixed track | shift+b |
+| bounce a time selection to one mixed track and deactivate the sources | command+shift+b |
 | drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
