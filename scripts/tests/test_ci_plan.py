@@ -3310,6 +3310,28 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
+    def test_midi_view_origin_unit_keeps_rendered_beat_exact_capture(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_origin_view::tests::"
+        witness = "editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges"
+        for name in ("midi_origin_view.rs", "midi_origin_view_tests.rs"):
+            with self.subTest(name=name):
+                path = "crates/hex-ui/src/editor/" + name
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                self.assertIn(witness, steps["ui-feature-tests"].argv)
+                self.assertNotIn("editor::", steps["ui-feature-tests"].argv)
+
     def test_trim_payload_unit_tier_routes_owner_and_real_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
