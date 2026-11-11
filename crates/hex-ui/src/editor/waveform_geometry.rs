@@ -11,8 +11,8 @@ use std::{cell::Cell, hint::black_box};
 use std::{collections::VecDeque, sync::Arc};
 
 use super::waveform::{
-    aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail, fraction_u64,
-    peak_vertical_bounds, timeline_source_ranges_at,
+    WaveformAmplitudeScale, aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail,
+    fraction_u64, peak_vertical_bounds, timeline_source_ranges_at,
 };
 
 #[cfg(test)]
@@ -67,6 +67,7 @@ struct WaveformGeometryKey {
     #[cfg(test)]
     reference_stereo: bool,
     mapping: WaveformMappingKey,
+    amplitude_scale: WaveformAmplitudeScale,
     visible_start: u64,
     visible_end: u64,
     origin_x: u32,
@@ -328,6 +329,7 @@ pub(super) use grid::WaveformGrid;
 
 pub(super) struct WaveformGeometryRequest<'a> {
     pub(super) mapping: &'a WaveformMapping,
+    pub(super) amplitude_scale: WaveformAmplitudeScale,
     pub(super) visible_start: u64,
     pub(super) visible_end: u64,
     pub(super) bounds: Bounds<Pixels>,
@@ -351,6 +353,7 @@ pub(super) fn cached_waveform_geometry(
         request.bounds,
         request.scale,
     );
+    key.amplitude_scale = request.amplitude_scale;
     key.grid = request.grid.map(WaveformGrid::key);
     if let Some(geometry) = cache
         .try_borrow_mut()
@@ -359,15 +362,7 @@ pub(super) fn cached_waveform_geometry(
     {
         return Some(geometry);
     }
-    let geometry = Arc::new(prepare_waveform_geometry(
-        waveform,
-        request.mapping,
-        request.visible_start,
-        request.visible_end,
-        request.bounds,
-        request.columns,
-        request.grid,
-    )?);
+    let geometry = Arc::new(prepare_waveform_geometry_with_scale(waveform, request)?);
     if let Ok(mut cache) = cache.try_borrow_mut() {
         cache.insert(
             key,
@@ -434,6 +429,7 @@ fn waveform_geometry_key(
         #[cfg(test)]
         reference_stereo: reference_stereo(),
         mapping,
+        amplitude_scale: WaveformAmplitudeScale::default(),
         visible_start,
         visible_end,
         origin_x: f32::from(bounds.origin.x).to_bits(),
@@ -454,6 +450,35 @@ pub(super) fn prepare_waveform_geometry(
     columns: usize,
     grid: Option<WaveformGrid>,
 ) -> Option<WaveformGeometry> {
+    prepare_waveform_geometry_with_scale(
+        waveform,
+        &WaveformGeometryRequest {
+            mapping,
+            amplitude_scale: WaveformAmplitudeScale::default(),
+            visible_start,
+            visible_end,
+            bounds,
+            scale: 1.0,
+            columns,
+            grid,
+        },
+    )
+}
+
+fn prepare_waveform_geometry_with_scale(
+    waveform: &CachedWaveform,
+    request: &WaveformGeometryRequest<'_>,
+) -> Option<WaveformGeometry> {
+    let WaveformGeometryRequest {
+        mapping,
+        visible_start,
+        visible_end,
+        bounds,
+        columns,
+        grid,
+        amplitude_scale,
+        ..
+    } = *request;
     #[cfg(all(test, feature = "ui-test-support"))]
     let _navigation_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformBuild);
@@ -649,7 +674,8 @@ pub(super) fn prepare_waveform_geometry(
         let mut maxima = Vec::with_capacity(point_count);
         let mut minima = Vec::with_capacity(point_count);
         for (column, peaks) in stereo_peaks.iter().enumerate() {
-            let (top, bottom) = peak_vertical_bounds(peaks[channel], center, amplitude);
+            let (top, bottom) =
+                peak_vertical_bounds(peaks[channel], center, amplitude, amplitude_scale);
             if grid.binned {
                 for edge in [first + column, first + column + 1] {
                     let x = grid.left + edge as f32 * grid.width / grid.columns as f32;
@@ -794,6 +820,9 @@ mod tests {
                 &cache,
                 &waveform,
                 &WaveformGeometryRequest {
+                    amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                        false,
+                    ),
                     mapping,
                     visible_start: 0,
                     visible_end: 100,
@@ -1581,6 +1610,42 @@ mod tests {
 
     #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
+    fn geometry_cache_separates_vertical_amplitude_scales() {
+        let peak = CachedPeak {
+            min: -0.1,
+            max: 0.1,
+        };
+        let source = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+        let extent = bounds();
+        let mapping = WaveformMapping::Source { timeline_origin: 0 };
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let get = |decibels| {
+            cached_waveform_geometry(
+                &cache,
+                &source,
+                &WaveformGeometryRequest {
+                    mapping: &mapping,
+                    amplitude_scale: WaveformAmplitudeScale::from_decibels(decibels),
+                    visible_start: 0,
+                    visible_end: 100,
+                    bounds: extent,
+                    scale: 1.0,
+                    columns: 100,
+                    grid: None,
+                },
+            )
+            .unwrap()
+        };
+        let linear = get(false);
+        let decibel = get(true);
+        assert!(!Arc::ptr_eq(&linear, &decibel));
+        assert!(Arc::ptr_eq(&linear, &get(false)));
+        assert!(Arc::ptr_eq(&decibel, &get(true)));
+        assert!(decibel.channels[0].outline[0].y < linear.channels[0].outline[0].y);
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
     fn geometry_cache_reuses_only_matching_source_mapping_and_bounds() {
         let source = waveform();
         let extent = bounds();
@@ -1647,6 +1712,9 @@ mod tests {
                 &cache,
                 &source,
                 &WaveformGeometryRequest {
+                    amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                        false,
+                    ),
                     mapping,
                     visible_start: 0,
                     visible_end: 96_000,
@@ -1710,6 +1778,9 @@ mod tests {
                 size(px(9.3), px(44.0)),
             );
             let request = WaveformGeometryRequest {
+                amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                    false,
+                ),
                 mapping: &mapping,
                 visible_start: origin,
                 visible_end: origin + 96_000,
@@ -1729,6 +1800,9 @@ mod tests {
                 timeline_origin: origin,
             };
             let request = WaveformGeometryRequest {
+                amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                    false,
+                ),
                 mapping: &mapping,
                 visible_start: origin,
                 visible_end: origin + 96_000,
@@ -1794,6 +1868,7 @@ mod tests {
         let columns = waveform_column_count(f32::from(extent.size.width), 2.0);
         let cache = RefCell::new(WaveformGeometryCache::default());
         let request = WaveformGeometryRequest {
+            amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(false),
             mapping: &mapping,
             visible_start,
             visible_end,
