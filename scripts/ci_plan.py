@@ -254,6 +254,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
+    "src/editor_backend.rs": ("editor_backend::tests::",),
     "src/editor/truncated_import.rs": ("editor::truncated_import::unit_tests::",),
     "src/editor/timeline_strip.rs": ("editor::timeline_strip::tests::",),
     "src/editor/shortcut_tests.rs": ("editor::shortcut_tests::",),
@@ -515,6 +516,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor_backend::": (
+        "editor::recovery::tests::explicit_play_from_recovers_degraded_vst3_at_the_requested_frame",
+    ),
     "editor::shortcut_tests::": (
         "editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus",
     ),
