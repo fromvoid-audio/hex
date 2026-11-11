@@ -47,6 +47,18 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
+        let loop_hint = "toggle loop · cmd+l · l/w set selection or toggle matching loop";
+        let loop_enabled = self
+            .pending_loop_region()
+            .or_else(|| self.state().and_then(|state| state.project.loop_region()))
+            .is_some_and(|region| region.enabled());
+        let mut loop_style = theme::action_style();
+        loop_style.text = theme::color(if loop_enabled {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        });
+        loop_style.hover_text = Some(loop_style.text);
         let automation_active =
             self.automation_view.enabled && self.mode == EditorMode::Arrangement;
         let automation_hint = "automation view · a · all arrangement tracks · track gain";
@@ -200,25 +212,16 @@ impl EditorView {
                 }))),
             )
             .child(
-                self.control_icon(
+                self.control_icon_description(
                     "↻",
-                    "toggle loop · cmd+l · l/w set selection or toggle matching loop",
+                    loop_hint,
+                    loop_hint.into(),
+                    loop_style,
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
                 .debug_selector(|| "transport-loop-toggle".into())
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(
-                    if self
-                        .state()
-                        .and_then(|state| state.project.loop_region())
-                        .is_some_and(|region| region.enabled())
-                    {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    },
-                )),
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(self.vector_icon(
                 TransportIcon::Split,

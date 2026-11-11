@@ -2,7 +2,8 @@
 use super::*;
 use crate::editor::test_environment::Environment;
 use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext, point, size};
-use hex_session::service::{Event, Service};
+use hex_project::Command;
+use hex_session::service::{Event, Request, Service};
 use std::{sync::Arc, time::Instant};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
@@ -100,6 +101,75 @@ fn painted_guides(visual: &mut VisualTestContext) -> [Bounds<gpui::Pixels>; 2] {
         bounds
     })
 }
+
+#[gpui::test]
+fn toggles_display_the_requested_state_while_the_real_response_is_held(cx: &mut TestAppContext) {
+    let old = LoopRegion::new(24_000, 48_000, false).unwrap();
+    let (_environment, editor, mut visual) = fixture(cx, old);
+    let bounds = painted_range(&mut visual);
+    for (index, enabled) in [true, false, true, false, true].into_iter().enumerate() {
+        match index {
+            0 | 1 => {
+                let button = visual.debug_bounds("transport-loop-toggle").unwrap();
+                visual.simulate_click(button.center(), Modifiers::default());
+            }
+            2 => visual.simulate_keystrokes("cmd-l"),
+            3 => visual.simulate_click(
+                bounds.center(),
+                Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                },
+            ),
+            _ => visual.simulate_keystrokes("l"),
+        }
+        let response = hold_real_response(&editor, &mut visual);
+        assert!(response.request_complete && response.error.is_none());
+        let expected = LoopRegion::new(old.start(), old.end(), enabled).unwrap();
+        assert_eq!(response.state.project.loop_region(), Some(expected));
+        visual.run_until_parked();
+        let (role, opacity) = if enabled {
+            (theme::PaletteRole::Text, 0.94)
+        } else {
+            (theme::PaletteRole::Muted, 0.62)
+        };
+        let expected_fill = Some(
+            gpui::Hsla::from(rgb(theme::color(role)))
+                .alpha(opacity)
+                .into(),
+        );
+        let toggle_color = rgb(theme::color(if enabled {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        }));
+        editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert_ne!(state.project.loop_region(), Some(expected));
+        });
+        assert_eq!(visual.rendered_background("loop-rail-range"), expected_fill);
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-loop-toggle")
+                .contains(&toggle_color.into())
+        );
+        install(&editor, &mut visual, response);
+        assert_eq!(visual.rendered_background("loop-rail-range"), expected_fill);
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-loop-toggle")
+                .contains(&toggle_color.into())
+        );
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.loop_region(),
+                Some(expected)
+            );
+            assert!(v.pending_loop.is_none());
+        });
+    }
+}
+
 #[gpui::test]
 fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut TestAppContext) {
     let old = LoopRegion::new(24_000, 48_000, true).unwrap();
