@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
@@ -430,6 +431,8 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
+    "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
     "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
@@ -913,6 +916,13 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 names.update(("output_meter::tests::unit_tests::", "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps"))
             if "crates/hex-ui/src/editor/time_selection.rs" in executable:
                 names.update(("editor::clip_range_fit::tests::", "editor::clip_range_fit::ui_tests::"))
+            if any("editor::controller_input::monitoring::unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::controller_input::monitoring::tests::actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect",
+                    "editor::controller_input::hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history",
+                    "editor::controller_input::hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest",
+                    "editor::midi_canvas::audition_tests::configured_controller_keeps_its_root_during_note_and_marquee_audition",
+                ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
