@@ -311,6 +311,9 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::console_track_page::": "unit_editor_logic",
                    "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
                    "editor::browser::geometry::": "unit_editor_logic",
+                   "editor::browser::audition_geometry::": "unit_editor_logic",
+                   "editor::browser::random_rank::": "unit_editor_logic",
+                   "editor::browser::scrollbar_geometry::": "unit_editor_logic",
                    "editor::browser::samples::state::": "unit_editor_logic",
                    "editor::browser::scan::": "unit_editor_logic",
                    "editor::group_overview::model::": "unit_editor_logic",
@@ -410,9 +413,11 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_reorder::subtree::": "track_group_focus",
                          "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
-# The standalone track-group tests own these sources. Retain the rendered
-# projection consumers when a change touches either source.
-UI_TRACK_GROUP_FOCUS_OWNERS = {
+# Reviewed tests for owners whose direct coverage lives in sibling modules.
+UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::browser::audition::": ("editor::browser::audition_geometry::",),
+    "editor::browser::random::": ("editor::browser::random_rank::",),
+    "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
     "editor::arrangement_focus::visibility::": (
         "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
         "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
@@ -466,6 +471,15 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
                       "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
                       "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root"},
+                    {"editor::browser::audition_geometry::",
+                     "editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus",
+                     "editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport"},
+                    {"editor::browser::random_rank::",
+                     "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
+                     "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged"},
+                    {"editor::browser::scrollbar_geometry::",
+                     "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+                     "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture"},
                     {"editor::browser::geometry::",
                      "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
                      "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
@@ -765,7 +779,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             continue
         def has_tests(candidate: str) -> bool:
             prefix = candidate + "::"
-            if owner == "hex-ui" and (prefix in UI_TRACK_GROUP_FOCUS_OWNERS
+            if owner == "hex-ui" and (prefix in UI_MODULE_TEST_DEPENDENCIES
                                       or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
                 return True
             return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
@@ -780,7 +794,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             owner_filters = filters.setdefault(owner, set())
             owner_filters.add(prefix)
             if owner == "hex-ui":
-                owner_filters.update(UI_TRACK_GROUP_FOCUS_OWNERS.get(prefix, ()))
+                owner_filters.update(UI_MODULE_TEST_DEPENDENCIES.get(prefix, ()))
     # The real viewport is an input to the waveform grid. Select its owner
     # when that source changes, including the grid's geometry consumers.
     if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:

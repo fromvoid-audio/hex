@@ -5,6 +5,10 @@
 //! search places native devices then plugins before files. Other sources and empty
 //! browsing retain file-first order. Row ranges are shared by virtualization,
 //! stable-key selection/history, activation, folder navigation and audition.
+mod audition_geometry;
+mod random_rank;
+mod scrollbar_geometry;
+
 mod audition;
 mod folder_places;
 mod history;
@@ -909,8 +913,10 @@ impl EditorView {
                     })
                 {
                     let admitted = result.and_then(|pcm| {
-                        let frame =
-                            audition::frame_at_fraction(pcm.frames().len(), request.start_fraction);
+                        let frame = audition_geometry::frame_at_fraction(
+                            pcm.frames().len(),
+                            request.start_fraction,
+                        );
                         audio
                             .control
                             .preview_publish_from(request.output_generation, pcm, frame)
