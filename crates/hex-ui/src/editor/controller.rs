@@ -1228,6 +1228,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
+                    visible_change |= self.section_launch_after_loop.take().is_some();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -1329,6 +1330,7 @@ impl EditorView {
         {
             self.invalidate_prepared_seek();
         }
+        visible_change |= self.tick_section_launch();
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
@@ -3913,6 +3915,7 @@ impl EditorView {
 
     pub(super) fn seek_pending(&self) -> bool {
         if self.recovery.generation().is_some()
+            || self.section_launch_waiting()
             || self.prepared_seek.is_some()
             || self.latched_seek_intent.is_some()
             || self.retired_seek_result.is_some()
@@ -4201,6 +4204,7 @@ impl EditorView {
             return;
         }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
+            self.cancel_section_launch_wait();
             self.invalidate_prepared_seek();
         }
         if self.audio.is_none() {
@@ -4853,6 +4857,7 @@ impl EditorView {
         self.cancel_tuning_audition();
         self.stop_computer_keyboard();
         self.cancel_scrub();
+        self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();
