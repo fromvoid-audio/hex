@@ -1358,8 +1358,9 @@ class SingleRunFeatureTests(unittest.TestCase):
                 default_id = "module-tests-hex-ui" if filters else "affected-tests"
                 if single:
                     self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                    expected_units = [unit] if filters else sorted(plan.UI_DEFAULT_LIB_UNIT_MODULES.values())
                     self.assertEqual(steps["ui-default-lib-unit-tests"].argv,
-                                     ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", unit))
+                                     ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", *expected_units))
                     self.assertNotIn(default_id, steps)
                 else:
                     default = steps[default_id].argv
