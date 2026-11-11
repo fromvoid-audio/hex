@@ -4922,6 +4922,31 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     (consumer, feature_args))
 
+    def test_project_title_units_keep_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::header::tests::"
+        consumers = (
+            "editor::header::ui_tests::compact_top_toolbar_and_bottom_project_title_preserve_chrome_and_controls",
+            "editor::header::ui_tests::title_double_click_never_toggles_fullscreen",
+        )
+        path = "crates/hex-ui/src/editor/header.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertIn(unit, default.argv)
+        self.assertTrue(default.requires_tests)
+        feature_args = steps["ui-feature-tests"].argv
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                            (consumer, feature_args))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
