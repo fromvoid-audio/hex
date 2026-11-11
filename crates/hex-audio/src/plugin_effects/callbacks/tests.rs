@@ -659,7 +659,7 @@ fn one_late_native_effect_reply_uses_aligned_dry_and_resumes_wet() {
         prepared: endpoint.configuration.prepared,
     };
     let mut position = 0;
-    let mut render = |expected: &[f32]| {
+    let mut render = |expected: &[f32], concealed| {
         let mut samples = [[0.0; 2]; QUANTUM];
         let frames = &mut samples[..expected.len()];
         for (index, frame) in frames.iter_mut().enumerate() {
@@ -679,6 +679,7 @@ fn one_late_native_effect_reply_uses_aligned_dry_and_resumes_wet() {
         for (frame, &value) in frames.iter().zip(expected) {
             assert_eq!(*frame, [value, -value]);
         }
+        assert_eq!(endpoint.concealed_output, concealed);
         position += frames.len();
     };
     let respond = |worker: &mut Worker, sequence| {
@@ -690,14 +691,14 @@ fn one_late_native_effect_reply_uses_aligned_dry_and_resumes_wet() {
         worker.complete(block).unwrap();
     };
 
-    render(&[0.0; 4]);
-    render(&[0.0; 2]);
-    render(&[0.0, 0.0, 1.0, 2.0]);
+    render(&[0.0; 4], false);
+    render(&[0.0; 2], false);
+    render(&[0.0, 0.0, 1.0, 2.0], true);
     respond(&mut worker, 0); // Late reply cannot replace the dry quantum.
     respond(&mut worker, 1);
-    render(&[3.0, 4.0, 10.0, 12.0]);
+    render(&[3.0, 4.0, 10.0, 12.0], true);
     respond(&mut worker, 2);
-    render(&[14.0, 16.0, 18.0, 20.0]);
+    render(&[14.0, 16.0, 18.0, 20.0], false);
     assert!(!control.is_revoked());
     assert_eq!(control.take_callback_fault(), None);
 }

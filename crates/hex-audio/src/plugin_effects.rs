@@ -469,6 +469,7 @@ impl NativeEffect {
                 dry_output: [[0.0; 2]; MAX_FRAMES],
                 dry,
                 dry_cursor: 0,
+                concealed_output: false,
                 tail,
                 bypass: bypass::BypassMix::default(),
             },
@@ -627,6 +628,7 @@ pub struct NativeEffectCallback {
     dry_output: [[f32; 2]; MAX_FRAMES],
     dry: Vec<[f32; 2]>,
     dry_cursor: usize,
+    concealed_output: bool,
     tail: tail::TailDrain,
     bypass: bypass::BypassMix,
 }
@@ -644,6 +646,7 @@ impl NativeEffectCallback {
     /// segments. A chunk/subsegment length is not the physical callback extent.
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {
         self.transport.begin_physical_callback(frames)?;
+        self.concealed_output = false;
         self.tail.begin();
         Ok(())
     }
@@ -756,6 +759,7 @@ impl NativeEffectCallback {
             dry_output: [[0.0; 2]; MAX_FRAMES],
             dry: vec![[0.0; 2]; latency as usize],
             dry_cursor: 0,
+            concealed_output: false,
             tail: tail::TailDrain::new(0, latency),
             bypass: bypass::BypassMix::default(),
         }
@@ -969,6 +973,7 @@ impl NativeEffectCallback {
             // wet samples with the same latency-aligned dry history used for
             // bypass. An instrument's dry history is already silence.
             frames[start..end].copy_from_slice(&self.dry_output[start..end]);
+            self.concealed_output = true;
         }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
