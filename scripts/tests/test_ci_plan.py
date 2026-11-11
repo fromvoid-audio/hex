@@ -4849,6 +4849,27 @@ class ModuleScopeTests(unittest.TestCase):
                                          "boundary": boundary, "cargo_inventory": inventory, "paths": []})
         self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in rendered_only))
 
+    def test_timeline_shortcut_parser_keeps_narrow_unit_and_real_focus(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::shortcut_tests::"
+        path = "crates/hex-ui/src/editor/shortcut_tests.rs"
+        witness = "editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertEqual(default.argv[default.argv.index("--") + 1:], (unit,))
+        feature = steps["ui-feature-tests"].argv
+        self.assertIn(witness, feature)
+        self.assertNotIn("editor::", feature)
+
     def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
