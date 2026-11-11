@@ -827,6 +827,7 @@ mod tests {
         assert!(faded_bottom[99].y < neutral_bottom[99].y);
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn key(origin: u64, bounds: Bounds<Pixels>) -> WaveformGeometryKey {
         waveform_geometry_key(
             &WaveformMapping::Source {
