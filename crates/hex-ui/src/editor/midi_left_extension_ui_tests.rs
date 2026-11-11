@@ -173,10 +173,10 @@ fn fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history(
         assert_eq!(preview.start().raw()+preview.length().raw(), original.start().raw()+original.length().raw());
         let project = &v.state.as_ref().unwrap().project;
         let unchanged = original.preview_edge_trim(hex_project::TrimEdge::Left, original.start()).unwrap();
-        let shapes = super::super::tracks::midi_trim_note_shapes(project, &original, unchanged, 0, 384_000);
+        let shapes = super::super::tracks::midi_trim_note_shapes(project, &original, unchanged, 0, 384_000, 0);
         assert_eq!(shapes.len(), 1);
         assert_eq!(
-            super::super::tracks::midi_trim_note_shapes(project, &original, preview, 0, 384_000), shapes,
+            super::super::tracks::midi_trim_note_shapes(project, &original, preview, 0, 384_000, 0), shapes,
             "the actual paint projection keeps the note at its old musical position",
         );
         preview

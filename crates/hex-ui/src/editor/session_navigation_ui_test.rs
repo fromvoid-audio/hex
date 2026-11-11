@@ -256,7 +256,7 @@ fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &m
 fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &mut TestAppContext) {
     let (handle, _, _, _) = session_window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    for width in [880.0, 1440.0] {
+    for width in [640.0, 880.0, 1440.0] {
         visual.simulate_resize(size(px(width), px(700.0)));
         visual.run_until_parked();
         let header = visual
@@ -266,11 +266,46 @@ fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &m
             .debug_bounds("session-scene-column")
             .expect("scene row bounds");
         let window = visual.update(|window, _| window.bounds());
-        let window_right = window.origin.x + window.size.width;
+        let window_right = window.origin.x + window.size.width - px(4.0);
+        assert_eq!(header.size.width, px(110.0));
         assert!(near(header.origin.x, row.origin.x));
         assert!(near(header.origin.x + header.size.width, window_right));
         assert!(near(row.origin.x + row.size.width, window_right));
     }
+}
+
+#[gpui::test]
+fn scene_launch_leads_the_caption_and_uses_the_guarded_offline_action(cx: &mut TestAppContext) {
+    let (handle, editor, _, scene) = session_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(700.0)));
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    let launch = visual
+        .debug_bounds(Box::leak(
+            format!("console-launch-scene-{}", scene.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let caption = visual
+        .debug_bounds(Box::leak(
+            format!("console-scene-menu-{}", scene.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(launch.right() < caption.left());
+    visual.simulate_click(launch.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_scene, Some(scene));
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+        assert_eq!(
+            view.error.as_deref(),
+            Some("session playback requires an audio output")
+        );
+    });
 }
 
 #[gpui::test]

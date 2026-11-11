@@ -4,8 +4,20 @@
 //! media paths to profile its actual rate/state instead of generated fixtures.
 //! The probe never saves or edits that document; omit the override to retain the
 //! original generated workload and its density assertions.
+//! HEX_NAVIGATION_SCOPE defaults to all. audio-100-dense requires the audio
+//! fixture directory and selects its 100-track normal-row dense pan/zoom cases;
+//! project-dense requires the project override and selects its corresponding
+//! normal-row cases. Both retain eight warmups and forty measured events per case.
+//! HEX_NAVIGATION_COMPARE_LAYOUTS=1 runs reference/current/current/reference in
+//! one persistent fixture, retaining every warmup/event. Trial switches invalidate
+//! retained content and geometry; layout identity also participates in cache keys.
+//! The reference hook is test-only; on legacy stereo both variants calibrate A/A.
 //! HEX_NAVIGATION_SUPPRESS_WAVEFORMS=1 performs diagnostic arranger waveform
 //! ablation with the same layout/input; it is not a shipped display mode.
+#[path = "navigation_profile/selection.rs"]
+mod selection;
+use selection::Selection;
+
 use super::*;
 use crate::editor::navigation_metrics;
 use gpui::{ScrollDelta, ScrollWheelEvent, size};
@@ -21,8 +33,10 @@ struct ProfileInput {
     original_bytes: Option<Vec<u8>>,
 }
 
-fn profile_inputs() -> Vec<(ProfileInput, Vec<bool>)> {
-    if let Some(path) = std::env::var_os("HEX_NAVIGATION_PROJECT_PATH") {
+fn profile_inputs(selection: Selection) -> Vec<(ProfileInput, Vec<bool>)> {
+    if selection != Selection::Audio100Dense
+        && let Some(path) = std::env::var_os("HEX_NAVIGATION_PROJECT_PATH")
+    {
         let path = PathBuf::from(path);
         assert!(
             path.is_absolute(),
@@ -49,6 +63,23 @@ fn profile_inputs() -> Vec<(ProfileInput, Vec<bool>)> {
                 original_bytes: Some(bytes),
             },
             vec![false, true],
+        )];
+    }
+    if selection == Selection::Audio100Dense {
+        let directory = PathBuf::from(
+            std::env::var_os("HEX_NAVIGATION_AUDIO_FIXTURE_DIR").expect("audio fixture directory"),
+        );
+        assert!(directory.is_absolute());
+        return vec![(
+            ProfileInput {
+                path: directory.join("100.hex"),
+                tracks: 100,
+                content: "audio",
+                sample_rate: 48_000,
+                memory_bytes: 8_000_000,
+                original_bytes: None,
+            },
+            vec![false],
         )];
     }
     let directory = PathBuf::from(
@@ -294,8 +325,49 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
         !cfg!(debug_assertions) || smoke,
         "timing requires --release; debug smoke must be explicit"
     );
-    let rounds = if smoke { 4 } else { 48 };
-    let warmup = if smoke { 1 } else { 8 };
+    let (rounds, warmup) = selection::iterations(smoke);
+    let comparison = std::env::var("HEX_NAVIGATION_COMPARE_LAYOUTS");
+    assert!(
+        !matches!(comparison, Err(std::env::VarError::NotUnicode(_))),
+        "navigation layout comparison must be UTF-8"
+    );
+    let trials = selection::comparison_trials(comparison.as_deref().ok())
+        .expect("valid navigation layout comparison");
+    let scope = std::env::var("HEX_NAVIGATION_SCOPE");
+    assert!(
+        !matches!(scope, Err(std::env::VarError::NotUnicode(_))),
+        "navigation scope must be UTF-8"
+    );
+    let selection = Selection::parse(scope.as_deref().ok()).expect("valid finite navigation scope");
+    selection
+        .validate_inputs(
+            std::env::var_os("HEX_NAVIGATION_PROJECT_PATH").is_some(),
+            std::env::var_os("HEX_NAVIGATION_FIXTURE_DIR").is_some(),
+            std::env::var_os("HEX_NAVIGATION_AUDIO_FIXTURE_DIR").is_some(),
+        )
+        .expect("selected navigation inputs");
+    let inputs = profile_inputs(selection);
+    let selected_cases: usize = inputs
+        .iter()
+        .map(|(input, rows)| {
+            rows.iter()
+                .map(|row| selection.cases(input.content, input.tracks, *row).len())
+                .sum::<usize>()
+        })
+        .sum();
+    let selected_cases = selected_cases * trials.len();
+    assert!(selected_cases > 0, "navigation selection cannot be empty");
+    println!(
+        "NAV_SELECTION,scope={},cases={selected_cases},warmup={warmup},measured={}",
+        selection.label(),
+        rounds - warmup
+    );
+    if trials.len() > 1 {
+        println!(
+            "NAV_COMPARE,trials={},order=reference/current/current/reference",
+            trials.len()
+        );
+    }
     let stage_timing =
         std::env::var_os("HEX_NAVIGATION_STAGE_TIMING").is_some_and(|value| value == "1");
     println!(
@@ -312,10 +384,14 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
             "NAV_STAGE_CSV,phase,content,tracks,row_mode,density,action,iteration,warmup,editor_us,row_us,clip_model_us,wave_lookup_us,wave_build_us,wave_provider_us,diagnostic_us,request_layout_us,prepaint_us,paint_us,wave_sampling_us,wave_paths_us,editor_calls,row_calls,clip_model_calls,wave_lookup_calls,wave_build_calls,wave_provider_calls,diagnostic_calls,request_layout_calls,prepaint_calls,paint_calls,wave_sampling_calls,wave_paths_calls"
         );
     }
-    for (input, row_modes) in profile_inputs() {
+    for (input, row_modes) in inputs {
         let tracks = input.tracks;
         let content = input.content;
         for single_row in row_modes {
+            let cases = selection.cases(content, tracks, single_row);
+            if cases.is_empty() {
+                continue;
+            }
             println!(
                 "NAV_INPUT,content={content},tracks={tracks},sample_rate={},memory_bytes={}",
                 input.sample_rate, input.memory_bytes
@@ -345,8 +421,26 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                 });
             }
             let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
-            for (density, divisor) in [("dense", 1_u64), ("zoomed", 16)] {
-                for action in ["pan", "zoom"] {
+            for (trial, &reference) in trials.iter().enumerate() {
+                let _reference = navigation_metrics::use_reference_stereo(reference);
+                if trials.len() > 1 {
+                    println!(
+                        "NAV_TRIAL,content={content},tracks={tracks},row_mode={},index={trial},layout={}",
+                        if single_row {
+                            "single_visible"
+                        } else {
+                            "normal"
+                        },
+                        if reference { "reference" } else { "current" },
+                    );
+                    editor.update(cx, |view, cx| {
+                        view.waveform_geometry_cache.borrow_mut().clear();
+                        view.clip_content_cache.entries.clear();
+                        cx.notify();
+                    });
+                }
+                for case in &cases {
+                    let (density, divisor, action) = (case.density, case.divisor, case.action);
                     visual.update(|window, cx| {
                         editor.update(cx, |view, cx| {
                             let horizon = view.state.as_ref().unwrap().timeline_frames;

@@ -418,6 +418,7 @@ mod tests {
                 sequence: 0,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             }));
             let accepted = view.device_gesture.snapshot().unwrap();
@@ -442,6 +443,7 @@ mod tests {
                     sequence: terminal.sequence(),
                     accepted: false,
                     preview_retained: true,
+                    source_lost: false,
                     reason: Some("audio publication queue full".into()),
                 },
                 Some(accepted)

@@ -129,7 +129,9 @@ pub(super) fn paired_event(
             PairMode::Q => q_from_y(event.position[1]),
             // Use displacement from the pressed node, rather than mapping its
             // gain coordinate to an unrelated absolute Q at the drag threshold.
-            PairMode::OptionQ => option_q(plan.node.q, event.position[1] - plan.origin_y),
+            PairMode::OptionQ => {
+                group_move::option_q(plan.node.q, event.position[1] - plan.origin_y)
+            }
         }),
     };
     let result = if event.phase == ResponseGraphPhase::Commit {
@@ -166,14 +168,15 @@ fn group_snapshot(
     delta: [f32; 2],
     rate: u32,
 ) -> Result<hex_lattice_contract::DeviceParameterSnapshot, &'static str> {
+    if nodes.len() > group_move::MAX_GROUP_NODES {
+        return Err("eq group move is limited to 32 nodes");
+    }
     let mut entries = Vec::with_capacity(nodes.len() * 2);
     for (node, origin) in nodes {
-        let x = (origin[0] + delta[0]).clamp(0.0, 1.0);
-        let y = (origin[1] + delta[1]).clamp(0.0, 1.0);
-        let (field, value) = if edits_q(node.kind) {
-            (NodeParameter::Q, q_from_y(y))
-        } else {
-            (NodeParameter::Gain, y * 48.0 - 24.0)
+        let (frequency_hz, vertical) = group_move::values(node.kind, *origin, delta, rate);
+        let (field, value) = match vertical {
+            group_move::Vertical::Q(value) => (NodeParameter::Q, value),
+            group_move::Vertical::Gain(value) => (NodeParameter::Gain, value),
         };
         let frequency = node
             .id
@@ -183,7 +186,7 @@ fn group_snapshot(
             .id
             .parameter(field)
             .map_err(|_| "eq group node is invalid")?;
-        entries.push((frequency, ParameterValue::Float(frequency_from_x(x, rate))));
+        entries.push((frequency, ParameterValue::Float(frequency_hz)));
         entries.push((second, ParameterValue::Float(value)));
     }
     hex_lattice_contract::DeviceParameterSnapshot::new(&entries)
@@ -272,10 +275,6 @@ pub(super) fn group_event(
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
     }
-}
-
-fn option_q(initial: f32, displacement: f32) -> f32 {
-    (initial * ((18.0_f32 / 0.1).ln() * displacement).exp()).clamp(0.1, 18.0)
 }
 
 #[derive(Clone, Copy)]
@@ -438,7 +437,7 @@ pub(super) fn scroll_event_core(
         return;
     }
     let delta = event.steps.saturating_sub(scroll.last_steps);
-    scroll.value = (i64::from(scroll.value) + i64::from(delta)).clamp(0, 3) as u32;
+    scroll.value = slope::advance(scroll.value, delta);
     scroll.last_steps = event.steps;
     let value = ParameterValue::Choice(scroll.value);
     let result = if event.phase == Phase::Commit {
@@ -472,12 +471,27 @@ pub(super) fn scroll_event_core(
 mod tests {
     use super::*;
     #[test]
-    fn option_displacement_keeps_initial_q_and_bounds_without_gain_coordinate_jump() {
-        for initial in [0.1, 0.707, 1.0, 18.0] {
-            assert_eq!(option_q(initial, 0.0), initial);
-            assert_eq!(option_q(initial, -2.0), 0.1);
-            assert_eq!(option_q(initial, 2.0), 18.0);
-            assert!(option_q(initial, 0.1) >= initial);
-        }
+    fn grouped_node_limit_matches_the_host_snapshot_capacity() {
+        assert_eq!(
+            group_move::MAX_GROUP_NODES * 2,
+            hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES
+        );
+        let mut nodes: Vec<_> = (1..=32)
+            .map(|raw| {
+                (
+                    Node::new(NodeId::new(raw).unwrap(), 1_000.0, 0.0, 0).unwrap(),
+                    [0.5, 0.5],
+                )
+            })
+            .collect();
+        assert!(group_snapshot(&nodes, [0.0, 0.0], 48_000).is_ok());
+        nodes.push((
+            Node::new(NodeId::new(33).unwrap(), 1_000.0, 0.0, 0).unwrap(),
+            [0.5, 0.5],
+        ));
+        assert_eq!(
+            group_snapshot(&nodes, [0.0, 0.0], 48_000).unwrap_err(),
+            "eq group move is limited to 32 nodes"
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! Actual verified readers + canonical worker; no native ownership is inferred.
 use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
 impl Files {
@@ -57,7 +57,10 @@ fn reservation(count: usize) -> SourcePlanReservation {
     }
 }
 fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
@@ -450,7 +453,7 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(next(&service).playback.is_none());
     let completion = service
         .export_events
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap();
     assert!(
         completion
@@ -507,7 +510,12 @@ fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_
     .unwrap();
     assert!(refused.verify_import(good).is_err());
     assert_eq!(refused.project().assets().count(), 0);
-    limits.reader.reader.max_source_frames = 8_000_001;
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES;
+    assert!(limits.validate().is_ok());
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES + 1;
+    assert!(limits.validate().is_err());
+    limits.reader.reader.max_source_frames = 8_000_000;
+    limits.reader.reader.max_file_bytes = crate::MAX_STREAMED_FILE_BYTES + 1;
     assert!(limits.validate().is_err());
 }
 
@@ -922,6 +930,31 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
 }
 
 #[test]
+fn identical_file_extrema_do_not_hide_independent_channels() {
+    let files = Files::new();
+    let path = files.0.join("independent.wav");
+    let mut index = 0;
+    hex_export::write_float_wav_new(&path, 48_000, 4096, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = if index % 2 == 0 {
+                [0.8, -0.8]
+            } else {
+                [-0.8, 0.8]
+            };
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false).unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    let waveform = source.cached_waveform().unwrap();
+    assert!(waveform.bins().iter().all(|pair| pair[0] == pair[1]));
+    assert!(!waveform.has_identical_channels());
+}
+
+#[test]
 fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm() {
     let files = Files::new();
     for (source_rate, project_rate) in [(48_000, 48_000), (44_100, 48_000), (96_000, 44_100)] {
@@ -951,7 +984,7 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
                 crate::VerifiedAudioFile::inspect(path.clone(), project_rate, small, || false)
                     .unwrap();
             bounded.prepare_waveform_on_control(|| false).unwrap();
-            assert_eq!(bounded.cached_waveform().unwrap().source_frames, 5003);
+            assert_eq!(bounded.cached_waveform().unwrap().source_frames(), 5003);
         }
         assert!(source.cached_waveform().is_none());
         let decoded = hex_media::decode_wav_file(
@@ -971,8 +1004,9 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
         let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
         source.prepare_waveform_on_control(|| false).unwrap();
         let actual = source.cached_waveform().unwrap();
-        assert_eq!(actual.source_frames, expected.source_frames);
-        assert_eq!(actual.bins, expected.bins);
+        assert!(actual.has_identical_channels());
+        assert_eq!(actual.source_frames(), expected.source_frames());
+        assert_eq!(actual.bins(), expected.bins());
         assert_eq!(actual.cached_bin_count(), expected.cached_bin_count());
         assert!(actual.cached_bin_count() <= 2047);
         assert!(!actual.shares_audio_with(&resident.audio));

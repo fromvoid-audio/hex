@@ -2,8 +2,10 @@
 use super::edit_cursor::EditCursor;
 use super::{EditorMode, EditorView};
 use crate::theme;
-use gpui::{CursorStyle, Div, Stateful, Window, div, prelude::*, px, relative, rgb};
-use hex_project::{Command, TrackId};
+use gpui::{
+    Context, CursorStyle, Div, Stateful, Window, canvas, div, prelude::*, px, relative, rgb,
+};
+use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::Request;
 use hex_widgets::{RangeSelectionTarget, RangeSelectionZones};
 use std::time::Instant;
@@ -94,6 +96,12 @@ impl EditorView {
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
     pub(super) fn advance_selection_intent(&mut self) {
+        if self
+            .edit_cursor
+            .is_some_and(|cursor| cursor.track.is_none())
+        {
+            self.edit_cursor = None;
+        }
         self.selection_intent_epoch = self
             .selection_intent_epoch
             .and_then(|epoch| epoch.checked_add(1));
@@ -134,10 +142,11 @@ impl EditorView {
         }
         self.edit_cursor.filter(|cursor| {
             cursor.generation == self.project_generation
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+                && self.state.as_ref().is_some_and(|state| {
+                    cursor
+                        .track
+                        .is_some_and(|track| state.project.track(track).is_some())
+                })
         })
     }
 
@@ -205,7 +214,7 @@ impl EditorView {
         self.time_selection_project_scope = true;
         self.time_selection = Some(selection);
         self.edit_cursor = Some(EditCursor {
-            track: selection.anchor_track,
+            track: Some(selection.anchor_track),
             frame: start,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -266,7 +275,7 @@ impl EditorView {
         self.advance_selection_intent();
         self.time_selection_project_scope = true;
         self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
-            track: first_track,
+            track: Some(first_track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -414,7 +423,8 @@ impl EditorView {
         ) else {
             return false;
         };
-        let (ordinary_handle, priority_control) = self.clip_pointer_handles(track, x, y, viewport);
+        let (ordinary_handle, priority_control, _, _) =
+            self.clip_pointer_handles(track, x, y, viewport, self.option_held, true);
         if !self.time_selection_key_held
             && (priority_control || ((extend || !inside_selection) && ordinary_handle))
         {
@@ -424,14 +434,14 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = state.revision;
         let selection = TimeSelection {
-            anchor_track: anchor.map_or(track, |cursor| cursor.track),
+            anchor_track: anchor.and_then(|cursor| cursor.track).unwrap_or(track),
             end_track: track,
             anchor_frame: anchor.map_or(frame, |cursor| cursor.frame),
             end_frame: frame,
         };
         self.advance_selection_intent();
         self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
-            track,
+            track: Some(track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -860,11 +870,22 @@ impl EditorView {
         let Some((track, frame)) = self.time_selection_paste_target() else {
             return;
         };
-        self.enqueue(if insert {
+        let request = if insert {
             Request::InsertTimeRange { track, frame }
         } else {
             Request::PasteTimeRange { track, frame }
-        });
+        };
+        // A clip-clipboard paste selects its acknowledged births.
+        let intent = super::group_copy::Pending::capture_paste(self, &request);
+        let before_pending = self.worker_requests_pending;
+        if self.enqueue(request)
+            && let Some(mut intent) = intent
+        {
+            if self.worker_requests_pending > before_pending {
+                intent.submitted(self.worker_requests_pending);
+            }
+            self.pending_group_copy = Some(intent);
+        }
     }
 
     pub(super) fn time_selection_paste_target(&self) -> Option<(TrackId, u64)> {
@@ -876,7 +897,10 @@ impl EditorView {
                     .copied()
                     .map(|track| (track, range.start()))
             })
-            .or_else(|| self.edit_cursor.map(|cursor| (cursor.track, cursor.frame)))
+            .or_else(|| {
+                self.edit_cursor
+                    .and_then(|cursor| Some((cursor.track?, cursor.frame)))
+            })
     }
 
     pub(super) fn delete_time_selection(&mut self, window: &Window) -> bool {
@@ -950,7 +974,7 @@ impl EditorView {
             end_frame: pending.range.end(),
         });
         if let Some(cursor) = &mut self.edit_cursor {
-            cursor.track = last_track;
+            cursor.track = Some(last_track);
             cursor.frame = start_frame;
         }
         self.time_selection_project_scope = pending.project_scope;
@@ -1037,6 +1061,8 @@ impl EditorView {
         self.suppress_cursor_click = gesture.moved;
         if gesture.moved {
             self.fit_clip_editor_to_time_selection();
+        } else {
+            self.update_locked_play_start_from_point();
         }
         true
     }
@@ -1072,10 +1098,12 @@ impl EditorView {
         if had_gesture || had_range {
             self.advance_selection_intent();
         }
-        if let Some(cursor) = self.edit_cursor {
+        if let Some(cursor) = self.edit_cursor
+            && let Some(track) = cursor.track
+        {
             self.time_selection = Some(TimeSelection {
-                anchor_track: cursor.track,
-                end_track: cursor.track,
+                anchor_track: track,
+                end_track: track,
                 anchor_frame: cursor.frame,
                 end_frame: cursor.frame,
             });
@@ -1104,47 +1132,87 @@ impl EditorView {
         Some((*track, *lane))
     }
 
-    /// Reserve clip headers and visible edge trims; bodies share empty-lane input.
+    /// Explicit controls win; ordinary headers yield only to double-press painting.
     pub(super) fn clip_handle_at_pointer(
         &self,
         track: TrackId,
         x: f32,
         y: f32,
         viewport: super::viewport::Viewport,
+        painting: bool,
     ) -> bool {
-        let (ordinary, priority) = self.clip_pointer_handles(track, x, y, viewport);
+        let (ordinary, priority, _, _) =
+            self.clip_pointer_handles(track, x, y, viewport, self.option_held, !painting);
         ordinary || priority
     }
-    pub(super) fn pointer_hits_priority_clip_control(&self, x: f32, y: f32) -> bool {
+    /// Hit the topmost painted clip body using the same bounds as its controls.
+    pub(super) fn visible_clip_at_pointer(&self, track: TrackId, x: f32, y: f32) -> Option<ClipId> {
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        self.clip_pointer_handles(track, x, y, viewport, false, true)
+            .3
+    }
+
+    pub(super) fn pointer_hits_priority_clip_control(&self, x: f32, y: f32, option: bool) -> bool {
         let Some((track, _)) = self.visible_lane_at(x, y) else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        self.clip_pointer_handles(track, x, y, self.visible_viewport(state.timeline_frames))
-            .1
+        self.clip_pointer_handles(
+            track,
+            x,
+            y,
+            self.visible_viewport(state.timeline_frames),
+            option,
+            true,
+        )
+        .1
+    }
+    fn pointer_hits_option_repeat_edge(&self, x: f32, y: f32) -> bool {
+        if self.time_selection_key_held {
+            return false;
+        }
+        let Some((track, _)) = self.visible_lane_at(x, y) else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        self.clip_pointer_handles(
+            track,
+            x,
+            y,
+            self.visible_viewport(state.timeline_frames),
+            true,
+            true,
+        )
+        .2
     }
     /// Ordinary headers/trim edges may yield to a selected time range; visible
-    /// fade and loop controls always retain their own pointer-down/drag route.
+    /// fade and loop controls and an eligible Option-repeat edge take priority.
+    /// Returns ordinary, priority and Option-repeat hits plus the topmost clip.
     fn clip_pointer_handles(
         &self,
         track: TrackId,
         x: f32,
         y: f32,
         viewport: super::viewport::Viewport,
-    ) -> (bool, bool) {
+        option: bool,
+        include_header: bool,
+    ) -> (bool, bool, bool, Option<ClipId>) {
         let Some(state) = self.state.as_ref() else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let Some(track) = state.project.track(track) else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let Some(lane) = self.drag_lanes.get(&track.id()) else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let handle_hit = |start: u64, end: u64| {
             let visible_start = start.max(viewport.start);
@@ -1165,10 +1233,13 @@ impl EditorView {
             let edge = super::trim::handle_width(width);
             let on_edge = (visible_start == start && x < left + edge)
                 || (visible_end == end && x >= left + width - edge);
-            Some(
-                y < lane.top + header_hit_height(lane.height)
-                    || (on_edge && y < lane.top + super::trim::edge_trim_height(lane.height)),
-            )
+            let in_edge_rail = y < lane.top + super::trim::edge_trim_height(lane.height);
+            let right_edge = visible_end == end && x >= left + width - edge && in_edge_rail;
+            Some((
+                (include_header && y < lane.top + header_hit_height(lane.height))
+                    || (on_edge && in_edge_rail),
+                right_edge,
+            ))
         };
         // MIDI is drawn after audio; later clips cover earlier clips of each kind.
         // A visible body must win over any obscured header or resize edge.
@@ -1181,16 +1252,22 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end).map(|ordinary| {
+                handle_hit(preview.frame_start, preview.frame_end).map(|(ordinary, right_edge)| {
+                    let repeat = option
+                        && right_edge
+                        && super::trim::loop_handles::midi_repeat_available(clip);
                     (
                         ordinary,
-                        super::trim::loop_handles::midi_controls(
-                            clip,
-                            &state.project,
-                            *lane,
-                            viewport,
-                        )
-                        .is_some_and(|c| c.hit(x, y)),
+                        repeat
+                            || super::trim::loop_handles::midi_controls(
+                                clip,
+                                &state.project,
+                                *lane,
+                                viewport,
+                            )
+                            .is_some_and(|c| c.hit(x, y)),
+                        repeat,
+                        Some(clip.id()),
                     )
                 })
             })
@@ -1200,10 +1277,17 @@ impl EditorView {
                         return None;
                     }
                     let end = clip.start().checked_add(clip.duration())?;
-                    handle_hit(clip.start(), end).map(|ordinary| {
+                    handle_hit(clip.start(), end).map(|(ordinary, right_edge)| {
+                        let repeat = option
+                            && right_edge
+                            && super::trim::loop_handles::audio_repeat_available(
+                                clip,
+                                &state.project,
+                            );
                         (
                             ordinary,
-                            self.fade_handle_hit(track.id(), clip, x, y, viewport)
+                            repeat
+                                || self.fade_handle_hit(track.id(), clip, x, y, viewport)
                                 || super::trim::loop_handles::audio_controls(
                                     clip,
                                     &state.project,
@@ -1211,11 +1295,13 @@ impl EditorView {
                                     viewport,
                                 )
                                 .is_some_and(|c| c.hit(x, y)),
+                            repeat,
+                            Some(clip.id()),
                         )
                     })
                 })
             })
-            .unwrap_or((false, false))
+            .unwrap_or((false, false, false, None))
     }
 
     /// Paint one opaque marker at the true dragged endpoint, above the range's
@@ -1256,7 +1342,9 @@ impl EditorView {
         track: TrackId,
         viewport: super::viewport::Viewport,
         scale_factor: f32,
+        cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
+        let cursor_owner = cx.entity();
         let raw_selection = self.time_selection?;
         let state = self.state.as_ref()?;
         state.project.track(track)?;
@@ -1339,7 +1427,38 @@ impl EditorView {
                                 .top_0()
                                 .w_full()
                                 .h(px(header_hit_height(self.track_height(track))))
-                                .cursor(CursorStyle::OpenHand)
+                                .when(!self.option_held, |handle| {
+                                    handle.cursor(CursorStyle::OpenHand)
+                                })
+                                .children(self.option_held.then(|| {
+                                    canvas(
+                                        |bounds, window, _| {
+                                            window
+                                                .insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                        },
+                                        move |_, hitbox, window, cx| {
+                                            if hitbox.is_hovered(window) {
+                                                let position = window.mouse_position();
+                                                let repeat = cursor_owner
+                                                    .read(cx)
+                                                    .pointer_hits_option_repeat_edge(
+                                                        f32::from(position.x),
+                                                        f32::from(position.y),
+                                                    );
+                                                window.set_cursor_style(
+                                                    if repeat {
+                                                        CursorStyle::Loop
+                                                    } else {
+                                                        CursorStyle::OpenHand
+                                                    },
+                                                    &hitbox,
+                                                );
+                                            }
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0()
+                                }))
                                 .hover(|style| {
                                     style.bg(rgb(theme::color(theme::PaletteRole::Text)))
                                 }),
