@@ -2150,12 +2150,25 @@ fn prepare_with_waveforms_using(
                         media.resident.get(&asset)
                     })?
                     .map(|root| {
-                        let waveform = roots
-                            .iter()
-                            .find(|(audio, shape, _)| {
-                                shape.is_none() && audio.shares_pcm_with(&root.audio)
+                        // A placement-only change can leave a large preview
+                        // root byte-for-byte identical even when it differs
+                        // from the outer clip waveform. Keep its exact peaks.
+                        let waveform = old
+                            .get(&view.clip)
+                            .and_then(|entry| entry.preview_root.as_ref())
+                            .filter(|previous| {
+                                previous.waveform.bins().len() <= requested_bins
+                                    && previous.waveform.shares_audio_with(&root.audio)
                             })
-                            .map(|(_, _, waveform)| Arc::clone(waveform))
+                            .map(|previous| Arc::clone(&previous.waveform))
+                            .or_else(|| {
+                                roots
+                                    .iter()
+                                    .find(|(audio, shape, _)| {
+                                        shape.is_none() && audio.shares_pcm_with(&root.audio)
+                                    })
+                                    .map(|(_, _, waveform)| Arc::clone(waveform))
+                            })
                             .map(Ok)
                             .unwrap_or_else(|| {
                                 waveform::summarize(&root.audio, requested_bins)

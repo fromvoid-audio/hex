@@ -1223,6 +1223,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
                     visible_change |= self.retire_clip_gain();
+                    visible_change |= self.retire_clip_activation();
                     visible_change |= self.retire_pending_gain();
                     visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
@@ -1284,6 +1285,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
         visible_change |= self.retire_abandoned_clip_gain();
+        visible_change |= self.retire_abandoned_clip_activation();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -2326,6 +2328,7 @@ impl EditorView {
         self.fade_request_complete(&event);
         self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
+        self.clip_activation_complete(&event);
         self.gain_request_complete(&event);
         self.gain_take_request_complete(&event);
         self.device_automation_complete(&event);
