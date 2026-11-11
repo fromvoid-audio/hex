@@ -21,6 +21,21 @@ pub(super) struct Snapshot {
     pub(super) inputs: RuntimeInputs,
     pub(super) file_sources: Option<ResidentFileSet>,
 }
+fn canonical_metadata(
+    snapshot: &Snapshot,
+    context: hex_engine::AudioSourceContext,
+) -> ResidentPublicationMetadata {
+    ResidentPublicationMetadata {
+        context,
+        device_preview: None,
+        tuning_preview: None,
+        seek_request: None,
+        stopped_restore: false,
+        computer_keyboard_request: None,
+        gain_recording_track: snapshot.prepared.gain_recording_track(),
+        requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+    }
+}
 struct Inputs<'a> {
     native_parameter_input: Option<hex_engine::NativeParameterInputTarget>,
     native: NativeSamplerSources<'a>,
@@ -348,16 +363,7 @@ impl Inputs<'_> {
         sink: &mut dyn WorkerAudioSink,
         context: hex_engine::AudioSourceContext,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let metadata = ResidentPublicationMetadata {
-            context,
-            device_preview: None,
-            tuning_preview: None,
-            seek_request: None,
-            stopped_restore: false,
-            computer_keyboard_request: None,
-            gain_recording_track: snapshot.prepared.gain_recording_track(),
-            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
-        };
+        let metadata = canonical_metadata(snapshot, context);
         self.publish_tagged(snapshot, project, sink, metadata)
     }
     /// Stopped section edits (and their Undo/Redo) keep the raw cursor but start
@@ -550,14 +556,16 @@ impl Inputs<'_> {
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
         selected.selected_after(&previous)?;
-        let accepted = self.publish_runtime(
-            snapshot,
-            playback,
-            sink,
-            metadata,
-            policy,
-            selected.allowance()?,
-        )?;
+        let additional_bytes = selected
+            .allowance()?
+            .checked_add(
+                playback
+                    .browser_audition_retained_bytes_on_control()
+                    .ok_or(SessionError::Invalid("browser audition storage overflow"))?,
+            )
+            .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
+        let accepted =
+            self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
         selected.cancel_retired_from(&previous);
         snapshot.inputs = selected;
         Ok(accepted)
@@ -998,7 +1006,15 @@ pub(super) fn prepare_import(
     current: Option<&Snapshot>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
-    prepare_bounce_import(input, context, sink, admission, current, None, admit)
+    prepare_import_playback(
+        input,
+        context,
+        sink,
+        admission,
+        current,
+        ImportPlayback::Normal,
+        admit,
+    )
 }
 /// An in-place bounce passes the applied source context it fences after its
 /// render. The lease admits playing (Pulse #3784): a stopped witness keeps the
@@ -1013,6 +1029,34 @@ pub(super) fn prepare_bounce_import(
     fence: Option<hex_engine::AudioSourceContext>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
+    let mode = fence.map_or(ImportPlayback::Normal, ImportPlayback::Bounce);
+    prepare_import_playback(input, context, sink, admission, current, mode, admit)
+}
+
+pub(super) enum ImportPlayback {
+    Normal,
+    Bounce(hex_engine::AudioSourceContext),
+    Browser {
+        track: hex_project::TrackId,
+        start: u64,
+        grid: hex_project::ResolvedInputGrid,
+    },
+}
+
+#[allow(clippy::too_many_arguments)] // One prospective import with a transient playback intent.
+pub(super) fn prepare_import_playback(
+    input: crate::import_batch::Preparation<'_>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+    mode: ImportPlayback,
+    admit: &mut dyn FnMut() -> Result<(), SessionError>,
+) -> Result<Snapshot, SessionError> {
+    let fence = match &mode {
+        ImportPlayback::Bounce(source) => Some(*source),
+        _ => None,
+    };
     let position = fence
         .map(|source| {
             // Adoption fences after its render, so it keeps the bounded poll.
@@ -1055,6 +1099,20 @@ pub(super) fn prepare_bounce_import(
     admit()?;
     if let Some(position) = position {
         inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
+    } else if let ImportPlayback::Browser { track, start, grid } = mode {
+        let (policy, section_loop) =
+            inherited_runtime(sink, context, ResidentPublicationPolicy::InheritRuntime)?;
+        let mut playback = playback_with_loop(&snapshot, section_loop)?;
+        playback.arm_browser_audition(track, start, grid);
+        let metadata = canonical_metadata(&snapshot, context);
+        inputs.publish_tagged_playback(
+            &mut snapshot,
+            input.project,
+            sink,
+            metadata,
+            policy,
+            playback,
+        )?;
     } else {
         inputs.publish(&mut snapshot, input.project, sink, context)?;
     }

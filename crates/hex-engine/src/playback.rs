@@ -416,6 +416,23 @@ impl Playback {
             .map(|runtime| runtime.request_live_restart())
             .is_some()
     }
+    /// Arm the resident clip in this exact candidate. Audio remains owned by
+    /// the prepared revision; the gesture carries only track, placement and grid.
+    pub fn arm_browser_audition(
+        &mut self,
+        track: hex_project::TrackId,
+        start: u64,
+        grid: hex_project::ResolvedInputGrid,
+    ) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.arm_browser_audition(track, start, grid);
+        }
+    }
+    pub fn browser_audition_retained_bytes_on_control(&self) -> Option<usize> {
+        self.session_runtime
+            .as_ref()
+            .map_or(Some(0), |runtime| runtime.browser_audition_retained_bytes())
+    }
     /// Whether `request_live_restart` applies to this candidate's live handoff.
     pub fn live_restart_requested(&self) -> bool {
         self.session_runtime
@@ -2106,6 +2123,12 @@ impl Playback {
                 self.performance_clock_exhausted = previous.performance_clock_exhausted;
                 self.playing = previous.playing;
             }
+        }
+        if same_control_context
+            && !fenced_restart
+            && let (Some(next), Some(old)) = (&mut self.session_runtime, &previous.session_runtime)
+        {
+            next.inherit_browser_audition(old);
         }
         self.inherit_metronome(previous);
         if let (Some(continued), Some(next), Some(old)) = (

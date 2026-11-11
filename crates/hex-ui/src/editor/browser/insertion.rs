@@ -1,7 +1,6 @@
 //! Enter captures one selected Arrangement target before bounded worker preparation.
 use super::{EditorMode, EditorView};
 use gpui::Context;
-use hex_session::import_batch::AudioBatchDestination;
 use hex_session::import_batch_decode::AudioBatchContext;
 use hex_session::service::Request;
 use std::path::PathBuf;
@@ -13,7 +12,17 @@ impl EditorView {
             Ok((request, control)) => {
                 // Capture metadata only. Decode and the canonical overwrite commit stay on
                 // the service worker; later UI selection/cursor changes cannot retarget it.
+                let routed_audition = matches!(
+                    &request,
+                    Request::ImportAudioBatch {
+                        audition_grid: Some(_),
+                        ..
+                    }
+                );
                 if self.enqueue(request) {
+                    if routed_audition && self.browser.playback_output.is_some() {
+                        self.cancel_browser_sample_playback();
+                    }
                     self.audio_batch = Some(control);
                     self.audio_batch_progress = None;
                     self.error = None;
@@ -71,14 +80,20 @@ impl EditorView {
         let start = grid
             .snap_frame(state.project.tempo_map(), self.cursor_position())
             .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
-        Request::audio_batch(
-            vec![path],
-            AudioBatchDestination::Track { track, start },
+        let audition_grid = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
+            .then_some(grid);
+        Request::browser_audio_batch(
+            path,
+            track,
+            start,
             AudioBatchContext {
                 project_generation: self.project_generation,
                 revision: state.revision,
                 active_gesture: false,
             },
+            audition_grid,
         )
     }
 }

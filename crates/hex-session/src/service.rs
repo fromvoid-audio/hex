@@ -863,6 +863,8 @@ pub enum Request {
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
         options: crate::import_batch::AudioImportOptions,
+        /// A single browser Enter import captured while Arrangement is playing.
+        audition_grid: Option<hex_project::ResolvedInputGrid>,
     },
     ImportToTrack {
         path: PathBuf,
@@ -1112,9 +1114,34 @@ impl Request {
                 context,
                 control: Arc::clone(&control),
                 options: Default::default(),
+                audition_grid: None,
             },
             control,
         ))
+    }
+
+    /// Preserve the captured authored frame while monitoring the imported
+    /// source from its beginning on the applied output's clock.
+    pub fn browser_audio_batch(
+        path: PathBuf,
+        track: hex_project::TrackId,
+        start: u64,
+        context: AudioBatchContext,
+        audition_grid: Option<hex_project::ResolvedInputGrid>,
+    ) -> Result<(Self, Arc<AudioBatchControl>), String> {
+        let (mut request, control) = Self::audio_batch(
+            vec![path],
+            AudioBatchDestination::Track { track, start },
+            context,
+        )?;
+        if let Self::ImportAudioBatch {
+            audition_grid: captured,
+            ..
+        } = &mut request
+        {
+            *captured = audition_grid;
+        }
+        Ok((request, control))
     }
 
     pub fn is_project_open(&self) -> bool {
@@ -5237,8 +5264,19 @@ fn run_worker(
                     context,
                     control,
                     options,
+                    audition_grid,
                 } => {
                     audio_batch_complete = Some(Arc::clone(&control));
+                    let audition = match destination {
+                        AudioBatchDestination::Track { track, start } if paths.len() == 1 => {
+                            audition_grid.map(|grid| resident_audio::ImportPlayback::Browser {
+                                track,
+                                start,
+                                grid,
+                            })
+                        }
+                        _ => None,
+                    };
                     let actual = AudioBatchContext {
                         project_generation,
                         revision,
@@ -5268,8 +5306,8 @@ fn run_worker(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),
                                     |input, admit| {
-                                        let snapshot = resident_audio::prepare_import(input,
-                                            hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) }, sink, admission, resident_snapshot.as_ref(), admit)?;
+                                        let snapshot = resident_audio::prepare_import_playback(input,
+                                            hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) }, sink, admission, resident_snapshot.as_ref(), audition.unwrap_or(resident_audio::ImportPlayback::Normal), admit)?;
                                         let prepared = Arc::clone(&snapshot.prepared);
                                         imported_resident = Some(snapshot);
                                         Ok(prepared)

@@ -183,6 +183,127 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
 }
 
 #[test]
+fn browser_insert_audition_survives_publication_after_the_entire_clip() {
+    for quantized in [false, true] {
+        late_browser_audition(quantized);
+    }
+}
+
+fn late_browser_audition(quantized: bool) {
+    use hex_project::{BeatTime, Command, ResolvedInputGrid};
+    use hex_session::import_batch_decode::AudioBatchContext;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(16_384);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "audition".into(),
+    }));
+    let (applied, _) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let mixed = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
+    let (applied, metadata) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|frame| *frame == [0.0; 2]));
+    let press = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    let grid = if quantized {
+        ResolvedInputGrid::fixed(mixed.state.project.meter_map(), BeatTime::ONE).unwrap()
+    } else {
+        ResolvedInputGrid::off()
+    };
+    let start = grid
+        .snap_frame(mixed.state.project.tempo_map(), press)
+        .unwrap();
+    assert_eq!(start, if quantized { 0 } else { press });
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    let (request, _) = Request::browser_audio_batch(
+        files.wav(48_000, 256),
+        track,
+        start,
+        AudioBatchContext {
+            project_generation: metadata.context.project_generation,
+            revision: mixed.state.revision,
+            active_gesture: false,
+        },
+        Some(grid),
+    )
+    .unwrap();
+    h.service.submit(request).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    for _ in 0..6 {
+        assert!(h.render().iter().all(|frame| *frame == [0.0; 2]));
+    }
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    assert!(position(&h) >= start + 256);
+    resume.send(()).unwrap();
+    let imported = h.next();
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = &imported.state.project.track(track).unwrap().clips()[0];
+    assert_eq!((clip.start(), clip.duration()), (start, 256));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut audible = 0;
+    let mut onset = None;
+    loop {
+        let before = position(&h);
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(position(&h), before + 64);
+        if status.applied_revision.load(Acquire) > applied {
+            let expected = *onset.get_or_insert(if quantized { 24_000 } else { before });
+            for (index, frame) in pcm.into_iter().enumerate() {
+                let at = before + index as u64;
+                if (expected..expected + 256).contains(&at) {
+                    assert_eq!(frame, [0.125; 2], "wrong sample at {at}");
+                    audible += 1;
+                } else {
+                    assert_eq!(frame, [0.0; 2], "sample duplicated at {at}");
+                }
+            }
+            if before >= expected + 256 {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "import did not apply");
+        std::thread::yield_now();
+    }
+    assert_eq!(audible, 256, "monitor must hear the whole late sample");
+    let undone = h.run(Request::Undo);
+    assert!(
+        undone
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .is_empty()
+    );
+}
+
+#[test]
 fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
 
