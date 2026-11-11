@@ -5235,6 +5235,7 @@ class ModuleScopeTests(unittest.TestCase):
         unit = "editor::edit_cursor::tests::"
         consumers = (
             "editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_e_uses_it_offline",
+            "editor::edit_cursor_ui_test::completed_time_selection_survives_idle_ticks_and_remains_rendered",
             "editor::edit_cursor_ui_test::space_restarts_from_selection_then_edit_cursor_and_respects_focus",
         )
         for path in (
@@ -5250,8 +5251,11 @@ class ModuleScopeTests(unittest.TestCase):
                 default = steps["ui-default-lib-unit-tests"].argv
                 self.assertIn(unit, default)
                 feature = steps["ui-feature-tests"].argv
+                self.assertNotIn("editor::", feature)
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+                    if path.endswith("/edit_cursor.rs"):
+                        self.assertIn(consumer, feature)
 
     def test_console_return_paging_units_keep_rendered_consumers(self):
         root = SCRIPTS.parent

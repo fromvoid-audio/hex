@@ -567,6 +567,7 @@ UI_MODULE_TEST_DEPENDENCIES = {
     ),
     "editor::edit_cursor::": (
         "editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_e_uses_it_offline",
+        "editor::edit_cursor_ui_test::completed_time_selection_survives_idle_ticks_and_remains_rendered",
         "editor::edit_cursor_ui_test::space_restarts_from_selection_then_edit_cursor_and_respects_focus",
     ),
     "editor::edit_cursor_ui_test::": (
