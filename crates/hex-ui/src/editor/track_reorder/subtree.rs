@@ -1,9 +1,10 @@
 //! Canonical selected subtree rows for one revision-stamped drag.
-use hex_project::{Invalid, MAX_TRACKS, Project, TrackId, TrackSelectionIds};
+use hex_project::{Invalid, MAX_TRACKS, Project, TrackId, TrackKind, TrackSelectionIds};
+use std::{collections::BTreeMap, ops::Range};
 
 pub(crate) struct SourceRows {
     selected: [bool; MAX_TRACKS],
-    group_ends: [usize; MAX_TRACKS],
+    groups: BTreeMap<TrackId, Range<usize>>,
     end: usize,
     contiguous: bool,
     common_parent: Option<Option<TrackId>>,
@@ -11,7 +12,7 @@ pub(crate) struct SourceRows {
 impl SourceRows {
     pub(crate) fn capture(project: &Project, tracks: &TrackSelectionIds) -> Result<Self, Invalid> {
         let mut selected = [false; MAX_TRACKS];
-        let mut group_ends = [0; MAX_TRACKS];
+        let mut groups = BTreeMap::new();
         let common_parent = if project.has_group_tracks() {
             let hierarchy = project.track_hierarchy()?;
             if tracks.ids().iter().any(|id| hierarchy.row(*id).is_none()) {
@@ -22,8 +23,8 @@ impl SourceRows {
             let mut same_parent = true;
             for row in hierarchy.rows() {
                 let range = row.subtree_range();
-                if let Some(end) = group_ends.get_mut(range.start) {
-                    *end = range.end;
+                if row.kind() == TrackKind::Group {
+                    groups.insert(row.id(), range.clone());
                 }
                 if !tracks.ids().contains(&row.id())
                     || selected.get(range.start).copied().unwrap_or(false)
@@ -70,7 +71,7 @@ impl SourceRows {
         let contiguous = selected[first..end].iter().all(|selected| *selected);
         Ok(Self {
             selected,
-            group_ends,
+            groups,
             end,
             contiguous,
             common_parent,
@@ -84,14 +85,21 @@ impl SourceRows {
                 && boundary == self.end
                 && self.common_parent == Some(destination_parent))
     }
+    /// A group can close across hidden rows. Compare the next visible row
+    /// with the canonical subtree end captured at the start of the drag.
+    pub(crate) fn group_ends_by(&self, group: TrackId, next_row: usize) -> bool {
+        self.groups
+            .get(&group)
+            .is_some_and(|range| range.end <= next_row)
+    }
+
     /// An append target cannot lie in a selected subtree or preserve a trailing no-op.
-    pub(crate) fn permits_group(&self, index: usize, group: TrackId) -> bool {
-        !self.selected.get(index).copied().unwrap_or(true)
-            && self.group_ends.get(index).is_some_and(|end| {
-                *end > index
-                    && !(self.contiguous
-                        && *end == self.end
-                        && self.common_parent == Some(Some(group)))
-            })
+    pub(crate) fn permits_group(&self, group: TrackId) -> bool {
+        self.groups.get(&group).is_some_and(|range| {
+            !(self.selected.get(range.start).copied().unwrap_or(true)
+                || self.contiguous
+                    && range.end == self.end
+                    && self.common_parent == Some(Some(group)))
+        })
     }
 }
