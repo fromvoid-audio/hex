@@ -185,7 +185,8 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
 # excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
 # compilation stays proven by affected clippy. Reviewed 31 October 2026:
 # - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
-#   debug selectors only) and hex-session's overview hooks; no cfg(not) gates.
+#   debug selectors only) and hex-session's overview hooks. Complementary
+#   library unit tests are explicitly scheduled by their module prefixes.
 #   Its separately selected ui-unit-tier companion gates source-local tests only.
 # - hex-session source-overview-test-support: an optional observer hook, None by default.
 # - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
@@ -199,11 +200,18 @@ ADDITIVE_TEST_FEATURES = {
 }
 
 
-def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
-    """Affected packages whose non-companion feature is reviewed additive.
+# Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
+UI_DEFAULT_LIB_UNIT_MODULES = {
+    "src/editor/device_gesture.rs": "editor::device_gesture::unit_tests::",
+}
+UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
-    Any line combining `not(` with that feature in the package's Rust sources is a
-    tripwire: the package keeps both default and feature test runs.
+
+def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
+    """Affected packages with a reviewed feature test configuration.
+
+    A negative gate in Rust source keeps both default and feature runs. The
+    exact test-only cfg in known hex-ui modules has its own default lib step.
     """
     selected = {}
     for package in inventory:
@@ -215,7 +223,10 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
             continue
         directory = root / Path(package["manifest"]).parent
         needle = f'feature = "{feature}"'
+        unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package["name"] == "hex-ui" else {}
         gated = any("not(" in line and needle in line
+                    and (line.strip() != UI_DEFAULT_LIB_UNIT_CFG
+                         or source.relative_to(directory).as_posix() not in unit_sources)
                     for source in directory.rglob("*.rs") if source.is_file()
                     for line in source.read_text(errors="replace").splitlines())
         if package["name"] == "hex-ui" and "ui-unit-tier" in package["features"]:

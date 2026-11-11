@@ -396,16 +396,10 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
-        retire_deferred, retire_failed_finalize_barriers,
-    };
     use hex_session::service::Request;
-    use std::collections::VecDeque;
 
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn plugin_source_loss_on_change_releases_edits_and_refuses_deferred_save(
         cx: &mut gpui::TestAppContext,
@@ -498,7 +492,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn retained_preview_refusal_keeps_edit_barrier_until_cancel(cx: &mut gpui::TestAppContext) {
         use hex_lattice_contract::ParameterValue;
@@ -606,6 +599,16 @@ mod tests {
             ));
         });
     }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{
+        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
+        retire_deferred, retire_failed_finalize_barriers,
+    };
+    use hex_session::service::Request;
+    use std::collections::VecDeque;
 
     #[test]
     fn unrelated_event_does_not_retire_a_pending_begin_or_terminal() {
