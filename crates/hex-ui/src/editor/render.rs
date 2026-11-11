@@ -1560,6 +1560,14 @@ impl Render for EditorView {
                 view.add_locator(window);
                 cx.notify();
             }))
+            .on_action(cx.trace(|view, _: &super::PreviousLocator, window, cx| {
+                view.navigate_locator(false, window);
+                cx.notify();
+            }))
+            .on_action(cx.trace(|view, _: &super::NextLocator, window, cx| {
+                view.navigate_locator(true, window);
+                cx.notify();
+            }))
             .on_action(cx.trace(|view, _: &super::MakeClipUnique, window, cx| {
                 if view.focus.is_focused(window)
                     && !view.track_header_focused(window)

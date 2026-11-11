@@ -13,7 +13,7 @@ use gpui::{
 };
 use hex_project::{ArrangementLocatorAppearance, Command, LocatorId, Project};
 use hex_session::service::{Event, Request};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Weak, atomic::Ordering::Acquire};
 
 const HEIGHT: f32 = 18.0;
 const DRAG_THRESHOLD: f32 = 3.0;
@@ -154,6 +154,49 @@ fn position(frame: u64, viewport: Viewport) -> f32 {
 }
 
 impl EditorView {
+    /// Navigate strictly past the stopped play start or the scheduled running
+    /// cursor. At either end there is no wrap. Running seeks retain transport.
+    pub(super) fn navigate_locator(&mut self, forward: bool, window: &Window) {
+        if self.mode != EditorMode::Arrangement
+            || !(self.focus.is_focused(window) || self.locators.focus.is_focused(window))
+            || self.track_header_focused(window)
+            || !self.locator_edit_available()
+        {
+            return;
+        }
+        let playing = self.desired_playing(
+            self.audio_status()
+                .is_some_and(|status| status.playing.load(Acquire)),
+        );
+        let reference = if playing {
+            self.cursor_position()
+        } else {
+            self.playback_start_frame()
+        };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let locators = state.project.arrangement_locators();
+        let index = if forward {
+            Some(locators.partition_point(|locator| locator.frame() <= reference))
+        } else {
+            locators
+                .partition_point(|locator| locator.frame() < reference)
+                .checked_sub(1)
+        };
+        let Some(frame) = index
+            .and_then(|index| locators.get(index))
+            .map(|locator| locator.frame())
+        else {
+            return;
+        };
+        if playing {
+            self.request_seek(frame);
+        } else {
+            self.place_locator_play_start(frame);
+        }
+    }
+
     fn locator_color(&self, row: &ArrangementLocatorAppearance, frame: u64) -> u32 {
         let color = if frame == row.frame {
             row.color
@@ -683,6 +726,182 @@ mod tests {
         visual
             .debug_bounds(selector)
             .expect("visible locator element")
+    }
+
+    #[gpui::test]
+    fn locator_shortcuts_navigate_stopped_and_running_without_stealing_text_focus(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::atomic::Ordering::Acquire;
+
+        cx.update(super::super::bind_editor_keys);
+        let mut fixture = super::super::worker_ui_fixture::open(
+            cx,
+            [1_000, 2_000, 3_000]
+                .into_iter()
+                .map(|frame| Command::AddArrangementLocator { frame })
+                .collect(),
+        );
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.update(|window, cx| {
+            fixture
+                .editor
+                .update(cx, |view, _| window.focus(&view.focus));
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-alt-right");
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 1_000);
+            assert!(!view.audio_status().unwrap().playing.load(Acquire));
+        });
+        visual.simulate_keystrokes("cmd-alt-right");
+        visual.simulate_keystrokes("cmd-alt-left");
+        visual.simulate_keystrokes("cmd-alt-left");
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.playback_start_frame(),
+                1_000,
+                "no wrap before first locator"
+            );
+        });
+        fixture
+            .editor
+            .update(&mut visual, |view, _| view.computer_keyboard.enabled = true);
+        visual.simulate_keystrokes("cmd-alt-right");
+        visual.simulate_keystrokes("cmd-alt-right");
+        visual.simulate_keystrokes("cmd-alt-right");
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.playback_start_frame(),
+                3_000,
+                "no wrap after last locator"
+            );
+            assert!(view.computer_keyboard.enabled);
+        });
+        fixture.editor.update(&mut visual, |view, _| {
+            view.computer_keyboard.enabled = false
+        });
+        visual.update(|window, cx| {
+            fixture
+                .editor
+                .update(cx, |view, _| window.focus(&view.locators.focus));
+        });
+        visual.simulate_keystrokes("cmd-alt-left");
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 2_000)
+        });
+
+        fixture.editor.update(&mut visual, |view, _| {
+            view.queue_audio_command(hex_engine::PlaybackCommand::PlayFrom(1_500));
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        fixture.editor.update(&mut visual, |view, cx| view.tick(cx));
+        fixture.editor.read_with(&visual, |view, _| {
+            assert!(!view.seek_pending(), "prior play seek still pending");
+            assert!(
+                view.locator_edit_available(),
+                "locator navigation unavailable"
+            );
+        });
+        let old_ticket = fixture
+            .editor
+            .read_with(&visual, |view, _| view.pending_seek_ticket);
+        visual.simulate_keystrokes("cmd-alt-right");
+        let ticket = fixture.editor.read_with(&visual, |view, _| {
+            let ticket = view
+                .pending_seek_ticket
+                .expect("running navigation admitted a seek");
+            assert_ne!(
+                Some(ticket),
+                old_ticket,
+                "navigation must submit a fresh seek"
+            );
+            ticket
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let consumed = fixture.editor.read_with(&visual, |view, _| {
+                view.audio_status().unwrap().consumed_command.load(Acquire) >= ticket
+            });
+            if consumed {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "seek was not consumed"
+            );
+            std::thread::yield_now();
+        }
+        // A running seek is admitted before its 128-frame declick completes.
+        fixture.backend.render(&mut [[0.0; 2]; 128]).unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert!(status.playing.load(Acquire));
+            let position = status.position.load(Acquire);
+            assert!(status.consumed_command.load(Acquire) >= ticket);
+            assert!((2_000..=2_192).contains(&position), "position {position}");
+        });
+
+        fixture.editor.update(&mut visual, |view, cx| view.tick(cx));
+        visual.simulate_keystrokes("cmd-alt-left");
+        let previous_ticket = fixture.editor.read_with(&visual, |view, _| {
+            let previous = view.pending_seek_ticket.expect("previous locator admitted");
+            assert_ne!(previous, ticket);
+            previous
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if fixture.editor.read_with(&visual, |view, _| {
+                view.audio_status().unwrap().consumed_command.load(Acquire) >= previous_ticket
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "previous seek was not consumed"
+            );
+            std::thread::yield_now();
+        }
+        fixture.backend.render(&mut [[0.0; 2]; 128]).unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert!((2_000..=2_192).contains(&status.position.load(Acquire)));
+        });
+
+        let id = fixture.editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.arrangement_locators()[0].id()
+        });
+        visual.update(|window, cx| {
+            fixture.editor.update(cx, |view, cx| {
+                let source = Source {
+                    generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    id,
+                };
+                view.begin_locator_name(source, window, cx);
+            });
+        });
+        visual.run_until_parked();
+        fixture
+            .editor
+            .read_with(&visual, |view, _| assert!(view.locators.name.is_some()));
+        let before = fixture.editor.read_with(&visual, |view, _| {
+            view.audio_status().unwrap().position.load(Acquire)
+        });
+        visual.simulate_keystrokes("cmd-alt-right");
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            assert!(view.locators.name.is_some());
+            assert_eq!(
+                view.audio_status().unwrap().position.load(Acquire),
+                before + 64
+            );
+        });
+        drop(visual);
+        fixture.finish(cx);
     }
 
     #[gpui::test]
