@@ -4486,6 +4486,17 @@ fn run_worker(
                     } else {
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
+                                if let Some(retired) = device_gesture.retire_mixer_gain_on_restart()
+                                {
+                                    if resident_preview
+                                        .as_ref()
+                                        .and_then(resident_preview::Preview::device_identity)
+                                        .is_some_and(|preview| preview.key == retired.key)
+                                    {
+                                        resident_preview = None;
+                                    }
+                                    gesture_ack = Some(retired);
+                                }
                                 status = Some("restarting audio".into());
                                 let context = hex_engine::AudioSourceContext {
                                     project_generation,
@@ -4581,7 +4592,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             None,
                         );
-                        device_gesture.handle_prepared(
+                        let mut outcome = device_gesture.handle_prepared(
                             &mut session,
                             gesture,
                             compiled.as_ref().map(|(_, artifact)| artifact),
@@ -4636,7 +4647,16 @@ fn run_worker(
                                     admission,
                                 )
                             },
-                        )
+                        );
+                        if !deferred
+                            && resident_preview
+                                .as_ref()
+                                .and_then(resident_preview::Preview::device_identity)
+                                .is_none_or(|preview| preview.key != outcome.ack.key)
+                        {
+                            device_gesture.retire_unpublished_mixer_terminal(&mut outcome.ack);
+                        }
+                        outcome
                     } else {
                         device_gesture.handle(
                             &mut session,
