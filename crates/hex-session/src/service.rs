@@ -3603,21 +3603,32 @@ fn run_worker(
                         TrackClipboardAction::Duplicate {
                             tracks,
                             without_clips,
-                        } => Some(
-                            session
-                                .project()
-                                .capture_tracks(tracks, *without_clips)
-                                .and_then(|clipboard| {
-                                    session
-                                        .project()
-                                        .track_destination_after_selection(tracks)
-                                        .map(|destination| Command::PasteTracks {
-                                            clipboard: Arc::new(clipboard),
-                                            destination,
-                                        })
-                                })
-                                .map_err(|error| error.to_string()),
-                        ),
+                        } => Some((|| {
+                            let project = session.project();
+                            let destination = project
+                                .track_destination_after_selection(tracks)
+                                .map_err(|error| error.to_string())?;
+                            let cancellation = RequestCancellation::new(
+                                Arc::clone(&session.shutdown),
+                                Arc::clone(&document_intent),
+                                queued.document_intent,
+                            );
+                            let clipboard = plugin_state_save::capture_tracks_for_duplicate(
+                                project,
+                                tracks,
+                                *without_clips,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                &cancellation,
+                                events.sampler_edit_audio(),
+                            )?;
+                            Ok(Command::PasteTracks {
+                                clipboard: Arc::new(clipboard),
+                                destination,
+                            })
+                        })()),
                     }
                 }
             }
