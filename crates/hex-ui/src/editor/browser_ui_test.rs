@@ -1910,59 +1910,6 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     assert_eq!(after_browser_wheel, before_browser_wheel);
 }
 
-#[test]
-fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta() {
-    let cases = [
-        (
-            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
-            false,
-            (12.0, 24.0),
-        ),
-        (
-            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
-            true,
-            (-12.0, -24.0),
-        ),
-        (
-            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
-            false,
-            (2.0, -3.0),
-        ),
-        (
-            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
-            true,
-            (-2.0, 3.0),
-        ),
-    ];
-    for (raw, inverted, (expected_x, expected_y)) in cases {
-        let event = gpui::ScrollWheelEvent {
-            delta: raw,
-            direction_inverted_from_device: inverted,
-            ..Default::default()
-        };
-        match event.physical_delta() {
-            gpui::ScrollDelta::Pixels(delta) => {
-                assert_eq!(f32::from(delta.x), expected_x);
-                assert_eq!(f32::from(delta.y), expected_y);
-            }
-            gpui::ScrollDelta::Lines(delta) => {
-                assert_eq!(delta.x, expected_x);
-                assert_eq!(delta.y, expected_y);
-            }
-        }
-        match (raw, event.delta) {
-            (gpui::ScrollDelta::Pixels(before), gpui::ScrollDelta::Pixels(after)) => {
-                assert_eq!(before, after);
-            }
-            (gpui::ScrollDelta::Lines(before), gpui::ScrollDelta::Lines(after)) => {
-                assert_eq!(before.x, after.x);
-                assert_eq!(before.y, after.y);
-            }
-            _ => panic!("raw scroll delta variant changed"),
-        }
-    }
-}
-
 #[gpui::test]
 fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppContext) {
     let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);

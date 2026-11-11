@@ -258,6 +258,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
     "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
+    "src/editor/browser.rs": ("editor::browser::unit_tests::",),
     "src/editor/track_tags.rs": ("editor::track_tags::tests::normalized_tags_use_only_the_eight_musical_element_colors",),
     "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
@@ -496,6 +497,11 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::browser::ui_test::": ("editor::browser::unit_tests::",),
+    "editor::browser::ui_test::scrollbar_ui_tests::": (
+        "editor::browser::unit_tests::",
+        "editor::browser::ui_test::arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline",
+    ),
     "context_menu::": (
         "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
         "editor::context_menu::tests::menu_escape_outside_click_and_enter_do_not_leak_to_editor",

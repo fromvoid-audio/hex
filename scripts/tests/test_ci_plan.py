@@ -2955,6 +2955,36 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in support), (consumer, support))
 
+    def test_browser_physical_wheel_delta_keeps_arrangement_and_scrollbar_witnesses(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::browser::unit_tests::"
+        consumers = (
+            "editor::browser::ui_test::arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline",
+            "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/browser.rs",
+            "crates/hex-ui/src/editor/browser_ui_test.rs",
+            "crates/hex-ui/src/editor/browser_scrollbar_ui_test.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                feature = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature))
+                self.assertNotIn("editor::", feature)
+
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
