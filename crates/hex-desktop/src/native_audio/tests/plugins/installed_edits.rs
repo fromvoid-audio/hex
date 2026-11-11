@@ -95,6 +95,150 @@ fn send(h: &mut ResidentHarness, client: &mut GestureClient) -> Event {
 }
 
 #[test]
+#[ignore = "requires an installed Diva catalog and source-bound native helper"]
+fn fourth_installed_instrument_lane_accepts_repeated_arrangement_edits() {
+    use super::automation::edit_with_running_callback;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+    };
+    let _native = native_fixture();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+    let selected = installed_selection(
+        &catalog,
+        "Diva.vst3",
+        hex_plugin_catalog::PluginRole::Instrument,
+    );
+    let class = selected.cid;
+    println!(
+        "Diva class={class:?} executable_sha256={}",
+        selected.executable_sha256
+    );
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        44_100,
+        catalog,
+        20_000_000,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "keys".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(applied);
+    let mut insert = request(&added.state, PluginEffectDestination::Instrument(track));
+    insert.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insert))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let device = accepted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (mut applied, metadata) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render_worker_step();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    let point = |quarter, value| AutomationPoint {
+        beat: BeatTime::from_quarters(quarter).unwrap(),
+        value: AutomationValue::new(value).unwrap(),
+        outgoing: AutomationInterpolation::Linear,
+    };
+    let edit = |revision, parameter, vst3_class, points| Request::DeviceAutomation {
+        project_generation: metadata.context.project_generation,
+        revision,
+        device,
+        target: DeviceAutomationTarget::Vst3 { parameter },
+        vst3_class,
+        points,
+    };
+    let mut state = accepted.state;
+    let mut previous = Arc::clone(&state.project);
+    for (parameter, end) in [
+        (148, Some(0.8)),
+        (86, Some(0.7)),
+        (91, Some(0.65)),
+        (97, None),
+        (97, Some(0.6)),
+        (97, Some(0.5)),
+    ] {
+        let mut points = vec![point(0, 0.25)];
+        if let Some(value) = end {
+            points.push(point(2, value));
+        }
+        let event = edit_with_running_callback(
+            &mut h,
+            edit(state.revision, parameter, Some(class), points.clone()),
+        );
+        assert!(
+            event.error.is_none(),
+            "parameter {parameter} points {}: {:?}",
+            points.len(),
+            event.error
+        );
+        assert_eq!(event.state.revision, state.revision + 1);
+        assert_eq!(
+            event
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(DeviceAutomationTarget::Vst3 { parameter })
+                .unwrap()
+                .points,
+            points
+        );
+        (applied, _) = h.applied(applied);
+        previous = Arc::clone(&state.project);
+        state = event.state;
+    }
+    let refused = edit_with_running_callback(
+        &mut h,
+        edit(state.revision, 97, Some([0xa3; 16]), vec![point(0, 0.1)]),
+    );
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("target no longer available"))
+    );
+    assert_eq!(refused.state.project, state.project);
+    let undone = edit_with_running_callback(&mut h, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project, previous);
+    (applied, _) = h.applied(applied);
+    let redone = edit_with_running_callback(&mut h, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, state.project);
+    h.applied(applied);
+}
+
+#[test]
 #[ignore = "requires explicit installed instrument/catalog/parameter IDs and source-bound native helper"]
 fn distinct_instrument_parameters_commit_and_read_back_while_playing() {
     let _native = native_fixture();

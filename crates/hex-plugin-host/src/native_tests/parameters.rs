@@ -36,6 +36,55 @@ fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_sparse_authored_request_delivers_the_full_point_capacity() {
+    use crate::transport::MAX_PARAMETER_POINTS;
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let mut input = request(instance.configuration(), 0);
+    for index in 0..MAX_PARAMETER_POINTS {
+        input
+            .parameters
+            .push(ParameterPoint {
+                frame: (index * 2) as u16,
+                id: 0,
+                normalized: if index % 2 == 0 { 0.75 } else { 0.125 },
+            })
+            .unwrap();
+    }
+    let reply = instance
+        .exchange_authored_on_worker(input, &metadata)
+        .unwrap();
+    for point in input.parameters.as_slice() {
+        let frame = usize::from(point.frame);
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (point.normalized * 2.0) as f32)
+        );
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
     exercise_native_dense_request(false);
 }

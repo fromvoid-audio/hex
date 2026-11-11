@@ -1,9 +1,44 @@
 //! Canonical VST3 lanes for Arrangement preparation.
 use super::{Knot, Lane, Program, QuantumProfile};
-use crate::AudioStorageError as Error;
+use crate::{AudioStorageError as Error, Invalid};
 use hex_lattice::{DevicePreparationContext, NativeDeviceRegistry, ProcessorInstanceIdentity};
 use hex_lattice_contract::DeviceAutomationTarget;
 use hex_project::{Device, DeviceAutomation, Project};
+
+pub(crate) enum PreparationError {
+    Source(Error),
+    Program(Invalid),
+}
+
+impl From<Error> for PreparationError {
+    fn from(error: Error) -> Self {
+        Self::Source(error)
+    }
+}
+
+impl From<PreparationError> for Error {
+    fn from(error: PreparationError) -> Self {
+        match error {
+            PreparationError::Source(error) => error,
+            PreparationError::Program(_) => Self::UnsupportedGraph,
+        }
+    }
+}
+
+impl From<PreparationError> for Invalid {
+    fn from(error: PreparationError) -> Self {
+        match error {
+            PreparationError::Program(reason) => reason,
+            PreparationError::Source(Error::SourceMismatch) => {
+                Self("vst3 automation source differs from the prepared device")
+            }
+            PreparationError::Source(Error::Overflow) => {
+                Self("vst3 automation storage size overflow")
+            }
+            PreparationError::Source(_) => Self("vst3 automation source is unavailable"),
+        }
+    }
+}
 
 fn effects(project: &Project) -> impl Iterator<Item = &Device> {
     project
@@ -65,7 +100,8 @@ fn quote_devices<'a>(
             .checked_add(std::mem::size_of::<Program>() + 3 * std::mem::size_of::<usize>())
             .and_then(|bytes| {
                 bytes.checked_add(
-                    super::MAX_POINTS * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
+                    super::MAX_TARGETS
+                        * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
                 )
             })
             .ok_or(Error::Overflow)?;
@@ -99,11 +135,11 @@ pub(crate) fn prepare_device(
     processor: hex_lattice::PreparedForeignProcessor,
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
-) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
+) -> Result<Option<hex_lattice::PreparedForeignAutomation>, PreparationError> {
     let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())?
     else {
         return if has_authored(device) {
-            Err(Error::UnsupportedGraph)
+            Err(Error::UnsupportedGraph.into())
         } else {
             Ok(None)
         };
@@ -115,14 +151,14 @@ pub(crate) fn prepare_device(
         QuantumProfile::arrangement(source.quantum_frames, region)
     };
     let program = Program::prepare_source(device.automation(), source, tempo, profile)
-        .map_err(|_| Error::UnsupportedGraph)?;
+        .map_err(PreparationError::Program)?;
     let Some(program) = program else {
         return Ok(None);
     };
     let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
     hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
         .map(Some)
-        .map_err(|_| Error::Overflow)
+        .map_err(|_| Error::Overflow.into())
 }
 
 pub(crate) fn exact_source<'a>(

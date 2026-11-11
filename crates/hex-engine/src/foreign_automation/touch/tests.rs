@@ -189,11 +189,8 @@ fn two_recorded_lanes_fit_a_physical_quantum_with_sdk_slices_and_loop_wrap() {
     // that still fits, and a large caller buffer cannot enlarge the queue.
     let jumps = std::array::from_fn::<_, 256, _>(|i| Some(4096 + (i % 38) as u64));
     assert_eq!(rendered(&program, &jumps, &[]).len(), 57);
-    let overflow = std::array::from_fn::<_, 256, _>(|i| Some(4096 + (i % 32) as u64));
-    assert_eq!(
-        program.render_quantum(&overflow, &[], &mut [ForeignParameterPoint::default(); 128]),
-        Err(Invalid("foreign automation output exceeds admission"))
-    );
+    let more_runs = std::array::from_fn::<_, 256, _>(|i| Some(4096 + (i % 32) as u64));
+    assert_eq!(rendered(&program, &more_runs, &[]).len(), 65);
 }
 
 fn base(map: &TempoMap, frame: u64) -> f64 {
