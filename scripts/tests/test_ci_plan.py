@@ -3970,6 +3970,49 @@ class ModuleScopeTests(unittest.TestCase):
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
 
+    def test_device_chain_layout_units_keep_rendered_pointer_and_keyboard_cases(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::device_panel::chain_layout_unit_tests::",
+            "editor::device_panel::chain_window::tests::",
+            "editor::device_panel::parameter_rows::tests::",
+        )
+        consumers = (
+            "editor::device_panel::tests::chain_window_tests::short_chain_window_does_not_add_scroll_extent",
+            "editor::device_panel::tests::clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail",
+            "editor::device_panel::tests::keyboard_navigation_tests::arrows_step_devices_and_paste_lands_in_the_clicked_gap",
+            "editor::device_panel::tests::parameter_rows_tests::generic_track_effect_rows_preserve_extent_identity_and_pins",
+        )
+        paths = (
+            "device_panel.rs",
+            "device_panel/chain_window.rs",
+            "device_panel/parameter_rows.rs",
+            "device_panel/tests.rs",
+            "device_panel/tests/chain_window_tests.rs",
+            "device_panel/tests/keyboard_navigation_tests.rs",
+            "device_panel/tests/parameter_rows_tests.rs",
+        )
+        for module in paths:
+            path = "crates/hex-ui/src/editor/" + module
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                for prefix in unit_prefixes:
+                    self.assertIn(prefix, unit_args)
+                self.assertNotIn("editor::device_panel::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} missing from {feature_args}")
+
     def test_browser_scalar_controls_keep_unit_and_native_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

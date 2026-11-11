@@ -192,7 +192,7 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>) -> Div {
     super::keyboard::rail(view, cx, rail)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

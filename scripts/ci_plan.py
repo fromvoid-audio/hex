@@ -203,6 +203,9 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::",),
+    "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
+    "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
     "src/editor/device_panel/eq8_panel/graph.rs": ("editor::device_panel::eq8_panel::graph::tests::",),
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
@@ -513,6 +516,13 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::device_panel::eq8_panel::selection::tests::",
                      "editor::device_panel::tests::eq8_marquee_tests::eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device",
                      "editor::device_panel::tests::eq8_marquee_tests::eq8_marquee_group_move_and_disable_each_commit_one_undo"},
+                    {"editor::device_panel::chain_layout_unit_tests::",
+                     "editor::device_panel::chain_window::tests::",
+                     "editor::device_panel::parameter_rows::tests::",
+                     "editor::device_panel::tests::chain_window_tests::short_chain_window_does_not_add_scroll_extent",
+                     "editor::device_panel::tests::clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail",
+                     "editor::device_panel::tests::keyboard_navigation_tests::arrows_step_devices_and_paste_lands_in_the_clicked_gap",
+                     "editor::device_panel::tests::parameter_rows_tests::generic_track_effect_rows_preserve_extent_identity_and_pins"},
                     {"editor::device_panel::operator_panel::tests::",
                      "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
                      "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},

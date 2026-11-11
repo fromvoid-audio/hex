@@ -3367,5 +3367,115 @@ fn empty_panel(message: &str) -> Stateful<Div> {
 
 mod return_view;
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod chain_layout_unit_tests {
+    use super::*;
+
+    #[test]
+    fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
+        let viewport = gpui::Bounds::new(
+            gpui::point(px(200.0), px(300.0)),
+            gpui::size(px(400.0), px(100.0)),
+        );
+        let clipped_card = gpui::Bounds::new(
+            gpui::point(px(100.0), px(300.0)),
+            gpui::size(px(286.0), px(100.0)),
+        );
+        let inside_both = gpui::point(px(250.0), px(330.0));
+        let offscreen_card_area = gpui::point(px(150.0), px(330.0));
+        let outside_rail = gpui::point(px(250.0), px(420.0));
+
+        assert!(super::pointer_within_visible_device_drop_bounds(
+            &inside_both,
+            &clipped_card,
+            Some(&viewport),
+        ));
+        assert!(!super::pointer_within_visible_device_drop_bounds(
+            &offscreen_card_area,
+            &clipped_card,
+            Some(&viewport),
+        ));
+        assert!(!super::pointer_within_visible_device_drop_bounds(
+            &outside_rail,
+            &clipped_card,
+            Some(&viewport),
+        ));
+    }
+
+    mod keyboard_navigation_tests {
+        use super::super::DevicePanelState;
+        use gpui::Modifiers;
+        use hex_project::{Command, Created, DeviceId};
+
+        fn ids(n: u64) -> Vec<DeviceId> {
+            let mut editor =
+                hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack { name: "ids".into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            for _ in 0..n {
+                editor
+                    .execute(Command::InsertDevice {
+                        track,
+                        before: None,
+                        state: hex_engine::default_native_device_state(
+                            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                        )
+                        .unwrap(),
+                    })
+                    .unwrap();
+            }
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .devices()
+                .iter()
+                .map(|device| device.id())
+                .collect()
+        }
+
+        #[test]
+        fn step_target_walks_selection_and_insertion_gaps() {
+            let order = ids(3);
+            let mut panel = DevicePanelState::default();
+            assert_eq!(panel.step_target(&order, true), Some(order[0]));
+            assert_eq!(panel.step_target(&order, false), Some(order[2]));
+            assert_eq!(panel.step_target(&[], true), None);
+
+            panel.select_only(Some(order[1]));
+            assert_eq!(panel.step_target(&order, true), Some(order[2]));
+            assert_eq!(panel.step_target(&order, false), Some(order[0]));
+            panel.select_only(Some(order[2]));
+            assert_eq!(panel.step_target(&order, true), None, "end does not wrap");
+
+            panel.select_insertion(Some(order[1]));
+            assert!(panel.selected_device.is_none(), "a gap replaces selection");
+            assert_eq!(panel.step_target(&order, false), Some(order[0]));
+            assert_eq!(panel.step_target(&order, true), Some(order[1]));
+            panel.select_insertion(Some(order[0]));
+            assert_eq!(panel.step_target(&order, false), None);
+            panel.select_insertion(None);
+            assert_eq!(panel.step_target(&order, false), Some(order[2]));
+            assert_eq!(panel.step_target(&order, true), None);
+
+            // A removed gap device leaves no stale paste target.
+            panel.select_insertion(Some(order[1]));
+            panel.reconcile_selection(&[order[0], order[2]].into_iter().collect());
+            assert_eq!(panel.insertion_before(&order), None);
+            panel.select_insertion(Some(order[1]));
+            panel.select_click(order[0], &order, Modifiers::default());
+            assert_eq!(
+                panel.insertion_before(&order),
+                None,
+                "selection replaces a gap"
+            );
+        }
+    }
+}
+
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor) mod tests;
