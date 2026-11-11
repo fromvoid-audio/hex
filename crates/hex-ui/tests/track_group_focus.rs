@@ -79,8 +79,11 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
             .unwrap()
     };
     assert!(!source.permits(index(inner), Some(outer)));
-    assert!(!source.permits_group(index(inner), inner));
+    assert!(!source.permits_group(inner));
     assert!(!source.permits(index(inside), Some(inner)));
+    assert!(!source.group_ends_by(inner, index(inside)));
+    assert!(source.group_ends_by(inner, index(unrelated)));
+    assert!(source.group_ends_by(outer, index(unrelated)));
     assert!(
         !source.permits(index(unrelated), None),
         "the boundary after the complete subtree is a no-op"
@@ -91,8 +94,8 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     );
     let nested =
         subtree::SourceRows::capture(project, &TrackSelectionIds::new(&[inner]).unwrap()).unwrap();
-    assert!(nested.permits_group(index(unrelated), unrelated));
-    assert!(!nested.permits_group(index(outer), outer));
+    assert!(nested.permits_group(unrelated));
+    assert!(!nested.permits_group(outer));
     assert!(
         nested.permits(index(unrelated), None),
         "unchanged order can still reparent a subtree"
