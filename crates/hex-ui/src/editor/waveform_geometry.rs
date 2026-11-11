@@ -1429,12 +1429,28 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ui-test-support")]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn canonical_trim_and_lower_fade_resize_keep_loop_and_one_shot_outline_still() {
-        use hex_project::{Command, Created, Editor, TrimEdge};
+        use hex_project::{Command, Created, Editor, Project, TrimEdge};
         let source = waveform();
-        let (project, track, _, imported) = super::super::clip_drag_ui_test::audio_project();
+        let mut fixture = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported {
+            track,
+            clip: imported,
+            ..
+        } = fixture
+            .execute(Command::ImportAudioTrack {
+                name: "audio source".into(),
+                path: "missing.wav".into(),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("import result")
+        };
+        let project = fixture.project().clone();
         let asset = project.clip(imported).unwrap().asset();
         let mut editor = Editor::new(project, 8).unwrap();
         for looping in [false, true] {
