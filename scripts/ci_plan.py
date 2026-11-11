@@ -213,6 +213,7 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/context_menu.rs": ("context_menu::tests::",),
     "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/header.rs": ("editor::header::tests::",),
     "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
@@ -486,6 +487,11 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "context_menu::": (
+        "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+        "editor::context_menu::tests::menu_escape_outside_click_and_enter_do_not_leak_to_editor",
+    ),
+    "editor::context_menu::": ("context_menu::tests::",),
     "editor::display_error::": (
         "editor::controller::project_replacement_tests::failed_batch_worker_event_displays_original_path_in_status_and_tooltip",
     ),
