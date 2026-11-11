@@ -218,6 +218,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/selection.rs": ("editor::selection::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
@@ -442,6 +443,7 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::session_audio_panel::playhead::": ("editor::session_audio_panel::unit_tests::",),
     "editor::device_automation::host_tests::": ("editor::device_automation::unit_tests::",
         "editor::native_automation_recording::unit_tests::",
         "editor::native_automation_recording::editor_input::tests::"),
@@ -692,6 +694,7 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
 # the unit binary cannot also compile and run the integration fixture there.
 UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "editor::automation_take_recovery::tests::",
                         "editor::selection::tests::": "editor::controller::project_replacement_tests::worker_snapshots_and_undo_keep_the_last_user_detail_focus",
+                        "editor::session_audio_panel::unit_tests::": "editor::session_audio_panel::tests::",
                         "editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
                         "output_meter::logic::": "output_meter::tests::",
                         "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
