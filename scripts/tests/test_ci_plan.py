@@ -3674,6 +3674,25 @@ class ModuleScopeTests(unittest.TestCase):
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-device-unit" for step in health))
 
+    def test_vst3_filesystem_cache_selects_support_without_default_or_projection_units(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/device_panel/vst3_parameters/cache.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        prefix = "editor::device_panel::vst3_parameters::cache::"
+        self.assertEqual(boundary["module_filters"], {owner: [prefix]})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        self.assertNotIn("ui-default-lib-unit-tests", steps)
+        self.assertNotIn("module-tests-hex-ui", steps)
+        self.assertFalse(any("unit_device" in step.argv for step in steps.values()))
+        self.assertIn(prefix, steps["ui-feature-tests"].argv)
+
     def test_vst3_row_projection_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
