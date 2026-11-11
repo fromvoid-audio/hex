@@ -112,6 +112,9 @@ pub struct ControllerParameter {
     pub units: ParameterText,
     pub display: Option<ParameterText>,
     pub default_display: Option<ParameterText>,
+    /// Last native Perform admitted for this parameter when the main lane
+    /// read the value and formatted text. Zero means no observed Perform.
+    pub editor_sequence: u64,
 }
 impl ControllerParameter {
     /// Display capability only, never authorization to edit a later source.
@@ -434,6 +437,7 @@ pub fn parameter_page(
         let format_flags = reader.byte()?;
         let display = ParameterText::read(&mut reader)?;
         let default_display = ParameterText::read(&mut reader)?;
+        let editor_sequence = u64::from_le_bytes(reader.array()?);
         if format_flags & !3 != 0
             || (format_flags & 1 == 0 && !display.as_utf16().is_empty())
             || (format_flags & 2 == 0 && !default_display.as_utf16().is_empty())
@@ -454,6 +458,7 @@ pub fn parameter_page(
             units,
             display: (format_flags & 1 != 0).then_some(display),
             default_display: (format_flags & 2 != 0).then_some(default_display),
+            editor_sequence,
         };
     }
     page.descriptor_signature = reader.array()?;

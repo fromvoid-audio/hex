@@ -1034,26 +1034,38 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
                 normalized: if authored { 0.5 } else { 0.25 },
             }]
         );
-        instance
-            .begin_parameter_page_on_worker(ParameterPageQuery::default())
-            .unwrap();
-        let until = Instant::now() + Duration::from_secs(2);
-        loop {
-            match instance.poll_parameter_page_on_worker().unwrap() {
-                ParameterPageProgress::Page(page) => {
-                    assert_eq!(
-                        page.as_slice()[0].normalized,
-                        if authored { 0.5 } else { 0.875 }
-                    );
-                    break;
+        let page = |instance: &mut Prepared| {
+            instance
+                .begin_parameter_page_on_worker(ParameterPageQuery::default())
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                match instance.poll_parameter_page_on_worker().unwrap() {
+                    ParameterPageProgress::Page(page) => return page.as_slice()[0],
+                    ParameterPageProgress::Pending => {
+                        assert!(Instant::now() < until, "controller feedback must settle");
+                        thread::yield_now();
+                    }
+                    other => panic!("expected a controller page, got {other:?}"),
                 }
-                ParameterPageProgress::Pending => {
-                    assert!(Instant::now() < until, "controller feedback must settle");
-                    thread::yield_now();
-                }
-                other => panic!("expected a controller page, got {other:?}"),
             }
-        }
+        };
+        let expected = if authored { 0.5 } else { 0.875 };
+        let first = page(&mut instance);
+        assert_eq!(first.normalized, expected);
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        let delayed = edits
+            .as_slice()
+            .iter()
+            .rev()
+            .find(|edit| edit.kind == protocol::ParameterEditKind::Perform)
+            .expect("delayed native Perform after the page");
+        assert_eq!(delayed.normalized, 0.25);
+        assert!(delayed.sequence < first.editor_sequence);
+        println!(
+            "controller page {}, delayed Perform {} at {}",
+            first.normalized, delayed.normalized, delayed.sequence
+        );
         assert!(
             instance
                 .stop_and_reap_on_control()

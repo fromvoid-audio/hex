@@ -1034,6 +1034,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
         out.push(3);
         text(out, "−∞ db");
         text(out, "sdk default");
+        out.extend(17_u64.to_le_bytes());
     }
     let config = config();
     let query = ParameterPageQuery {
@@ -1118,6 +1119,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     assert_eq!(page.descriptor_signature, std::array::from_fn(|n| n as u8));
     let value = page.as_slice()[0];
     assert_eq!(value.id, 0);
+    assert_eq!(value.editor_sequence, 17);
     assert!(value.is_editable());
     assert!(value.supports_authored_automation());
     assert_eq!(value.plain, ParameterPlainValue::NegativeInfinity);
