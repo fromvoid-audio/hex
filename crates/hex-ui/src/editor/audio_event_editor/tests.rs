@@ -544,25 +544,39 @@ fn event_pointer_matches_arrangement_and_retains_move_and_trim_targets(cx: &mut 
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    for (position, expected) in [
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    for (position, modifiers, expected) in [
         (
             point(b.center().x, b.bottom() - px(15.0)),
+            Modifiers::default(),
             gpui::CursorStyle::Arrow,
         ),
         (
             point(b.center().x, b.top() + px(26.0)),
+            Modifiers::default(),
+            gpui::CursorStyle::OpenHand,
+        ),
+        (
+            point(b.center().x, b.top() + px(26.0)),
+            option,
             gpui::CursorStyle::ResizeUpDown,
         ),
         (
             point(b.left() + px(2.0), b.center().y),
+            Modifiers::default(),
             gpui::CursorStyle::ResizeLeftBracket,
         ),
         (
             point(b.right() - px(2.0), b.center().y),
+            Modifiers::default(),
             gpui::CursorStyle::ResizeRightBracket,
         ),
     ] {
-        visual.simulate_mouse_move(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_modifiers_change(modifiers);
+        visual.simulate_mouse_move(position, None, modifiers);
         visual.run_until_parked();
         assert_eq!(visual.rendered_cursor_style(), Some(expected));
     }
