@@ -153,6 +153,7 @@ fn prefix_waveform_view(
         (
             source,
             WaveformMapping::Clip {
+                fade: Some(rewound.retained_fade()),
                 clip: rewound,
                 timeline_origin: origin,
             },
@@ -325,6 +326,7 @@ fn preview_waveform_view_cached_inner(
             WaveformMapping::Clip {
                 clip: preview.clone(),
                 timeline_origin: preview.start(),
+                fade: Some(preview.retained_fade()),
             },
             visible_start,
             visible_end,
@@ -397,6 +399,7 @@ pub(super) fn waveform_view_cached(
             WaveformMapping::Clip {
                 clip: clip.clone(),
                 timeline_origin: clip.start(),
+                fade: None,
             },
             visible_start,
             visible_end,
