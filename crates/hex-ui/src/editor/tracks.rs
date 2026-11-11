@@ -1593,12 +1593,6 @@ impl EditorView {
                     })
                     .child(theme::text(if folded { ">" } else { "v" }))
             }))
-            .children(track.is_group().then(|| {
-                div()
-                    .flex_shrink_0()
-                    .debug_selector(move || format!("group-track-marker-{}", track_id.value()))
-                    .child(theme::text("group · "))
-            }))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
                 track.name(),
