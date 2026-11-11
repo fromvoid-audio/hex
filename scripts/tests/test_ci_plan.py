@@ -2806,6 +2806,33 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn("--ignored", feature.argv)
         self.assertNotIn("module-tests-hex-ui", steps)
 
+    def test_display_error_unit_route_keeps_batch_failure_window_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/display_error.rs"
+        unit = "editor::display_error::tests::"
+        consumer = (
+            "editor::controller::project_replacement_tests::"
+            "failed_batch_worker_event_displays_original_path_in_status_and_tooltip"
+        )
+        boundary = plan.boundary_selection(root, [source], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertEqual(boundary["module_filters"],
+                         {owner: sorted(["editor::display_error::", consumer])})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [source]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        self.assertNotIn("--features", default.argv)
+        feature = steps["ui-feature-tests"]
+        self.assertIn("ui-test-support", feature.argv)
+        self.assertIn(consumer, feature.argv)
+
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
