@@ -203,6 +203,7 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/editor/changelog.rs": ("editor::changelog::tests::",),
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
