@@ -373,6 +373,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     # Owners test; every affected consumer still compiles and lints below.
     tested = boundary.get("test_packages", [])
     module_filters = boundary.get("module_filters", {})
+    standalone_ui = boundary.get("ui_standalone_unit_targets", {})
     by_name = {p["name"]: p for p in inventory}
     doc_examples = set(boundary.get("doc_example_owners", []))
 
@@ -406,23 +407,22 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for package in tested:
             if package in module_filters and package not in single:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
-        if "hex-ui" in single and "hex-ui" not in module_filters:
-            steps.append(Step(
-                "ui-default-standalone-tests",
-                (
-                    "cargo", "test", "-p", "hex-ui",
-                    "--test", "unit_editor_state",
-                    "--test", "track_group_focus",
-                    "--test", "browser_disclosure_assets",
-                    "--test", "browser_place_assets",
-                    "--test", "cursor_assets",
-                    "--test", "midi_audition_icon",
-                    "--test", "transport_icon_assets",
-                    "--locked",
-                ),
-                requires_tests=True,
-            ))
-        if "hex-ui" in single:
+        if standalone_ui:
+            if tested != ["hex-ui"] or single.get("hex-ui") != "ui-test-support" or module_filters:
+                raise ValueError("standalone UI unit targets require an exclusively test-only hex-ui boundary")
+            for target, filters in sorted(standalone_ui.items()):
+                feature = ci_plan.UI_UNIT_FEATURES.get(target)
+                feature_args = ("--features", feature) if feature else ()
+                steps.append(Step(f"ui-unit-{target}",
+                                  ("cargo", "test", "-p", "hex-ui", *feature_args,
+                                   "--test", target, "--locked", *(("--", *filters) if filters else ())),
+                                  requires_tests=True))
+        elif "hex-ui" in single and "hex-ui" not in module_filters:
+            steps.append(Step("ui-default-standalone-tests",
+                              ("cargo", "test", "-p", "hex-ui",
+                               *(arg for target in ci_plan.UI_DEFAULT_STANDALONE_TESTS for arg in ("--test", target)),
+                               "--locked"), requires_tests=True))
+        if "hex-ui" in single and not standalone_ui:
             unit_prefixes = {prefix for modules in ci_plan.UI_DEFAULT_LIB_UNIT_MODULES.values()
                              for prefix in modules}
             if "hex-ui" in module_filters:
@@ -434,7 +434,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                                   ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--",
                                    *sorted(unit_prefixes)), requires_tests=True))
         if single:
-            for package in (p for p in tested if p in single):
+            for package in (p for p in tested if p in single and not (standalone_ui and p == "hex-ui")):
                 # Module-scoped doctests run only when the changed files carry doc examples.
                 if package in module_filters and package not in doc_examples:
                     continue
@@ -480,6 +480,8 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         scope = tested if runs_rust_tests(step.argv) else affected
         selected = [p for p in owners if p in scope]
         if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
+            continue
+        if standalone_ui and selected == ["hex-ui"] and runs_rust_tests(step.argv):
             continue
         # Scoped UI changes select mapped unit and standalone targets below.
         # Whole-package runs retain the explicit feature targets and doctests.

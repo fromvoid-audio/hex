@@ -448,6 +448,10 @@ UI_UNIT_HARNESS_MODULES = {
     },
 }
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
+UI_DEFAULT_STANDALONE_TESTS = (
+    "unit_editor_state", "track_group_focus", "browser_disclosure_assets", "browser_place_assets",
+    "cursor_assets", "midi_audition_icon", "transport_icon_assets",
+)
 # These standalone targets run separately from a module-scoped library run.
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
@@ -1116,6 +1120,40 @@ def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
     return owner if gated(file, frozenset()) else None
 
 
+def ui_standalone_unit_targets(root: Path, paths: list[str], package: dict) -> dict[str, list[str]]:
+    """Route only reviewed standalone test inputs without expanding source-owner cohorts."""
+    directory = Path(package["manifest"]).parent
+    roots = {f"tests/{target}.rs": target for target in (*UI_DEFAULT_STANDALONE_TESTS, *UI_UNIT_FEATURES)}
+    selected: dict[str, set[str]] = {}
+    whole_targets = set()
+    for path in paths:
+        relative_path = Path(path)
+        file = root / relative_path
+        if not relative_path.is_relative_to(directory) or file.is_symlink() or not file.is_file():
+            return {}
+        relative = relative_path.relative_to(directory).as_posix()
+        target = roots.get(relative) or UI_UNIT_HARNESS_FILES.get(relative)
+        if target is not None:
+            whole_targets.add(target)
+            continue
+        filters = UI_UNIT_HARNESS_MODULES.get(relative)
+        if filters is None:
+            return {}
+        for name in filters:
+            selected.setdefault(UI_UNIT_TARGETS[name], set()).add(name)
+    for target in whole_targets:
+        selected[target] = set()
+    for target in selected:
+        matches = [entry for entry in package["targets"] if entry.get("name") == target and entry["kind"] == ["test"]]
+        feature = UI_UNIT_FEATURES.get(target)
+        expected_features = {feature} if feature else set()
+        if len(matches) != 1 or set(matches[0].get("required-features", ())) != expected_features:
+            return {}
+        if expected_features - package["features"].keys():
+            return {}
+    return {target: sorted(filters) for target, filters in sorted(selected.items())}
+
+
 def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
     """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
 
@@ -1174,12 +1212,18 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     tested = owner_test_packages(paths, inventory, affected)
     # Only owners of changed files get module filters; a runtime consumer tested
     # on another owner's behalf has no changed file and keeps its whole suite.
-    module_filters = {} if narrow else module_test_filters(root, paths, inventory, tested)
+    single_run = {} if narrow else single_run_packages(root, tested, inventory)
+    standalone = {}
+    if tested == ["hex-ui"] and single_run.get("hex-ui") == "ui-test-support":
+        package = next(p for p in inventory if p["name"] == "hex-ui")
+        standalone = ui_standalone_unit_targets(root, executable, package)
+    module_filters = {} if narrow or standalone else module_test_filters(root, paths, inventory, tested)
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
             "module_filters": module_filters,
+            **({"ui_standalone_unit_targets": standalone} if standalone else {}),
             "doc_example_owners": doc_example_owners(root, paths, inventory),
             "test_packages": [] if narrow else tested,
-            "single_run": {} if narrow else single_run_packages(root, tested, inventory),
+            "single_run": single_run,
             "lint_packages": affected,
             "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
             "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
