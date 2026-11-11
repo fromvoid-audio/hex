@@ -4582,6 +4582,31 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn(witness, steps["ui-feature-tests"].argv)
         self.assertNotIn("editor::device_panel::", steps["ui-feature-tests"].argv)
 
+    def test_rattle_diamond_unit_keeps_rendered_panel_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/device_panel/rattle_panel.rs"
+        unit = "editor::device_panel::rattle_panel::tests::"
+        rendered = (
+            "editor::device_panel::tests::rattle_ui_tests::rattle_display_reads_authored_automation_and_manual_draft_precedence",
+            "editor::device_panel::tests::rattle_ui_tests::rattle_track_return_panel_fits_and_drive_draft_commits_one_undo",
+        )
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertIn("editor::device_panel::rattle_panel::", boundary["module_filters"][owner])
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        feature = steps["ui-feature-tests"]
+        for name in rendered:
+            self.assertIn(name, feature.argv)
+
     def test_vst3_filesystem_cache_selects_support_without_default_or_projection_units(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

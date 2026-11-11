@@ -974,6 +974,14 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
     h.render_plugin_block();
     wait(|| h.plugin_completed.load(Acquire) == 1);
     for bypassed in [true, false] {
+        let cut = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire);
         let changed = same_source_edit(
             &mut h,
             Request::Edit(Command::SetDeviceBypass { device, bypassed }),
@@ -1000,12 +1008,18 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
                 let absolute = start + block * 256 + offset as u64;
                 let expected = if absolute < 512 {
                     0.0
-                } else if bypassed {
-                    0.25
                 } else {
-                    0.25 * (0.5 + ((absolute - 512) / 256) as f32 * 0.125)
+                    // The published bypass fades between the same wet and dry
+                    // histories over five milliseconds without moving the clock.
+                    let progress = ((absolute - cut + 1) as f32 / 240.0).min(1.0);
+                    let wet_gain = if bypassed { 1.0 - progress } else { progress };
+                    let wet = 0.25 * (0.5 + ((absolute - 512) / 256) as f32 * 0.125);
+                    0.25 + (wet - 0.25) * wet_gain
                 };
-                assert_eq!(frame, [expected; 2], "bypass={bypassed}, frame={absolute}");
+                assert!(
+                    frame.iter().all(|sample| (sample - expected).abs() < 1e-6),
+                    "bypass={bypassed}, frame={absolute}, actual={frame:?}, expected={expected}"
+                );
             }
         }
         assert_eq!(h.plugin_records.load(Acquire), 1);
