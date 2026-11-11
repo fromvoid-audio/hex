@@ -55,7 +55,7 @@ pub(super) fn prepare(
     let separation = u64::from((rate / 1000).max(1));
     let mut starts = Vec::new();
     starts
-        .try_reserve_exact(MAX_POINTS)
+        .try_reserve_exact(MAX_DETECTED_TRANSIENTS)
         .map_err(|_| Error::Allocation)?;
     starts.push(0_u64);
     let warmup = request
@@ -80,7 +80,7 @@ pub(super) fn prepare(
         let x = request.input.frame(i128::from(i));
         let energy = x[0] * x[0] + x[1] * x[1];
         if last.is_none_or(|last| i >= last + separation) && energy > 1e-12 && energy > slow * 8.0 {
-            if starts.len() == MAX_POINTS {
+            if starts.len() == MAX_DETECTED_TRANSIENTS {
                 return Err(Error::Invalid("transients exceed bounded source plan"));
             }
             if i != 0 {
