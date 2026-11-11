@@ -4607,6 +4607,34 @@ class ModuleScopeTests(unittest.TestCase):
         for name in rendered:
             self.assertIn(name, feature.argv)
 
+    def test_sampler_cursor_mapping_unit_keeps_exact_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/device_panel/sampler_cursor_tests.rs"
+        unit = "editor::device_panel::sampler_overview::tests::sampler_cursor_original_frame_mapping_bounds_and_time"
+        rendered = (
+            "editor::device_panel::sampler_overview::tests::sampler_cursor_clicks_original_frames_without_project_or_audio_edits",
+            "editor::device_panel::sampler_overview::tests::sampler_cursor_source_replacement_undo_and_stale_click",
+        )
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        self.assertEqual(boundary["module_filters"][owner], ["editor::device_panel::sampler_overview::tests::"])
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        default = steps["ui-default-lib-unit-tests"]
+        self.assertTrue(default.requires_tests)
+        self.assertIn(unit, default.argv)
+        self.assertNotIn("editor::device_panel::sampler_overview::tests::", default.argv)
+        feature = steps["ui-feature-tests"]
+        support_prefix = "editor::device_panel::sampler_overview::tests::"
+        self.assertIn(support_prefix, feature.argv)
+        for name in rendered:
+            self.assertTrue(name.startswith(support_prefix))
+
     def test_vst3_filesystem_cache_selects_support_without_default_or_projection_units(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

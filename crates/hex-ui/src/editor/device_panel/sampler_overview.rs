@@ -368,6 +368,6 @@ fn source_marker(selector: &'static str, fraction: f64, color: theme::PaletteRol
         .debug_selector(move || selector.into())
 }
 
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(test)]
 #[path = "sampler_cursor_tests.rs"]
 mod tests;
