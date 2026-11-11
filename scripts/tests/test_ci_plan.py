@@ -3437,6 +3437,40 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertIn(name, feature)
                 self.assertNotIn("editor::", feature)
 
+    def test_clip_border_corner_unit_keeps_rendered_clip_edges(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        consumers = (
+            "editor::clip_boundary::tests::adjacent_clip_edges_share_one_grid_pixel",
+            "editor::clip_boundary::tests::all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes",
+            "editor::clip_boundary::tests::resolved_clip_canvas_can_paint_a_distinct_edge_in_the_parent_scene",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/clip_boundary.rs",
+            "crates/hex-ui/src/editor/clip_border_ui_test.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                self.assertIn("editor::clip_boundary::tests::corner_geometry_is_bounded_and_resolves_again_after_resize", unit.argv)
+                self.assertTrue(unit.requires_tests)
+                feature = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature), (consumer, feature))
+                self.assertNotIn("editor::", feature)
+
+        boundary["module_filters"] = {owner: [consumers[0]]}
+        rendered_only = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                         "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in rendered_only))
+
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
