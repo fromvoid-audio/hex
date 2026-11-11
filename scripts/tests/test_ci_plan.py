@@ -3786,6 +3786,41 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(any(expected[0] in step.argv for step in steps if "unit_editor_logic" in step.argv))
             self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
+    def test_device_panel_header_style_uses_default_lib_and_keeps_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::header_style_unit_tests::"
+        consumers = (
+            "editor::device_panel::tests::header_style_tests::retained_source_path_indicator_is_rendered_with_the_existing_chain",
+            "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
+            "editor::device_panel::tests::sine_and_effect_place_their_shared_header_to_the_left_of_the_body",
+        )
+        for source in (
+            "crates/hex-ui/src/editor/device_panel.rs",
+            "crates/hex-ui/src/editor/device_panel/tests/header_style_tests.rs",
+            "crates/hex-ui/src/editor/device_panel/return_view.rs",
+        ):
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                self.assertIn(unit, steps["ui-default-lib-unit-tests"].argv)
+                chain = "editor::device_panel::chain_layout_unit_tests::"
+                if source.endswith("/device_panel.rs"):
+                    self.assertIn(chain, steps["ui-default-lib-unit-tests"].argv)
+                if source.endswith("/header_style_tests.rs"):
+                    self.assertNotIn(chain, steps["ui-default-lib-unit-tests"].argv)
+                self.assertNotIn("--features", steps["ui-default-lib-unit-tests"].argv)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    (consumer, feature_args))
+
     def test_output_meter_logic_keeps_rendered_and_editor_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
