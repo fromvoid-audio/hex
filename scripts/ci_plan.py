@@ -219,6 +219,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
+    "src/editor/missing_media.rs": ("editor::missing_media::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
@@ -1018,6 +1019,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::device_automation::host_tests::vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob",
                     "editor::device_automation::host_tests::vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack",
                 ))
+            if {
+                "crates/hex-ui/src/editor/missing_media.rs",
+                "crates/hex-ui/src/editor/missing_media/tests.rs",
+                "crates/hex-ui/src/editor/missing_media/ui_tests.rs",
+            }.intersection(executable):
+                names.update(("editor::missing_media::tests::", "editor::missing_media::ui_tests::"))
             if {
                 "crates/hex-ui/src/editor/waveform_geometry.rs",
                 "crates/hex-ui/src/editor/waveform_geometry/grid.rs",
