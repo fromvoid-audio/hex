@@ -2060,7 +2060,7 @@ impl EditorView {
     }
 }
 
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::launch_action;
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
