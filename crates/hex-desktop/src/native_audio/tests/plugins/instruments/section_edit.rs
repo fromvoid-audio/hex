@@ -145,19 +145,14 @@ fn duplicate_section_recovers_after_a_refused_live_midi_edit() {
             .iter()
             .all(|clip| clip.notes()[0].velocity() == 80)
     );
-    let (applied, _) = h.applied(applied);
-    assert!(applied > rejected);
-    assert!(
-        h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .playing
-            .load(Acquire)
-    );
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let installed = status.recording_source().unwrap();
+    assert_eq!(installed.context.editor_revision, duplicated.state.revision);
+    assert!(installed.audio_revision > refused_duplicate.unwrap().0);
+    assert!(status.playing.load(Acquire));
     let undone = run_callback(&mut h, Request::Undo);
     assert!(undone.error.is_none(), "{:?}", undone.error);
+    h.applied(installed.audio_revision);
     let mut restored = undone.state.project.snapshot();
     let before = edited.state.project.snapshot();
     restored.next_id = before.next_id;
