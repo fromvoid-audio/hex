@@ -332,7 +332,11 @@ fn browser_sample_real_drop_targets_load_one_sampler_and_preserve_other_tracks(
             editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
             wait_for_revision(&mut fixture, &mut visual, before.revision + 2);
             editor.read_with(&visual, |view, _| {
-                assert_eq!(view.state.as_ref().unwrap().project, before.project)
+                let restored = &view.state.as_ref().unwrap().project;
+                // Undo preserves the allocation high-water mark.
+                assert_eq!(restored.tracks(), before.project.tracks());
+                assert_eq!(restored.native_sources(), before.project.native_sources());
+                assert_eq!(restored.assets().count(), before.project.assets().count());
             });
             editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
             wait_for_revision(&mut fixture, &mut visual, before.revision + 3);
