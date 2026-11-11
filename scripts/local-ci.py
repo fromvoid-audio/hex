@@ -423,7 +423,8 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                 requires_tests=True,
             ))
         if "hex-ui" in single:
-            unit_prefixes = set(ci_plan.UI_DEFAULT_LIB_UNIT_MODULES.values())
+            unit_prefixes = {prefix for modules in ci_plan.UI_DEFAULT_LIB_UNIT_MODULES.values()
+                             for prefix in modules}
             if "hex-ui" in module_filters:
                 unit_prefixes = {max(prefix, name, key=len)
                                  for prefix in unit_prefixes for name in module_filters["hex-ui"]

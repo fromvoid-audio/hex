@@ -1395,7 +1395,9 @@ class SingleRunFeatureTests(unittest.TestCase):
                 default_id = "module-tests-hex-ui" if filters else "affected-tests"
                 if single:
                     self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
-                    expected_units = [unit] if filters else sorted(plan.UI_DEFAULT_LIB_UNIT_MODULES.values())
+                    all_units = {prefix for modules in plan.UI_DEFAULT_LIB_UNIT_MODULES.values()
+                                 for prefix in modules}
+                    expected_units = [unit] if filters else sorted(all_units)
                     self.assertEqual(steps["ui-default-lib-unit-tests"].argv,
                                      ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", *expected_units))
                     self.assertNotIn(default_id, steps)
@@ -1413,6 +1415,58 @@ class SingleRunFeatureTests(unittest.TestCase):
         steps = ci.planned_steps({"scope": "rust", "affected_packages": ["hex-ui"], "boundary": unrelated,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in steps))
+
+    def test_default_lib_keeps_multiple_unit_modules_from_one_source(self):
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        parent = "editor::shared::"
+        first, second = parent + "first::", parent + "second::"
+        relative_source = "src/editor/shared.rs"
+        shared = "crates/hex-ui/" + relative_source
+        first_source = "crates/hex-ui/src/editor/shared/first.rs"
+        modules = {relative_source: (first, second), "src/editor/shared/first.rs": (first,)}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(plan.UI_DEFAULT_LIB_UNIT_MODULES, modules, clear=True), \
+                patch.dict(ci.ci_plan.UI_DEFAULT_LIB_UNIT_MODULES, modules, clear=True):
+            root = Path(directory)
+            source = root / "crates/hex-ui/src"
+            source.joinpath("editor/shared").mkdir(parents=True)
+            source.joinpath("lib.rs").write_text("mod editor;\n")
+            source.joinpath("editor.rs").write_text("mod shared;\n")
+            (root / shared).write_text(
+                plan.UI_DEFAULT_LIB_UNIT_CFG + "\nmod first;\n"
+                + plan.UI_DEFAULT_LIB_UNIT_CFG + "\nmod second;\n"
+                '#[cfg(all(test, feature = "ui-test-support"))]\nmod rendered;\n')
+            for child in ("first", "second", "rendered"):
+                source.joinpath(f"editor/shared/{child}.rs").write_text("#[test]\nfn covers_case() {}\n")
+
+            for path, scope, expected in (
+                (shared, [parent], (first, second)),
+                (first_source, [first], (first,)),
+                (shared, [], (first, second)),
+            ):
+                with self.subTest(path=path, scope=scope):
+                    boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                    self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                    if scope:
+                        self.assertEqual(boundary["module_filters"], {owner: scope})
+                    else:
+                        boundary["module_filters"] = {}
+                    steps = {step.step_id: step for step in ci.planned_steps({
+                        "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                        "cargo_inventory": inventory, "paths": [path]})}
+                    unit = steps["ui-default-lib-unit-tests"]
+                    self.assertTrue(unit.requires_tests)
+                    self.assertEqual(unit.argv, ("cargo", "test", "-p", owner, "--lib", "--locked",
+                                                 "--", *expected))
+                    self.assertEqual(steps["ui-feature-tests"].argv,
+                                     ("cargo", "test", "-p", owner, "--lib", "--features",
+                                      "ui-test-support", "--locked", *(("--", *scope) if scope else ())))
+
+            source.joinpath("unreviewed.rs").write_text(plan.UI_DEFAULT_LIB_UNIT_CFG + "\nmod tests {}\n")
+            self.assertEqual(plan.single_run_packages(root, [owner], inventory), {})
 
     def test_live_hex_ui_plans_keep_the_test_tier_split(self):
         root = SCRIPTS.parent
