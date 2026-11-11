@@ -5669,7 +5669,10 @@ class ModuleScopeTests(unittest.TestCase):
         unit = "editor::fade_handle_geometry::"
         integration = "editor::fade_handles::"
         for path in ("fade_handle_geometry.rs", "fade_handles.rs", "fade_handles_ui_test.rs"):
-            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            source = "crates/hex-ui/src/editor/" + path
+            boundary = plan.boundary_selection(root, [source], inventory, [owner])
+            self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+            names = boundary["module_filters"]
             expected = [unit, integration]
             if path == "fade_handles_ui_test.rs":
                 expected += [
@@ -5683,12 +5686,22 @@ class ModuleScopeTests(unittest.TestCase):
                     "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
                 ]
             self.assertEqual(names, {owner: sorted(expected)})
-            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
-                        "single_run": {owner: "ui-test-support"}, "module_filters": names}
-            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
-                                      "cargo_inventory": inventory, "paths": []})
-            self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
-            self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+            steps = {step.step_id: step for step in ci.planned_steps({
+                "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                "cargo_inventory": inventory, "paths": [source]})}
+            standalone = steps["ui-unit-unit_editor_logic"]
+            self.assertIn(unit, standalone.argv)
+            self.assertTrue(standalone.requires_tests)
+            default = steps["ui-default-lib-unit-tests"]
+            self.assertIn("editor::fade_handles::tests::", default.argv)
+            self.assertTrue(default.requires_tests)
+            feature = steps["ui-feature-tests"].argv
+            for consumer in (
+                "editor::fade_handles::ui_tests::authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_handle",
+                "editor::fade_handles::ui_tests::narrow_clip_hides_hover_and_f_targets_until_zoomed_in",
+                "editor::fade_handles::ui_tests::released_two_axis_fade_stays_painted_until_real_worker_ack",
+            ):
+                self.assertTrue(any(consumer.startswith(prefix) for prefix in feature), consumer)
 
     def test_console_meter_selection_keeps_unit_and_integration_coverage(self):
         root = SCRIPTS.parent
