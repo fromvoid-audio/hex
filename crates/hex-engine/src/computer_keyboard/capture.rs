@@ -169,20 +169,17 @@ impl ComputerKeyboardRuntime {
                 .iter()
                 .flatten()
                 .any(|after| after.id == voice.id && after.gate.is_some())
+                && let Some(source) = capture_source(binding, voice)
+                && capture
+                    .push(AcceptedMidiNote {
+                        source,
+                        occurrence_id: voice.id,
+                        performance_frame: frame,
+                        event: MidiCaptureEvent::Off,
+                    })
+                    .is_err()
             {
-                if let Some(source) = capture_source(binding, voice) {
-                    if capture
-                        .push(AcceptedMidiNote {
-                            source,
-                            occurrence_id: voice.id,
-                            performance_frame: frame,
-                            event: MidiCaptureEvent::Off,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
+                return;
             }
         }
         for voice in self
@@ -200,6 +197,7 @@ impl ComputerKeyboardRuntime {
                         ((voice.token & 255) - 1) as u8,
                         ((voice.token >> 8) & 255) as u8,
                     ),
+                    VoiceSource::Audition => continue,
                     VoiceSource::Hardware { pitch, .. } => (pitch, (voice.sampler / 128 + 1) as u8),
                 };
                 if capture
@@ -224,6 +222,7 @@ fn capture_source(binding: MidiCaptureBinding, voice: &Voice) -> Option<MidiCapt
             key: voice.key as u8,
             press_token: voice.token >> 16,
         }),
+        VoiceSource::Audition => None,
         VoiceSource::Hardware { channel, .. } => Some(MidiCaptureSource::Hardware {
             activation: binding.hardware?,
             channel,

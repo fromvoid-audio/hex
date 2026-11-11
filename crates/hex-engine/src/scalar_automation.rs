@@ -16,6 +16,16 @@ pub struct ScalarAutomationBinding {
     pub source: ScalarSourceMetadata,
 }
 
+/// Limit the combined page and stage work of one recording playback window.
+pub const MAX_SCALAR_AUTOMATION_BINDINGS: usize = 16;
+
+#[derive(Debug)]
+pub(crate) struct PreparedBinding {
+    pub(crate) request: ScalarAutomationBinding,
+    pub(crate) input: crate::NativeParameterInputTarget,
+    pub(crate) arrival_frames: u32,
+}
+
 pub(crate) fn validate_source(
     project: &hex_project::Project,
     binding: &ScalarAutomationBinding,
@@ -96,13 +106,10 @@ pub(crate) fn visit_origin_runs(
 
 /// Fixed preparation-allocated scratch. Filling completes before any PCM/DSP
 /// access for this chunk; failed materialization never becomes a base fallback.
-pub(crate) struct State {
-    target: [DeviceAutomationTarget; 1],
+struct State {
     raw: Vec<Option<hex_project::AutomationValue>>,
     values: Vec<Option<NormalizedAutomationValue>>,
     frames: usize,
-    offset: usize,
-    identity: hex_lattice::ProcessorInstanceIdentity,
     arrival_frames: u32,
 }
 impl State {
@@ -115,10 +122,7 @@ impl State {
                 * (std::mem::size_of::<Option<hex_project::AutomationValue>>()
                     + std::mem::size_of::<Option<NormalizedAutomationValue>>())
     }
-    pub(crate) fn new(
-        input: crate::NativeParameterInputTarget,
-        arrival_frames: u32,
-    ) -> Result<Self, Invalid> {
+    fn new(arrival_frames: u32) -> Result<Self, Invalid> {
         fn scratch<T: Copy>() -> Result<Vec<Option<T>>, Invalid> {
             let mut values = Vec::new();
             values
@@ -131,41 +135,20 @@ impl State {
             Ok(values)
         }
         Ok(Self {
-            target: [input.target()],
             raw: scratch()?,
             values: scratch()?,
             frames: 0,
-            offset: 0,
-            identity: input.identity(),
             arrival_frames,
         })
     }
     pub(crate) fn arrival_frames(&self) -> u32 {
         self.arrival_frames
     }
-    pub(crate) fn fill<P: MediaPages + ?Sized>(
-        &mut self,
-        pages: &mut P,
-        source: &ScalarSourceMetadata,
-        start: u64,
-        frames: usize,
-        offset: usize,
-    ) -> Result<(), Invalid> {
-        self.frames = 0;
-        self.values.fill(None);
-        let raw = self
-            .raw
-            .get_mut(..frames)
-            .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
-        crate::read_scalar_values(pages, source, start, raw)?;
-        self.finish_fill(frames, offset)
-    }
     pub(crate) fn fill_with_origins<P: MediaPages + ?Sized>(
         &mut self,
         pages: &mut P,
         source: &ScalarSourceMetadata,
         frames: usize,
-        offset: usize,
         origin: impl FnMut(usize) -> Result<Option<u64>, Invalid>,
     ) -> Result<(), Invalid> {
         self.frames = 0;
@@ -184,9 +167,9 @@ impl State {
                 .ok_or(Invalid("scalar origin run is outside scratch"))?;
             crate::read_scalar_values(pages, source, frame, destination)
         })?;
-        self.finish_fill(frames, offset)
+        self.finish_fill(frames)
     }
-    fn finish_fill(&mut self, frames: usize, offset: usize) -> Result<(), Invalid> {
+    fn finish_fill(&mut self, frames: usize) -> Result<(), Invalid> {
         let raw = self
             .raw
             .get(..frames)
@@ -201,33 +184,132 @@ impl State {
             };
         }
         self.frames = frames;
+        Ok(())
+    }
+    fn value_at(&self, offset: usize) -> Option<NormalizedAutomationValue> {
+        self.values
+            .get(offset)
+            .copied()
+            .flatten()
+            .filter(|_| offset < self.frames)
+    }
+}
+
+/// One fully materialized window per exact processor. A group borrows its
+/// preallocated scalar lanes through the existing shared parameter contract.
+pub(crate) struct StateSet {
+    groups: Vec<Group>,
+    offset: usize,
+}
+
+struct Group {
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    targets: Vec<DeviceAutomationTarget>,
+    states: Vec<State>,
+}
+
+impl StateSet {
+    pub(crate) fn requested_data_bytes(bindings: &[PreparedBinding]) -> Option<usize> {
+        let groups = groups_by_identity(bindings).count();
+        std::mem::size_of::<Self>()
+            .checked_add(groups.checked_mul(std::mem::size_of::<Group>())?)?
+            .checked_add(bindings.len().checked_mul(
+                State::requested_data_bytes() + std::mem::size_of::<DeviceAutomationTarget>(),
+            )?)
+    }
+
+    pub(crate) fn new(bindings: &[PreparedBinding]) -> Result<Self, Invalid> {
+        let mut groups = fixed_vec(groups_by_identity(bindings).count())?;
+        for slice in groups_by_identity(bindings) {
+            let mut targets = fixed_vec(slice.len())?;
+            let mut states = fixed_vec(slice.len())?;
+            for binding in slice {
+                targets.push(binding.input.target());
+                states.push(State::new(binding.arrival_frames)?);
+            }
+            groups.push(Group {
+                identity: slice[0].input.identity(),
+                targets,
+                states,
+            });
+        }
+        Ok(Self { groups, offset: 0 })
+    }
+
+    pub(crate) fn fill<P: MediaPages + ?Sized>(
+        &mut self,
+        bindings: &[PreparedBinding],
+        pages: &mut P,
+        frames: usize,
+        offset: usize,
+        mut origin: impl FnMut(u32, usize) -> Result<Option<u64>, Invalid>,
+    ) -> Result<(), Invalid> {
+        for (state, binding) in self
+            .groups
+            .iter_mut()
+            .flat_map(|group| &mut group.states)
+            .zip(bindings)
+        {
+            let delay = state.arrival_frames();
+            state.fill_with_origins(pages, &binding.request.source, frames, |index| {
+                origin(delay, index)
+            })?;
+        }
         self.offset = offset;
         Ok(())
     }
-    pub(crate) fn window(&self) -> NativeExternalAutomation<'_> {
-        NativeExternalAutomation {
-            identity: self.identity,
+}
+
+fn groups_by_identity(
+    bindings: &[PreparedBinding],
+) -> impl Iterator<Item = &[PreparedBinding]> + Clone {
+    bindings.chunk_by(|a, b| a.input.identity() == b.input.identity())
+}
+
+fn fixed_vec<T>(capacity: usize) -> Result<Vec<T>, Invalid> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| Invalid("scalar group allocation failed"))?;
+    if values.capacity() != capacity {
+        return Err(Invalid("scalar group exceeds its data reservation"));
+    }
+    Ok(values)
+}
+
+impl hex_lattice::NativeExternalAutomationSet for StateSet {
+    fn window(
+        &self,
+        identity: hex_lattice::ProcessorInstanceIdentity,
+    ) -> Option<NativeExternalAutomation<'_>> {
+        let group = self
+            .groups
+            .iter()
+            .find(|group| group.identity == identity)?;
+        Some(NativeExternalAutomation {
+            identity,
             frame_offset: self.offset,
-            values: self,
-        }
+            values: group,
+        })
     }
 }
-impl ExternalParameterAutomation for State {
+
+impl ExternalParameterAutomation for Group {
     fn frames(&self) -> usize {
-        self.frames
+        self.states.first().map_or(0, |state| state.frames)
     }
+
     fn targets(&self) -> &[DeviceAutomationTarget] {
-        &self.target
+        &self.targets
     }
+
     fn value_at(
         &self,
         target: DeviceAutomationTarget,
         offset: usize,
     ) -> Option<NormalizedAutomationValue> {
-        if self.target[0] != target || offset >= self.frames {
-            return None;
-        }
-        self.values.get(offset).copied().flatten()
+        let index = self.targets.binary_search(&target).ok()?;
+        self.states[index].value_at(offset)
     }
 }
 

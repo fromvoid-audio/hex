@@ -1,6 +1,43 @@
 //! Canonical controller assignments and global instrument settings.
 use super::*;
 
+/// Keep the canonical voice selector mounted once, independently of the
+/// currently selected envelope/detail page. Loaded counts are not rewritten.
+pub(super) fn voices(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    device_view: &NativeDeviceView,
+) -> Stateful<Div> {
+    let control = compact_control(
+        view,
+        cx,
+        device,
+        DeviceControlIdentity {
+            class: NativeDeviceClass::Instrument,
+            type_id: device_view.type_id,
+        },
+        &device_view.parameters,
+        id(601),
+        ControlPresentation::CompactConfirmSelector,
+        Some("voices"),
+    )
+    .w(px(52.0));
+    div()
+        .id(ElementId::Name(
+            format!("operator-voices-{}", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-voices-{}", device.value()))
+        .w_full()
+        .h(px(18.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .child(detail_caption("voices").w(px(44.0)))
+        .child(control)
+}
+
 pub(super) fn controls(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -15,7 +52,6 @@ pub(super) fn controls(
         .flex()
         .gap(px(2.0));
     for (parameter, label, presentation) in [
-        (601, "voices", ControlPresentation::CompactSelector),
         (602, "rtg", ControlPresentation::CompactButton),
         (603, "interpol.", ControlPresentation::CompactButton),
         (604, "antialias", ControlPresentation::CompactButton),

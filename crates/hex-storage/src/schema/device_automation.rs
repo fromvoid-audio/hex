@@ -34,7 +34,7 @@ struct Lane {
 }
 #[derive(Deserialize)]
 struct Lanes(#[serde(deserialize_with = "lanes")] Vec<Lane>);
-fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
+pub(crate) fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -68,9 +68,20 @@ pub(super) fn points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Point
     bounded(d, hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
 }
 fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> {
-    struct Inventory;
-    impl<'de> serde::de::Visitor<'de> for Inventory {
-        type Value = Vec<Lane>;
+    bounded_lanes(d, |lane: &Lane| lane.points.len())
+}
+
+pub(super) fn bounded_lanes<'de, D, T>(
+    d: D,
+    point_count: impl Fn(&T) -> usize,
+) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Inventory<T, F>(F, std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>, F: Fn(&T) -> usize> serde::de::Visitor<'de> for Inventory<T, F> {
+        type Value = Vec<T>;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded device automation points")
         }
@@ -80,9 +91,9 @@ fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> 
         ) -> Result<Self::Value, A::Error> {
             let mut rows = Vec::new();
             let mut count = 0usize;
-            while let Some(row) = seq.next_element::<Lane>()? {
+            while let Some(row) = seq.next_element::<T>()? {
                 count = count
-                    .checked_add(row.points.len())
+                    .checked_add(self.0(&row))
                     .ok_or_else(|| serde::de::Error::custom("automation point count overflow"))?;
                 if rows.len() == hex_project::MAX_DEVICE_AUTOMATION_POINTS
                     || count > hex_project::MAX_DEVICE_AUTOMATION_POINTS
@@ -97,7 +108,7 @@ fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> 
             Ok(rows)
         }
     }
-    d.deserialize_seq(Inventory)
+    d.deserialize_seq(Inventory(point_count, std::marker::PhantomData))
 }
 /// Visit only canonical envelope owners. Track instrument projections remain
 /// empty even when many bindings reference the same retained source envelope.
@@ -161,8 +172,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid device automation document"))?;
@@ -175,7 +188,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("device automation inventory missing"))?,
     )?;
     object.insert("version".into(), 49.into());
-    let core = super::session_audio_loops::decode49(&serde_json::to_vec(&value)?)?;
+    let core = super::session_audio_loops::decode49_value(value)?;
     let mut snapshot = core.snapshot();
     let known: std::collections::BTreeSet<_> = core
         .automation_devices()
@@ -219,6 +232,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let lane = DeviceAutomation {
+            touch: Vec::new(),
+            vst3_class: None,
             read_selection: hex_project::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter),
             points,

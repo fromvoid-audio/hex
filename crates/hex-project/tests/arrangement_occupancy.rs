@@ -212,33 +212,81 @@ fn current_format_audio_and_mixed_overlap_refuses_instead_of_normalizing() {
 }
 
 #[test]
-fn colliding_tempo_change_refuses_before_preparation_and_preserves_redo() {
+fn colliding_tempo_point_crops_the_audio_tail_like_a_global_tempo_edit() {
     let mut f = fixture();
     f.editor.execute(midi(f.track, 2_000, 400)).unwrap();
-    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
-    assert!(f.editor.undo());
     let before = f.editor.project().clone();
     let mut prepared = false;
-    let result = f.editor.execute_prepared::<_, Invalid>(
-        Command::SetTempoPoint {
-            beat: BeatTime::ZERO,
-            tempo: Tempo::new(480_000_000).unwrap(),
-        },
-        |_| {
-            prepared = true;
-            Ok(())
-        },
+    // Four times faster: the MIDI clip's beat now lands at frame 500, inside
+    // the audio clip's old 1,000-frame span. Onsets stay on their beats and
+    // only the colliding audio tail is cropped, as for `SetProjectTempo`.
+    f.editor
+        .execute_prepared::<_, Invalid>(
+            Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(480_000_000).unwrap(),
+            },
+            |_| {
+                prepared = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(prepared);
+    let changed = f.editor.project();
+    let audio = changed.clip(f.original).unwrap();
+    assert_eq!((audio.start(), audio.duration()), (0, 500));
+    assert_eq!(audio.asset(), f.asset);
+    assert_eq!(
+        changed
+            .tempo_map()
+            .beat_to_frame(changed.tracks()[0].midi_clips()[0].start())
+            .unwrap(),
+        500
     );
-    assert!(
-        result
-            .as_ref()
-            .err()
-            .is_some_and(|e| e.0.contains("overlap")),
-        "colliding tempo accepted: {result:?}"
-    );
-    assert!(!prepared);
+    assert!(f.editor.undo());
     assert_eq!(f.editor.project(), &before);
-    assert!(f.editor.can_redo());
+}
+
+#[test]
+fn silent_left_extension_uses_arrangement_overwrite_only_after_preparation() {
+    let mut f = fixture();
+    f.editor
+        .execute(Command::MoveClip {
+            clip: f.original,
+            track: f.track,
+            start: 1500,
+        })
+        .unwrap();
+    let Created::Clip(peer) = f.editor.execute(audio(f.track, f.asset, 700, 500)).unwrap() else {
+        panic!("peer");
+    };
+    let before = f.editor.project().snapshot();
+    let trim = Command::TrimClipEdge {
+        clip: f.original,
+        edge: hex_project::TrimEdge::Left,
+        frame: 1000,
+    };
+    let refused = f.editor.execute_prepared::<(), Invalid>(trim.clone(), |_| {
+        Err(Invalid("fixture refused preparation"))
+    });
+    assert_eq!(refused.unwrap_err(), Invalid("fixture refused preparation"));
+    assert_eq!(f.editor.project().snapshot(), before);
+    f.editor.execute(trim).unwrap();
+    let edited = f.editor.project().clip(f.original).unwrap();
+    assert_eq!((edited.start(), edited.duration()), (1000, 1500));
+    assert_eq!(edited.audio_events().events[0].start, 500);
+    let retained = f.editor.project().clip(peer).unwrap();
+    assert_eq!(
+        (
+            retained.start(),
+            retained.duration(),
+            retained.source_length()
+        ),
+        (700, 300, 300)
+    );
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), before);
 }
 
 #[test]

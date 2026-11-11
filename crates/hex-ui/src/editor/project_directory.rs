@@ -130,7 +130,7 @@ impl EditorView {
         self.error = Some(
             format!(
                 "could not {operation} project folder · {}",
-                error.to_string().to_lowercase()
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
             )
             .into(),
         );

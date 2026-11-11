@@ -17,6 +17,13 @@ pub(crate) fn source(project: &mut Project, clip: ClipId) -> Result<AliasSourceI
             .edit
             .clone()
             .unwrap_or_else(|| Arc::new(AudioClipEdit::capture(&audio)));
+        if matches!(edit.domain.clock, crate::AudioDomainClock::Frames(length)
+            if length > crate::MAX_AUDIO_DOMAIN_FRAMES)
+        {
+            return Err(Invalid(
+                "linked audio exceeds the supported frame event extent",
+            ));
+        }
         let content = Content::Audio {
             asset: audio.asset,
             content: Arc::clone(&edit.domain.content),

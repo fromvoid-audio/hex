@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 from urllib.parse import unquote
 
@@ -15,17 +16,39 @@ _PYTHON_SPEC = importlib.util.spec_from_file_location(
 if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
     raise RuntimeError("Python self-test impact policy unavailable")
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
-_PYTHON_SPEC.loader.exec_module(python_tests)
+# Use the exact source rather than a timestamp-valid stale bytecode cache.
+_PYTHON_SOURCE_PATH = Path(_PYTHON_SPEC.origin)
+_PYTHON_SOURCE_DIR = os.open(_PYTHON_SOURCE_PATH.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    _PYTHON_SOURCE_FD = os.open(_PYTHON_SOURCE_PATH.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                dir_fd=_PYTHON_SOURCE_DIR)
+    try:
+        if not stat.S_ISREG(os.fstat(_PYTHON_SOURCE_FD).st_mode):
+            raise RuntimeError("Python test policy source is not a regular file")
+        with os.fdopen(_PYTHON_SOURCE_FD, "rb", closefd=False) as _python_source:
+            _PYTHON_SOURCE_BYTES = _python_source.read()
+    finally:
+        os.close(_PYTHON_SOURCE_FD)
+finally:
+    os.close(_PYTHON_SOURCE_DIR)
+_PYTHON_SOURCE_SHA256 = hashlib.sha256(_PYTHON_SOURCE_BYTES).hexdigest()
+exec(compile(_PYTHON_SOURCE_BYTES, _PYTHON_SPEC.origin, "exec", dont_inherit=True), python_tests.__dict__)
 
-POLICY_VERSION = 3
+POLICY_VERSION = 54
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
 RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
+# Both consumers compile this exact storage source through theme.rs by path.
+PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sandbox"},
+                          "crates/hex-ui/src/theme.rs": {"hex-sandbox"},
+                          "crates/hex-ui/src/theme/device.rs": {"hex-sandbox"}}
+RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
     "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py", "scripts/ci_target_storage.py",
+    "scripts/test_shards.py", "scripts/python_shards.py",
 }
 
 
@@ -127,7 +150,13 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
         else:
             scopes.add("full")
             reasons.append("high-risk or unknown input: " + path)
-    affected = set(changed)
+    path_consumers = set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in paths))
+    missing = path_consumers - {p["name"] for p in inventory}
+    if missing:
+        raise ValueError("reviewed path consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
+    if path_consumers:
+        reasons.append("path-included source: include reviewed theme consumers")
+    affected = set(changed) | path_consumers
     while True:
         next_affected = affected | {p["name"] for p in inventory
                                    if any(d["name"] in affected for d in p["dependencies"])}
@@ -139,7 +168,7 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     if scopes == {"ui"} and affected - UI_PACKAGES - {"hex-desktop"}:
         scopes.add("rust")
         reasons.append("UI has additional consumers: include their package configurations")
-    if scopes == {"ui"} and any(set(p["features"]) - ({"ui-test-support"} if p["name"] == "hex-ui" else set())
+    if scopes == {"ui"} and any(set(p["features"]) - ({"ui-test-support", "ui-unit-tier"} if p["name"] == "hex-ui" else set())
                                 for p in inventory if p["name"] in UI_PACKAGES):
         scopes.add("rust")
         reasons.append("additional UI features require affected-package configurations")
@@ -149,6 +178,658 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     if not reasons:
         reasons.append("known " + scope + " inputs; prose does not widen executable scope")
     return scope, sorted(affected), reasons
+
+
+# Reviewed test-only features that add APIs/tests without changing default behavior,
+# so a package's default `cargo test` is a subset of its feature run (doctests
+# excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
+# compilation stays proven by affected clippy. Reviewed 31 October 2026:
+# - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
+#   debug selectors only) and hex-session's overview hooks. Complementary
+#   library unit tests are explicitly scheduled by their module prefixes.
+#   Its separately selected ui-unit-tier companion gates source-local tests only.
+# - hex-session source-overview-test-support: an optional observer hook, None by default.
+# - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
+# allocation-probe installs a counting global allocator and has cfg(not) gates;
+# it is deliberately absent and keeps both runs.
+ADDITIVE_TEST_FEATURES = {
+    "hex-ui": "ui-test-support",
+    "hex-session": "source-overview-test-support",
+    "hex-engine": "instrument-test-support",
+    "hex-export": "instrument-test-support",
+}
+
+
+# Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
+UI_DEFAULT_LIB_UNIT_MODULES = {
+    "src/editor/device_gesture.rs": "editor::device_gesture::unit_tests::",
+    "src/editor/device_panel/operator_panel.rs": "editor::device_panel::operator_panel::tests::",
+    "src/editor/device_panel/operator_panel/envelope.rs": "editor::device_panel::operator_panel::envelope::tests::",
+    "src/editor/device_panel/operator_panel/filter_response.rs": "editor::device_panel::operator_panel::filter_response::tests::",
+    "src/editor/device_panel/operator_panel/harmonics.rs": "editor::device_panel::operator_panel::harmonics::tests::",
+    "src/editor/drag.rs": "editor::drag::tests::",
+    "src/editor/waveform_geometry.rs": "editor::waveform_geometry::tests::",
+}
+UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
+
+
+def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
+    """Affected packages with a reviewed feature test configuration.
+
+    A negative gate in Rust source keeps both default and feature runs. The
+    exact test-only cfg in known hex-ui modules has its own default lib step.
+    """
+    selected = {}
+    for package in inventory:
+        feature = ADDITIVE_TEST_FEATURES.get(package["name"])
+        if package["name"] not in affected or not feature:
+            continue
+        companions = {"ui-unit-tier"} if package["name"] == "hex-ui" else set()
+        if set(package["features"]) - {"default"} - companions != {feature}:
+            continue
+        directory = root / Path(package["manifest"]).parent
+        needle = f'feature = "{feature}"'
+        unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package["name"] == "hex-ui" else {}
+        gated = any("not(" in line and needle in line
+                    and (line.strip() != UI_DEFAULT_LIB_UNIT_CFG
+                         or source.relative_to(directory).as_posix() not in unit_sources)
+                    for source in directory.rglob("*.rs") if source.is_file()
+                    for line in source.read_text(errors="replace").splitlines())
+        if package["name"] == "hex-ui" and "ui-unit-tier" in package["features"]:
+            # Fail closed if the reviewed test-only companion ever gates
+            # production code or gains an unreviewed expression.
+            companion = 'feature = "ui-unit-tier"'
+            gated |= any(companion in line and line.strip() != '#[cfg(all(test, feature = "ui-unit-tier"))]'
+                         for source in directory.joinpath("src").rglob("*.rs") if source.is_file()
+                         for line in source.read_text(errors="replace").splitlines())
+        if not gated:
+            selected[package["name"]] = feature
+    return selected
+
+
+TEST_CFG = re.compile(r"#\[cfg\((test|all\(test\b[^()]*(\([^()]*\)[^()]*)*\))\)\]")
+
+
+def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[str]]]]:
+    """Map each declared module file to (declaring file, attributes) pairs.
+
+    Only top-level `mod NAME;` lines (no indentation) are indexed; `#[path]` is
+    resolved relative to the declaring file's directory, as rustc does outside
+    inline modules. Declarations nested in inline modules are not indexed, so
+    their files stay unproven rather than misattributed.
+    """
+    declaration = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+    path_attribute = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+    found: dict[Path, list[tuple[Path, list[str]]]] = {}
+    for parent in sorted(f for f in source_root.rglob("*.rs") if f.is_file()):
+        lines = parent.read_text(errors="replace").splitlines()
+        for index, line in enumerate(lines):
+            match = declaration.fullmatch(line.rstrip())
+            if not match:
+                continue
+            attributes = []
+            cursor = index - 1
+            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
+                attributes.append(lines[cursor].strip())
+                cursor -= 1
+            name = match.group(3)
+            explicit = next((path_attribute.fullmatch(a).group(1) for a in attributes
+                             if path_attribute.fullmatch(a)), None)
+            if explicit:
+                targets = [parent.parent / explicit]
+            else:
+                base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
+                targets = [base / f"{name}.rs", base / name / "mod.rs"]
+            for target in targets:
+                found.setdefault(target.resolve(), []).append((parent.resolve(), attributes))
+    return found
+
+
+TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
+# Unit test targets which compile the owning source directly. Keep their libtest
+# names under the original module path so scoped coverage remains observable.
+UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
+                   "log_viewer::presentation::": "unit_editor_logic",
+                   "log_viewer::filter::": "unit_editor_logic",
+                   "log_viewer::scrollbar::geometry::": "unit_editor_logic",
+                   "editor::console_track_page::": "unit_editor_logic",
+                   "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
+                   "editor::browser::geometry::": "unit_editor_logic",
+                   "editor::browser::samples::state::": "unit_editor_logic",
+                   "editor::browser::scan::": "unit_editor_logic",
+                   "editor::group_overview::model::": "unit_editor_logic",
+                   "editor::browser::tree::state::": "unit_editor_logic",
+                   "editor::arrangement_map::model::": "unit_editor_logic",
+                   "editor::controller::session_feedback::": "unit_editor_logic",
+                   "editor::waveform::paint_geometry::": "unit_editor_logic",
+                   "editor::waveform_geometry::grid::": "unit_editor_logic",
+                   "editor::waveform_loop::projection::": "unit_editor_logic",
+                   "editor::waveform_loop::accepted_root::": "unit_editor_logic",
+                   "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
+                   "editor::waveform_stretch::projection::": "unit_editor_logic",
+                   "editor::drag::geometry::": "unit_editor_logic",
+                   "output_meter::logic::": "unit_editor_logic",
+                   "editor::overview_waveform::": "unit_editor_logic",
+                   "editor::waveform_columns::": "unit_editor_logic",
+                   "editor::device_panel::eq_panel::axes::": "unit_editor_logic",
+                   "editor::device_panel::eq_panel::response::": "unit_editor_logic",
+                   "editor::session_audio_panel::playhead::": "unit_editor_logic",
+                   "editor::device_panel::vst3_parameters::row_projection::": "unit_device",
+                   "editor::midi_cue::timing::": "unit_timeline",
+                   "editor::waveform_source::": "unit_editor_logic",
+                   "editor::computer_keyboard::state::": "unit_editor_logic",
+                   "editor::audio_admission::": "unit_editor_state",
+                   "editor::audio_import_settings::admission::": "unit_editor_logic",
+                   "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
+                   "editor::controller::audio_event_correlation::": "unit_editor_logic",
+                   "editor::cpu_meter::": "unit_editor_state",
+                   "editor::device_automation::plot_geometry::": "unit_automation",
+                   "editor::device_panel::eq_panel::group_move::": "unit_device",
+                   "editor::device_panel::eq_panel::selection::": "unit_device",
+                   "editor::device_panel::eq_panel::slope::": "unit_device",
+                   "editor::device_panel::eq_panel::state_edit::": "unit_device",
+                   "editor::device_panel::numeric_display::": "unit_device",
+                   "editor::device_panel::spectrum_display::": "unit_device",
+                   "editor::disk_overload::": "unit_editor_state",
+                   "editor::fade_calculation::": "unit_editor_logic",
+                   "editor::fade_handle_geometry::": "unit_editor_logic",
+                   "editor::midi_drag::": "unit_piano_roll",
+                   "editor::midi_group_drag::": "unit_piano_roll",
+                   "editor::midi_canvas::geometry::": "unit_piano_roll",
+                   "editor::midi_scene::": "unit_piano_roll",
+                   "editor::midi_selection::": "unit_piano_roll",
+                   "editor::midi_source_controls::": "unit_piano_roll",
+                   "editor::midi_stroke::": "unit_piano_roll",
+                   "editor::midi_thumbnail::": "unit_editor_state",
+                   "editor::midi_velocity::": "unit_piano_roll",
+                   "editor::midi_viewport_grid::": "unit_piano_roll",
+                   "editor::midi_wheel_mapping::": "unit_piano_roll",
+                   "editor::musical_time::": "unit_timeline",
+                   "editor::pending_edit::": "unit_editor_state",
+                   "editor::play_intent::": "unit_editor_state",
+                   "editor::recent_projects::labels::": "unit_editor_logic",
+                   "editor::recovery_state::": "unit_editor_state",
+                   "editor::refresh_state::": "unit_editor_logic",
+                   "editor::seek::": "unit_timeline",
+                   "editor::session_grid::actions::": "unit_editor_logic",
+                   "editor::session_navigation::": "unit_editor_logic",
+                   "editor::session_route_view::": "unit_editor_logic",
+                   "editor::section_launch::geometry::": "unit_editor_logic",
+                   "editor::track_latency::presentation::": "unit_editor_logic",
+                   "editor::trim::admission::": "unit_editor_logic",
+                   "editor::trim::geometry::": "unit_editor_logic",
+                   "editor::trim::preview_state::": "unit_editor_logic",
+                   "editor::trim::stretch_preview::resolver::": "unit_editor_logic",
+                   "editor::signed_frame_viewport::": "unit_timeline",
+                   "editor::track_meters::decay::": "unit_editor_logic",
+                   "editor::track_meters::follower::": "unit_editor_logic",
+                   "editor::track_meters::scale::": "unit_editor_state",
+                   "editor::track_meters::selection::": "unit_editor_logic",
+                   "editor::tracks::clone_source_window::": "unit_editor_logic",
+                   "editor::tracks::group_overlap::": "unit_editor_logic",
+                   "editor::user_errors::": "unit_editor_logic",
+                   "editor::viewport::": "unit_editor_state",
+                   "section_appearance::": "unit_section",
+                   "section_hit::": "unit_section",
+                   "section_input::": "unit_section",
+                   "section_reorder::": "unit_section",
+                   "section_surface::focus::geometry::": "unit_section",
+                   "section_surface::geometry::": "unit_section",
+                   "section_resize::": "unit_section",
+                   "section_selection::": "unit_section",
+                   "theme::": "unit_editor_logic"}
+UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
+                         "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
+UI_UNIT_HARNESS_MODULES = {
+    "tests/editor_logic_unit/recent_projects.rs": {"editor::recent_projects::labels::"},
+    "tests/editor_logic_unit/session_grid.rs": {"editor::session_grid::actions::"},
+    "tests/editor_logic_unit/tracks.rs": {
+        "editor::tracks::clone_source_window::", "editor::tracks::group_overlap::",
+    },
+}
+UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
+# These standalone targets run separately from a module-scoped library run.
+UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
+                         "editor::track_hierarchy_indent::": "track_group_focus",
+                         "editor::track_reorder::subtree::": "track_group_focus",
+                         "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
+UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
+# The standalone track-group tests own these sources. Retain the rendered
+# projection consumers when a change touches either source.
+UI_TRACK_GROUP_FOCUS_OWNERS = {
+    "editor::arrangement_focus::visibility::": (
+        "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
+        "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
+        "editor::track_tags::tests::folded_matches_stay_selected_and_filter_applies_to_console_headers",
+    ),
+    "editor::track_hierarchy_indent::": (
+        "editor::track_clipboard_ui_test::nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends",
+        "editor::track_clipboard_ui_test::group_track_header_menu_arrangement",
+        "editor::track_clipboard_ui_test::group_track_header_menu_session",
+    ),
+}
+# These geometry modules call one another; a change to one must exercise the
+# complete pure boundary rather than only its own test-name prefix.
+# These consumers live in larger test modules; a selected ancestor must retain
+# the unit owner as well as the specific consumer checks.
+UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
+                      "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
+                      "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
+                      "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
+                      "editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit",
+                      "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
+                      "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
+                      "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
+                    {"editor::midi_canvas::geometry::",
+                     "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
+                     {"editor::time_move_preview::intervals::tests::",
+                      "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
+                      "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
+                      "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination",
+                      "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source"},
+                    {"editor::browser::samples::state::",
+                      "editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
+                      "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
+                      "editor::browser::ui_test::browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches",
+                      "editor::browser::ui_test::browser_history_ui_test::review_history_waits_for_the_used_catalog_not_an_unrelated_scan",
+                      "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
+                      "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
+                      "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop"},
+                     {"editor::browser::tree::state::",
+                      "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                      "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                      "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                      "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root"},
+                    {"editor::browser::geometry::",
+                     "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
+                     "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
+                     "editor::track_layout_ui_test::empty_project_main_header_width_handle_uses_current_window_limit"},
+                    {"editor::browser::scan::",
+                     "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
+                     "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+                     "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+                     "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                     "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget"},
+                    {"editor::device_panel::operator_panel::tests::",
+                     "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
+                     "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
+                    {"editor::device_panel::operator_panel::envelope::tests::",
+                     "editor::device_panel::tests::operator_envelope_reference_ui_tests::other_envelopes_refresh_without_stealing_selection_and_reuse_repaint_geometry"},
+                    {"editor::device_panel::operator_panel::filter_response::tests::",
+                     "editor::device_panel::tests::operator_filter_response_tests::native_filter_display_fits_reuses_cache_and_follows_real_control_history",
+                     "editor::device_panel::tests::operator_filter_response_tests::filter_curve_keeps_released_parameter_preview_across_completed_repaints"},
+                    {"editor::device_panel::operator_panel::harmonics::tests::",
+                     "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
+                    {"editor::recent_projects::labels::",
+                     "editor::recent_projects::tests::",
+                     "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"},
+                    {"editor::arrangement_map::model::",
+                      "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                      "editor::arrangement_focus::visibility::",
+                      "editor::group_overview::model::",
+                      "editor::group_overview::tests::",
+                      "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused"},
+                    {"section_surface::geometry::",
+                     "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+                     "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+                     "editor::group_overview::tests::native_group_preview_tracks_viewport_content_removal_and_undo",
+                     "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale"},
+                    {"section_surface::focus::geometry::",
+                     "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
+                     "editor::arrangement_focus::tests::only_selected_sections_in_q_focus_receive_the_pattern"},
+                    {"editor::section_launch::geometry::",
+                     "editor::arrangement_sections::tests::launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections",
+                     "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels"},
+                    {"editor::track_latency::presentation::",
+                     "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
+                     "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers"},
+                    {"editor::trim::admission::",
+                     "editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion",
+                     "editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit"},
+                    {"editor::trim::geometry::",
+                     "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+                     "editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack",
+                     "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+                     "editor::track_compact_ui_test::compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel"},
+                    {"editor::trim::preview_state::",
+                     "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
+                     "editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step",
+                     "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+                     "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo"},
+                    {"editor::trim::stretch_preview::resolver::",
+                     "editor::trim::stretch_limit_tests::",
+                     "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
+                     "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
+                     "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+                     "editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes"},
+                     {"editor::controller::session_feedback::",
+                      "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+                      "editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement"},
+                     {"editor::waveform_stretch::projection::",
+                      "editor::waveform_stretch::tests::geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map"},
+                     {"editor::waveform_loop::accepted_root::",
+                      "editor::waveform::resize_tests::shift_stretch_keeps_live_sample_varied_waveforms_visible",
+                      "editor::waveform::resize_tests::trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off"},
+                     {"editor::waveform_geometry::grid::",
+                      "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"},
+                     {"editor::drag::geometry::", "editor::drag::tests::",
+                      "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
+                      "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
+                     {"editor::session_grid::actions::", "editor::delete_ui_tests::",
+                      "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents",
+                      "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                      "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+                      "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+                      "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"},
+                    {"editor::tracks::clone_source_window::",
+                     "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
+                     "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+                     "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group"},
+                    {"editor::tracks::group_overlap::",
+                     "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
+                     "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
+                     "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
+                     "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release"},
+                    {"editor::console_track_page::",
+                     "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+                     "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+                     "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+                     "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+                     "editor::track_meters::selection::",
+                     "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"},
+                    {"log_viewer::scrollbar::geometry::",
+                     "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
+                     "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures"},
+                    {"log_viewer::filter::",
+                     "log_viewer::tests::rapid_filter_changes_install_only_the_latest_result",
+                     "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
+                     "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation"},
+                    {"log_viewer::presentation::",
+                     "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
+                     "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
+                     "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
+                     "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation"}]
+UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_panel::eq_panel::response::"},
+                   {"editor::midi_canvas::geometry::", "editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
+                   {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
+                   {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
+                   {"output_meter::logic::", "editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
+                   {"section_appearance::", "section_reorder::"},
+                   {"editor::midi_cue::", "editor::midi_cue::timing::", "editor::clip_range_fit::"},
+                   {"editor::device_panel::vst3_parameters::", "editor::device_panel::vst3_parameters::row_projection::"},
+                   {"editor::session_audio_panel::", "editor::session_audio_panel::playhead::"},
+                   {"editor::overview_waveform::", "editor::waveform_columns::",
+                    "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                    "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                    "editor::waveform_source::", "editor::waveform::", "editor::waveform_geometry::",
+                    "editor::waveform_geometry::grid::",
+                    "editor::waveform_loop::", "editor::waveform_loop::projection::",
+                    "editor::waveform_stretch::", "editor::waveform_stretch::accepted_root::",
+                    "editor::waveform_stretch::projection::",
+                    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
+# Recovery's real prepared-audio test is a sibling so importing its state into
+# the unit binary cannot also compile and run the integration fixture there.
+UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
+                        "output_meter::logic::": "output_meter::tests::",
+                        "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                        "editor::waveform_columns::": "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                        "editor::device_panel::eq_panel::response::": "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
+                        "editor::computer_keyboard::state::": "editor::computer_keyboard::tests::",
+                        "editor::recovery_state::": "editor::recovery_state_integration_tests::",
+                        "editor::audio_import_settings::admission::": "editor::track_defaults::",
+                        "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
+                        "editor::fade_calculation::": "editor::fades::",
+                        "editor::fade_handle_geometry::": "editor::fade_handles::",
+                        "editor::midi_wheel_mapping::": "editor::midi_wheel::",
+                        "editor::refresh_state::": "editor::output_meter_ui_test::",
+                        "editor::session_grid::actions::": "editor::session_grid::tests::",
+                        "editor::session_navigation::": "editor::session_navigation_ui_test::",
+                        "editor::track_meters::selection::": "editor::track_meters::tests::",
+                        "editor::track_meters::decay::": "editor::track_meters::tests::",
+                        "editor::track_meters::follower::": "editor::track_meters::main_output::tests::",
+                        "theme::": "editor::theme_settings::tests::"}
+MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+
+
+def module_paths(source_root: Path) -> dict[Path, str] | None:
+    """Rust module path of every file reachable from the crate root.
+
+    Walks top-level `mod NAME;` declarations from lib.rs (or main.rs), resolving
+    `#[path]` as rustc does. Returns None when the crate includes source text
+    (`include!`), so a module filter can never miss included tests.
+    """
+    root_file = next((source_root / name for name in ("lib.rs", "main.rs")
+                      if (source_root / name).is_file()), None)
+    if root_file is None:
+        return None
+    paths: dict[Path, str] = {root_file.resolve(): ""}
+    pending = [root_file.resolve()]
+    while pending:
+        parent = pending.pop()
+        text = parent.read_text(errors="replace")
+        if "include!(" in text:
+            return None
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            match = MOD_LINE.fullmatch(line.rstrip())
+            if not match:
+                continue
+            attributes, cursor = [], index - 1
+            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
+                attributes.append(lines[cursor].strip())
+                cursor -= 1
+            name = match.group(3)
+            explicit = next((PATH_ATTRIBUTE.fullmatch(a).group(1) for a in attributes
+                             if PATH_ATTRIBUTE.fullmatch(a)), None)
+            base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
+            targets = [parent.parent / explicit] if explicit else [base / f"{name}.rs", base / name / "mod.rs"]
+            target = next((t.resolve() for t in targets if t.is_file()), None)
+            if target is None or target in paths:
+                continue
+            prefix = paths[parent]
+            paths[target] = f"{prefix}::{name}" if prefix else name
+            pending.append(target)
+    return paths
+
+
+def doc_example_owners(root: Path, paths: list[str], inventory: list[dict]) -> list[str]:
+    """Owners whose changed Rust files carry doc examples (fenced code in doc comments)."""
+    owners = set()
+    for path in paths:
+        file = root / path
+        if not path.endswith(".rs") or not file.is_file():
+            continue
+        if any(line.lstrip().startswith(("///", "//!")) and "```" in line
+               for line in file.read_text(errors="replace").splitlines()):
+            owner = owner_package(path, inventory)
+            if owner:
+                owners.add(owner)
+    return sorted(owners)
+
+
+WAVEFORM_PAINT_GEOMETRY_UNIT = "editor::waveform::paint_geometry::"
+WAVEFORM_PAINT_GEOMETRY_TESTS = {
+    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+    "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+    "editor::fade_handles::ui_tests::released_two_axis_fade_stays_painted_until_real_worker_ack",
+    "editor::fades::musical_tests::transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_curve",
+    "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
+    "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
+    "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
+}
+WAVEFORM_PAINT_GEOMETRY_CONSUMERS = {
+    "crates/hex-ui/src/editor/audio_event_editor/waveform_preview.rs",
+    "crates/hex-ui/src/editor/audio_event_editor/free_placement_tests.rs",
+    "crates/hex-ui/src/editor/audio_event_editor/tests.rs",
+    "crates/hex-ui/src/editor/audio_event_editor/workflow_tests.rs",
+    "crates/hex-ui/src/editor/fade_handles_ui_test.rs",
+    "crates/hex-ui/src/editor/fades/musical_tests.rs",
+    "crates/hex-ui/src/editor/tracks.rs",
+    "crates/hex-ui/src/editor/waveform_geometry.rs",
+    "crates/hex-ui/src/editor/waveform_header_ui_test.rs",
+}
+
+def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
+                        tested: list[str]) -> dict[str, list[str]]:
+    """Per-owner libtest filters for module-scoped merges (user policy, 1 November 2026).
+
+    A changed `src/` file selects the tests of its own module subtree, named
+    `module::path::`. When that subtree declares no tests, the nearest ancestor
+    module with tests is selected instead, so a change never merges untested.
+    A crate root, an unresolved file, an `include!`, a non-`src/` input or a
+    reviewed runtime consumer keeps the whole package (absent from the result).
+    """
+    filters: dict[str, set[str]] = {}
+    whole: set[str] = set()
+    resolved: dict[str, dict[Path, str] | None] = {}
+    executable = [p for p in paths if not metadata_path(p)]
+    for path in executable:
+        owner = owner_package(path, inventory)
+        if owner not in tested:
+            continue
+        package = next(p for p in inventory if p["name"] == owner)
+        directory = (root / Path(package["manifest"]).parent).resolve()
+        file = (root / path).resolve()
+        if owner == "hex-storage" and path == "crates/hex-storage/src/text.rs":
+            if file.is_file() and (directory / "src" / "text_tests.rs").is_file():
+                filters.setdefault(owner, set()).add("text_tests::")
+            else:
+                whole.add(owner)
+            continue
+        if owner == "hex-ui":
+            # This target compiles the real focus source by path. Keep mixed
+            # owner-and-harness changes scoped while selecting its full binary.
+            if file == directory / "tests" / "track_group_focus.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::arrangement_focus::")
+                continue
+            if file == directory / "tests" / "midi_pressure_boundary.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::midi_recording::")
+                continue
+            relative_path = file.relative_to(directory).as_posix()
+            harness_target = UI_UNIT_HARNESS_FILES.get(relative_path)
+            unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
+                            if (file == directory / "tests" / f"{target}.rs"
+                                or target == harness_target)}
+            unit_modules.update(UI_UNIT_HARNESS_MODULES.get(relative_path, set()))
+            if unit_modules and file.is_file():
+                filters.setdefault(owner, set()).update(unit_modules)
+                continue
+        if not path.endswith(".rs") or not file.is_file() or file.relative_to(directory).parts[0] != "src":
+            whole.add(owner)
+            continue
+        if owner not in resolved:
+            resolved[owner] = module_paths(directory / "src")
+        modules = resolved[owner]
+        module = None if modules is None else modules.get(file)
+        if not module:
+            whole.add(owner)
+            continue
+        def has_tests(candidate: str) -> bool:
+            prefix = candidate + "::"
+            if owner == "hex-ui" and (prefix in UI_TRACK_GROUP_FOCUS_OWNERS
+                                      or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
+                return True
+            return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
+                       for f, name in modules.items()
+                       if name == candidate or name.startswith(candidate + "::"))
+        while module and not has_tests(module):
+            module = module.rpartition("::")[0]
+        if not module:
+            whole.add(owner)
+        else:
+            prefix = module + "::"
+            owner_filters = filters.setdefault(owner, set())
+            owner_filters.add(prefix)
+            if owner == "hex-ui":
+                owner_filters.update(UI_TRACK_GROUP_FOCUS_OWNERS.get(prefix, ()))
+    # The real viewport is an input to the waveform grid. Select its owner
+    # when that source changes, including the grid's geometry consumers.
+    if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
+        filters.setdefault("hex-ui", set()).update({"editor::waveform_geometry::grid::", "editor::arrangement_map::model::"})
+    if "hex-ui" in tested and WAVEFORM_PAINT_GEOMETRY_CONSUMERS.intersection(executable):
+        filters.setdefault("hex-ui", set()).add(WAVEFORM_PAINT_GEOMETRY_UNIT)
+    # The theme source is compiled by path in each consumer. Run its own text
+    # contract alongside storage's test, without widening other storage edits.
+    if "crates/hex-storage/src/text.rs" in executable:
+        for consumer in PATH_RUNTIME_CONSUMERS["crates/hex-storage/src/text.rs"] & set(tested):
+            filters.setdefault(consumer, set()).add("theme::tests::")
+    if "hex-sandbox" in tested:
+        if "crates/hex-ui/src/theme.rs" in executable:
+            filters.setdefault("hex-sandbox", set()).add("theme::")
+        if "crates/hex-ui/src/theme/device.rs" in executable:
+            filters.setdefault("hex-sandbox", set()).add("theme::device::")
+    selected = {}
+    for owner, names in filters.items():
+        if owner in whole:
+            continue
+        if owner == "hex-ui":
+            # Pairs and shared unit dependencies can introduce one another;
+            # close over both before dropping paths covered by an ancestor.
+            while True:
+                before = len(names)
+                for module, integration in UI_INTEGRATION_PAIRS.items():
+                    if any(module.startswith(name) or name.startswith(module)
+                           or (integration.startswith(name) and
+                               (module.startswith(name) or name.count("::") > 1))
+                           or name.startswith(integration)
+                           for name in names):
+                        names.update((module, integration))
+                for cohort in UI_UNIT_COHORTS:
+                    if names & cohort:
+                        names.update(cohort)
+                for cohort in UI_PREFIX_COHORTS:
+                    if any(member.startswith(name) or name.startswith(member)
+                           for name in names for member in cohort):
+                        names.update(cohort)
+                if len(names) == before:
+                    break
+            # These exact consumer checks exercise the projection owner. They
+            # do not seed unrelated fade and waveform dependency cohorts.
+            if any(WAVEFORM_PAINT_GEOMETRY_UNIT.startswith(name) for name in names):
+                names.update(WAVEFORM_PAINT_GEOMETRY_TESTS)
+        # A filter already covered by a broader selected module is redundant.
+        selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
+    return selected
+
+
+def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
+    """Owner of a Rust file no other package can observe, or None when unproven.
+
+    Integration tests, benches and examples are owner-only targets. A `src/`
+    file qualifies only when every declaration of it is directly preceded by
+    `#[cfg(test)]` or `#[cfg(all(test, …))]`, or lives in a file that itself
+    qualifies. `any(`/`not(` conditions, `include!(` in the package, missing,
+    undeclared or inline-nested files are not proven and keep consumers.
+    """
+    owner = owner_package(path, inventory)
+    package = next((p for p in inventory if p["name"] == owner), None)
+    if package is None or not path.endswith(".rs") or path.endswith("/build.rs"):
+        return None
+    directory = root / Path(package["manifest"]).parent
+    file = (root / path).resolve()
+    if not file.is_file():
+        return None
+    relative = file.relative_to(directory.resolve())
+    if relative.parts[0] in {"tests", "benches", "examples"}:
+        return owner
+    if relative.parts[0] != "src":
+        return None
+    source_root = directory / "src"
+    if any("include!(" in f.read_text(errors="replace") for f in source_root.rglob("*.rs") if f.is_file()):
+        return None
+    declarations = module_declarations(source_root)
+
+    def gated(module: Path, seen: frozenset) -> bool:
+        uses = declarations.get(module, [])
+        if not uses or module in seen:
+            return False
+        return all(any(TEST_CFG.fullmatch(a) and "any(" not in a and "not(" not in a for a in attributes)
+                   or gated(parent, seen | {module}) for parent, attributes in uses)
+
+    return owner if gated(file, frozenset()) else None
 
 
 def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
@@ -165,15 +846,26 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     missing = {consumer for owner in affected for consumer in RUNTIME_CONSUMERS.get(owner, set())} - names
     if missing:
         raise ValueError("reviewed runtime consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
+    path_consumers = set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in executable))
+    missing = path_consumers - (names & set(affected))
+    if missing:
+        raise ValueError("reviewed path consumers missing from affected packages: " + ", ".join(sorted(missing)))
     compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
+    # hex-sandbox (design tool over hex-engine/hex-widgets) has no compressor
+    # code, fixtures or tests; it is linted with every other Cargo consumer.
     known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
-                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream"}
+                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream",
+                       "hex-sandbox"}
     reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
                          # Stream test hooks gate no compressor code or tests; compressor
                          # plans still lint those configurations (local-ci boundary_steps).
                          "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
-                         "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
-                         "hex-stream": {"allocation-probe", "test-support"}}
+                         "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-session": {"source-overview-test-support"},
+                         "hex-stream": {"allocation-probe", "test-support"},
+                         # One-shot verified-WAV read fault injection; it does not
+                         # change compressor processing or its host contract.
+                         "hex-media": {"test-support"},
+                         "hex-sandbox": {"ui-test-support", "ui-unit-tier"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)
@@ -195,19 +887,145 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
             {"package": "hex-audio", "test": "allocation_probe_calibration", "filter": "", "features": "allocation-probe"},
             {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
         ]
+    tested = owner_test_packages(paths, inventory, affected)
+    # Only owners of changed files get module filters; a runtime consumer tested
+    # on another owner's behalf has no changed file and keeps its whole suite.
+    module_filters = {} if narrow else module_test_filters(root, paths, inventory, tested)
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
-            "test_packages": [] if narrow else affected,
+            "module_filters": module_filters,
+            "doc_example_owners": doc_example_owners(root, paths, inventory),
+            "test_packages": [] if narrow else tested,
+            "single_run": {} if narrow else single_run_packages(root, tested, inventory),
             "lint_packages": affected,
             "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
             "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
             "excluded_packages": sorted({p["name"] for p in inventory} - set(affected)),
             "rationale": ("unchanged host interfaces/registration; real compressor host, history, allocation, save/reopen and UI consumers; other device behavior omitted; all Cargo consumers linted"
-                          if narrow else "owner plus transitive normal/dev/build/optional/target and reviewed runtime consumers; full package tests and relevant feature configurations; no module isolation assumed")}
+                          if narrow else "owner packages and reviewed runtime consumers test in every configuration; every transitive Cargo consumer compiles and lints; consumer suites rely on the owner's boundary tests")}
+
+
+def owner_test_packages(paths: list[str], inventory: list[dict], affected: list[str]) -> list[str]:
+    """Packages whose test suites a merge runs: the boundary owners.
+
+    The owning crate's tests guard its public contract. Cargo consumers still
+    compile and lint against it, but their suites are not rerun: a consumer
+    regression is a missing owner boundary test, fixed there (user policy,
+    1 November 2026). Reviewed runtime consumers without a Cargo edge test too.
+    A manifest or build-script change can alter how consumers build, so it keeps
+    the whole affected closure.
+    """
+    executable = [p for p in paths if not metadata_path(p)]
+    if any(p.endswith(("Cargo.toml", "/build.rs")) for p in executable):
+        return sorted(affected)
+    owners = {owner for p in executable if (owner := owner_package(p, inventory))}
+    owners |= {consumer for owner in set(owners) for consumer in RUNTIME_CONSUMERS.get(owner, set())}
+    owners |= set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in executable))
+    tested = sorted(owners & set(affected))
+    return tested or sorted(affected)
+
+
+def health_selection(paths: list[str], inventory: list[dict]) -> dict:
+    """Post-merge main health: the merged change's own packages, not every consumer.
+
+    A short signal that main is not red right after a merge, never qualification.
+    Tooling paths add the Python self-tests; unknown/high-risk inputs test the
+    workspace; prose alone keeps the metadata check.
+    """
+    owners, python, workspace = set(), False, []
+    for path in paths:
+        if metadata_path(path):
+            continue
+        scope = classify([path], inventory)[0]
+        if scope == "tooling":
+            python = True
+        elif scope in {"rust", "ui"} and owner_package(path, inventory):
+            owners.add(owner_package(path, inventory))
+            owners.update(PATH_RUNTIME_CONSUMERS.get(path, set()))
+        else:
+            workspace.append(path)
+    return {"packages": sorted(owners), "python": python, "workspace_inputs": workspace}
+
+
+# Build-speed and debug-info profile keys: they change codegen, never program
+# semantics. debug-assertions, overflow-checks, panic, lto and rpath stay unreviewed.
+PROFILE_SAFE_KEYS = {"opt-level", "debug", "codegen-units", "incremental", "split-debuginfo", "strip"}
+PROFILE_PACKAGE = re.compile(r'profile\.[A-Za-z0-9_-]+\.package\."?([A-Za-z0-9_-]+)"?')
+
+
+def strip_toml_comment(line: str) -> str:
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return line[:index]
+    return line
+
+
+def manifest_sections(text: str) -> dict[str, list[str]] | None:
+    """Root-manifest tables to their meaningful lines; None when not plainly parseable."""
+    sections: dict[str, list[str]] = {"": []}
+    current = ""
+    for raw in text.splitlines():
+        line = strip_toml_comment(raw).strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            if not line.endswith("]") or line.startswith("[["):
+                return None
+            current = line.strip("[] ")
+            if current in sections:
+                return None
+            sections[current] = []
+        else:
+            sections[current].append(line)
+    return sections
+
+
+def profile_only_packages(root: Path, base: str, source: str, inventory: list[dict]) -> list[str] | None:
+    """Workspace packages named by a root-manifest change that only retunes their profiles.
+
+    Every changed table must be `[profile.NAME.package.MEMBER]` (never `"*"`) using
+    only PROFILE_SAFE_KEYS. Such a change alters how those packages compile, not
+    what they mean, so their own suites verify it (user policy, 1 November 2026).
+    Anything else returns None and keeps the comprehensive audit.
+    """
+    def read(revision: str) -> str | None:
+        result = subprocess.run(["git", "show", f"{revision}:Cargo.toml"], cwd=root, capture_output=True)
+        return result.stdout.decode(errors="replace") if result.returncode == 0 else None
+
+    old_text, new_text = read(base), read(source)
+    old = None if old_text is None else manifest_sections(old_text)
+    new = None if new_text is None else manifest_sections(new_text)
+    if old is None or new is None:
+        return None
+    names = {package["name"] for package in inventory}
+    packages = set()
+    for header in sorted(set(old) | set(new)):
+        if old.get(header) == new.get(header):
+            continue
+        match = PROFILE_PACKAGE.fullmatch(header)
+        if not match or match.group(1) not in names:
+            return None
+        for line in [*old.get(header, []), *new.get(header, [])]:
+            key = line.split("=", 1)[0].strip().strip('"') if "=" in line else None
+            if key not in PROFILE_SAFE_KEYS:
+                return None
+        packages.add(match.group(1))
+    return sorted(packages) or None
+
+
+def crate_root_path(package: str, inventory: list[dict], root: Path) -> str | None:
+    directory = Path(next(p for p in inventory if p["name"] == package)["manifest"]).parent
+    return next((str(directory / "src" / name) for name in ("lib.rs", "main.rs")
+                 if (root / directory / "src" / name).is_file()), None)
 
 
 def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
             allow_same_tree_merge: bool = False) -> dict:
-    if profile not in {"edit", "merge", "full", "release"}:
+    if profile not in {"edit", "merge", "full", "release", "health"}:
         raise ValueError("unknown check profile")
     source_sha = git(root, "rev-parse", "--verify", source + "^{commit}").decode().strip()
     base_sha = git(root, "rev-parse", "--verify", base + "^{commit}").decode().strip()
@@ -217,7 +1035,11 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                 != git(root, "rev-parse", source_sha + "^{tree}")):
             raise ValueError("requested source is not the current checkout")
         subprocess.run(["git", "merge-base", "--is-ancestor", source_sha, head], cwd=root, check=True)
-    subprocess.run(["git", "merge-base", "--is-ancestor", base_sha, source_sha], cwd=root, check=True)
+    if subprocess.run(["git", "merge-base", "--is-ancestor", base_sha, source_sha],
+                      cwd=root, capture_output=True).returncode != 0:
+        raise ValueError(f"base {base_sha[:12]} is not an ancestor of source {source_sha[:12]}; "
+                         "merge the current base into the candidate first, then rerun "
+                         "(--carry-report <last passed summary.json> reuses unaffected steps)")
     paths = changed_paths(root, base_sha, source_sha)
     if not paths:
         raise ValueError("empty scope is not qualifying test evidence; use --profile full for an audit")
@@ -225,7 +1047,27 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     inputs = runtime_inputs(root)
     if profile in {"merge", "full", "release"}:
         require_qualifying_inputs(inputs)
-    scope, affected, reasons = classify(paths, inventory)
+    if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1").decode().strip() != base_sha:
+        raise ValueError("health checks a merge commit against its first parent: use --base SOURCE^1")
+    # A profile-only root-manifest change selects the retuned packages as if
+    # their crate roots changed: their whole suites test, consumers lint.
+    selection_paths = paths
+    profile_packages = profile_only_packages(root, base_sha, source_sha, inventory) if "Cargo.toml" in paths else None
+    profile_roots = [crate_root_path(p, inventory, root) for p in profile_packages or []]
+    if profile_packages and all(profile_roots):
+        selection_paths = [p for p in paths if p != "Cargo.toml"] + profile_roots
+    scope, affected, reasons = classify(selection_paths, inventory)
+    if selection_paths is not paths:
+        reasons.append("profile-only root manifest change: owner suites of " + ", ".join(profile_packages)
+                       + " (codegen keys only; semantics unchanged)")
+    executable = [p for p in selection_paths if not metadata_path(p)]
+    if profile == "merge" and scope in {"rust", "ui"} and executable:
+        owners = [test_only_owner(root, p, inventory) for p in executable]
+        if all(owners):
+            excluded = sorted(set(affected) - set(owners))
+            scope, affected = "rust", sorted(set(owners))
+            reasons.append("test-only inputs (cfg(test) modules or owner test targets): owner packages "
+                           "only; consumers cannot observe them: " + ", ".join(excluded))
     if profile in {"full", "release"}:
         scope = "full"
         reasons.append("explicit full audit/release request")
@@ -236,11 +1078,13 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "affected_packages": affected, "cargo_inventory": inventory,
               "runtime_inputs": inputs,
               "python_tests": python_tests.select(
-                  profile, [path for path in paths if not metadata_path(path)],
+                  profile, [path for path in selection_paths if not metadata_path(path)],
                   inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
-    if scope == "rust":
-        result["boundary"] = boundary_selection(root, paths, inventory, affected)
+    if scope in {"rust", "ui"}:
+        result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
+    if profile == "health":
+        result["health"] = health_selection(selection_paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
 
@@ -282,6 +1126,97 @@ def reuse_checks(root: Path, plan: dict, report: Path, env=None) -> dict:
     result.pop("plan_sha256")
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
+
+
+# A base advance through these inputs can change every compiled configuration.
+CARRY_BLOCKING_NAMES = {"Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "rust-toolchain"}
+
+
+def owner_package(path: str, inventory: list[dict]) -> str | None:
+    owners = [p for p in inventory if path.startswith(str(Path(p["manifest"]).parent) + "/")]
+    owner = max(owners, key=lambda p: len(p["manifest"]), default=None)
+    return None if owner is None else owner["name"]
+
+
+def dependency_closure(packages: list[str], inventory: list[dict]) -> set[str]:
+    """Packages plus every workspace dependency of any kind, optional or target-specific."""
+    by_name = {p["name"]: p for p in inventory}
+    closure = set(packages)
+    pending = list(packages)
+    while pending:
+        package = by_name.get(pending.pop())
+        for dependency in package["dependencies"] if package else ():
+            if dependency["name"] in by_name and dependency["name"] not in closure:
+                closure.add(dependency["name"])
+                pending.append(dependency["name"])
+    return closure
+
+
+def carry_basis(root: Path, plan: dict, evidence: dict, env=None) -> dict:
+    """Prove a candidate differs from a passed one only by verbatim base-advance inputs.
+
+    The earlier candidate (merge of the PR onto an older base) passed every step.
+    The new candidate merged a newer base. Results may carry only when every
+    executable path changed since the earlier candidate came unmodified from the
+    base advance, touches none of the PR's own paths, and is ordinary package
+    source (no manifest, lockfile, toolchain, build script, tooling or unknown
+    input). Returns the directly changed owner packages and the Python selection
+    that those paths require; callers decide per step and rerun on any doubt.
+    """
+    if plan["profile"] != "merge":
+        raise ValueError("base-advance carry requires an explicit merge profile")
+    if python_tests.native_acceptance_inputs(os.environ if env is None else env):
+        raise ValueError("native/external acceptance inputs require fresh checks")
+    old = evidence.get("plan") or {}
+    steps = evidence.get("steps") or []
+    tree = evidence.get("start_tree")
+    if (evidence.get("schema_version") != 2 or evidence.get("mode") != "merge"
+            or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
+            or evidence.get("stale") is not False or evidence.get("dirty") is not False
+            or evidence.get("native_acceptance_opt_in") is not False
+            or not tree or tree != evidence.get("end_tree")
+            or evidence.get("resume") or old.get("reuse")
+            or not old.get("qualifies_merge") or old.get("profile") != "merge"
+            or not steps or any(s.get("status") not in {"passed", "carried"} for s in steps)):
+        raise ValueError("carried report is not a complete passed merge-profile run")
+    if old.get("cargo_inventory") != plan["cargo_inventory"]:
+        raise ValueError("Cargo workspace inventory changed since the carried report")
+    previous, previous_base = old["source"], old["base"]
+    if evidence.get("commit") != previous or tree.get("commit") != previous:
+        raise ValueError("carried report does not identify its own candidate")
+    for ancestor, descendant, what in ((previous_base, plan["base"], "base"),
+                                       (previous, plan["source"], "candidate")):
+        if subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                          cwd=root, capture_output=True).returncode != 0:
+            raise ValueError(f"carried report's {what} is not an ancestor of the current {what}")
+    delta = changed_paths(root, previous, plan["source"])
+    executable = [p for p in delta if not metadata_path(p)]
+    upstream = set(changed_paths(root, previous_base, plan["base"]))
+    own = set(old.get("paths", []))
+
+    def blob(revision: str, path: str) -> str | None:
+        result = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{revision}:{path}"],
+                                cwd=root, capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    inventory = plan["cargo_inventory"]
+    owners = set()
+    for path in executable:
+        if path in own:
+            raise ValueError("candidate's own path changed since the carried report: " + path)
+        if path not in upstream or blob(plan["source"], path) != blob(plan["base"], path):
+            raise ValueError("change is not a verbatim base-advance input: " + path)
+        if Path(path).name in CARRY_BLOCKING_NAMES or classify([path], inventory)[0] not in {"rust", "ui"}:
+            raise ValueError("dependency, toolchain, build, tooling or unknown input changed: " + path)
+        owner = owner_package(path, inventory)
+        if owner is None:
+            raise ValueError("changed input has no workspace owner: " + path)
+        owners.add(owner)
+    return {"report_commit": previous, "report_base": previous_base,
+            "delta_paths": delta, "delta_owners": sorted(owners),
+            "python_tests": python_tests.select(
+                "merge", executable, inventory, UI_PACKAGES,
+                python_tests.available_modules(root), env=env)}
 
 
 def check_metadata(root: Path, base: str, source: str) -> list[str]:
