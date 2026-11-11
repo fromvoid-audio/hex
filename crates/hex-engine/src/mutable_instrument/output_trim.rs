@@ -5,7 +5,7 @@ use hex_lattice::StereoFrame;
 use hex_lattice_contract::HostGain;
 
 #[derive(Clone, Copy)]
-pub(super) struct OutputTrim {
+pub(crate) struct OutputTrim {
     pub(super) base: HostGain,
     pub(super) committed: HostGain,
     pub(super) scratch: HostGain,
