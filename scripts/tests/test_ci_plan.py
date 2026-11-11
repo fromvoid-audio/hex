@@ -5905,7 +5905,7 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::session_grid::actions::"
-        integration = "editor::session_grid::tests::"
+        wrapper = "editor::session_grid::tests::"
         delete = "editor::delete_ui_tests::"
         launch = ("editor::device_panel::tests::device_comparison_tests::"
                   "device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack")
@@ -5916,7 +5916,7 @@ class ModuleScopeTests(unittest.TestCase):
         menu = ("editor::context_menu::tests::"
                 "global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits")
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid/actions.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([unit, integration, delete, launch, queued, intent, navigation,
+        self.assertEqual(names, {owner: sorted([unit, wrapper, delete, launch, queued, intent, navigation,
                                                 navigation_unit, menu])})
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid.rs"], inventory, [owner])
         self.assertEqual(parent, {owner: sorted(["editor::session_grid::", delete, launch, queued, intent, navigation,
@@ -5943,12 +5943,24 @@ class ModuleScopeTests(unittest.TestCase):
         default_units = next(step for step in steps if step.step_id == "ui-default-lib-unit-tests")
         self.assertIn(queued, default_units.argv)
         self.assertIn(intent, default_units.argv)
+        self.assertIn(wrapper, default_units.argv)
         self.assertTrue(all(test in feature.argv for test in (delete, launch, navigation, menu)))
         for path in ("delete_ui_tests.rs", "controller.rs", "session_navigation_ui_test.rs",
                      "context_menu.rs",
                      "device_panel/tests/device_comparison_tests.rs"):
             consumers = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertIn(unit, consumers[owner])
+
+        action_path = "crates/hex-ui/src/editor/session_grid/actions.rs"
+        action_boundary = plan.boundary_selection(root, [action_path], inventory, [owner])
+        self.assertEqual(action_boundary["single_run"], {owner: "ui-test-support"})
+        action_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": action_boundary,
+            "cargo_inventory": inventory, "paths": [action_path]})}
+        self.assertIn(wrapper, action_steps["ui-default-lib-unit-tests"].argv)
+        self.assertIn(unit, action_steps["ui-unit-unit_editor_logic"].argv)
+        self.assertIn(navigation, action_steps["ui-feature-tests"].argv)
+        self.assertIn(menu, action_steps["ui-feature-tests"].argv)
 
     def crate(self, root: Path) -> list[dict]:
         files = {
