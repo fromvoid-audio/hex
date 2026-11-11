@@ -906,23 +906,24 @@ louder. rattle processes at twice the sample rate and reports 11 samples of
 latency, which hex compensates. drive changes glide over about 20 ms and can be
 automated. bypass passes audio unchanged while keeping its history warm.
 
-in the eq graph, single-click empty space to create a band. the left and right
+in the eq graph, double-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-hold **option** while pressing empty space to keep the button held, position the
-new band and hear its effect during playback; release to keep the band as one
+hold the second click and drag to position the new band and hear its effect
+during playback. release to keep the band as one
 undoable edit. vertical movement changes q for a cut or notch, or the gain of a
 bell. existing nodes keep their own selection and drag targets. press
 **escape** to cancel.
 
-hold **shift** and drag across empty space in the eq graph to select every node
-inside the rectangle; **shift-command** toggles those nodes against the selection.
+click empty space in the eq graph to clear the selection. drag from empty space
+to select every node inside the rectangle. **shift-command** toggles those nodes
+against the selection.
 dragging a selected node moves the whole selection, keeping each node's
 spacing, and **backspace** or **remove** deletes every selected node with its
 automation. one undo restores either edit.
 
-the fixed eight-band eq uses the same marquee selection. dragging a selected
+in the fixed eight-band eq, hold **shift** to draw a marquee. dragging a selected
 band moves the group in one undoable edit. **backspace** disables the selected
 bands; their fixed slots remain available. one undo restores their on flags.
 
