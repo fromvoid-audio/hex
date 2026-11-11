@@ -77,6 +77,17 @@ impl ClipDrag {
         self.copy_modifier.get() && self.snap_modifier.get()
     }
 
+    /// The grabbed clip supplies the cursor for both single and group drags.
+    pub(super) fn cursor_position(&self) -> Option<(Option<TrackId>, u64)> {
+        match self.destination.get()? {
+            ClipDropDestination::ExistingTrack(track) => {
+                let preview = self.preview.get().filter(|p| p.target_track == track)?;
+                Some((Some(track), preview.start_frame))
+            }
+            ClipDropDestination::NewTrack { start_frame, .. } => Some((None, start_frame)),
+        }
+    }
+
     pub(super) fn retire(&self) {
         self.preview.set(None);
         self.group.borrow_mut().capture = None;
@@ -170,6 +181,7 @@ pub(super) enum ClipDropDestination {
     NewTrack {
         before_track: Option<TrackId>,
         position: ClipPosition,
+        start_frame: u64,
     },
 }
 
@@ -785,15 +797,17 @@ impl super::EditorView {
                 drag.insertion_line_y.set(None);
                 return (None, true);
             }
-            let position = candidate_position(&state.project, drag, None, pointer_x, timeline);
-            let Some(position) = position else {
+            let preview = candidate_position(&state.project, drag, None, pointer_x, timeline)
+                .and_then(|position| preview_for(&state.project, drag.source_track, position));
+            let Some(preview) = preview else {
                 drag.destination.set(None);
                 drag.insertion_line_y.set(None);
                 return (None, false);
             };
             drag.destination.set(Some(ClipDropDestination::NewTrack {
                 before_track,
-                position,
+                position: preview.position,
+                start_frame: preview.start_frame,
             }));
             drag.insertion_line_y.set(Some(line_y));
             return (None, true);
@@ -938,6 +952,7 @@ impl super::EditorView {
         let Some(ClipDropDestination::NewTrack {
             before_track,
             position,
+            ..
         }) = destination
         else {
             self.clear_clip_drag(drag.project_generation, drag.clip);
@@ -984,10 +999,14 @@ impl super::EditorView {
                 self.clear_clip_drag(drag.project_generation, drag.clip);
                 return;
             };
-            self.pending_clip_move = self
-                .active_clip_drag
-                .take()
-                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                )
+            });
             let before_pending = self.worker_requests_pending;
             if self.enqueue(Request::MoveExistingClips {
                 project_generation: drag.project_generation,
@@ -1018,10 +1037,14 @@ impl super::EditorView {
                 self.clear_clip_drag(drag.project_generation, drag.clip);
                 return;
             };
-            self.pending_clip_move = self
-                .active_clip_drag
-                .take()
-                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                )
+            });
             if !self.enqueue(Request::Edit(command)) {
                 self.retire_pending_clip_move();
                 self.clear_clip_drag(drag.project_generation, drag.clip);
@@ -1578,6 +1601,8 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        drag.destination
+            .set(Some(ClipDropDestination::ExistingTrack(target_track)));
         if std::mem::take(&mut self.drag_bounce_held) {
             self.drop_clip_bounce(drag, target_track, preview);
             cx.notify();
@@ -1616,6 +1641,7 @@ impl super::EditorView {
                 drag,
                 command.clone(),
                 std::sync::Arc::clone(&state.project),
+                self.selection_intent_epoch,
             )
         });
         let before_pending = self.worker_requests_pending;

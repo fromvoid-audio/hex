@@ -1106,8 +1106,8 @@ pub(super) struct EditorView {
     locked_play_start: Option<edit_cursor::EditCursor>,
     play_start_at_beginning: bool,
     escape_stop_armed: bool,
-    /// The selected clip a point cursor was deliberately placed inside; that
-    /// cursor then outranks the clip's play start (see `selected_arrangement_play_start`).
+    /// The selection whose play start was superseded by placing a point inside
+    /// it or dropping a clip. The identity fences that precedence to the current selection.
     edit_cursor_in_selected_clip: Option<ClipId>,
     /// The selected clip whose in-clip cursor a loop enable retired; the loop
     /// start then keeps outranking that clip's play start until a new click.

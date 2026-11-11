@@ -393,6 +393,13 @@ fn drag_source_to_inserted_track(
             Some(super::drag::ClipDropDestination::NewTrack {
                 before_track: anchor,
                 position: expected,
+                start_frame: super::drag::preview_for(
+                    &view.state.as_ref().unwrap().project,
+                    source_track,
+                    expected,
+                )
+                .unwrap()
+                .start_frame,
             })
         );
         assert!(drag.lane_hovered.get());
@@ -2942,7 +2949,7 @@ fn selector(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
 }
 
-fn assert_clip_move_guides(visual: &mut VisualTestContext, expected_x: gpui::Pixels) {
+pub(super) fn assert_clip_move_guides(visual: &mut VisualTestContext, expected_x: gpui::Pixels) {
     for edge in ["top", "bottom"] {
         let selector = Box::leak(format!("clip-move-guide-{edge}").into_boxed_str());
         let marker = visual.debug_bounds(selector).expect("painted drag guide");
@@ -2951,6 +2958,16 @@ fn assert_clip_move_guides(visual: &mut VisualTestContext, expected_x: gpui::Pix
             "{edge} guide follows the dragged anchor"
         );
     }
+    let line = visual
+        .debug_bounds("clip-move-guide-line")
+        .expect("full-height drag cursor");
+    let surface = visual.debug_bounds("arrangement-surface").unwrap();
+    assert!((line.left() - expected_x).abs() <= px(1.0));
+    assert_eq!(
+        (line.top(), line.bottom()),
+        (surface.top(), surface.bottom())
+    );
+    assert!(visual.rendered_background("clip-move-guide-line").is_some());
 }
 
 fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
@@ -3690,6 +3707,13 @@ fn assert_drag_handoff_at_grab(
         .collect();
     let anchor_x = previews[0].1.left();
     assert_clip_move_guides(&mut visual, anchor_x);
+    let destination = editor.read_with(&visual, |v, _| {
+        v.active_clip_drag
+            .as_ref()
+            .unwrap()
+            .cursor_position()
+            .unwrap()
+    });
     let held_notes: Vec<_> = clips
         .iter()
         .zip(midi)
@@ -3824,6 +3848,10 @@ fn assert_drag_handoff_at_grab(
     pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.pending_clip_move.is_none());
+        let cursor = v
+            .edit_cursor
+            .expect("cursor retained at the committed drop");
+        assert_eq!((cursor.track, cursor.frame), destination);
         assert_eq!(
             v.state.as_ref().unwrap().project.snapshot(),
             expected.project().snapshot(),
@@ -3832,6 +3860,11 @@ fn assert_drag_handoff_at_grab(
     });
     assert!(visual.debug_bounds("clip-move-guide-top").is_none());
     assert!(visual.debug_bounds("clip-move-guide-bottom").is_none());
+    assert!(visual.debug_bounds("clip-move-guide-line").is_none());
+    let marker = visual
+        .debug_bounds("time-marker-top-start")
+        .expect("committed edit cursor");
+    assert!((marker.center().x - anchor_x).abs() <= px(1.0));
     for ((clip, is_midi), (preview, held, _, _, _)) in canonical_ids.iter().zip(midi).zip(&previews)
     {
         assert!(visual.debug_bounds(preview).is_none());
@@ -3946,6 +3979,7 @@ fn rendered_move_cancel_and_stale_controls_restore_source(cx: &mut TestAppContex
         pump_move(&editor, &mut visual);
         assert!(visual.debug_bounds("clip-move-guide-top").is_none());
         assert!(visual.debug_bounds("clip-move-guide-bottom").is_none());
+        assert!(visual.debug_bounds("clip-move-guide-line").is_none());
         editor.read_with(&visual, |v, _| {
             assert!(v.pending_clip_move.is_none() && v.active_clip_drag.is_none());
             if control < 2 {
@@ -4008,6 +4042,7 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
             drag,
             invalid.clone(),
             Arc::clone(&v.state.as_ref().unwrap().project),
+            v.selection_intent_epoch,
         ));
         assert!(v.enqueue(Request::DeviceGesture(
             hex_session::device_gesture::GestureRequest::Cancel {
@@ -4133,7 +4168,15 @@ fn drag_guides_preserve_locked_play_start_through_cancel_and_ack(cx: &mut TestAp
         });
         visual.run_until_parked();
         let (_, end) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 120.0);
+        let destination = editor.read_with(&visual, |view, _| {
+            view.active_clip_drag
+                .as_ref()
+                .unwrap()
+                .cursor_position()
+                .unwrap()
+        });
         assert!(visual.debug_bounds("clip-move-guide-top").is_some());
+        assert!(visual.debug_bounds("clip-move-guide-line").is_some());
         assert!(visual.debug_bounds("locked-play-start-top").is_some());
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.playback_start_frame(), 24_000)
@@ -4150,10 +4193,17 @@ fn drag_guides_preserve_locked_play_start_through_cancel_and_ack(cx: &mut TestAp
         visual.run_until_parked();
         assert!(visual.debug_bounds("clip-move-guide-top").is_none());
         assert!(visual.debug_bounds("clip-move-guide-bottom").is_none());
+        assert!(visual.debug_bounds("clip-move-guide-line").is_none());
         assert!(visual.debug_bounds("locked-play-start-top").is_some());
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.valid_locked_play_start().unwrap().frame, 24_000);
             assert_eq!(view.playback_start_frame(), 24_000);
+            let cursor = view.edit_cursor.unwrap();
+            if cancel {
+                assert_eq!(cursor.frame, 24_000);
+            } else {
+                assert_eq!((cursor.track, cursor.frame), destination);
+            }
             assert!(view.last_transport_command.is_none());
         });
     }

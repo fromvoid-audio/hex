@@ -2311,7 +2311,7 @@ impl EditorView {
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.modulation_depth_complete(&event);
-        self.clip_move_request_complete(&event);
+        let clip_drop_cursor = self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);
@@ -2406,13 +2406,18 @@ impl EditorView {
             self.audio_batch_progress = None;
         }
         self.reconcile_group_selection(&event);
-        if event.bounce_complete.as_ref().is_some_and(|completed| {
+        let bounce_drop_cursor = if event.bounce_complete.as_ref().is_some_and(|completed| {
             self.bounce_control
                 .as_ref()
                 .is_some_and(|active| active.same_job(completed))
         }) {
             self.bounce_control = None;
-        }
+            self.pending_bounce_drop
+                .take()
+                .and_then(|p| p.complete(&event))
+        } else {
+            None
+        };
         if event.project_replaced
             && let Some(control) = self.bounce_control.take()
         {
@@ -3244,6 +3249,9 @@ impl EditorView {
         self.normalize_completed_trim_viewport(retired_trim);
         self.apply_created_note_selection(created_note_selection);
         self.apply_completed_midi_step(midi_step_complete);
+        if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
+            self.install_drop_cursor(cursor);
+        }
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }

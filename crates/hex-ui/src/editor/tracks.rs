@@ -3223,6 +3223,7 @@ impl EditorView {
         if let Some(drag::ClipDropDestination::NewTrack {
             before_track: None,
             position,
+            ..
         }) = payload.destination.get()
         {
             let state = self.state.as_ref()?;
