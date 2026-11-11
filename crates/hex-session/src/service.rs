@@ -597,6 +597,7 @@ pub enum Request {
         project_generation: u64,
         revision: u64,
         range: hex_project::TimeRange,
+        /// An entirely empty ordinary lane range creates blank MIDI clips.
         create_if_empty: bool,
     },
     /// Captured range in the focused lower audio-event editor.

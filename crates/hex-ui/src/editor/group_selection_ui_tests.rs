@@ -235,6 +235,7 @@ fn g_does_not_group_arrangement_selection_under_another_focus_owner(cx: &mut Tes
 fn dragging_an_empty_lane_range_then_g_creates_a_blank_clip(cx: &mut TestAppContext) {
     let (_files, handle, editor, _) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
     let track = editor.read_with(&visual, |view, _| {
         view.state.as_ref().unwrap().project.tracks()[0].id()
     });

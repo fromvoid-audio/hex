@@ -1867,13 +1867,19 @@ impl EditorView {
                 start,
                 end,
             } => {
-                display.markers.push(Marker {
-                    id: None,
-                    name: name.clone(),
-                    color: *color,
-                    start: *start,
-                    end: *end,
-                });
+                let index = display
+                    .markers
+                    .partition_point(|marker| marker.start < *start);
+                display.markers.insert(
+                    index,
+                    Marker {
+                        id: None,
+                        name: name.clone(),
+                        color: *color,
+                        start: *start,
+                        end: *end,
+                    },
+                );
             }
             Command::RenameArrangementSection { section, name } => {
                 if let Some(m) = display.markers.iter_mut().find(|m| m.id == Some(*section)) {
