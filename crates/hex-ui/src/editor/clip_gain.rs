@@ -1,4 +1,5 @@
-//! Arrangement audio gain input. The Window lease owns held input only; the
+//! Option-drag on an Arrangement audio clip's top edge adjusts gain. The Window
+//! lease owns held input only; the
 //! ordinary FIFO receipt retains the released value until canonical installation.
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
 //! their relative gains in one EditClips command; a single audio clip
@@ -272,7 +273,10 @@ impl EditorView {
                 .left(px(9.0))
                 .right(px(9.0))
                 .h(px(4.0))
-                .cursor(gpui::CursorStyle::ResizeUpDown)
+                .when(self.option_held || held, |s| {
+                    s.cursor(gpui::CursorStyle::ResizeUpDown)
+                        .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+                })
                 .when(held, |s| {
                     s.children([gpui::canvas(
                         |_, _, _| (),
@@ -283,12 +287,11 @@ impl EditorView {
                     .absolute()
                     .inset_0()])
                 })
-                .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip {
                         kind: crate::tooltips::Kind::control("clip gain"),
                         name: format!(
-                            "gain {:+.1} db · drag down to reduce · shift for fine",
+                            "gain {:+.1} db · option-drag · shift for fine",
                             f64::from(value) / 1000.0
                         ),
                     })
@@ -309,6 +312,9 @@ impl EditorView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                        if !event.modifiers.alt {
+                            return;
+                        }
                         cx.stop_propagation();
                         let drag = Drag {
                             generation,
@@ -366,7 +372,11 @@ impl EditorView {
                         }
                     }),
                 )
-                .on_click(|_, _, cx| cx.stop_propagation())
+                .on_click(|event, _, cx| {
+                    if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.down.modifiers.alt) {
+                        cx.stop_propagation();
+                    }
+                })
                 .into_any_element(),
         )
     }
