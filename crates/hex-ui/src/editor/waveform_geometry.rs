@@ -118,6 +118,7 @@ pub(super) struct WaveformPaintSample {
     pub(super) mask: Bounds<Pixels>,
     pub(super) ordinates: [(f32, f32); 2],
     pub(super) envelope_points: usize,
+    pub(super) outline_fingerprint: [u64; 2],
 }
 
 impl WaveformGeometryCache {
@@ -215,6 +216,23 @@ impl WaveformGeometryCache {
                 .iter()
                 .map(|channel| channel.outline.len())
                 .sum(),
+            outline_fingerprint: std::array::from_fn(|channel| {
+                let outline = &geometry.channels[channel].outline;
+                let upper = outline.len() / 2;
+                [
+                    0,
+                    upper / 4,
+                    upper / 2,
+                    upper * 3 / 4,
+                    upper * 7 / 8,
+                    upper.saturating_sub(1),
+                ]
+                .into_iter()
+                .filter_map(|index| outline.get(index))
+                .fold(0xcbf29ce484222325_u64, |hash, point| {
+                    (hash ^ u64::from(f32::from(point.y).to_bits())).wrapping_mul(0x100000001b3)
+                })
+            }),
         });
     }
 
@@ -743,32 +761,45 @@ mod tests {
             min: -1.0,
             max: 1.0,
         };
-        let waveform = CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap();
+        let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
         let mapping = |clip: &Clip| WaveformMapping::Clip {
             clip: clip.clone(),
             timeline_origin: 0,
             fade: Some(clip.retained_fade()),
         };
-        assert_ne!(
-            waveform_geometry_key(&mapping(&neutral), 0, 100, bounds, 1.0),
-            waveform_geometry_key(&mapping(&faded), 0, 100, bounds, 1.0)
-        );
         let held = WaveformMapping::Clip {
             clip: neutral.clone(),
             timeline_origin: 0,
             fade: Some(faded.retained_fade()),
         };
-        assert_eq!(
-            waveform_geometry_key(&held, 0, 100, bounds, 1.0),
-            waveform_geometry_key(&mapping(&faded), 0, 100, bounds, 1.0)
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let get = |mapping: &WaveformMapping| {
+            cached_waveform_geometry(
+                &cache,
+                &waveform,
+                &WaveformGeometryRequest {
+                    mapping,
+                    visible_start: 0,
+                    visible_end: 100,
+                    bounds,
+                    scale: 1.0,
+                    columns: 100,
+                    grid: None,
+                },
+            )
+            .unwrap()
+        };
+        let neutral = get(&mapping(&neutral));
+        let faded = get(&mapping(&faded));
+        assert!(
+            !Arc::ptr_eq(&neutral, &faded),
+            "fade edits invalidate cached geometry"
         );
-        let neutral =
-            prepare_waveform_geometry(&waveform, &mapping(&neutral), 0, 100, bounds, 100, None)
-                .unwrap();
-        let faded =
-            prepare_waveform_geometry(&waveform, &mapping(&faded), 0, 100, bounds, 100, None)
-                .unwrap();
+        assert!(
+            Arc::ptr_eq(&faded, &get(&held)),
+            "held and canonical fades share the same geometry"
+        );
         let neutral_top = &neutral.channels[0].outline[..100];
         let faded_top = &faded.channels[0].outline[..100];
         assert!(faded_top[0].y > neutral_top[0].y);
