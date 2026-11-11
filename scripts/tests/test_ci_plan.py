@@ -2857,6 +2857,38 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn("ui-test-support", feature.argv)
         self.assertIn(consumer, feature.argv)
 
+    def test_popup_clamping_unit_keeps_rendered_context_menu_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "context_menu::tests::popup_stays_inside_window_edges"
+        consumers = (
+            "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+            "editor::context_menu::tests::menu_escape_outside_click_and_enter_do_not_leak_to_editor",
+        )
+        for source in ("crates/hex-ui/src/context_menu.rs",
+                       "crates/hex-ui/src/editor/context_menu.rs"):
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [source], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                filters = boundary["module_filters"][owner]
+                self.assertTrue(any(unit.startswith(prefix) for prefix in filters), filters)
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [source]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertTrue(any(unit.startswith(selected) for selected in default.argv))
+                self.assertNotIn("--features", default.argv)
+                feature = steps["ui-feature-tests"].argv
+                self.assertIn("ui-test-support", feature)
+                support = feature[feature.index("--") + 1:]
+                self.assertNotIn("editor::", support)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in support), (consumer, support))
+
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
