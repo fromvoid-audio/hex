@@ -166,7 +166,14 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
     repaint(&mut visual, &editor);
     let grip = visual.debug_bounds("audio-event-gain-1").unwrap().center();
     let moved = point(grip.x, grip.y + px(20.0));
-    visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(
+        grip,
+        MouseButton::Left,
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     let deadline = crate::test_wait::hang_deadline();

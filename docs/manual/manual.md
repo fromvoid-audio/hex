@@ -708,15 +708,15 @@ over it to see how many playback callbacks were affected on the current output.
 it clears three seconds after the last reported increase. short fades ease the
 transition into and out of missing audio.
 
-on an arrangement audio clip, hover over the top edge between the trim corners
-and drag vertically to adjust clip gain. drag down to reduce or up to increase;
-hold **shift** for fine adjustments. the displayed db value previews the change;
-release commits one undo step, and **escape** cancels. when the clip belongs to a
-whole-clip selection, selected audio clips change by the same db amount, retaining
-their relative levels; selected midi clips remain unchanged. held **2**, existing time
-selections and fade controls retain their input priorities. this top-edge gesture
-currently applies to audio clips; midi and individual event gain gestures remain
-unavailable.
+on an arrangement audio clip, hold **option** and drag vertically on the top edge
+between the trim corners to adjust clip gain. in the audio event editor,
+**option**-drag the top edge of an event to adjust its gain. drag down to reduce
+gain or up to increase it. hold **shift** during either drag for fine
+adjustments. the displayed db value previews the change. release commits one
+undo step, and **escape** cancels. when the clip belongs to a whole-clip
+selection, selected audio clips change by the same db amount, retaining their
+relative levels. held **2**, existing time selections and fade controls retain
+their input priorities.
 
 file-backed clips support placement, playback, clip gain and ordinary device
 processing. processing that materializes audio, including pitch,
