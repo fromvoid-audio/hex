@@ -215,6 +215,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
+    "src/editor/selection.rs": ("editor::selection::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
@@ -690,6 +691,7 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
 UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "editor::automation_take_recovery::tests::",
+                        "editor::selection::tests::": "editor::controller::project_replacement_tests::worker_snapshots_and_undo_keep_the_last_user_detail_focus",
                         "editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
                         "output_meter::logic::": "output_meter::tests::",
                         "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
