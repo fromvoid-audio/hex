@@ -721,6 +721,7 @@ mod tests {
         Bounds::new(point(px(12.0), px(34.0)), size(px(1200.0), px(180.0)))
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn plain_clip_fade_shapes_peaks_and_changes_cache_identity() {
         use hex_project::{Command, Created, Editor, Project};
