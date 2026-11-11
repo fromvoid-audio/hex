@@ -5826,6 +5826,46 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn(menu_test, logic_names)
         self.assertFalse(any(mru.startswith(name) or closed_menu.startswith(name) for name in logic_names))
 
+    def test_tuning_pure_units_keep_exact_rendered_tuning_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::tuning::snap_tests::",
+            "editor::tuning::plots::tests::",
+            "editor::tuning::audition_level_unit_tests::",
+        )
+        consumers = (
+            "editor::tuning::ui_tests::review_followup_dice_changes_the_actual_palette_without_editing_the_project",
+            "editor::tuning::ui_tests::review_first_imported_degree_can_drag_without_changing_reference_or_count",
+            "editor::tuning::ui_tests::audition_keys_are_owned_by_tuning_focus_and_release_after_modifier_changes",
+        )
+        cases = (
+            ("crates/hex-ui/src/editor/tuning/mod.rs", unit_prefixes, consumers),
+            ("crates/hex-ui/src/editor/tuning/plots.rs", (unit_prefixes[1],), (consumers[0],)),
+            ("crates/hex-ui/src/editor/tuning/ui_tests.rs", (), consumers),
+        )
+        for path, units, rendered in cases:
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                if units:
+                    unit = steps["ui-default-lib-unit-tests"]
+                    self.assertTrue(unit.requires_tests)
+                    for name in units:
+                        self.assertIn(name, unit.argv)
+                else:
+                    self.assertNotIn("ui-default-lib-unit-tests", steps)
+                feature = steps["ui-feature-tests"].argv
+                for consumer in rendered:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature), (consumer, feature))
+                self.assertNotIn("editor::", feature)
+
     def test_guarded_session_launch_keeps_real_action_and_intent_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

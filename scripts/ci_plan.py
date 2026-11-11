@@ -231,6 +231,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/browser/history.rs": ("editor::browser::history::tests::",),
     "src/editor/musical_audio_controls.rs": ("editor::musical_audio_controls::tests::",),
     "src/editor/musical_audio_controls/sample_bpm.rs": ("editor::musical_audio_controls::sample_bpm::tests::",),
+    "src/editor/tuning/mod.rs": ("editor::tuning::snap_tests::", "editor::tuning::audition_level_unit_tests::"),
+    "src/editor/tuning/plots.rs": ("editor::tuning::plots::tests::",),
     "src/editor/midi_draw.rs": ("editor::midi_draw::tests::",),
     "src/editor/midi_pan.rs": ("editor::midi_pan::tests::",),
     "src/editor/track_performance/tests.rs": ("editor::track_performance::tests::",),
@@ -1112,6 +1114,8 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::musical_audio_controls::ui_tests::selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats",
                     "editor::musical_audio_controls::ui_tests::shift_selected_warp_applies_to_every_clip_with_its_own_source_region",
                 ))
+            if "crates/hex-ui/src/editor/tuning/plots.rs" in executable:
+                names.add("editor::tuning::ui_tests::review_followup_dice_changes_the_actual_palette_without_editing_the_project")
             if "crates/hex-ui/src/editor/pending_edit.rs" in executable:
                 names.update((
                     "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
