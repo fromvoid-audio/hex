@@ -34,6 +34,91 @@ fn wav_at(rate: u32, samples: &[i16]) -> Vec<u8> {
 }
 
 #[test]
+fn windowed_wav_matches_whole_preview_at_matched_and_converted_rates() {
+    let directory = TestDir::new();
+    let path = directory.0.join("windowed.wav");
+    let samples: Vec<i16> = (0..10_003)
+        .map(|n| ((n * 37 % 24_000) as i16) - 12_000)
+        .collect();
+    for (source_rate, rate) in [(44_100, 44_100), (44_100, 48_000), (192_000, 8_000)] {
+        fs::write(&path, wav_at(source_rate, &samples)).unwrap();
+        let expected = playback(&path, rate).unwrap();
+        let mut source = PreviewWindowSource::open(&path, rate, &RUNNING).unwrap();
+        assert_eq!(source.output_rate(), rate);
+        assert_eq!(source.output_frames(), expected.frames().len() as u64);
+        let mut actual = Vec::new();
+        let mut offset = 0_u64;
+        for size in [1, 511, BROWSER_PREVIEW_WINDOW_FRAMES, 37]
+            .into_iter()
+            .cycle()
+        {
+            if offset == source.output_frames() {
+                break;
+            }
+            let count = size.min((source.output_frames() - offset) as usize);
+            actual.extend(source.read_window(offset, count, &RUNNING).unwrap());
+            offset += count as u64;
+        }
+        assert_eq!(actual.len(), expected.frames().len());
+        for (actual, expected) in actual
+            .iter()
+            .flatten()
+            .zip(expected.frames().iter().flatten())
+        {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+}
+
+#[test]
+fn windowed_wav_refuses_cancelled_changed_and_invalid_requests() {
+    let directory = TestDir::new();
+    let path = directory.0.join("windowed.wav");
+    fs::write(&path, wav_at(48_000, &[100; 512])).unwrap();
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        PreviewWindowSource::open(&path, 48_000, &cancelled),
+        Err(PreviewFailure::Cancelled)
+    ));
+    let mut source = PreviewWindowSource::open(&path, 48_000, &RUNNING).unwrap();
+    assert!(matches!(
+        source.read_window(0, 32, &cancelled),
+        Err(PreviewFailure::Cancelled)
+    ));
+    assert!(source.read_window(0, 0, &RUNNING).is_err());
+    assert!(
+        source
+            .read_window(0, BROWSER_PREVIEW_WINDOW_FRAMES + 1, &RUNNING)
+            .is_err()
+    );
+    assert!(source.read_window(500, 13, &RUNNING).is_err());
+    assert!(source.read_window(u64::MAX, 1, &RUNNING).is_err());
+    assert!(PreviewWindowSource::open(&path, 0, &RUNNING).is_err());
+    fs::write(&path, wav_at(48_000, &[100; 513])).unwrap();
+    assert!(source.read_window(0, 32, &RUNNING).is_err());
+    fs::write(&path, b"not a wav").unwrap();
+    assert!(PreviewWindowSource::open(&path, 48_000, &RUNNING).is_err());
+    let oversized = directory.0.join("oversized.wav");
+    fs::File::create(&oversized)
+        .unwrap()
+        .set_len(BROWSER_PREVIEW_FILE_LIMIT as u64 + 1)
+        .unwrap();
+    assert!(PreviewWindowSource::open(&oversized, 48_000, &RUNNING).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn windowed_wav_rejects_a_replaced_path_while_the_old_descriptor_remains_open() {
+    let directory = TestDir::new();
+    let path = directory.0.join("current.wav");
+    fs::write(&path, wav_at(48_000, &[100; 512])).unwrap();
+    let mut source = PreviewWindowSource::open(&path, 48_000, &RUNNING).unwrap();
+    fs::rename(&path, directory.0.join("original.wav")).unwrap();
+    fs::write(&path, wav_at(48_000, &[100; 513])).unwrap();
+    assert!(source.read_window(0, 32, &RUNNING).is_err());
+}
+
+#[test]
 fn waveform_then_audition_of_one_file_decodes_it_once() {
     let directory = TestDir::new();
     let path = directory.0.join("shared.wav");

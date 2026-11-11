@@ -27,7 +27,10 @@ mod clip_paint;
 pub use clip_paint::PaintMidiClip;
 mod browser_preview;
 pub mod take_audio;
-pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
+pub use browser_preview::{
+    AudioPreview, BROWSER_PREVIEW_WINDOW_FRAMES, PreviewFailure, PreviewSources,
+    PreviewWindowSource,
+};
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
