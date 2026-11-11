@@ -211,8 +211,9 @@ fn selection_crossfade_publication_seek_stop_and_retirement_are_callback_allocat
             (at + 1) as f32 / 16.0
         } else if at < 10 {
             let progress = (at - 6) as f64 / 3.0;
-            (at + 1) as f32 / 16.0 * (1.0 - progress) as f32
-                + (at - 2) as f32 / 16.0 * progress as f32
+            let incoming_gain = progress * progress * (3.0 - 2.0 * progress);
+            (at + 1) as f32 / 16.0 * (1.0 - incoming_gain) as f32
+                + (at - 2) as f32 / 16.0 * incoming_gain as f32
         } else {
             (at - 2) as f32 / 16.0
         };
