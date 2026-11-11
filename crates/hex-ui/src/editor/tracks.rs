@@ -5,6 +5,10 @@ mod group_overlap;
 
 pub(super) use group_overlap::group_overlap_spans;
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "tracks/midi_trim_unit_tests.rs"]
+mod midi_trim_unit_tests;
+
 use super::clip_boundary::clip_boundary_shell;
 use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
 use super::time_move_preview::{
