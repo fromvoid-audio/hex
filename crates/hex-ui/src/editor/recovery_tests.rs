@@ -24,10 +24,19 @@ use std::time::Instant;
 #[gpui::test]
 fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
     use super::super::audio_admission::StoppedPlaybackRestore;
+    use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
+
     let _output_serial = hex_audio::worker_fixture::serial_output();
-    let (mut output, backend) =
+    let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
     let client = output.take_client().unwrap();
+    client.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
+    let stop_count = |view: &mut EditorView| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        std::iter::from_fn(|| control.take_audio_diagnostic())
+            .filter(|event| matches!(event.kind, AudioDiagnosticKind::PriorityStop { .. }))
+            .count()
+    };
     let mut project =
         hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Device(device) = project
@@ -72,12 +81,35 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
             device_preview_identity: None,
             tuning_preview_identity: None,
         });
-        view.stop();
+        view.stop_from_escape();
+        let restore = Some(StoppedPlaybackRestore::Preparing);
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(stop_count(view), 1, "first stop reaches the callback");
+
+        view.stop_from_escape();
+        assert!(view.play_start_at_beginning);
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert_eq!(
-            view.stopped_playback_restore,
-            Some(StoppedPlaybackRestore::Preparing)
+            stop_count(view),
+            0,
+            "repeat stop leaves the pending restore alone"
         );
+
         view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+        assert!(view.deferred_play.is_some());
+        view.stop();
+        assert!(view.deferred_play.is_none());
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(
+            stop_count(view),
+            0,
+            "cancel deferred play without revoking the restore"
+        );
+
         view.queue_audio_command(PlaybackCommand::PlayFrom(0));
         assert!(view.deferred_play.is_some());
         assert_eq!(
