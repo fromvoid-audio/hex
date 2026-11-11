@@ -5558,13 +5558,16 @@ class ModuleScopeTests(unittest.TestCase):
                      "track_meters/follower.rs", "track_meters/scale.rs", "refresh_state.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertEqual(names, {owner: METER_BOUNDARY})
-        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/track_meters.rs"], inventory, [owner])
+        meter_path = "crates/hex-ui/src/editor/track_meters.rs"
+        compact_header = "editor::track_layout_ui_test::track_meter_uses_own_peak_and_stays_inside_compact_header"
+        parent = plan.module_test_filters(root, [meter_path], inventory, [owner])
         self.assertEqual(parent, {owner: [
             "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
             "editor::console_track_page::", "editor::output_meter_ui_test::", "editor::refresh_state::",
             "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
             "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
             "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+            compact_header,
             "editor::track_meters::", "output_meter::logic::", "output_meter::tests::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
@@ -5572,6 +5575,22 @@ class ModuleScopeTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+        parent_boundary = plan.boundary_selection(root, [meter_path], inventory, [owner])
+        parent_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": parent_boundary,
+            "cargo_inventory": inventory, "paths": [meter_path]})}
+        pure = parent_steps["ui-default-lib-unit-tests"]
+        self.assertIn("editor::track_meters::tests::", pure.argv)
+        self.assertTrue(pure.requires_tests)
+        feature = parent_steps["ui-feature-tests"].argv
+        for consumer in (
+            "editor::track_meters::tests::compact_and_expanded_meter_geometry_has_headroom_and_a_unity_mark",
+            "editor::track_meters::tests::revision_handoff_keeps_meter_visible_across_repaints",
+            "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers",
+            compact_header,
+        ):
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature), (consumer, feature))
 
     def test_console_track_page_keeps_unit_and_paging_consumers(self):
         root = SCRIPTS.parent
