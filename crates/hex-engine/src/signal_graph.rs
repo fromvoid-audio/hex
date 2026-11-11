@@ -1205,7 +1205,9 @@ impl SignalGraph {
     /// typed endpoints are unchanged, and nodes on both sides keep their actual
     /// latency and arrivals. Edge positions may shift: a zero-latency node with
     /// only zero-delay edges (for example an unbound source's generator) may
-    /// appear or disappear. History must be copied through
+    /// appear or disappear. This can also change the order of independent
+    /// owners. Each graph uses its own topological order, while history follows
+    /// the unchanged typed edges. History must be copied through
     /// `pair_retained_pre_main_edges`, never by position.
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
         self.retained_pre_main_history_maps_from(other, None)
@@ -1236,7 +1238,7 @@ impl SignalGraph {
                             .iter()
                             .filter_map(|&owner| retained_order(other, owner)))
             } else {
-                self.tracks.len() != other.tracks.len() || self.owner_order != other.owner_order
+                self.tracks.len() != other.tracks.len()
             }
         {
             return false;
