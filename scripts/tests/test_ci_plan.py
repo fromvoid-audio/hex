@@ -2131,8 +2131,11 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::", "editor::group_overview::model::", "editor::group_overview::tests::",
+                                  "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths",
                                   "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
-                                  "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
+                                  "editor::output_meter_ui_test::", "editor::overview_waveform::",
+                                  "editor::recent_projects::labels::", "editor::recent_projects::tests::",
+                                  "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                                   "editor::section_launch::geometry::",
                                   "editor::session_audio_panel::",
@@ -3985,6 +3988,37 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn("editor::session_grid::", combined_feature.argv)
         for consumer in [*consumers, *action_consumers]:
             self.assertTrue(any(consumer.startswith(selected) for selected in combined_feature.argv))
+
+    def test_recent_project_labels_keep_menu_and_mru_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/recent_projects/labels.rs"
+        shim = "crates/hex-ui/tests/editor_logic_unit/recent_projects.rs"
+        unit = "editor::recent_projects::labels::"
+        menu = "editor::menus::tests::project_menu_keeps_open_actions_and_recent_project_paths"
+        mru = "editor::recent_projects::tests::"
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, menu, mru])})
+        self.assertEqual(plan.module_test_filters(root, [shim], inventory, [owner]), names)
+        self.assertEqual(plan.module_test_filters(
+            root, [source, "crates/hex-ui/tests/editor_logic_unit/editor.rs"], inventory, [owner]), {})
+        for path in (source, shim, "crates/hex-ui/src/editor/recent_projects.rs",
+                     "crates/hex-ui/src/editor/menus.rs"):
+            selected = plan.module_test_filters(root, [path], inventory, [owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": selected}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": [path]})
+            unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(name) for name in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in (menu, mru):
+                self.assertTrue(any(consumer.startswith(name) for name in feature.argv))
 
     def test_guarded_session_launch_keeps_real_action_and_intent_consumers(self):
         root = SCRIPTS.parent
