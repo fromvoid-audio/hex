@@ -73,6 +73,16 @@ pub enum GestureTarget {
 }
 
 impl GestureTarget {
+    pub fn is_mixer_gain(self) -> bool {
+        matches!(
+            self,
+            Self::TrackGain { .. }
+                | Self::TrackGains { .. }
+                | Self::MainGain
+                | Self::ReturnGain { .. }
+        )
+    }
+
     pub fn track_gain_anchor(self) -> Option<TrackId> {
         match self {
             Self::TrackGain { track } | Self::TrackGains { track } => Some(track),
@@ -1356,6 +1366,37 @@ impl GestureMachine {
     pub fn reset(&mut self) {
         self.active = None;
         self.last_key = None;
+    }
+
+    /// Reconcile a refused terminal with the resident worker's publication
+    /// record. Only an accepted overlay can keep a mixer gain gesture alive.
+    pub(crate) fn retire_unpublished_mixer_terminal(&mut self, ack: &mut GestureAck) {
+        if ack.preview_retained
+            && self
+                .snapshot()
+                .is_some_and(|active| active.key == ack.key && active.target.is_mixer_gain())
+        {
+            self.active = None;
+            ack.preview_retained = false;
+        }
+    }
+
+    /// An accepted output restart relinquishes its mixer preview. Restore
+    /// from the authored values on the next output and preserve key ordering.
+    pub(crate) fn retire_mixer_gain_on_restart(&mut self) -> Option<GestureAck> {
+        let active = self
+            .snapshot()
+            .filter(|active| active.target.is_mixer_gain())?;
+        self.active = None;
+        Some(GestureAck {
+            key: active.key,
+            phase: GesturePhase::Cancel,
+            sequence: 0,
+            accepted: false,
+            preview_retained: false,
+            source_lost: false,
+            reason: Some("volume edit canceled · audio is restarting".into()),
+        })
     }
 
     pub fn handle(

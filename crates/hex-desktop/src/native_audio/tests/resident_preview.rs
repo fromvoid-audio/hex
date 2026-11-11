@@ -1875,6 +1875,110 @@ fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
 }
 
 #[test]
+fn refused_unpublished_gain_releases_the_fader_and_restart_retires_a_real_preview() {
+    use hex_project::{Command, Created};
+    use hex_session::device_gesture::{
+        GestureKey, GesturePhase, GestureRequest, GestureTarget, ParameterValue,
+    };
+    use std::sync::atomic::Ordering::Release;
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let before = h.run(Request::Edit(Command::AddTrack {
+        name: "gain".into(),
+    }));
+    let Some(Created::Track(track)) = before.created else {
+        panic!("track");
+    };
+    let (mut applied, _) = h.applied(applied);
+    let key = |token| GestureKey {
+        generation: 0,
+        token,
+    };
+    let begin = |token| {
+        Request::DeviceGesture(GestureRequest::Begin {
+            key: key(token),
+            target: GestureTarget::TrackGain { track },
+        })
+    };
+    let change = |token| {
+        Request::DeviceGesture(GestureRequest::Change {
+            key: key(token),
+            sequence: 1,
+            value: ParameterValue::Float(0.5),
+        })
+    };
+    let commit = |token, value| {
+        Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
+            key: key(token),
+            sequence: 2,
+            value: ParameterValue::Float(value),
+        })
+    };
+
+    assert!(h.run(begin(1)).gesture_ack.unwrap().accepted);
+    h.refuse.store(true, Release);
+    let refused = h.run(change(1));
+    assert!(!refused.gesture_ack.unwrap().accepted);
+    assert!(refused.device_preview.is_none());
+    let refused = h.run(commit(1, 0.25));
+    let ack = refused.gesture_ack.unwrap();
+    assert_eq!((ack.key, ack.phase), (key(1), GesturePhase::Commit));
+    assert!(!ack.accepted && !ack.preview_retained && ack.reason.is_some());
+    assert!(refused.active_device_gesture.is_none());
+    assert!(refused.device_preview.is_none());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.project, before.state.project);
+
+    h.refuse.store(false, Release);
+    assert!(h.run(begin(2)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(2)).gesture_ack.unwrap().accepted);
+    (applied, _) = h.applied(applied);
+    let committed = h.run(commit(2, 0.25));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.project.track(track).unwrap().gain(), 0.25);
+    assert_eq!(committed.state.revision, before.state.revision + 1);
+    (applied, _) = h.applied(applied);
+
+    assert!(h.run(begin(3)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(3)).gesture_ack.unwrap().accepted);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.device_preview.unwrap().key, key(3));
+    h.refuse.store(true, Release);
+    let retained = h.run(commit(3, 0.75));
+    assert!(retained.gesture_ack.unwrap().preview_retained);
+    assert!(retained.device_preview.is_some());
+    h.refuse.store(false, Release);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: 0,
+        request_id: 1,
+    });
+    let retired = restarted.gesture_ack.unwrap();
+    assert_eq!((retired.key, retired.phase), (key(3), GesturePhase::Cancel));
+    assert!(!retired.preview_retained);
+    assert!(restarted.active_device_gesture.is_none());
+    assert!(restarted.device_preview.is_none());
+    assert_eq!(restarted.state.revision, committed.state.revision);
+    assert_eq!(restarted.state.project, committed.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (applied, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, committed.state.revision);
+    assert!(metadata.device_preview.is_none());
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, before.state.project);
+    let (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, committed.state.project);
+    h.applied(applied);
+}
+
+#[test]
 fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonical() {
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
