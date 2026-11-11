@@ -266,6 +266,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
     "src/editor/device_panel/sampler_cursor_tests.rs": ("editor::device_panel::sampler_overview::tests::sampler_cursor_original_frame_mapping_bounds_and_time",),
+    "src/editor/device_panel/vst3_parameters/scrollbar.rs": ("editor::device_panel::vst3_parameters::scrollbar::tests::thumb_clamps_extents_and_rejects_invalid_geometry",),
     "src/editor/device_panel/rattle_panel.rs": ("editor::device_panel::rattle_panel::tests::",),
     "src/editor/device_panel/modulators.rs": ("editor::device_panel::modulators::tests::",),
     "src/editor/device_panel/eq_panel/gestures.rs": ("editor::device_panel::eq_panel::gestures::tests::",),
@@ -518,6 +519,9 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::device_panel::rattle_panel::": (
         "editor::device_panel::tests::rattle_ui_tests::rattle_display_reads_authored_automation_and_manual_draft_precedence",
         "editor::device_panel::tests::rattle_ui_tests::rattle_track_return_panel_fits_and_drive_draft_commits_one_undo",
+    ),
+    "editor::device_panel::vst3_parameters::scrollbar::": (
+        "editor::device_panel::vst3_parameters::tests::vst3_header_and_list_bounds_stay_fixed_across_touch_states",
     ),
     "editor::display_error::": (
         "editor::controller::project_replacement_tests::failed_batch_worker_event_displays_original_path_in_status_and_tooltip",

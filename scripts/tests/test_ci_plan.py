@@ -4654,6 +4654,43 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertFalse(any("unit_device" in step.argv for step in steps.values()))
         self.assertIn(prefix, steps["ui-feature-tests"].argv)
 
+    def test_vst3_scrollbar_thumb_unit_keeps_projection_and_rendered_panel(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        owner_path = "crates/hex-ui/src/editor/device_panel/vst3_parameters/scrollbar.rs"
+        consumer_path = "crates/hex-ui/src/editor/device_panel/vst3_parameters.rs"
+        projection_path = "crates/hex-ui/src/editor/device_panel/vst3_parameters/row_projection.rs"
+        unit = "editor::device_panel::vst3_parameters::scrollbar::tests::thumb_clamps_extents_and_rejects_invalid_geometry"
+        projection = "editor::device_panel::vst3_parameters::row_projection::"
+        rendered = "editor::device_panel::vst3_parameters::tests::vst3_header_and_list_bounds_stay_fixed_across_touch_states"
+        for path in (owner_path, consumer_path):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(unit, default.argv)
+                feature = steps["ui-feature-tests"].argv
+                self.assertTrue(any(rendered.startswith(prefix) for prefix in feature))
+                self.assertNotIn("editor::", feature)
+                self.assertNotIn("editor::device_panel::", feature)
+
+        boundary = plan.boundary_selection(root, [projection_path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [projection_path]})}
+        standalone = steps["ui-unit-unit_device"].argv
+        self.assertTrue(steps["ui-unit-unit_device"].requires_tests)
+        self.assertTrue(any(projection.startswith(prefix) for prefix in standalone))
+        self.assertIn("editor::device_panel::vst3_parameters::", steps["ui-feature-tests"].argv)
+
     def test_vst3_row_projection_selects_unit_and_panel_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
