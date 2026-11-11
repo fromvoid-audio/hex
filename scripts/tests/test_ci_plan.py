@@ -5098,6 +5098,37 @@ class ModuleScopeTests(unittest.TestCase):
                 for consumer in consumers:
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
 
+    def test_utility_readout_unit_keeps_rendered_controls(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::device_panel::utility_panel::tests::"
+        consumers = (
+            "editor::device_panel::tests::utility_gain_is_presented_in_db_and_typed_values_remain_linear_canonical",
+            "editor::device_panel::tests::utility_default_width_and_audio_readouts_use_reference_units",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/device_panel/utility_panel.rs",
+            "crates/hex-ui/src/editor/device_panel/tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, default)
+                support = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in support))
+                    if path.endswith("/utility_panel.rs"):
+                        self.assertIn(consumer, support)
+                if path.endswith("/utility_panel.rs"):
+                    self.assertNotIn("editor::device_panel::tests::", support)
+
     def test_vst3_entry_unit_keeps_raw_zero_rendered_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
