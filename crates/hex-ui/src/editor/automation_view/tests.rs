@@ -25,8 +25,8 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
     editor.update(&mut visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
         v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-            anchor_track: p.tracks()[0].id(),
-            end_track: p.tracks()[1].id(),
+            anchor_track: Some(p.tracks()[0].id()),
+            end_track: Some(p.tracks()[1].id()),
             anchor_frame: 12_000,
             end_frame: 36_000,
         });

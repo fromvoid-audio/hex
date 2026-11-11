@@ -25,8 +25,8 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
         v.viewport = prior;
         let track = v.selected_track.unwrap();
         v.time_selection = Some(TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 96_000,
             end_frame: 48_000,
         });
@@ -816,8 +816,8 @@ fn arrange_vertical_back_prunes_removed_rows_and_clamps_scroll_after_resize(
         view.selected_track = Some(tracks[2]);
         view.track_selection.replace(&tracks[..3]);
         view.time_selection = Some(TimeSelection {
-            anchor_track: tracks[0],
-            end_track: tracks[2],
+            anchor_track: Some(tracks[0]),
+            end_track: Some(tracks[2]),
             anchor_frame: 0,
             end_frame: 48_000,
         });

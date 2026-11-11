@@ -168,8 +168,8 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     editor.update(cx, |view, _| {
         view.time_selection_project_scope = true;
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: empty,
+            anchor_track: Some(source),
+            end_track: Some(empty),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -243,8 +243,8 @@ fn export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track(
         view.selected_track = Some(third);
         view.time_selection_project_scope = true;
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: third,
+            anchor_track: Some(source),
+            end_track: Some(third),
             anchor_frame: 0,
             end_frame: 48_000,
         });

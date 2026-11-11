@@ -39,8 +39,8 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
             editor.update(cx, |view, cx| {
                 if start_source == "range" {
                     view.time_selection = Some(super::time_selection::TimeSelection {
-                        anchor_track: target,
-                        end_track: target,
+                        anchor_track: Some(target),
+                        end_track: Some(target),
                         anchor_frame: 80_000,
                         end_frame: 65_000,
                     });
@@ -243,8 +243,8 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
             // A pre-existing clip/range would ordinarily supply Play's start.
             view.selected_clip = Some(clip);
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: source,
-                end_track: last,
+                anchor_track: Some(source),
+                end_track: Some(last),
                 anchor_frame: 32_000,
                 end_frame: 42_000,
             });
@@ -946,8 +946,8 @@ fn option_drag_copies_time_range_and_keeps_source_preview_visible(cx: &mut TestA
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: source,
+            anchor_track: Some(source),
+            end_track: Some(source),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -1041,8 +1041,8 @@ fn audio_time_move_preview_masks_overlaps_and_restores_when_cancelled(cx: &mut T
         ))
         .expect("source lane");
     let selection = super::time_selection::TimeSelection {
-        anchor_track: source,
-        end_track: source,
+        anchor_track: Some(source),
+        end_track: Some(source),
         anchor_frame: 0,
         end_frame: 48_000,
     };
@@ -1156,9 +1156,7 @@ fn captured_time_selection_projects_outside_pointer_and_release_position(cx: &mu
         let selection = view.time_selection.expect("live selection");
         assert_eq!(
             selection.end_track,
-            view.visible_lane_near_y(-300.0)
-                .expect("nearest fresh lane above the window")
-                .0,
+            view.visible_lane_near_y(-300.0).map(|(track, _)| track),
             "vertical target clamps to nearest fresh lane"
         );
         assert_eq!(
@@ -1172,7 +1170,8 @@ fn captured_time_selection_projects_outside_pointer_and_release_position(cx: &mu
         assert!(view.time_selection_gesture.is_none());
         let selection = view.time_selection.expect("completed selection");
         assert_eq!(
-            selection.end_track, target,
+            selection.end_track,
+            Some(target),
             "release below tracks clamps to last lane"
         );
         let viewport = view.visible_viewport(384_000);
@@ -1532,8 +1531,8 @@ fn midi_time_move_preview_translates_cached_notes_to_the_destination(cx: &mut Te
         .expect("destination lane");
     editor.update(cx, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: source,
+            anchor_track: Some(source),
+            end_track: Some(source),
             anchor_frame: 24_000,
             end_frame: 72_000,
         });
@@ -1623,8 +1622,8 @@ fn multi_row_move_preview_maps_each_source_row_to_its_destination_offset(cx: &mu
         .expect("second selected source row");
     editor.update(cx, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: first_target,
-            end_track: second_source,
+            anchor_track: Some(first_target),
+            end_track: Some(second_source),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -1724,8 +1723,8 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         .expect("destination lane");
     editor.update(cx, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: source,
+            anchor_track: Some(source),
+            end_track: Some(source),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -1822,8 +1821,8 @@ fn selection_handle_and_reselect_zones_own_gestures_over_selected_clips(cx: &mut
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.update(cx, |view, cx| {
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: source,
-                end_track: source,
+                anchor_track: Some(source),
+                end_track: Some(source),
                 anchor_frame: 0,
                 end_frame: 96_000,
             });
@@ -1881,8 +1880,8 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
         editor.update(cx, |view, _| {
             window.focus(&view.focus);
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: target,
-                end_track: source,
+                anchor_track: Some(target),
+                end_track: Some(source),
                 anchor_frame: 96_000,
                 end_frame: 48_000,
             });
@@ -1950,8 +1949,8 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
                 pulse_started: std::time::Instant::now(),
             });
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: target,
-                end_track: source,
+                anchor_track: Some(target),
+                end_track: Some(source),
                 anchor_frame: 52_000,
                 end_frame: 28_000,
             });
@@ -1970,8 +1969,8 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: source,
-                end_track: source,
+                anchor_track: Some(source),
+                end_track: Some(source),
                 anchor_frame: 41_000,
                 end_frame: 41_000,
             });
@@ -2172,8 +2171,8 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
                     pulse_started: Instant::now(),
                 });
                 view.time_selection = selection.then_some(super::time_selection::TimeSelection {
-                    anchor_track: track,
-                    end_track: track,
+                    anchor_track: Some(track),
+                    end_track: Some(track),
                     anchor_frame: 52_000,
                     end_frame: 28_000,
                 });
@@ -2913,8 +2912,8 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: source,
-                end_track: source,
+                anchor_track: Some(source),
+                end_track: Some(source),
                 anchor_frame: 90_000,
                 end_frame: 80_000,
             });
@@ -3110,8 +3109,8 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = Some(clip);
         v.time_selection = Some(TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: start + 10_000,
             end_frame: start + 20_000,
         });

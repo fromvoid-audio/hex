@@ -199,8 +199,8 @@ impl EditorView {
         };
         self.set_point_cursor(Some(track), frame);
         self.time_selection = Some(TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: frame,
             end_frame: frame,
         });
@@ -287,8 +287,8 @@ impl EditorView {
             cursor.generation,
         ));
         self.time_selection = Some(TimeSelection {
-            anchor_track: cursor.track,
-            end_track: cursor.track,
+            anchor_track: Some(cursor.track),
+            end_track: Some(cursor.track),
             anchor_frame: cursor.frame,
             end_frame: cursor.frame,
         });
@@ -403,28 +403,17 @@ impl EditorView {
                 .locked_play_start
                 .as_mut()
                 .is_some_and(|locked| locked.pulse_locked_marker(now));
-        if self.time_selection_project_scope {
-            let first_last = self.state.as_ref().and_then(|state| {
-                Some((
-                    state.project.tracks().first()?.id(),
-                    state.project.tracks().last()?.id(),
-                ))
-            });
-            if let Some((first, last)) = first_last {
-                if let Some(cursor) = self.edit_cursor.as_mut() {
-                    cursor.track = Some(first);
-                }
-                if let Some(selection) = self.time_selection.as_mut() {
-                    selection.anchor_track = first;
-                    selection.end_track = last;
-                }
-            } else {
-                self.edit_cursor = None;
-                self.time_selection = None;
-                self.time_selection_project_scope = false;
-                self.time_selection_gesture = None;
-                self.suppress_cursor_click = false;
-                return true;
+        if self.time_selection_project_scope
+            && let Some(state) = &self.state
+        {
+            let tracks = state.project.tracks();
+            let first = tracks.first().map(|track| track.id());
+            if let Some(cursor) = self.edit_cursor.as_mut() {
+                cursor.track = first;
+            }
+            if let Some(selection) = self.time_selection.as_mut() {
+                selection.anchor_track = first;
+                selection.end_track = tracks.last().map(|track| track.id());
             }
         }
         let Some(cursor) = &mut self.edit_cursor else {
@@ -442,12 +431,15 @@ impl EditorView {
             self.suppress_cursor_click = false;
             return true;
         }
-        if self.time_selection.is_some_and(|selection| {
-            self.state.as_ref().is_none_or(|state| {
-                state.project.track(selection.anchor_track).is_none()
-                    || state.project.track(selection.end_track).is_none()
+        if !self.time_selection_project_scope
+            && self.time_selection.is_some_and(|selection| {
+                self.state.as_ref().is_none_or(|state| {
+                    [selection.anchor_track, selection.end_track]
+                        .into_iter()
+                        .any(|track| track.is_none_or(|track| state.project.track(track).is_none()))
+                })
             })
-        }) {
+        {
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
