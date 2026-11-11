@@ -326,9 +326,13 @@ fn verified_audio_candidate_is_current(context: VerifiedSeekCandidateContext) ->
         && context.applied_project_revision == Some(context.current_project_revision)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 #[path = "arrangement_seek_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "arrangement_seek_unit_tests.rs"]
+mod unit_tests;
 
 use super::{EditorView, PendingPlayback};
 use hex_engine::playback::PlaybackHandoffRejection;

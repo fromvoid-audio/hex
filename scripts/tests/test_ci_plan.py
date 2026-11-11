@@ -2933,6 +2933,35 @@ class ModuleScopeTests(unittest.TestCase):
                         root, [source + "tests/" + module + ".rs"], inventory, [owner])
                     self.assertTrue(any(unit.startswith(prefix) for prefix in reverse[owner]))
 
+    def test_arrangement_seek_units_keep_callback_worker_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::arrangement_seek::unit_tests::"
+        consumers = (
+            "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
+            "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+            "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+        )
+        for name in ("arrangement_seek.rs", "arrangement_seek_tests.rs",
+                     "arrangement_seek_unit_tests.rs", "arrangement_sections.rs", "edit_cursor_ui_test.rs"):
+            path = "crates/hex-ui/src/editor/" + name
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_args = steps["ui-default-lib-unit-tests"].argv
+                self.assertIn(unit, unit_args)
+                self.assertNotIn("editor::arrangement_seek::tests::", unit_args)
+                feature_args = steps["ui-feature-tests"].argv
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
+                                    f"{consumer} is missing from {feature_args}")
+
     def test_arrangement_audio_controls_keep_unit_and_worker_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -3991,6 +4020,38 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
                 for name in consumers:
                     self.assertTrue(any(name.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
+    def test_eq8_units_keep_rendered_marquee_and_group_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        units = (
+            "editor::device_panel::eq8_panel::graph::tests::",
+            "editor::device_panel::eq8_panel::group::tests::",
+            "editor::device_panel::eq8_panel::selection::tests::",
+        )
+        consumers = (
+            "editor::device_panel::tests::eq8_marquee_tests::eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device",
+            "editor::device_panel::tests::eq8_marquee_tests::eq8_marquee_group_move_and_disable_each_commit_one_undo",
+        )
+        paths = ("eq8_panel/graph.rs", "eq8_panel/group.rs", "eq8_panel/selection.rs",
+                 "tests/eq8_marquee_tests.rs")
+        for file in paths:
+            with self.subTest(file=file):
+                path = "crates/hex-ui/src/editor/device_panel/" + file
+                names = plan.module_test_filters(root, [path], inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": names}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertEqual(steps["ui-default-lib-unit-tests"].argv[-3:], units)
+                self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in steps["ui-feature-tests"].argv))
 
     def test_midi_loop_display_cohort_routes_source_and_consumer_changes(self):
         root = SCRIPTS.parent

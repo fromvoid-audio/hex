@@ -203,6 +203,10 @@ ADDITIVE_TEST_FEATURES = {
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES = {
+    "src/editor/arrangement_seek.rs": "editor::arrangement_seek::unit_tests::",
+    "src/editor/device_panel/eq8_panel/graph.rs": "editor::device_panel::eq8_panel::graph::tests::",
+    "src/editor/device_panel/eq8_panel/group.rs": "editor::device_panel::eq8_panel::group::tests::",
+    "src/editor/device_panel/eq8_panel/selection.rs": "editor::device_panel::eq8_panel::selection::tests::",
     "src/editor/loop_rail.rs": "editor::loop_rail::tests::",
     "src/editor/controller.rs": CONTROLLER_PUBLICATION_UNIT,
     "src/editor/arrangement_audio_panel.rs": "editor::arrangement_audio_panel::tests::",
@@ -418,6 +422,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::edit_cursor_ui_test::": ("editor::arrangement_seek::unit_tests::",),
     "editor::browser::audition::": ("editor::browser::audition_geometry::",),
     "editor::browser::random::": ("editor::browser::random_rank::",),
     "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
@@ -501,6 +508,11 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
                      "editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs"},
+                    {"editor::device_panel::eq8_panel::graph::tests::",
+                     "editor::device_panel::eq8_panel::group::tests::",
+                     "editor::device_panel::eq8_panel::selection::tests::",
+                     "editor::device_panel::tests::eq8_marquee_tests::eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device",
+                     "editor::device_panel::tests::eq8_marquee_tests::eq8_marquee_group_move_and_disable_each_commit_one_undo"},
                     {"editor::device_panel::operator_panel::tests::",
                      "editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
                      "editor::device_panel::tests::operator_waveform_editor_tests::waveform_cycle_updates_from_real_partial_edits_and_undo"},
@@ -862,6 +874,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             ):
                 if any(unit.startswith(name) for name in names):
                     names.update(consumers)
+            if any("editor::arrangement_seek::unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
+                    "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+                    "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+                ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
