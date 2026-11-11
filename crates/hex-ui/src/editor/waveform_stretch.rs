@@ -92,5 +92,5 @@ pub(super) fn stretch_waveform_view(
 mod accepted_root;
 pub(super) use accepted_root::accepted_root_frame;
 
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests;
