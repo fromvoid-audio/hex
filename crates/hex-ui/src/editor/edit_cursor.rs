@@ -368,6 +368,7 @@ impl EditorView {
         // Its stale-source checks above still run; hidden point cursors need no pulse.
         // A point cursor hidden behind a rectangle play start needs no pulse either.
         self.mode == EditorMode::Arrangement
+            && !self.play_start_at_beginning
             && self.selected_arrangement_play_start().is_none()
             && self
                 .edit_cursor
@@ -390,7 +391,11 @@ impl EditorView {
             .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation);
         let cursor = cursor.or(locked);
-        let cursor_frame = cursor.map(|cursor| cursor.frame).or(guide)?;
+        let reset = self.play_start_at_beginning;
+        let cursor_frame = cursor
+            .map(|cursor| cursor.frame)
+            .or(guide)
+            .or(reset.then_some(0))?;
         let (start, end) = self
             .time_selection
             .map_or((cursor_frame, cursor_frame), |selection| {
@@ -403,7 +408,8 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
-        if guide.is_none()
+        if !reset
+            && guide.is_none()
             && locked.is_none()
             && start == end
             && self.selected_arrangement_play_start().is_some()
@@ -447,7 +453,21 @@ impl EditorView {
                 .then_some(cursor)
                 .flatten()
         });
-        if let Some(point) = point
+        if reset
+            && let Some(marker) = viewport.fraction(0).and_then(|position| {
+                time_position_marker(
+                    format!("transport-start-{edge_name}").into(),
+                    position,
+                    Endpoint::Point,
+                    edge,
+                    theme::time_position_marker_color(),
+                )
+            })
+        {
+            markers.push(marker.into_any_element());
+        }
+        if !reset
+            && let Some(point) = point
             && let Some(marker) = viewport.fraction(point.frame).and_then(|position| {
                 time_position_marker(
                     if locked.is_some() {
@@ -505,17 +525,27 @@ impl EditorView {
     ) -> Option<Div> {
         let markers =
             self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, guide, cx);
-        let line = self.project_point_cursor().and_then(|cursor| {
-            let position = viewport.fraction(cursor.frame)?;
+        let line = if self.play_start_at_beginning {
+            Some((
+                0,
+                theme::time_position_marker_color(),
+                "transport-start-line",
+            ))
+        } else {
+            self.project_point_cursor()
+                .map(|cursor| (cursor.frame, cursor.color(), "project-edit-cursor-line"))
+        };
+        let line = line.and_then(|(frame, color, selector)| {
+            let position = viewport.fraction(frame)?;
             Some(
                 div()
-                    .debug_selector(|| "project-edit-cursor-line".into())
+                    .debug_selector(move || selector.into())
                     .absolute()
                     .top_0()
                     .bottom_0()
                     .left(gpui::relative(position))
                     .w(px(1.0))
-                    .bg(gpui::rgb(cursor.color())),
+                    .bg(gpui::rgb(color)),
             )
         });
         if markers.is_none() && line.is_none() {

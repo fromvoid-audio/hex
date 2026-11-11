@@ -1088,7 +1088,7 @@ impl Render for EditorView {
                 view.toggle_play();
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &Stop, window, cx| {
+            .on_action(cx.trace(|view, stop: &Stop, window, cx| {
                 cx.stop_active_drag(window);
                 view.retire_active_clip_drag();
                 view.cancel_active_browser_audio_drag();
@@ -1097,7 +1097,11 @@ impl Render for EditorView {
                 view.cancel_track_reorder();
                 view.device_panel.navigation.cancel();
                 view.cancel_modulation_target_drag();
-                view.stop();
+                if stop.return_to_beginning {
+                    view.stop_at_beginning();
+                } else {
+                    view.stop();
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CancelDragOrStop, window, cx| {
@@ -1186,7 +1190,7 @@ impl Render for EditorView {
                     && !device_drag_stopped
                     && !pan_canceled
                 {
-                    view.stop();
+                    view.stop_from_escape();
                 }
                 cx.notify();
             }))

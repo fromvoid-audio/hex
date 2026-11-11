@@ -421,7 +421,6 @@ actions!(
         PreviousTrack,
         NextTrack,
         LaunchSessionSelection,
-        Stop,
         ImportAudio,
         NewProject,
         NewStreamingProject,
@@ -496,6 +495,12 @@ actions!(
         Quit
     ]
 );
+
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = hex_editor, no_json)]
+pub(super) struct Stop {
+    return_to_beginning: bool,
+}
 
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(namespace = hex_editor, no_json)]
@@ -1099,6 +1104,8 @@ pub(super) struct EditorView {
     edit_cursor: Option<edit_cursor::EditCursor>,
     /// Transient Arrangement play-start lock; never seeks the active transport.
     locked_play_start: Option<edit_cursor::EditCursor>,
+    play_start_at_beginning: bool,
+    escape_stop_armed: bool,
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_arrangement_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
@@ -1871,6 +1878,8 @@ impl EditorView {
             context_menu: None,
             edit_cursor: None,
             locked_play_start: None,
+            play_start_at_beginning: false,
+            escape_stop_armed: false,
             edit_cursor_in_selected_clip: None,
             loop_start_over_clip: None,
             selection_loop_start: None,
@@ -1957,6 +1966,7 @@ impl EditorView {
     }
 
     pub(super) fn toggle_play(&mut self) {
+        self.escape_stop_armed = false;
         if self.section_install_pending() {
             self.error = Some("applying edit · wait for audio".into());
             return;
@@ -1994,7 +2004,14 @@ impl EditorView {
         self.queue_audio_command(command);
     }
 
+    /// A Stop reset supplies absolute frame zero until the next selection
+    /// intent or project replacement. It leaves the edit cursor, ranges, clip
+    /// selection, play-start lock and loop intact. The reset wins over all of
+    /// those sources, including a loop whose start is later in the song.
     fn playback_start_frame(&self) -> u64 {
+        if self.play_start_at_beginning {
+            return 0;
+        }
         if let Some(cursor) = self.valid_locked_play_start() {
             return cursor.frame;
         }
