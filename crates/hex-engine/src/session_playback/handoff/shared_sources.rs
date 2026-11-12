@@ -2764,8 +2764,7 @@ mod tests {
             for (index, frame) in output.iter().enumerate().skip(128) {
                 for channel in 0..2 {
                     assert!(
-                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs()
-                            < 0.000_002,
+                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs() < 0.000_002,
                         "index={index} frame={frame:?}"
                     );
                 }

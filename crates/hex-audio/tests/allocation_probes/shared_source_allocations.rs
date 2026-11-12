@@ -195,7 +195,7 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
         track: b,
         source: Some(source),
     })?;
-    for track in [a, b] {
+    for (track, pitch) in [(a, 60), (b, 67)] {
         let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
             track,
             start: BeatTime::ZERO,
@@ -208,7 +208,7 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
             clip,
             start: BeatTime::ZERO,
             duration: BeatTime::from_quarters(3)?,
-            pitch: 60,
+            pitch,
             velocity: 100,
             channel: 0,
         })?;
@@ -233,7 +233,10 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
     for step in 0..8 {
         match step {
             1 => {
-                editor.execute(Command::Mute { track: b, muted: true })?;
+                editor.execute(Command::Mute {
+                    track: b,
+                    muted: true,
+                })?;
                 let candidate = playback(
                     editor.project(),
                     prepared(editor.project())?,
@@ -249,7 +252,10 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                     .map_err(|error| error.reason)?;
             }
             2 => {
-                editor.execute(Command::Mute { track: b, muted: false })?;
+                editor.execute(Command::Mute {
+                    track: b,
+                    muted: false,
+                })?;
                 let candidate = playback(
                     editor.project(),
                     prepared(editor.project())?,
@@ -330,8 +336,17 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
         // held voice is cut until the key is pressed again; it must still be
         // applied, not refused, and allocate nothing.
         if [1, 2, 5].contains(&step) {
-            assert!(control.status.rejected_revision().is_none(), "step {step}: {:?}", control.status.rejected_revision());
+            assert!(
+                control.status.rejected_revision().is_none(),
+                "step {step}: {:?}",
+                control.status.rejected_revision()
+            );
         }
+        assert!(
+            control.status.render_fault_snapshot().is_none(),
+            "step {step}: {:?}",
+            control.status.render_fault_snapshot()
+        );
         if step < 4 {
             assert!(
                 output
