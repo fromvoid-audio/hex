@@ -365,6 +365,61 @@ class FreshTargetReservationTests(unittest.TestCase):
 
 
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_qualifying_step_sequence_refuses_drift_before_execution_or_target_access(self):
+        self.step_sequence_patch.stop()
+        expected = local_ci.planned_steps({"scope": "full"})
+        first = expected[0]
+        cases = {
+            "empty": (),
+            "missing": expected[1:],
+            "added": (*expected, first),
+            "reordered": (expected[1], expected[0], *expected[2:]),
+            "argv": (local_ci.Step(first.step_id, (*first.argv, "--changed"),
+                                   first.uses_cargo_target, first.requires_tests), *expected[1:]),
+            "flags": (local_ci.Step(first.step_id, first.argv, not first.uses_cargo_target,
+                                    first.requires_tests), *expected[1:]),
+            "id": (local_ci.Step("changed", first.argv, first.uses_cargo_target,
+                                 first.requires_tests), *expected[1:]),
+            "test-flag": (local_ci.Step(first.step_id, first.argv, first.uses_cargo_target,
+                                         not first.requires_tests), *expected[1:]),
+        }
+        for label, steps in cases.items():
+            with self.subTest(label=label):
+                runner = local_ci.LocalCiRunner(self.repo, mode="full", run_id="sequence-" + label,
+                    env=self.env, steps=steps, min_free_bytes=0, target_state_dir=self.target_state_dir)
+                with patch.object(runner, "_resolve_cargo_identity") as identity, \
+                        patch.object(runner, "_run_step") as execute:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("step_sequence_error", runner.summary)
+                identity.assert_not_called()
+                execute.assert_not_called()
+
+    def test_scoped_step_binding_and_nonqualifying_custom_execution(self):
+        self.step_sequence_patch.stop()
+        plan = {"scope": "metadata", "base": "base", "source": "source", "qualifies_merge": True}
+        expected = local_ci.planned_steps(plan)
+        matching = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=expected)
+        self.assertIsNone(matching._step_sequence_error())
+        altered = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=())
+        self.assertIsNotNone(altered._step_sequence_error())
+        with patch.object(altered, "_resolve_cargo_identity") as identity, \
+                patch.object(altered, "_run_step") as execute:
+            self.assertEqual(altered.run(), 2)
+        identity.assert_not_called()
+        execute.assert_not_called()
+        full = local_ci.LocalCiRunner(self.repo, mode="full", env=self.env)
+        self.assertIsNone(full._step_sequence_error())
+        for mode in ("quick", "component", "custom"):
+            with self.subTest(mode=mode):
+                partial = local_ci.LocalCiRunner(self.repo, mode=mode, run_id="custom-" + mode, env=self.env,
+                    steps=(local_ci.Step("first", ("first",)),), min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(partial.run(), 0)
+                self.assertEqual(partial.summary["status"], "partial")
+        scoped_partial = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env,
+            plan={"scope": "metadata", "qualifies_merge": False}, steps=())
+        self.assertIsNone(scoped_partial._step_sequence_error())
+
     def test_module_shard_empty_configs_require_aggregate_passes(self):
         (self.bin / "python3").write_text(
             '#!/bin/sh\ncase "$*" in\n'
@@ -411,6 +466,11 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertGreaterEqual(summary["duration_seconds"], summary["time_to_first_result_seconds"])
 
     def setUp(self) -> None:
+        # Pipeline and checkpoint fixtures exercise other boundaries with short,
+        # synthetic steps. Sequence admission has dedicated unmocked tests above.
+        self.step_sequence_patch = patch.object(local_ci.LocalCiRunner, "_step_sequence_error", return_value=None)
+        self.step_sequence_patch.start()
+        self.addCleanup(self.step_sequence_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
         # Tests for unsafe lexical aliases construct those paths explicitly.

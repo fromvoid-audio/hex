@@ -1,6 +1,8 @@
 use super::*;
+use crate::editor::waveform_geometry::WaveformGeometryCache;
 use hex_project::{Command, Created, Editor, Project};
 use hex_session::{CachedPeak, CachedWaveform};
+use std::cell::RefCell;
 
 fn fixture() -> (Editor, hex_project::ClipId) {
     let mut editor = Editor::new(Project::new(44_100).unwrap(), 32).unwrap();
@@ -59,6 +61,7 @@ fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
         let mapping =
             WaveformMapping::Stretch(Arc::new(projection(&editor, id, TrimEdge::Right, length)));
         let request = WaveformGeometryRequest {
+            amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(false),
             mapping: &mapping,
             visible_start: 0,
             visible_end: length,

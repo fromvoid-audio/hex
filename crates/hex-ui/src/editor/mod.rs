@@ -1044,8 +1044,8 @@ pub(super) struct EditorView {
     group_overview_cache: std::cell::RefCell<group_overview::Cache>,
     audio_point_page: usize,
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
-    pub(in crate::editor) waveform_geometry_cache:
-        Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
+    pub(in crate::editor) waveform_geometry_cache: Rc<waveform_geometry::WaveformViewCache>,
+    pub(in crate::editor) clip_waveform_geometry_cache: Rc<waveform_geometry::WaveformViewCache>,
     midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
     midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
@@ -1619,6 +1619,9 @@ impl EditorView {
         );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
+        let waveform_geometry = Rc::new(std::cell::RefCell::new(
+            waveform_geometry::WaveformGeometryCache::default(),
+        ));
         let mut view = Self {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
@@ -1834,8 +1837,11 @@ impl EditorView {
             overview_waveform_cache: Rc::new(std::cell::RefCell::new(
                 overview_waveform::Cache::default(),
             )),
-            waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
-                waveform_geometry::WaveformGeometryCache::default(),
+            waveform_geometry_cache: Rc::new(waveform_geometry::WaveformViewCache::new(Rc::clone(
+                &waveform_geometry,
+            ))),
+            clip_waveform_geometry_cache: Rc::new(waveform_geometry::WaveformViewCache::new(
+                waveform_geometry,
             )),
             midi_visible_notes: Default::default(),
             midi_tile_images: Default::default(),
@@ -2392,23 +2398,4 @@ pub(crate) fn sampler_midi_fixture_ready(
 }
 
 #[cfg(test)]
-mod shortcut_tests {
-    use super::{
-        FitTimeline, KeyBinding, PanTimelineLeft, PanTimelineRight, SaveAsProject, SaveProject,
-        SelectAllMidiNotes, ToggleMidiDrawMode, ZoomIn, ZoomOut, escape_binding,
-    };
-
-    #[test]
-    fn timeline_shortcuts_parse() {
-        let _zoom_in = KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor"));
-        let _zoom_out = KeyBinding::new("cmd--", ZoomOut, Some("hex_editor"));
-        let _fit = KeyBinding::new("cmd-0", FitTimeline, Some("hex_editor"));
-        let _pan_left = KeyBinding::new("alt-left", PanTimelineLeft, Some("hex_editor"));
-        let _pan_right = KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor"));
-        let _save = KeyBinding::new("cmd-s", SaveProject, Some("hex_editor"));
-        let _save_as = KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor"));
-        let _escape = escape_binding();
-        let _select_all_midi = KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_midi"));
-        let _toggle_midi_draw = KeyBinding::new("b", ToggleMidiDrawMode, Some("hex_midi"));
-    }
-}
+mod shortcut_tests;

@@ -66,11 +66,11 @@ mod startup_failure_tests;
 pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
+mod clip_audition;
+pub use clip_audition::{ArrangementPlayStartAudition, ArrangementStretchAudition, PlayStartEdit};
 mod publication_wait;
 mod resident_audio;
 mod resident_preview;
-mod stretch_audition;
-pub use stretch_audition::ArrangementStretchAudition;
 mod resident_seek;
 mod stopped_arrangement;
 mod truncated_import;
@@ -1253,7 +1253,7 @@ pub struct Service {
     export_test_hook: ExportTestHook,
     /// `None` after shutdown, which disconnects an idle blocking worker.
     requests: Option<request_cancellation::Sender>,
-    stretch_audition: Arc<stretch_audition::Mailbox>,
+    clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
     solo_views: Receiver<SoloViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
@@ -1601,8 +1601,8 @@ impl Service {
         let worker_shutdown = Arc::clone(&shutdown);
         let startup_failure = Arc::new(std::sync::OnceLock::new());
         let worker_startup_failure = Arc::clone(&startup_failure);
-        let stretch_audition = Arc::new(stretch_audition::Mailbox::default());
-        let worker_stretch_audition = Arc::clone(&stretch_audition);
+        let clip_audition = Arc::new(clip_audition::Mailbox::default());
+        let worker_clip_audition = Arc::clone(&clip_audition);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             // Structural stopped publications reuse the bounded preroll constructor.
@@ -1694,7 +1694,7 @@ impl Service {
                     recovery,
                     resident_seek,
                     solo_view_tx,
-                    worker_stretch_audition,
+                    worker_clip_audition,
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -1705,7 +1705,7 @@ impl Service {
                 request_tx,
                 document_intent,
             )),
-            stretch_audition,
+            clip_audition,
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             solo_views,
@@ -1733,21 +1733,61 @@ impl Service {
         self.solo_views.try_recv()
     }
 
-    /// Replace the one held stretch audition target. This never enters the
-    /// canonical FIFO and never takes playback or media custody from the worker.
+    /// Replace the one held stretch audition target outside the canonical FIFO.
     pub fn audition_arrangement_stretch(&self, target: Option<ArrangementStretchAudition>) {
-        self.stretch_audition.set(target);
+        if let Some(target) = target {
+            self.clip_audition
+                .set(clip_audition::Target::Stretch(target));
+        } else {
+            self.clip_audition
+                .clear(Some(clip_audition::Kind::Stretch), false);
+        }
     }
 
-    /// Stop preparing held targets and retain the audible preview through the
-    /// ordinary edit's exact terminal.
+    /// Hold the audible stretch preview until the ordinary edit's terminal.
     pub fn finish_arrangement_stretch_audition(&self) {
-        self.stretch_audition.release();
+        self.clip_audition.release(clip_audition::Kind::Stretch);
+    }
+
+    /// Replace the held play-start target, or cancel held input. Released audio
+    /// remains owned by the pending clip edit until its exact terminal.
+    pub fn audition_arrangement_play_start(&self, target: Option<ArrangementPlayStartAudition>) {
+        if let Some(target) = target {
+            self.clip_audition
+                .set(clip_audition::Target::PlayStart(target));
+        } else {
+            self.clip_audition
+                .clear(Some(clip_audition::Kind::PlayStart), true);
+        }
+    }
+
+    /// Retain the last applied play-start preview through a single commit.
+    pub fn finish_arrangement_play_start_audition(&self) {
+        self.clip_audition.release(clip_audition::Kind::PlayStart);
+    }
+
+    /// Retire the audition after refusal or installation of the authored edit.
+    pub fn retire_arrangement_play_start_audition(&self) {
+        self.clip_audition
+            .clear(Some(clip_audition::Kind::PlayStart), false);
     }
 
     #[cfg(feature = "source-overview-test-support")]
     pub fn held_arrangement_stretch_audition_for_test(&self) -> Option<ArrangementStretchAudition> {
-        self.stretch_audition.held()
+        match self.clip_audition.held()? {
+            clip_audition::Target::Stretch(target) => Some(target),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "source-overview-test-support")]
+    pub fn held_arrangement_play_start_audition_for_test(
+        &self,
+    ) -> Option<ArrangementPlayStartAudition> {
+        match self.clip_audition.held()? {
+            clip_audition::Target::PlayStart(target) => Some(target),
+            _ => None,
+        }
     }
 
     /// Submit without waiting for worker capacity.
@@ -1764,7 +1804,7 @@ impl Service {
         let diagnostic = self.diagnostics.begin(&request);
         let result = self.submit_traced(request, diagnostic);
         if result.is_ok() && replaces_audition_source {
-            self.stretch_audition.set(None);
+            self.clip_audition.clear(None, false);
         }
         self.diagnostics.returned(diagnostic, &result);
         result
@@ -2440,7 +2480,7 @@ fn run_worker(
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
     solo_views: SyncSender<SoloViewObservation>,
-    stretch_audition: Arc<stretch_audition::Mailbox>,
+    clip_audition: Arc<clip_audition::Mailbox>,
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
@@ -2485,7 +2525,7 @@ fn run_worker(
         None;
     let mut resident_snapshot: Option<resident_audio::Snapshot> = None;
     let mut resident_preview: Option<resident_preview::Preview> = None;
-    let mut stretch_lane = stretch_audition::Lane::default();
+    let mut clip_audition_lane = clip_audition::Lane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -2711,8 +2751,8 @@ fn run_worker(
         |mut audio, audition| {
             if audition {
                 let pending = audio.is_some_and(|sink| {
-                    stretch_lane.drive(
-                        &stretch_audition,
+                    clip_audition_lane.drive(
+                        &clip_audition,
                         &session,
                         hex_engine::AudioSourceContext {
                             project_generation,
@@ -2858,16 +2898,13 @@ fn run_worker(
             },
             document_intent.load(Ordering::Acquire),
         );
-        let stretch_release = resident_preview
+        let clip_audition_release = resident_preview
             .as_ref()
-            .is_some_and(|preview| preview.stretch_target().is_some())
-            && matches!(
-                &queued.request,
-                Request::Edit(Command::StretchAudioClipEdge { .. } | Command::TrimClipEdge { .. })
-            );
+            .and_then(resident_preview::Preview::clip_target)
+            .is_some_and(|target| target.matches_release(&queued.request));
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
-            && (stretch_release
+            && (clip_audition_release
                 || matches!(
                     &queued.request,
                     Request::Edit(
@@ -3603,21 +3640,32 @@ fn run_worker(
                         TrackClipboardAction::Duplicate {
                             tracks,
                             without_clips,
-                        } => Some(
-                            session
-                                .project()
-                                .capture_tracks(tracks, *without_clips)
-                                .and_then(|clipboard| {
-                                    session
-                                        .project()
-                                        .track_destination_after_selection(tracks)
-                                        .map(|destination| Command::PasteTracks {
-                                            clipboard: Arc::new(clipboard),
-                                            destination,
-                                        })
-                                })
-                                .map_err(|error| error.to_string()),
-                        ),
+                        } => Some((|| {
+                            let project = session.project();
+                            let destination = project
+                                .track_destination_after_selection(tracks)
+                                .map_err(|error| error.to_string())?;
+                            let cancellation = RequestCancellation::new(
+                                Arc::clone(&session.shutdown),
+                                Arc::clone(&document_intent),
+                                queued.document_intent,
+                            );
+                            let clipboard = plugin_state_save::capture_tracks_for_duplicate(
+                                project,
+                                tracks,
+                                *without_clips,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                &cancellation,
+                                events.sampler_edit_audio(),
+                            )?;
+                            Ok(Command::PasteTracks {
+                                clipboard: Arc::new(clipboard),
+                                destination,
+                            })
+                        })()),
                     }
                 }
             }
@@ -8623,7 +8671,7 @@ fn run_worker(
         let canonical_prepared = if let Some(prepared) = replacement_revision {
             if resident_preview
                 .as_ref()
-                .is_some_and(|overlay| overlay.stretch_target().is_some())
+                .is_some_and(|overlay| overlay.clip_target().is_some())
                 && resident_snapshot
                     .as_ref()
                     .is_some_and(|snapshot| Arc::ptr_eq(&snapshot.prepared, &prepared))
@@ -13422,7 +13470,7 @@ mod service_tests {
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            stretch_audition: Arc::new(stretch_audition::Mailbox::default()),
+            clip_audition: Arc::new(clip_audition::Mailbox::default()),
             requests: Some(request_cancellation::Sender::new(
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
