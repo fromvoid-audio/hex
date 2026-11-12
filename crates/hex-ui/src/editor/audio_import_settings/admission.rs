@@ -45,10 +45,12 @@ impl State {
     ) -> Result<Request, String> {
         let arrangement_import = match &request {
             Request::Import(_)
-            | Request::InsertProjectSample { .. }
             | Request::ImportToTrack { .. }
             | Request::ImportToTrackWithOverwrite { .. }
             | Request::ImportToNewTrack { .. } => true,
+            Request::InsertProjectSample { destination, .. } => {
+                !matches!(destination, AudioBatchDestination::Console(_))
+            }
             Request::ImportAudioBatch { destination, .. } => {
                 !matches!(destination, AudioBatchDestination::Console(_))
             }
@@ -70,8 +72,15 @@ fn capture(
     warp: AudioImportWarp,
     context: AudioBatchContext,
 ) -> Result<Request, String> {
-    if let Request::InsertProjectSample { warp: captured, .. } = &mut request {
-        *captured = warp;
+    if let Request::InsertProjectSample {
+        destination,
+        warp: captured,
+        ..
+    } = &mut request
+    {
+        if !matches!(destination, AudioBatchDestination::Console(_)) {
+            *captured = warp;
+        }
         return Ok(request);
     }
     let (path, destination, overwrite) = match request {
