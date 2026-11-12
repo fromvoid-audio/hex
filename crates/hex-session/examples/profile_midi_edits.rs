@@ -2,8 +2,9 @@
 //! `--recovery` and `--no-recovery` compare note edits on the real worker;
 //! `--duplicate-recovery` and `--duplicate-no-recovery` profile whole-clip
 //! duplication against the same saved-project fixture. `--paste-recovery`
-//! and `--paste-no-recovery` measure two queued clip pastes. No argument retains
-//! the direct-session profile.
+//! and `--paste-no-recovery` measure two queued clip pastes; `--time-copy-recovery`
+//! and `--time-copy-no-recovery` measure queued Arrangement time-range copies.
+//! No argument retains the direct-session profile.
 use hex_project::{
     BeatTime, Command, Created, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project,
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
