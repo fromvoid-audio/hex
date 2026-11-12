@@ -49,6 +49,15 @@ pub(super) fn open_with_audition_readiness(
     commands: Vec<hex_project::Command>,
     audition_ready: bool,
 ) -> WorkerUiFixture {
+    open_with_section_support(cx, commands, audition_ready, false)
+}
+
+pub(super) fn open_with_section_support(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+    audition_ready: bool,
+    section_fixture: bool,
+) -> WorkerUiFixture {
     let serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
@@ -69,7 +78,10 @@ pub(super) fn open_with_audition_readiness(
         .unwrap()
         .configure_device_resource_publication_on_control(reservation.storage)
         .unwrap();
-    let client = output.take_client().unwrap();
+    let mut client = output.take_client().unwrap();
+    if section_fixture {
+        client.bind_resident_transport(0);
+    }
     let (events, receiver) = sync_channel(64);
     let consume_next_inherited_candidate = Arc::new(AtomicBool::new(false));
     let service = Service::with_audio_sink_and_native_reservation(
@@ -81,6 +93,7 @@ pub(super) fn open_with_audition_readiness(
             events,
             audition_ready,
             Arc::clone(&consume_next_inherited_candidate),
+            section_fixture,
         ),
         reservation,
     )

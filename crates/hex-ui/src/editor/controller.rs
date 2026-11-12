@@ -4384,6 +4384,74 @@ impl EditorView {
         }
     }
 
+    /// Starts only on the source that actually accepted this committed copy.
+    /// A full UI or audio queue refuses visibly rather than dropping the fence.
+    pub(super) fn queue_section_copy_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.wake_poll();
+        let playing = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.status())
+            .is_some_and(|status| status.playing.load(Acquire));
+        if self.desired_playing(playing)
+            || !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        let token = match super::play_intent::prepare_admission(
+            &mut self.play_intent,
+            Some(true),
+            0,
+            UI_REQUEST_CAPACITY,
+        ) {
+            Ok(token) => token,
+            Err(AdmissionError::QueueFull) => {
+                self.error = Some("playback command queue full".into());
+                return;
+            }
+            Err(AdmissionError::TokenExhausted) => {
+                self.report_intent_exhausted();
+                return;
+            }
+        };
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .play_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        let command = PlaybackCommand::PlayFrom(frame);
+        self.admit_play_intent(
+            PendingPlaybackAction {
+                action: PlaybackAction::Transport(command),
+                generation: self.project_generation,
+                revision: None,
+                intent_token: token,
+            },
+            Some(true),
+            Some(ticket),
+        );
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(command);
+        }
+    }
+
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
         self.wake_poll();
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
