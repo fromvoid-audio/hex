@@ -372,17 +372,25 @@ pub struct Event {
     pub tuning_library: Option<TuningLibraryResult>,
 }
 
-/// Best-effort display observation after a Solo edit commits and before its
+/// Best-effort display observation after a track mute or solo edit commits and before its
 /// ordinary terminal. The one-slot channel can drop observations under
 /// backpressure; only the ordered Event terminal acknowledges the request.
 /// Consumers must match the generation and previous revision before painting,
 /// and retire the observation on the terminal or project replacement. It
 /// never acknowledges recovery, transfers project custody or proves audio application.
-pub struct SoloViewObservation {
+pub struct TrackSwitchViewObservation {
     pub project_generation: u64,
     pub previous_revision: u64,
     pub revision: u64,
-    pub tracks: Vec<(hex_project::TrackId, bool)>,
+    pub tracks: Vec<TrackSwitchState>,
+}
+
+/// Authored switches. Effective audibility remains owned by the audio mixer.
+#[derive(Clone, Copy)]
+pub struct TrackSwitchState {
+    pub track: hex_project::TrackId,
+    pub muted: bool,
+    pub soloed: bool,
 }
 
 /// The committed Arrangement clip or section copy, available before checkpoint
@@ -1266,7 +1274,7 @@ pub struct Service {
     requests: Option<request_cancellation::Sender>,
     clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
-    solo_views: Receiver<SoloViewObservation>,
+    track_switch_views: Receiver<TrackSwitchViewObservation>,
     duplicate_views: Receiver<DuplicateViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
@@ -1584,7 +1592,7 @@ impl Service {
         let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
-        let (solo_view_tx, solo_views) = mpsc::sync_channel(1);
+        let (track_switch_view_tx, track_switch_views) = mpsc::sync_channel(1);
         let (duplicate_view_tx, duplicate_views) = mpsc::sync_channel(1);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
@@ -1706,7 +1714,7 @@ impl Service {
                     actor_export_events,
                     recovery,
                     resident_seek,
-                    solo_view_tx,
+                    track_switch_view_tx,
                     duplicate_view_tx,
                     worker_clip_audition,
                 )
@@ -1722,7 +1730,7 @@ impl Service {
             clip_audition,
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
-            solo_views,
+            track_switch_views,
             duplicate_views,
             export_events: export_event_rx,
             export_busy,
@@ -1742,10 +1750,10 @@ impl Service {
         self.startup_failure.get().map(String::as_str)
     }
 
-    /// Receive a bounded, optional Solo display observation. A full channel
+    /// Receive a bounded track mute or solo display observation. A full channel
     /// drops the observation; the ordinary terminal remains authoritative.
-    pub fn try_solo_view(&self) -> Result<SoloViewObservation, TryRecvError> {
-        self.solo_views.try_recv()
+    pub fn try_track_switch_view(&self) -> Result<TrackSwitchViewObservation, TryRecvError> {
+        self.track_switch_views.try_recv()
     }
 
     /// Receive an optional display observation without consuming a terminal.
@@ -2499,7 +2507,7 @@ fn run_worker(
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
-    solo_views: SyncSender<SoloViewObservation>,
+    track_switch_views: SyncSender<TrackSwitchViewObservation>,
     duplicate_views: SyncSender<DuplicateViewObservation>,
     clip_audition: Arc<clip_audition::Mailbox>,
 ) {
@@ -3010,9 +3018,15 @@ fn run_worker(
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
-        let solo_request = matches!(
+        let track_switch_request = matches!(
             &request,
-            Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
+            Request::Edit(
+                Command::Mute { .. }
+                    | Command::ToggleMute(_)
+                    | Command::ToggleTracksMute(_)
+                    | Command::ToggleSolo { .. }
+                    | Command::ToggleSoloTracks { .. }
+            )
         );
         let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
         let arrangement_duplicate = matches!(
@@ -8915,20 +8929,19 @@ fn run_worker(
                     .flatten();
             }
         }
-        if solo_request && canonical_changed && error.is_none() {
+        let committed_track_switch = track_switch_request && canonical_changed && error.is_none();
+        if committed_track_switch {
             let mut tracks = Vec::new();
             if tracks
                 .try_reserve_exact(state.project.tracks().len())
                 .is_ok()
             {
-                tracks.extend(
-                    state
-                        .project
-                        .tracks()
-                        .iter()
-                        .map(|track| (track.id(), track.soloed())),
-                );
-                let _ = solo_views.try_send(SoloViewObservation {
+                tracks.extend(state.project.tracks().iter().map(|track| TrackSwitchState {
+                    track: track.id(),
+                    muted: track.muted(),
+                    soloed: track.soloed(),
+                }));
+                let _ = track_switch_views.try_send(TrackSwitchViewObservation {
                     project_generation,
                     previous_revision: revision_before_request,
                     revision,
@@ -8971,7 +8984,9 @@ fn run_worker(
             let journal_result = if committed_arrangement_duplicate.is_some()
                 || (time_range_copy && canonical_changed && error.is_none())
             {
-                events.measure_duplicate_recovery(maintain_recovery)
+                events.measure_recovery("duplicate_recovery_us", maintain_recovery)
+            } else if committed_track_switch {
+                events.measure_recovery("track_switch_recovery_us", maintain_recovery)
             } else {
                 maintain_recovery()
             };
@@ -13602,7 +13617,7 @@ mod service_tests {
         let (requests, _request_receiver) = mpsc::sync_channel(0);
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
-        let (_solo_sender, solo_views) = mpsc::sync_channel(1);
+        let (_track_switch_sender, track_switch_views) = mpsc::sync_channel(1);
         let (_duplicate_sender, duplicate_views) = mpsc::sync_channel(1);
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
@@ -13616,7 +13631,7 @@ mod service_tests {
                 events,
                 Arc::new(diagnostics::Hooks::default()),
             ),
-            solo_views,
+            track_switch_views,
             duplicate_views,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),

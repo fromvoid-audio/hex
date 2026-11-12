@@ -1117,8 +1117,8 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_automation_close(cx);
-        if let Ok(view) = self.service.try_solo_view() {
-            visible_change |= self.observe_solo_view(view);
+        if let Ok(view) = self.service.try_track_switch_view() {
+            visible_change |= self.observe_track_switch_view(view);
         }
         if let Ok(view) = self.service.try_duplicate_view() {
             visible_change |= self.observe_duplicate_view(view);
@@ -2286,11 +2286,11 @@ impl EditorView {
             return None;
         }
         if self
-            .solo_observation
+            .track_switch_observation
             .as_ref()
             .is_some_and(|view| event.project_replaced || event.state.revision >= view.revision)
         {
-            self.solo_observation = None;
+            self.track_switch_observation = None;
         }
         if event.request_complete && event.error.is_some() {
             self.cancel_new_preparation();
