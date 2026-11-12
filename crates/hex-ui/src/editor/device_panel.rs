@@ -75,6 +75,7 @@ pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_prev
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
+mod source_summary;
 pub(super) mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
@@ -84,6 +85,7 @@ pub(super) use send_controls::return_send_numeric_control;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
 const DEVICE_CHAIN_PADDING: f32 = 3.0;
+const SOURCE_SUMMARY_WIDTH: f32 = 128.0;
 pub(super) const DEVICE_PANEL_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT
     + DEVICE_PANEL_BORDER_WIDTH
     + DEVICE_PANEL_HEADER_HEIGHT
@@ -127,6 +129,7 @@ pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
+    source_summary: source_summary::SourceSummaryCache,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     modulation_target_drag: modulators::TargetDragState,
@@ -1166,6 +1169,17 @@ fn render_track(
         .overflow_x_scroll()
         .overflow_y_hidden();
     chain = navigation::rail(view, chain);
+    let source_summary = view
+        .device_panel
+        .source_summary
+        .get(&state.project, track_id);
+    let prefix = if let Some(summary) = source_summary {
+        let card = source_summary_card(summary).mr(px(DEVICE_CHAIN_PADDING));
+        chain = chain.child(card);
+        SOURCE_SUMMARY_WIDTH + DEVICE_CHAIN_PADDING
+    } else {
+        0.0
+    };
     if retained_source_path_label(track).is_some() {
         chain = chain
             .border_t_1()
@@ -1217,7 +1231,9 @@ fn render_track(
             (device.id(), width)
         })
         .collect();
-    view.device_panel.chain_window.prepare(&geometry);
+    view.device_panel
+        .chain_window
+        .prepare_with_prefix(&geometry, prefix);
     let spectrum_identities: Vec<_> = nodes
         .iter()
         .filter_map(|node| {
@@ -1375,6 +1391,53 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+fn source_summary_card(summary: &source_summary::SourceSummary) -> Div {
+    let count = summary.contributors;
+    let count_label = if count == 1 {
+        "midi track"
+    } else {
+        "midi tracks"
+    };
+    let receiver = summary
+        .receiver
+        .as_deref()
+        .map(hex_session::service::text::verbatim)
+        .unwrap_or_else(|| "none".into());
+    let background = theme::color(theme::PaletteRole::Border);
+    div()
+        .debug_selector(|| "device-source-summary".into())
+        .w(px(SOURCE_SUMMARY_WIDTH))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .p(px(4.0))
+        .text_xs()
+        .text_color(rgb(theme::readable_text(
+            background,
+            theme::color(theme::PaletteRole::SecondaryText),
+        )))
+        .child(theme::text("source"))
+        .child(
+            div()
+                .truncate()
+                .text_color(rgb(theme::readable_text(
+                    background,
+                    theme::color(theme::PaletteRole::Text),
+                )))
+                .child(theme::text(hex_session::service::text::verbatim(
+                    &summary.name,
+                ))),
+        )
+        .child(theme::text(summary.role))
+        .child(theme::text(format!("{count} {count_label}")))
+        .child(
+            div()
+                .truncate()
+                .child(theme::text(format!("receiver · {receiver}"))),
+        )
 }
 
 // The panel appends at the tail or replaces the existing instrument in place.
