@@ -1877,10 +1877,17 @@ fn verify_paced_instrument_authoring(
         (600..=100_000).contains(&blocks),
         "paced block count out of range"
     );
+    let burst_delay = std::env::var("HEX_TEST_VST3_BURST_MILLIS")
+        .map(|value| value.parse::<u64>().expect("burst delay"))
+        .unwrap_or(0);
+    assert!(burst_delay <= 25, "burst delay out of range");
     for block in 0..blocks {
         let deadline = start + period * block;
         if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
             std::thread::sleep(delay);
+        }
+        if burst_delay != 0 && block != 0 && block % 100 == 0 {
+            std::thread::sleep(Duration::from_millis(burst_delay));
         }
         harness.pump();
         let callback_start = Instant::now();
