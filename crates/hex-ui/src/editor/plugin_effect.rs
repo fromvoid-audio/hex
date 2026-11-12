@@ -67,6 +67,14 @@ pub(crate) fn fixture_view(
                     .as_ref()
                     .and_then(|audio| audio.status())
                     .and_then(|status| status.native_effect_source()),
+                transport: view
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.status())
+                    .map(|status| {
+                        use std::sync::atomic::Ordering::Acquire;
+                        (status.position.load(Acquire), status.playing.load(Acquire))
+                    }),
             }
         })
         .map_err(|error| error.to_string())

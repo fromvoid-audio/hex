@@ -215,6 +215,7 @@ impl SessionPlayback {
                 note_off_sent: gate <= cut,
                 gain_at_end_bits: gain.to_bits(),
                 gain_frozen,
+                contributor_fade: None,
             });
             plan.len += 1;
             Ok(())
