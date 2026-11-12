@@ -1307,7 +1307,9 @@ impl EditorView {
         {
             lanes.range = None;
         }
-        if let Some(selected) = lanes.selected.take() {
+        if let Some(range) = lanes.range {
+            lanes.selected = range.selection(lanes.points_ref(&state.project, range.target));
+        } else if let Some(selected) = lanes.selected.take() {
             let target = selected.target;
             lanes.selected = if lanes
                 .pending
