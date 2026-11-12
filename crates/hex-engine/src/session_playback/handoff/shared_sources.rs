@@ -1643,8 +1643,28 @@ mod tests {
                 "refused launch must not alter the running source"
             );
             assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            // The held notes end at one quarter note and their declared
+            // one-second tails then retire. A fresh explicit launch can retry.
+            for _ in 0..190 {
+                candidate.render(&mut actual).unwrap();
+            }
+            candidate
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: session_clip,
+                    quantization: crate::LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            candidate.render(&mut actual).unwrap();
+            assert_eq!(
+                candidate.owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip: session_clip })
+            );
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
             candidate.apply(SessionPlaybackCommand::Stop).unwrap();
-            candidate.render(&mut [[0.0; 2]; 64]).unwrap();
+            for _ in 0..130 {
+                candidate.render(&mut actual).unwrap();
+            }
+            assert_eq!(actual, [[0.0; 2]; 64]);
         });
     }
 
@@ -1723,6 +1743,21 @@ mod tests {
             assert!(
                 output.iter().flatten().any(|sample| sample.abs() > 0.001),
                 "the existing peer must continue"
+            );
+            for _ in 0..190 {
+                muted.render(&mut output).unwrap();
+            }
+            assert_eq!(
+                output, [[0.0; 2]; 64],
+                "a rejected held key must not replay when capacity returns"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            input.set_key(0, Some((60, 100, 2))).unwrap();
+            muted.render(&mut output).unwrap();
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "a fresh press must work after the voices retire"
             );
             input.set_key(0, None).unwrap();
             muted.render(&mut output).unwrap();
