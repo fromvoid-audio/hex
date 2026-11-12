@@ -237,12 +237,11 @@ impl NativeWorker {
             instance,
             |instance| {
                 let config = instance.configuration();
-                let prefix = instance.completed_blocks_on_control();
-                if config.input_channels == 0 {
-                    instrument_channel_from_completed_prefix(config.binding, config.quantum, prefix)
-                } else {
-                    channel_from_completed_prefix(config.binding, config.quantum, prefix)
-                }
+                native_pcm_channel_from_completed_prefix(
+                    config.binding,
+                    config.quantum,
+                    instance.completed_blocks_on_control(),
+                )
             },
             spawn,
         )

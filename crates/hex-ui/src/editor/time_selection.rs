@@ -26,8 +26,9 @@ pub(super) fn header_hit_height(row_height: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimeSelection {
-    pub(super) anchor_track: TrackId,
-    pub(super) end_track: TrackId,
+    // An empty project's Main range has no ordinary track anchors.
+    pub(super) anchor_track: Option<TrackId>,
+    pub(super) end_track: Option<TrackId>,
     pub(super) anchor_frame: u64,
     pub(super) end_frame: u64,
 }
@@ -96,6 +97,14 @@ impl EditorView {
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
     pub(super) fn advance_selection_intent(&mut self) {
+        self.play_start_at_beginning = false;
+        self.escape_stop_armed = false;
+        if self
+            .edit_cursor
+            .is_some_and(|cursor| cursor.track.is_none())
+        {
+            self.edit_cursor = None;
+        }
         self.selection_intent_epoch = self
             .selection_intent_epoch
             .and_then(|epoch| epoch.checked_add(1));
@@ -136,10 +145,11 @@ impl EditorView {
         }
         self.edit_cursor.filter(|cursor| {
             cursor.generation == self.project_generation
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+                && self.state.as_ref().is_some_and(|state| {
+                    cursor
+                        .track
+                        .is_some_and(|track| state.project.track(track).is_some())
+                })
         })
     }
 
@@ -197,8 +207,8 @@ impl EditorView {
             return false;
         };
         let selection = TimeSelection {
-            anchor_track: first.id(),
-            end_track: last.id(),
+            anchor_track: Some(first.id()),
+            end_track: Some(last.id()),
             anchor_frame: start,
             end_frame: end,
         };
@@ -232,13 +242,8 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let Some(first_track) = state.project.tracks().first().map(|track| track.id()) else {
-            // An empty project has no valid whole-project time range.
-            return false;
-        };
-        let Some(last_track) = state.project.tracks().last().map(|track| track.id()) else {
-            return false;
-        };
+        let first_track = state.project.tracks().first().map(|track| track.id());
+        let last_track = state.project.tracks().last().map(|track| track.id());
         let Some(lane) = self.main_track_lane_bounds.filter(|lane| {
             self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
         }) else {
@@ -256,7 +261,14 @@ impl EditorView {
         ) else {
             return false;
         };
-        let anchor = self.time_selection_cursor_anchor(extend);
+        let anchor = self.time_selection_cursor_anchor(extend).or_else(|| {
+            self.edit_cursor.filter(|cursor| {
+                extend
+                    && self.time_selection_project_scope
+                    && cursor.track.is_none()
+                    && cursor.generation == self.project_generation
+            })
+        });
         let generation = self.project_generation;
         let revision = state.revision;
         let selection = TimeSelection {
@@ -426,15 +438,16 @@ impl EditorView {
         let anchor = self.time_selection_cursor_anchor(extend);
         let generation = self.project_generation;
         let revision = state.revision;
+        let anchor_track = anchor.and_then(|cursor| cursor.track).unwrap_or(track);
         let selection = TimeSelection {
-            anchor_track: anchor.map_or(track, |cursor| cursor.track),
-            end_track: track,
+            anchor_track: Some(anchor_track),
+            end_track: Some(track),
             anchor_frame: anchor.map_or(frame, |cursor| cursor.frame),
             end_frame: frame,
         };
         self.advance_selection_intent();
         self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
-            track,
+            track: Some(track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -452,7 +465,7 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
-        self.select_lane_span(selection.anchor_track, track);
+        self.select_lane_span(anchor_track, track);
         // The pressed clip stays the clip editor subject, not an object selection.
         let pressed = self.arrangement_clip_at(track, frame, self.detail_clip_id());
         if anchor.is_none() {
@@ -555,7 +568,7 @@ impl EditorView {
         gesture.pointer_x = x;
         gesture.pointer_y = y;
         gesture.free_modifier = free;
-        let Some((pointer_track, lane)) = self.time_gesture_lane_near_y(y) else {
+        let Some((Some(pointer_track), lane)) = self.time_gesture_lane_near_y(y) else {
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
@@ -724,12 +737,10 @@ impl EditorView {
         if self.time_selection_project_scope {
             return Some((0, tracks.len().checked_sub(1)?));
         }
-        let anchor = tracks
-            .iter()
-            .position(|track| track.id() == selection.anchor_track)?;
-        let end = tracks
-            .iter()
-            .position(|track| track.id() == selection.end_track)?;
+        let anchor_track = selection.anchor_track?;
+        let end_track = selection.end_track?;
+        let anchor = tracks.iter().position(|track| track.id() == anchor_track)?;
+        let end = tracks.iter().position(|track| track.id() == end_track)?;
         Some(if anchor <= end {
             (anchor, end)
         } else {
@@ -890,7 +901,10 @@ impl EditorView {
                     .copied()
                     .map(|track| (track, range.start()))
             })
-            .or_else(|| self.edit_cursor.map(|cursor| (cursor.track, cursor.frame)))
+            .or_else(|| {
+                self.edit_cursor
+                    .and_then(|cursor| Some((cursor.track?, cursor.frame)))
+            })
     }
 
     pub(super) fn delete_time_selection(&mut self, window: &Window) -> bool {
@@ -958,13 +972,13 @@ impl EditorView {
         };
         let start_frame = pending.range.start();
         self.time_selection = Some(TimeSelection {
-            anchor_track: first_track,
-            end_track: last_track,
+            anchor_track: Some(first_track),
+            end_track: Some(last_track),
             anchor_frame: start_frame,
             end_frame: pending.range.end(),
         });
         if let Some(cursor) = &mut self.edit_cursor {
-            cursor.track = last_track;
+            cursor.track = Some(last_track);
             cursor.frame = start_frame;
         }
         self.time_selection_project_scope = pending.project_scope;
@@ -1017,15 +1031,7 @@ impl EditorView {
             return false;
         };
         let next = TimeSelection {
-            end_track: if self.time_selection_project_scope {
-                state
-                    .project
-                    .tracks()
-                    .last()
-                    .map_or(track, |item| item.id())
-            } else {
-                track
-            },
+            end_track: track,
             end_frame: frame,
             ..gesture.selection
         };
@@ -1037,8 +1043,10 @@ impl EditorView {
         gesture.moved = true;
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
-        if !self.time_selection_project_scope {
-            self.select_lane_span(next.anchor_track, track);
+        if !self.time_selection_project_scope
+            && let (Some(anchor), Some(track)) = (next.anchor_track, track)
+        {
+            self.select_lane_span(anchor, track);
         }
         self.selected_clip = None;
         true
@@ -1049,6 +1057,14 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
+        if gesture.selection.anchor_track.is_none()
+            && gesture.selection.anchor_frame == gesture.selection.end_frame
+        {
+            self.time_selection = None;
+            self.time_selection_project_scope = false;
+            self.edit_cursor = None;
+            return true;
+        }
         if gesture.moved {
             self.fit_clip_editor_to_time_selection();
         } else {
@@ -1088,10 +1104,12 @@ impl EditorView {
         if had_gesture || had_range {
             self.advance_selection_intent();
         }
-        if let Some(cursor) = self.edit_cursor {
+        if let Some(cursor) = self.edit_cursor
+            && let Some(track) = cursor.track
+        {
             self.time_selection = Some(TimeSelection {
-                anchor_track: cursor.track,
-                end_track: cursor.track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: cursor.frame,
                 end_frame: cursor.frame,
             });
@@ -1353,6 +1371,11 @@ impl EditorView {
         let viewport_end = viewport.end()?;
         let stroke = 1.0 / scale_factor.max(1.0);
         if raw_selection.anchor_frame == raw_selection.end_frame {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
+                return None;
+            }
             let frame = raw_selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;
@@ -1472,6 +1495,11 @@ impl EditorView {
         let selection = self.time_selection?;
         let viewport_end = viewport.end()?;
         if selection.anchor_frame == selection.end_frame {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
+                return None;
+            }
             let frame = selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;

@@ -81,10 +81,10 @@ fn concrete_complete_bindings_measure_storage_overflow_instead_of_force_fit() {
     assert_eq!(size_of::<Handle>(), 24);
     assert_eq!(size_of::<PoolLayout>(), 104);
     assert_eq!(pool_bytes(), 2_853_688);
-    assert_eq!(context_bytes(), 2660);
+    assert_eq!(context_bytes(), 2644);
     let charge = size_of::<Slot>() + context_bytes();
     let recipes = 2 * 1024 * 1024 / charge;
-    assert_eq!(recipes, 407);
+    assert_eq!(recipes, 408);
     assert!(recipes * charge <= 2 * 1024 * 1024);
     assert!((recipes + 1) * charge > 2 * 1024 * 1024);
     assert_eq!(size_of::<OriginalPair>(), 8112);

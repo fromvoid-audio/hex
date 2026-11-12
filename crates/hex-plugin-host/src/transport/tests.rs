@@ -226,7 +226,7 @@ fn deadline_observation_distinguishes_a_worker_that_has_not_picked_up_the_reques
 #[test]
 fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
     let (control, mut callback, mut worker) =
-        instrument_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
     let mut output = [[0.0; 2]; 8];
     let counts = allocation_counter::measure(|| {
         for value in [1.0, 2.0, 3.0] {
@@ -262,7 +262,7 @@ fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
 #[test]
 fn native_instrument_revokes_after_two_consecutive_missed_replies() {
     let (control, mut callback, mut worker) =
-        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let mut output = [[0.0; 2]; 8];
     for _ in 0..3 {
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
@@ -1152,7 +1152,7 @@ fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
         assert_eq!(callback.take_accepted_manual_parameter(), None);
     }
     let (_control, mut callback, mut worker) =
-        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let stage = |callback: &mut Callback| {
         let mut output = [[9.0; 2]; 8];
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();

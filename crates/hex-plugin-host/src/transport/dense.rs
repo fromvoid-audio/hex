@@ -119,7 +119,7 @@ pub fn dense_effect_channel_from_completed_prefix(
     completed_blocks: u64,
 ) -> Result<(Control, DenseEffectCallback, Worker), Fault> {
     let (control, callback, mut worker) =
-        channel_from_completed_prefix(binding, quantum, completed_blocks)?;
+        native_pcm_channel_from_completed_prefix(binding, quantum, completed_blocks)?;
     let (sender, receive) = RingBuffer::new(QUEUE_CAPACITY);
     worker.dense_requests = Some(receive);
     Ok((

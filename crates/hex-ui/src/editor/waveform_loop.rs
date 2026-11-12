@@ -1,10 +1,10 @@
 //! Bounded visual projection of accepted processing-root peaks through the
 //! canonical placement query. This never prepares audio or owns a DSP clock.
 use super::waveform::{WaveformGrid, WaveformPreview, waveform_canvas};
-use super::waveform_geometry::{WaveformGeometryCache, WaveformMapping};
+use super::waveform_geometry::{WaveformMapping, WaveformViewCache};
 use gpui::Div;
 use hex_project::{AudioViewResizeOperation, preview_audio_view_resize};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 mod accepted_root;
 mod projection;
@@ -15,7 +15,7 @@ pub(super) fn loop_waveform_view(
     request: WaveformPreview<'_>,
     start: u64,
     end: u64,
-    cache: Rc<RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     grid: Option<WaveformGrid>,
 ) -> Option<Div> {
     request.preview.audio_edit()?.placement?;

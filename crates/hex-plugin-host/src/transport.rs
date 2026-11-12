@@ -10,9 +10,10 @@
 //! staged across contiguous graph segments until the complete physical callback
 //! passes final host conversion; only then may it reach a worker.
 //! Malformed output or saturation revokes the entire one-shot exchange.
-//! Native instruments may conceal one missing reply with silence and discard
-//! its late output. No stale-buffer replay, waiting, waking, allocation or
-//! DSP rollback occurs.
+//! Native PCM workers may conceal one missing reply and discard its late
+//! output. The audio host uses aligned dry input for effects and silence for
+//! instruments. No stale-buffer replay, waiting, waking, allocation or DSP
+//! rollback occurs.
 
 type Frame = [f32; 2];
 use crate::protocol::{EditorPerforms, EditorRestorations};
@@ -809,6 +810,9 @@ struct Stage {
 pub struct SegmentReply {
     pub events: Events,
     pub parameters: Parameters,
+    /// Half-open segment-relative span with a concealed PCM reply, if any.
+    /// It carries no accepted parameter or editor metadata.
+    pub concealed_output: Option<(usize, usize)>,
 }
 
 /// Callback endpoint. Install before native callback reservation; return the
@@ -817,7 +821,7 @@ pub struct Callback {
     binding: Binding,
     quantum: u16,
     first_reply_sequence: u64,
-    conceal_instrument_gap: bool,
+    conceal_output_gap: bool,
     requests: Producer<InputRequest>,
     replies: Consumer<OutputReply>,
     revoked: Arc<Revocation>,
@@ -867,10 +871,11 @@ pub fn channel_from_completed_prefix(
     channel_with_policy(binding, quantum, completed_blocks, false)
 }
 
-/// The native instrument wire carries PCM and parameter observations but no
-/// output MIDI. A single deadline miss can leave one quantum silent while
-/// preserving ordered input and the fixed 2Q alignment of subsequent replies.
-pub fn instrument_channel_from_completed_prefix(
+/// The native instance wire carries PCM and parameter observations, with no
+/// output MIDI. A single deadline miss conceals one quantum while preserving
+/// ordered input and the fixed 2Q alignment of subsequent replies. A late
+/// reply never acknowledges audio, editor gestures or manual parameters.
+pub fn native_pcm_channel_from_completed_prefix(
     binding: Binding,
     quantum: u16,
     completed_blocks: u64,
@@ -882,7 +887,7 @@ fn channel_with_policy(
     binding: Binding,
     quantum: u16,
     completed_blocks: u64,
-    conceal_instrument_gap: bool,
+    conceal_output_gap: bool,
 ) -> Result<(Control, Callback, Worker), Fault> {
     if !binding.is_valid() || quantum == 0 || usize::from(quantum) > MAX_FRAMES {
         return Err(Fault::Configuration);
@@ -903,7 +908,7 @@ fn channel_with_policy(
             binding,
             quantum,
             first_reply_sequence,
-            conceal_instrument_gap,
+            conceal_output_gap,
             requests: request_tx,
             replies: reply_rx,
             revoked: Arc::clone(&revoked),
@@ -1233,6 +1238,8 @@ impl Callback {
             return Err(Fault::InvalidParameters);
         }
         let q = u64::from(self.quantum);
+        let quantum_frames = usize::from(self.quantum);
+        let initial_offset = (stage.state.position % q) as usize;
         let EffectSegmentOrigins { authored, manual } = origins;
         if authored.is_some() && !parameters.is_empty() {
             return Err(Fault::InvalidParameters);
@@ -1240,7 +1247,7 @@ impl Callback {
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
-        if stage.state.position % q != 0
+        if initial_offset != 0
             && self.authored_origins.program.is_some()
             && self.authored_origins.program != program
         {
@@ -1256,6 +1263,8 @@ impl Callback {
         let mut result = SegmentReply {
             events: Events::default(),
             parameters: Parameters::default(),
+            concealed_output: (initial_offset != 0 && stage.state.output_gap)
+                .then_some((0, input.len().min(quantum_frames - initial_offset))),
         };
         let mut event_index = 0;
         let mut parameter_index = 0;
@@ -1295,10 +1304,14 @@ impl Callback {
                         &self.revoked,
                         self.binding,
                         self.quantum,
-                        self.conceal_instrument_gap,
+                        self.conceal_output_gap,
                         &mut stage.state,
                         sequence - 2,
                     )?;
+                    if stage.state.output_gap {
+                        result.concealed_output =
+                            Some((index, input.len().min(index + quantum_frames)));
+                    }
                     if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
                         // start can fall in the complete physical callback.
@@ -1400,7 +1413,7 @@ impl Callback {
                 self.authored_origins.frames[offset] = origin;
             }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
-            if offset + 1 == usize::from(self.quantum) {
+            if offset + 1 == quantum_frames {
                 // Absence is also frozen at the opening frame. A programme
                 // first supplied mid-quantum starts at the next boundary;
                 // it cannot replace this quantum's ordinary parameter input.
@@ -1509,12 +1522,12 @@ fn stage_reply(
     revoked: &Revocation,
     binding: Binding,
     quantum: u16,
-    conceal_instrument_gap: bool,
+    conceal_output_gap: bool,
     state: &mut State,
     expected: u64,
 ) -> Result<(), Fault> {
     let validate = |reply: &OutputReply, sequence| {
-        if conceal_instrument_gap && !reply.block.events.as_slice().is_empty() {
+        if conceal_output_gap && !reply.block.events.as_slice().is_empty() {
             return Err(Fault::InvalidEvents);
         }
         reply.valid(binding, quantum, sequence)
@@ -1534,7 +1547,7 @@ fn stage_reply(
             state.output = reply;
             state.output_gap = false;
         }
-        Err(_) if conceal_instrument_gap && !state.output_gap => {
+        Err(_) if conceal_output_gap && !state.output_gap => {
             state.output = OutputReply {
                 block: Block::empty(binding, quantum),
                 manual: None,

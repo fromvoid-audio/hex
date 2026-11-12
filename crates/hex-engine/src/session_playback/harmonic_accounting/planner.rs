@@ -26,12 +26,16 @@ pub(super) struct OwnerCharge {
     pub header: usize,
     pub payload: usize,
     pub ledgers: usize,
+    pub frozen: usize,
+    pub modulation: usize,
 }
 impl OwnerCharge {
     pub fn bytes(self) -> Result<usize, Refusal> {
         self.header
             .checked_add(self.payload)
             .and_then(|n| n.checked_add(self.ledgers))
+            .and_then(|n| n.checked_add(self.frozen))
+            .and_then(|n| n.checked_add(self.modulation))
             .ok_or(Refusal::Overflow)
     }
 }
@@ -138,11 +142,15 @@ pub(super) fn plan(input: &Input<'_>) -> Result<Plan, Refusal> {
             {
                 return Err(Refusal::OwnerContract);
             }
+            let declared_owner = owner
+                .payload
+                .checked_add(owner.modulation)
+                .ok_or(Refusal::Overflow)?;
             if owner.payload == 0 || owner.payload > 8192 {
                 return Err(Refusal::Pair);
             }
             declared = declared
-                .checked_add(owner.payload)
+                .checked_add(declared_owner)
                 .ok_or(Refusal::Overflow)?;
             runtime = runtime.checked_add(owner_bytes).ok_or(Refusal::Overflow)?;
         }

@@ -4,7 +4,7 @@
 //! existing instrument or precede effects. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
-    drag::{NativeDeviceDrag, NativeDeviceDragSource},
+    drag::{BrowserAudioDrag, NativeDeviceDrag, NativeDeviceDragSource},
 };
 use crate::theme;
 use gpui::{App, Context, Div, Stateful, prelude::*, rgb};
@@ -13,7 +13,7 @@ use hex_project::TrackId;
 use hex_session::service::{NativeDeviceDropSource, Request};
 
 impl EditorView {
-    // A validated plugin effect uses the separate asynchronous insertion path;
+    // A validated plugin uses the separate asynchronous insertion path;
     // native devices return their existing typed request.
     fn header_device_request(
         &self,
@@ -40,12 +40,15 @@ impl EditorView {
             return Err("device drop canceled · project or source changed");
         }
         if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
-            self.check_device_append_target(track, cx)?;
+            let target = self.check_device_append_target(track, cx)?;
             if self.pending_plugin_effect.is_some() {
                 return Err("wait for the pending vst3 insertion");
             }
-            if selection.role != hex_plugin_catalog::PluginRole::Effect {
-                return Err("drop a vst3 effect on the track header");
+            if selection.role == hex_plugin_catalog::PluginRole::Instrument
+                && (target.is_group()
+                    || (target.instrument().is_some() && !target.receives_source_audio()))
+            {
+                return Err("select an ordinary receiving track for the vst3 instrument");
             }
             return Ok(None);
         }
@@ -78,7 +81,7 @@ impl EditorView {
         }))
     }
 
-    fn check_device_append_target(
+    pub(super) fn check_device_append_target(
         &self,
         track: TrackId,
         cx: &App,
@@ -147,7 +150,27 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = self.state.as_ref().map(|state| state.revision);
         let owner = cx.entity();
+        let sample_owner = owner.clone();
         header
+            .drag_over::<BrowserAudioDrag>(move |style, drag, _, cx| {
+                if sample_owner
+                    .read(cx)
+                    .browser_sampler_drop_track(drag, Some(track), cx)
+                    .is_ok()
+                {
+                    let color = rgb(theme::color(theme::PaletteRole::Secondary));
+                    style
+                        .bg(gpui::Hsla::from(color).alpha(0.18))
+                        .border_color(color)
+                } else {
+                    style
+                }
+            })
+            .on_drop(super::sampler_load::track_drop_listener(
+                cx,
+                Some(track),
+                hex_project::InstrumentLoadPlacement::First,
+            ))
             .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
                 let valid = owner
                     .read(cx)
@@ -192,12 +215,24 @@ impl EditorView {
                         }
                         Ok(None) => {
                             if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
-                                view.insert_plugin_effect(
-                                    selection,
-                                    hex_session::service::PluginEffectDestination::Track(track),
-                                    None,
-                                    cx,
-                                );
+                                use hex_session::service::PluginEffectDestination;
+                                let instrument = view
+                                    .state
+                                    .as_ref()
+                                    .and_then(|state| state.project.track(track))
+                                    .and_then(hex_project::Track::instrument)
+                                    .map(hex_project::Device::id);
+                                let destination = match (selection.role, instrument) {
+                                    (
+                                        hex_plugin_catalog::PluginRole::Instrument,
+                                        Some(instrument),
+                                    ) => PluginEffectDestination::ReplaceInstrument {
+                                        track,
+                                        instrument,
+                                    },
+                                    _ => PluginEffectDestination::Track(track),
+                                };
+                                view.insert_plugin_effect(selection, destination, None, cx);
                             } else {
                                 view.error = Some("device drop source changed".into());
                             }

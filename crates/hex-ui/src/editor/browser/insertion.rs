@@ -1,10 +1,10 @@
 //! Enter captures one selected Arrangement target before bounded worker preparation.
 use super::{EditorMode, EditorView};
 use gpui::Context;
-use hex_session::import_batch::AudioBatchDestination;
+use hex_engine::playback::BrowserAuditionTiming;
 use hex_session::import_batch_decode::AudioBatchContext;
 use hex_session::service::Request;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::atomic::Ordering::Acquire};
 
 impl EditorView {
     pub(super) fn insert_browser_audio(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -13,7 +13,17 @@ impl EditorView {
             Ok((request, control)) => {
                 // Capture metadata only. Decode and the canonical overwrite commit stay on
                 // the service worker; later UI selection/cursor changes cannot retarget it.
+                let routed_audition = matches!(
+                    &request,
+                    Request::ImportAudioBatch {
+                        audition_timing: Some(_),
+                        ..
+                    }
+                );
                 if self.enqueue(request) {
+                    if routed_audition && self.browser.playback_output.is_some() {
+                        self.cancel_browser_sample_playback();
+                    }
                     self.audio_batch = Some(control);
                     self.audio_batch_progress = None;
                     self.error = None;
@@ -68,17 +78,30 @@ impl EditorView {
             .filter(|id| state.project.track(*id).is_some())
             .ok_or("sample insertion refused · select an arrangement track")?;
         let grid = self.resolve_input_grid()?;
+        let status = self.audio_status();
+        let transport_epoch = status.map(|status| status.transport_epoch.load(Acquire));
         let start = grid
             .snap_frame(state.project.tempo_map(), self.cursor_position())
             .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
-        Request::audio_batch(
-            vec![path],
-            AudioBatchDestination::Track { track, start },
+        let audition_timing = status.zip(transport_epoch).and_then(|(status, epoch)| {
+            (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                && status.playing.load(Acquire)
+                && status.transport_epoch.load(Acquire) == epoch)
+                .then_some(BrowserAuditionTiming {
+                    grid,
+                    transport_epoch: epoch,
+                })
+        });
+        Request::browser_audio_batch(
+            path,
+            track,
+            start,
             AudioBatchContext {
                 project_generation: self.project_generation,
                 revision: state.revision,
                 active_gesture: false,
             },
+            audition_timing,
         )
     }
 }

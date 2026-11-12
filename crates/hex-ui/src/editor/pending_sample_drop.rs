@@ -67,8 +67,43 @@ impl EditorView {
                         path,
                         before_track: t,
                         start: s,
+                    }
+                    | Request::ImportToNewTrackWithGain {
+                        path,
+                        before_track: t,
+                        start: s,
+                        ..
                     },
                 ) => drop.path == *path && (before_track, start) == (*t, *s),
+                (
+                    BrowserDropDestination::ExistingTrack { track, start },
+                    Request::ImportAudioBatch {
+                        paths,
+                        destination: AudioBatchDestination::Track { track: t, start: s },
+                        ..
+                    },
+                ) => {
+                    paths.as_slice() == std::slice::from_ref(&drop.path)
+                        && (track, start) == (*t, *s)
+                }
+                (
+                    BrowserDropDestination::NewTrack {
+                        before_track,
+                        start,
+                    },
+                    Request::ImportAudioBatch {
+                        paths,
+                        destination:
+                            AudioBatchDestination::NewTracks {
+                                before_track: t,
+                                start: s,
+                            },
+                        ..
+                    },
+                ) => {
+                    paths.as_slice() == std::slice::from_ref(&drop.path)
+                        && (before_track, start) == (*t, *s)
+                }
                 (
                     BrowserDropDestination::Console(target),
                     Request::ImportAudioBatch {

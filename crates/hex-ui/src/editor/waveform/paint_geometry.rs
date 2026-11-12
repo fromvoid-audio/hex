@@ -5,13 +5,39 @@ use hex_session::CachedPeak;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
+/// Vertical amplitude mapping; independent of timeline and display scaling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::editor) enum WaveformAmplitudeScale {
+    #[default]
+    Linear,
+    Decibel,
+}
+
+impl WaveformAmplitudeScale {
+    pub(in crate::editor) fn from_decibels(enabled: bool) -> Self {
+        if enabled { Self::Decibel } else { Self::Linear }
+    }
+
+    fn map(self, value: f32) -> f32 {
+        match self {
+            Self::Linear => value.clamp(-1.0, 1.0),
+            Self::Decibel if value.is_finite() => {
+                let value = value.clamp(-1.0, 1.0);
+                value.signum() * ((99.0 * value.abs()).ln_1p() / 100.0_f32.ln()).min(1.0)
+            }
+            Self::Decibel => 0.0,
+        }
+    }
+}
+
 pub(in crate::editor) fn peak_vertical_bounds(
     peak: CachedPeak,
     center: f32,
     amplitude: f32,
+    scale: WaveformAmplitudeScale,
 ) -> (f32, f32) {
-    let top = center - peak.max.clamp(-1.0, 1.0) * amplitude;
-    let bottom = center - peak.min.clamp(-1.0, 1.0) * amplitude;
+    let top = center - scale.map(peak.max) * amplitude;
+    let bottom = center - scale.map(peak.min) * amplitude;
     (top.min(bottom), top.max(bottom))
 }
 
@@ -28,9 +54,9 @@ fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
     };
     let out_end = fade.span() - fade.out_end_offset();
     let midpoints = [
-        (fade.in_curve() != 0 || fade.in_position() != 500)
+        fade.ramp_is_curved(false)
             .then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
-        (fade.out_curve() != 0 || fade.out_position() != 500)
+        fade.ramp_is_curved(true)
             .then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
     ];
     fade.breakpoints()
@@ -41,13 +67,11 @@ fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
             (1..32)
                 .flat_map(move |index| {
                     [
-                        ((fade.in_curve() != 0 || fade.in_position() != 500) && fade.fade_in() > 1)
+                        (fade.ramp_is_curved(false) && fade.fade_in() > 1)
                             .then(|| fade.in_start() + at_gain(fade.fade_in(), index, false)),
-                        ((fade.out_curve() != 0 || fade.out_position() != 500)
-                            && fade.fade_out() > 1)
-                            .then(|| {
-                                out_end - fade.fade_out() + at_gain(fade.fade_out(), index, true)
-                            }),
+                        (fade.ramp_is_curved(true) && fade.fade_out() > 1).then(|| {
+                            out_end - fade.fade_out() + at_gain(fade.fade_out(), index, true)
+                        }),
                     ]
                 })
                 .flatten(),
@@ -185,6 +209,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decibel_scale_preserves_endpoints_and_expands_quiet_signed_peaks() {
+        let scale = WaveformAmplitudeScale::from_decibels(true);
+        assert_eq!(scale.map(0.0), 0.0);
+        assert!((scale.map(1.0) - 1.0).abs() <= f32::EPSILON);
+        assert!((scale.map(-1.0) + 1.0).abs() <= f32::EPSILON);
+        assert!(scale.map(0.1) > 0.1);
+        assert_eq!(scale.map(-0.1), -scale.map(0.1));
+        let mut previous = 0.0;
+        for step in 1..=1_000 {
+            let mapped = scale.map(step as f32 / 1_000.0);
+            assert!(mapped >= previous && mapped <= 1.0);
+            previous = mapped;
+        }
+        assert!(scale.map(f32::NAN).is_finite());
+        assert!(scale.map(f32::INFINITY).is_finite());
+    }
+
+    #[test]
     fn waveform_peak_geometry_preserves_signed_channel_extrema() {
         let positive = peak_vertical_bounds(
             CachedPeak {
@@ -193,6 +235,7 @@ mod tests {
             },
             10.0,
             8.0,
+            WaveformAmplitudeScale::Linear,
         );
         assert!(positive.0 < positive.1 && positive.1 < 10.0);
         let negative = peak_vertical_bounds(
@@ -202,6 +245,7 @@ mod tests {
             },
             10.0,
             8.0,
+            WaveformAmplitudeScale::Linear,
         );
         assert!(negative.0 > 10.0 && negative.1 > negative.0);
     }

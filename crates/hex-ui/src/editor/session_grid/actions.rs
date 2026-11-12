@@ -1,7 +1,30 @@
-//! Session grid target validation against the current project.
-use super::super::EditorMode;
-use hex_engine::SessionPlaybackCommand;
+//! Session grid action projection and target validation against the current project.
+use super::super::{EditorMode, play_intent::IntentToken};
+use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
 use hex_project::{ClipId, Project, SceneId, SessionCellContent, TrackId};
+
+/// A queued playback command retains its project generation and optional revision.
+/// The controller owns intent-token reservation and admission.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingPlaybackAction {
+    pub action: PlaybackAction,
+    pub generation: u64,
+    pub revision: Option<u64>,
+    pub(crate) intent_token: Option<IntentToken>,
+}
+
+pub(in crate::editor) fn launch_action(
+    command: SessionPlaybackCommand,
+    revision: u64,
+    generation: u64,
+) -> PendingPlaybackAction {
+    PendingPlaybackAction {
+        action: PlaybackAction::LaunchAndPlay(command),
+        generation,
+        revision: Some(revision),
+        intent_token: None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::editor) enum DeleteTarget {
@@ -92,12 +115,39 @@ pub(in crate::editor) fn action_matches_project(
     }
 }
 
+pub(super) fn with_quantization(
+    command: SessionPlaybackCommand,
+    quantization: LaunchQuantization,
+) -> SessionPlaybackCommand {
+    match command {
+        SessionPlaybackCommand::LaunchClip { clip, .. } => {
+            SessionPlaybackCommand::LaunchClip { clip, quantization }
+        }
+        SessionPlaybackCommand::LaunchScene { scene, .. } => SessionPlaybackCommand::LaunchScene {
+            scene,
+            quantization,
+        },
+        SessionPlaybackCommand::StopTrack { track, .. } => SessionPlaybackCommand::StopTrack {
+            track,
+            quantization,
+        },
+        SessionPlaybackCommand::StopAllClips { .. } => {
+            SessionPlaybackCommand::StopAllClips { quantization }
+        }
+        SessionPlaybackCommand::BackToArrangement { .. } => {
+            SessionPlaybackCommand::BackToArrangement { quantization }
+        }
+        command => command,
+    }
+}
+
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
-        DeleteTarget, EditorMode, action_is_current, action_matches_project, resolve_delete_target,
+        DeleteTarget, EditorMode, action_is_current, action_matches_project, launch_action,
+        resolve_delete_target, with_quantization,
     };
-    use hex_engine::{LaunchQuantization, SessionPlaybackCommand};
+    use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
     use hex_project::{Command, Created, Editor, Project, SessionCellContent};
 
     #[test]
@@ -174,6 +224,34 @@ mod tests {
         assert!(action_matches_project(Some(editor.project()), stop));
         editor.execute(Command::RemoveTrack(track)).unwrap();
         assert!(!action_matches_project(Some(editor.project()), stop));
+    }
+
+    #[test]
+    fn launch_and_play_is_one_revision_guarded_action() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let pending = launch_action(
+            SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            },
+            19,
+            3,
+        );
+        assert!(matches!(
+            pending.action,
+            PlaybackAction::LaunchAndPlay(SessionPlaybackCommand::LaunchScene { .. })
+        ));
+        assert_eq!(pending.revision, Some(19));
+        assert_eq!(pending.generation, 3);
+        assert_eq!(pending.intent_token, None);
     }
 
     #[test]
@@ -409,5 +487,117 @@ mod tests {
             Some(SessionCellContent::Audio(_))
         ));
         assert_eq!(editor.project().snapshot(), with_audio);
+    }
+
+    #[test]
+    fn quantization_is_captured_by_each_session_command() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "instrument".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "pattern".into(),
+                source_length: hex_project::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("session clip")
+        };
+
+        let commands = [
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+            SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            },
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: LaunchQuantization::Immediate,
+            },
+            SessionPlaybackCommand::StopAllClips {
+                quantization: LaunchQuantization::Immediate,
+            },
+            SessionPlaybackCommand::BackToArrangement {
+                quantization: LaunchQuantization::Immediate,
+            },
+        ];
+        for quantization in [
+            LaunchQuantization::Immediate,
+            LaunchQuantization::FourQuarter,
+        ] {
+            for command in commands {
+                let captured = with_quantization(command, quantization);
+                let expected = match command {
+                    SessionPlaybackCommand::LaunchClip { clip, .. } => {
+                        SessionPlaybackCommand::LaunchClip { clip, quantization }
+                    }
+                    SessionPlaybackCommand::LaunchScene { scene, .. } => {
+                        SessionPlaybackCommand::LaunchScene {
+                            scene,
+                            quantization,
+                        }
+                    }
+                    SessionPlaybackCommand::StopTrack { track, .. } => {
+                        SessionPlaybackCommand::StopTrack {
+                            track,
+                            quantization,
+                        }
+                    }
+                    SessionPlaybackCommand::StopAllClips { .. } => {
+                        SessionPlaybackCommand::StopAllClips { quantization }
+                    }
+                    SessionPlaybackCommand::BackToArrangement { .. } => {
+                        SessionPlaybackCommand::BackToArrangement { quantization }
+                    }
+                    command => command,
+                };
+                assert_eq!(captured, expected);
+            }
+        }
+
+        let mut selected_quantization = LaunchQuantization::FourQuarter;
+        let captured = with_quantization(
+            SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            },
+            selected_quantization,
+        );
+        let queued = captured;
+        selected_quantization = LaunchQuantization::Immediate;
+        assert_eq!(selected_quantization, LaunchQuantization::Immediate);
+        assert!(matches!(
+            queued,
+            SessionPlaybackCommand::LaunchScene {
+                quantization: LaunchQuantization::FourQuarter,
+                ..
+            }
+        ));
+        assert_eq!(
+            with_quantization(
+                SessionPlaybackCommand::CancelPending { track: None },
+                LaunchQuantization::FourQuarter,
+            ),
+            SessionPlaybackCommand::CancelPending { track: None }
+        );
     }
 }

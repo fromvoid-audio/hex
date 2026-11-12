@@ -74,7 +74,7 @@ pub(super) fn passive_audio_fragment(
     viewport: Viewport,
     viewport_end: u64,
     grid: &[super::musical_time::GridLine],
-    cache: std::rc::Rc<std::cell::RefCell<super::waveform_geometry::WaveformGeometryCache>>,
+    cache: std::rc::Rc<super::waveform_geometry::WaveformViewCache>,
     selector: String,
     header_only: bool,
 ) -> Option<Div> {
@@ -156,6 +156,7 @@ pub(super) fn passive_audio_fragment(
                     0.0
                 },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                header_gradient: None,
                 notch: super::clip_boundary::Notch::new(stop == end),
             },
             true,
@@ -274,6 +275,7 @@ pub(super) fn passive_midi_fragment(
                     0.0
                 },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                header_gradient: None,
                 notch: super::clip_boundary::Notch::new(visible_end == timeline_interval.1),
             },
             true,
@@ -335,7 +337,7 @@ mod visual_tests {
                             viewport,
                             length,
                             &[],
-                            Rc::new(std::cell::RefCell::new(Default::default())),
+                            Rc::new(Default::default()),
                             "fragment-audio".into(),
                             self.compact,
                         )),

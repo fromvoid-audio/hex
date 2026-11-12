@@ -22,12 +22,79 @@ use std::sync::{
 use std::time::Instant;
 
 #[gpui::test]
-fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
-    use super::super::audio_admission::StoppedPlaybackRestore;
+fn stop_during_fresh_vst3_recovery_cancels_play_without_revoking_sources(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
+
     let _output_serial = hex_audio::worker_fixture::serial_output();
-    let (mut output, backend) =
+    let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
     let client = output.take_client().unwrap();
+    client.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
+    let mut project =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    project
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
+                1,
+                vec![0],
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        project.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "fresh recovery fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        let generation = view.recovery.begin(120).unwrap();
+        assert!(view.recovery.opened(generation));
+        view.pending_recovery_generation = Some(generation);
+        view.defer_play_until_audio_recovers();
+        view.stop();
+        assert!(view.deferred_play.is_none());
+        assert_eq!(view.recovery.position(), Some(0));
+        assert_eq!(view.recovery.generation(), Some(generation));
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let control = &mut view.audio.as_mut().unwrap().control;
+        assert!(
+            !std::iter::from_fn(|| control.take_audio_diagnostic())
+                .any(|event| matches!(event.kind, AudioDiagnosticKind::PriorityStop { .. })),
+            "stop must leave the fresh recovery output intact"
+        );
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
+    use super::super::audio_admission::StoppedPlaybackRestore;
+    use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
+
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    client.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
+    let stop_count = |view: &mut EditorView| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        std::iter::from_fn(|| control.take_audio_diagnostic())
+            .filter(|event| matches!(event.kind, AudioDiagnosticKind::PriorityStop { .. }))
+            .count()
+    };
     let mut project =
         hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Device(device) = project
@@ -72,12 +139,35 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
             device_preview_identity: None,
             tuning_preview_identity: None,
         });
-        view.stop();
+        view.stop_from_escape();
+        let restore = Some(StoppedPlaybackRestore::Preparing);
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(stop_count(view), 1, "first stop reaches the callback");
+
+        view.stop_from_escape();
+        assert!(view.play_start_at_beginning);
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert_eq!(
-            view.stopped_playback_restore,
-            Some(StoppedPlaybackRestore::Preparing)
+            stop_count(view),
+            0,
+            "repeat stop leaves the pending restore alone"
         );
+
         view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+        assert!(view.deferred_play.is_some());
+        view.stop();
+        assert!(view.deferred_play.is_none());
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(
+            stop_count(view),
+            0,
+            "cancel deferred play without revoking the restore"
+        );
+
         view.queue_audio_command(PlaybackCommand::PlayFrom(0));
         assert!(view.deferred_play.is_some());
         assert_eq!(
@@ -935,7 +1025,9 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             project_generation: 0,
             revision: event.state.revision,
             track,
-            empty_sampler: None,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
             path: path.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
         })

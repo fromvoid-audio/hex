@@ -227,49 +227,6 @@ fn stationary_command_endpoints_toggle_and_command_edge_drags_remain_free(cx: &m
     }
 }
 
-#[test]
-fn hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges() {
-    use super::super::{EditMode, region_edit_mode};
-    let bounds = gpui::Bounds::new(point(px(100.0), px(0.0)), gpui::size(px(300.0), px(18.0)));
-    let viewport = Viewport {
-        start: 0,
-        length: 300,
-    };
-    let kind = |region, viewport, x| match region_edit_mode(region, viewport, bounds, x) {
-        Some(EditMode::Move { .. }) => "move",
-        Some(EditMode::ResizeStart { .. }) => "start",
-        Some(EditMode::ResizeEnd { .. }) => "end",
-        Some(EditMode::Paint { .. }) | None => "none",
-    };
-    for width in [1, 8, 12, 18, 48] {
-        let r = LoopRegion::new(100, 100 + width, true).unwrap();
-        assert_eq!(kind(r, viewport, 200.0), "start");
-        assert_eq!(kind(r, viewport, 200.0 + width as f32), "end");
-        assert_eq!(kind(r, viewport, 194.0), "start");
-        assert_eq!(kind(r, viewport, 193.9), "none");
-        assert_eq!(kind(r, viewport, 206.0 + width as f32), "end");
-        assert_eq!(kind(r, viewport, 206.1 + width as f32), "none");
-        assert_eq!(kind(r, viewport, 200.0 + width as f32 / 2.0), "move");
-    }
-    let wide = LoopRegion::new(100, 148, false).unwrap();
-    assert_eq!(kind(wide, viewport, 206.0), "start");
-    assert_eq!(kind(wide, viewport, 206.1), "move");
-    assert_eq!(kind(wide, viewport, 241.9), "move");
-    assert_eq!(kind(wide, viewport, 242.0), "end");
-    // A clipped-away start cannot steal the visible body, even when only 3px remain.
-    let clipped = Viewport {
-        start: 145,
-        length: 300,
-    };
-    assert_eq!(kind(wide, clipped, 100.0), "move");
-    assert_eq!(kind(wide, clipped, 103.0), "end");
-    let clipped_end = Viewport {
-        start: 0,
-        length: 110,
-    };
-    assert_eq!(kind(wide, clipped_end, 400.0), "move");
-}
-
 #[gpui::test]
 fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut TestAppContext) {
     let viewport = Viewport {

@@ -55,6 +55,9 @@ impl Project {
         let mut candidate = self.clone();
         candidate.tempo_map = rate.tempo(&self.tempo_map)?;
         candidate.sample_rate = sample_rate;
+        for locator in Arc::make_mut(&mut candidate.arrangement_locators) {
+            locator.frame = rate.frame(locator.frame)?;
+        }
         for asset in candidate.assets.values_mut() {
             asset.playback_frames =
                 converted_frame_count(asset.source_frames, asset.source_sample_rate, sample_rate)?;

@@ -519,8 +519,9 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
         let refused = s.import_device_asset_prepared(
             fixture.decoded(),
             &cancel,
-            NativeAssetDestination::EmptyInstrument {
+            NativeAssetDestination::NewInstrument {
                 track,
+                placement: hex_project::InstrumentLoadPlacement::First,
                 state,
                 source_slot,
             },

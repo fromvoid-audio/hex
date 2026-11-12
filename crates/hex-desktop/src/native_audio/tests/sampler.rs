@@ -1114,6 +1114,7 @@ fn rendered_sampler_save_open(
         assert!(Instant::now() < end, "actual SaveNew picker did not open");
     }
     cx.simulate_new_path_selection(|_| Some(saved.clone()));
+    let saved = saved.with_extension("").join("saved.hex");
     // Publication on disk precedes the worker's completion event. Both are
     // required before another rendered action can safely use the saved project.
     while !saved.exists()
@@ -1685,7 +1686,10 @@ fn catalog_empty_sampler_fills_same_device_and_reaches_native_current_from_ordin
         project_generation: h.context.unwrap().project_generation,
         revision: before.state.revision,
         track,
-        empty_sampler: Some((device.id(), device.state().clone())),
+        slot: hex_session::service::SamplerLoadSlot::Existing {
+            device: device.id(),
+            expected_state: device.state().clone(),
+        },
         path: wav(&files, false),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1742,7 +1746,9 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1863,7 +1869,9 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });

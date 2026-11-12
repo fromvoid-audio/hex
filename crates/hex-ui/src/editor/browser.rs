@@ -5,6 +5,10 @@
 //! search places native devices then plugins before files. Other sources and empty
 //! browsing retain file-first order. Row ranges are shared by virtualization,
 //! stable-key selection/history, activation, folder navigation and audition.
+mod audition_geometry;
+mod random_rank;
+mod scrollbar_geometry;
+
 mod audition;
 mod folder_places;
 mod history;
@@ -56,8 +60,6 @@ fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> Stri
 }
 
 pub(super) const DEFAULT_WIDTH: f32 = 480.0;
-const MIN_WIDTH: f32 = 220.0;
-pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
@@ -105,17 +107,13 @@ pub(super) fn default_preferences_path() -> PathBuf {
 }
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
-    requested.clamp(
-        MIN_WIDTH,
-        (window_width
-            - MIN_WORKSPACE_WIDTH
-            - 4.0
-            // Both the browser and workspace panels have framed surrounds.
-            - 4.0 * hex_widgets::PANEL_FRAME_INSET
-            - super::workspace_view::PANEL_GUTTER)
-            .max(MIN_WIDTH),
-    )
+    geometry::clamped_panel_width(requested, window_width, super::workspace_view::PANEL_GUTTER)
 }
+
+#[path = "browser/geometry.rs"]
+mod geometry;
+pub(super) use geometry::MIN_WORKSPACE_WIDTH;
+use geometry::browser_audio_drag_ghost_position;
 
 #[path = "browser/scan.rs"]
 mod scan;
@@ -480,16 +478,13 @@ fn browser_audio_drag_ghost(
             stroke,
             bottom_radius: 0.0,
             header_height: super::clip_name::CLIP_NAME_HEIGHT,
+            header_gradient: None,
             notch: super::clip_boundary::Notch::new(notched),
         },
         true,
         move || format!("{selector}-trailing"),
     )
     .opacity(0.9)
-}
-
-fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
-    (pointer.0 + 12.0, pointer.1 + 12.0)
 }
 
 impl EditorView {
@@ -918,8 +913,10 @@ impl EditorView {
                     })
                 {
                     let admitted = result.and_then(|pcm| {
-                        let frame =
-                            audition::frame_at_fraction(pcm.frames().len(), request.start_fraction);
+                        let frame = audition_geometry::frame_at_fraction(
+                            pcm.frames().len(),
+                            request.start_fraction,
+                        );
                         audio
                             .control
                             .preview_publish_from(request.output_generation, pcm, frame)
@@ -2851,28 +2848,6 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{MIN_WIDTH, browser_audio_drag_ghost_position, clamped_panel_width};
-
-    #[test]
-    fn browser_drag_ghost_position_uses_window_relative_pointer_coordinates() {
-        // Window::bounds().origin is global screen space; it is intentionally not
-        // accepted by this helper because GPUI pointer events are window-relative.
-        assert_eq!(
-            browser_audio_drag_ghost_position((317.0, 129.0)),
-            (329.0, 141.0)
-        );
-    }
-
-    #[test]
-    fn browser_width_preserves_minimum_workspace_and_panel() {
-        assert_eq!(clamped_panel_width(280.0, 1_240.0), 280.0);
-        assert_eq!(clamped_panel_width(500.0, 880.0), 297.0);
-        assert_eq!(clamped_panel_width(100.0, 880.0), MIN_WIDTH);
-    }
-}
-
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "browser_ui_test.rs"]
 mod ui_test;
@@ -2884,3 +2859,61 @@ mod console_drop_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "browser/folder_places_ui_test.rs"]
 mod folder_places_ui_test;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use gpui::{point, px};
+
+    #[test]
+    fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta() {
+        let cases = [
+            (
+                gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
+                false,
+                (12.0, 24.0),
+            ),
+            (
+                gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
+                true,
+                (-12.0, -24.0),
+            ),
+            (
+                gpui::ScrollDelta::Lines(point(2.0, -3.0)),
+                false,
+                (2.0, -3.0),
+            ),
+            (
+                gpui::ScrollDelta::Lines(point(2.0, -3.0)),
+                true,
+                (-2.0, 3.0),
+            ),
+        ];
+        for (raw, inverted, (expected_x, expected_y)) in cases {
+            let event = gpui::ScrollWheelEvent {
+                delta: raw,
+                direction_inverted_from_device: inverted,
+                ..Default::default()
+            };
+            match event.physical_delta() {
+                gpui::ScrollDelta::Pixels(delta) => {
+                    assert_eq!(f32::from(delta.x), expected_x);
+                    assert_eq!(f32::from(delta.y), expected_y);
+                }
+                gpui::ScrollDelta::Lines(delta) => {
+                    assert_eq!(delta.x, expected_x);
+                    assert_eq!(delta.y, expected_y);
+                }
+            }
+            match (raw, event.delta) {
+                (gpui::ScrollDelta::Pixels(before), gpui::ScrollDelta::Pixels(after)) => {
+                    assert_eq!(before, after);
+                }
+                (gpui::ScrollDelta::Lines(before), gpui::ScrollDelta::Lines(after)) => {
+                    assert_eq!(before.x, after.x);
+                    assert_eq!(before.y, after.y);
+                }
+                _ => panic!("raw scroll delta variant changed"),
+            }
+        }
+    }
+}

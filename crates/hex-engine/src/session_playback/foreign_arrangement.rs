@@ -61,6 +61,7 @@ impl Ledger {
 struct Generator {
     track: TrackId,
     processor: PreparedForeignProcessor,
+    has_authored_automation: bool,
     committed: Ledger,
     scratch: Ledger,
 }
@@ -78,11 +79,11 @@ impl Generator {
         let track_id = track
             .canonical_track_id()
             .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-        let Some(PreparedProcessorFactory::Foreign(processor)) = track
+        let node = track
             .foreign_instrument
             .as_ref()
-            .and_then(|node| node.definition.as_ref())
-        else {
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let Some(PreparedProcessorFactory::Foreign(processor)) = node.definition.as_ref() else {
             return Err(SessionPlaybackError::DeviceRuntime);
         };
         if processor.binding().is_none() {
@@ -91,6 +92,7 @@ impl Generator {
         Ok(Self {
             track: track_id,
             processor: *processor,
+            has_authored_automation: node.automation.foreign().is_some(),
             committed: ledger()?,
             scratch: ledger()?,
         })
@@ -102,6 +104,7 @@ pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
     pub(super) requires_clock_continuity: bool,
     pub(super) keeps_first_pass_loop_clock: bool,
+    pub(super) keeps_unautomated_loop_clock: bool,
 }
 
 pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
@@ -294,6 +297,7 @@ impl ForeignArrangement {
             old_indices: [None; MAX_TRACKS],
             requires_clock_continuity: false,
             keeps_first_pass_loop_clock: true,
+            keeps_unautomated_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
         for (index, candidate) in self.generators.iter().enumerate() {
@@ -301,9 +305,9 @@ impl ForeignArrangement {
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
                 let old = old.as_ref()?;
                 (old.track == candidate.track && old.processor == candidate.processor)
-                    .then_some((index, &old.committed))
+                    .then_some((index, old))
             });
-            let Some((old_index, ledger)) = matched else {
+            let Some((old_index, donor)) = matched else {
                 if cut.playing && fresh != Some(candidate.track) {
                     return Err(INCOMPATIBLE_HANDOFF);
                 }
@@ -316,8 +320,16 @@ impl ForeignArrangement {
             *retained
                 .get_mut(old_index)
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
+            let ledger = &donor.committed;
             if ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes()) {
                 plan.requires_clock_continuity = true;
+                // An Arrangement gate keeps its performance-frame deadline at
+                // the same cursor. A future wrap releases it through the normal
+                // renderer. Without an authored program, a changed loop does
+                // not affect the worker's parameter-origin budget.
+                plan.keeps_unautomated_loop_clock &= ledger.route == Some(RouteOwner::Arrangement)
+                    && !candidate.has_authored_automation
+                    && !donor.has_authored_automation;
                 // These held gates are timed against the canonical first
                 // pass. Keep their IDs and deadlines on the original worker.
                 plan.keeps_first_pass_loop_clock &= cut.loop_pass == 0
@@ -334,12 +346,7 @@ impl ForeignArrangement {
                         loops[0],
                         loops[1],
                     )
-                    && tracks.get(index).is_some_and(|track| {
-                        track
-                            .foreign_instrument
-                            .as_ref()
-                            .is_some_and(|node| node.automation.foreign().is_some())
-                    });
+                    && candidate.has_authored_automation;
             }
             if !ledger.cut
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
@@ -499,6 +506,9 @@ impl ForeignArrangement {
         // A fresh generator can first appear at a running Arrangement cursor.
         // Chase its current span without changing any retained generator's gate.
         let first_route = ledger.route.is_none();
+        // A same-clock audio restart can keep this ledger. Only chase an
+        // interactive start if this generator also cut its authored gates.
+        let chase = context.chase && ledger.cut;
         let wrapped = session.route.owner == RouteOwner::Arrangement
             && !route_changed
             && !ledger.cut
@@ -530,7 +540,7 @@ impl ForeignArrangement {
                     track
                         .for_each_mutable_midi_span(context.arrangement, end, |span| {
                             if span.start < context.arrangement
-                                && !(context.chase || wrapped || first_route)
+                                && !(chase || wrapped || first_route)
                             {
                                 return;
                             }

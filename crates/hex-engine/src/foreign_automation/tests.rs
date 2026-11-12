@@ -232,7 +232,8 @@ fn coincident_frames_keep_the_later_point_and_one_point_holds_across_its_origin(
 #[test]
 fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
     use AutomationInterpolation::Step;
-    let lanes: Vec<_> = (0..9)
+    let full_lanes = MAX_POINTS / 8;
+    let lanes: Vec<_> = (0..=full_lanes as u32)
         .map(|id| {
             lane(
                 id,
@@ -243,7 +244,7 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
             )
         })
         .collect();
-    let capabilities: Vec<_> = (0..9)
+    let capabilities: Vec<_> = (0..=full_lanes as u32)
         .map(|id| ParameterCapability {
             id,
             steps: 0,
@@ -251,16 +252,34 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
         })
         .collect();
     let profile = QuantumProfile::arbitrary(8, 2);
-    assert!(Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).is_err());
+    assert_eq!(
+        Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).unwrap_err(),
+        Invalid("vst3 automation exceeds the per-quantum point limit")
+    );
     assert!(Program::prepare(&lanes[..1], [2; 16], &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], CLASS, &capabilities[1..], &tempo(), profile).is_err());
-    // The ninth armed parameter still needs its canonical base even
+    // The next armed parameter still needs its canonical base even
     // when its authored lane is absent; it cannot evade the shared budget.
-    assert!(Program::prepare(&lanes[..8], CLASS, &capabilities, &tempo(), profile).is_err());
+    assert!(
+        Program::prepare(
+            &lanes[..full_lanes],
+            CLASS,
+            &capabilities,
+            &tempo(),
+            profile
+        )
+        .is_err()
+    );
 
-    let program = Program::prepare(&lanes[..8], CLASS, &capabilities[..8], &tempo(), profile)
-        .unwrap()
-        .unwrap();
+    let program = Program::prepare(
+        &lanes[..full_lanes],
+        CLASS,
+        &capabilities[..full_lanes],
+        &tempo(),
+        profile,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(program.point_budget(), MAX_POINTS);
     let full = [0, 1, 2, 3, 0, 1, 2, 3].map(Some);
     assert_eq!(render(&program, &full, &[]).len(), MAX_POINTS);
@@ -530,7 +549,7 @@ fn constant_instrument_bases_share_one_point_each_across_discontinuities() {
         })
         .collect::<Vec<_>>();
     let profile = QuantumProfile::for_arrangement_instrument(256, None);
-    for width in [4, MAX_POINTS] {
+    for width in [4, MAX_TARGETS] {
         let program = Program::prepare(&[], CLASS, &capabilities[..width], &tempo(), profile)
             .unwrap()
             .unwrap();
@@ -549,6 +568,53 @@ fn constant_instrument_bases_share_one_point_each_across_discontinuities() {
             assert_eq!(point.normalized.to_bits(), capability.normalized_base_bits);
         }
         assert!(render(&program, &[None; 256], &[]).is_empty());
+    }
+}
+
+#[test]
+fn fourth_sparse_vst3_lane_keeps_all_slice_endpoints_at_44100() {
+    use AutomationInterpolation::{Linear, Step};
+    let tempo = TempoMap::new(
+        44_100,
+        vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(120_000_000).unwrap(),
+        )],
+    )
+    .unwrap();
+    let ids = [86, 91, 97, 148];
+    let lanes = ids.map(|id| {
+        lane(
+            id,
+            vec![
+                point(BeatTime::ZERO, 0.25, Linear),
+                point(BeatTime::ONE, 0.75, Step),
+            ],
+        )
+    });
+    let capabilities = ids.map(|id| ParameterCapability {
+        id,
+        steps: 0,
+        normalized_base_bits: 0.25f64.to_bits(),
+    });
+    let program = Program::prepare(
+        &lanes,
+        CLASS,
+        &capabilities,
+        &tempo,
+        QuantumProfile::for_arrangement_instrument(256, None),
+    )
+    .unwrap()
+    .unwrap();
+    let cuts = [32, 64, 96, 128, 160, 192, 224];
+    let origins = std::array::from_fn::<_, 256, _>(|i| Some((1000 + (i + 16) % 256) as u64));
+    let points = render(&program, &origins, &cuts);
+    assert_eq!(points.len(), 72);
+    let end = tempo.beat_to_frame(BeatTime::ONE).unwrap() as f64;
+    for point in points {
+        assert!(ids.contains(&point.id));
+        let origin = origins[usize::from(point.frame)].unwrap() as f64;
+        assert!((point.normalized - (0.25 + 0.5 * origin / end)).abs() < 1e-12);
     }
 }
 

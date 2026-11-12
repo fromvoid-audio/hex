@@ -1,6 +1,7 @@
 //! View-local panels for exact hosted VST3 controller sources. Persisted rows
 //! supply names and order only. Native Perform receipts can advance the knob's
-//! display. Fresh controller pages still authorize edits.
+//! display. Fresh controller pages authorize new edits. A held pointer uses
+//! the admitted numeric gesture and Session key through its terminal.
 use super::*;
 use gpui::{Entity, Subscription, UniformListScrollHandle, uniform_list};
 use hex_audio::prepared::AppliedAudioSource;
@@ -37,7 +38,7 @@ pub(super) struct State {
     serial: u64,
     reconciled: Option<(AudioSourceContext, Option<u64>)>,
     panels: HashMap<DeviceId, Panel>,
-    in_flight: Option<(DeviceId, PluginParameterQuery)>,
+    in_flight: Option<(PluginParameterQuery, AppliedAudioSource)>,
     deferred_result: Option<(PluginParameterResult, u64)>,
     last_touched_device: Option<DeviceId>,
     reported_status: Option<ReportedStatus>,
@@ -48,11 +49,11 @@ struct ReportedStatus {
     message: String,
     error: Option<String>,
 }
-#[derive(Clone, Copy)]
 struct LiveTouchValue {
     touch: TouchObservation,
     value: PluginParameterValue,
-    after_request: u64,
+    sequence: u64,
+    formatted: String,
 }
 
 struct Panel {
@@ -160,50 +161,71 @@ impl Panel {
         self.result.as_ref().map(|rows| rows.as_slice())
     }
 
-    fn observe_value(&mut self, touch: TouchObservation, value: Option<PluginParameterValue>) {
+    fn observe_value(
+        &mut self,
+        touch: TouchObservation,
+        sequence: u64,
+        value: Option<PluginParameterValue>,
+    ) {
         // Bound this map by the admitted row inventory. Unknown targets still
         // follow the ordinary controller lookup before displaying a value.
         if let Some(value) = value
             && self.source == Some(touch.binding)
             && self.query.context == touch.source.context
             && self.query.output_identity == touch.source.output_identity
-            && self.rows().is_some_and(|rows| {
+            && let Some(row) = self.result.as_ref().and_then(|rows| {
                 rows.iter()
-                    .any(|row| row.id == touch.parameter && row.metadata_revision != 0)
+                    .find(|row| row.id == touch.parameter && row.metadata_revision != 0)
             })
+            && sequence > row.editor_sequence
         {
-            self.live_values.insert(
-                touch.parameter,
-                LiveTouchValue {
+            let live = self
+                .live_values
+                .entry(touch.parameter)
+                .or_insert_with(|| LiveTouchValue {
                     touch,
                     value,
-                    after_request: self.query.request_id,
-                },
-            );
+                    sequence,
+                    formatted: row.value.clone(),
+                });
+            if sequence > live.sequence {
+                live.sequence = sequence;
+                live.value = value;
+            }
         }
     }
 
+    fn live_value(&self, row: &PluginParameterRow) -> Option<&LiveTouchValue> {
+        self.live_values.get(&row.id).filter(|live| {
+            self.source == Some(live.touch.binding)
+                && self.query.context == live.touch.source.context
+                && self.query.output_identity == live.touch.source.output_identity
+                && row.metadata_revision != 0
+        })
+    }
+
     fn display_value(&self, row: &PluginParameterRow) -> f64 {
-        self.live_values
-            .get(&row.id)
-            .filter(|live| {
-                self.source == Some(live.touch.binding)
-                    && self.query.context == live.touch.source.context
-                    && self.query.output_identity == live.touch.source.output_identity
-                    && row.metadata_revision != 0
-            })
+        self.live_value(row)
             .map_or(row.normalized, |live| live.value.normalized())
+    }
+
+    fn display_text<'a>(&'a self, row: &'a PluginParameterRow) -> &'a str {
+        // Only the SDK page formats values. Hold its last text while the
+        // immediate knob preview is ahead of the controller observation.
+        self.live_value(row)
+            .map_or(row.value.as_str(), |live| live.formatted.as_str())
     }
 
     fn reconcile_live_values(
         &mut self,
-        query: PluginParameterQuery,
         source: hex_lattice_contract::ForeignProcessorBinding,
         rows: &[PluginParameterRow],
     ) {
         self.live_values.retain(|&id, live| {
             live.touch.binding == source
-                && (query.request_id <= live.after_request || !rows.iter().any(|row| row.id == id))
+                && !rows
+                    .iter()
+                    .any(|row| row.id == id && row.editor_sequence >= live.sequence)
         });
     }
 
@@ -231,8 +253,8 @@ impl Panel {
                         // Keep the last observed presentation while the source renews.
                         // Capabilities stay revoked; this value never authorizes input
                         // and the disk cache still stores descriptors only.
-                        pending.normalized = row.normalized;
-                        pending.value = row.value.clone();
+                        pending.normalized = self.display_value(row);
+                        pending.value = self.display_text(row).to_owned();
                         pending
                     })
                     .collect(),
@@ -268,6 +290,28 @@ fn current_applied_source(view: &EditorView) -> Option<AppliedAudioSource> {
         .and_then(|status| status.native_effect_source())
 }
 
+/// A panel can outlive the original hosted endpoint while Stop or an output
+/// restart prepares its replacement. Only the installed output can supply
+/// inventory, and its exact revision fences late background terminals.
+fn refresh_source(view: &EditorView) -> Option<AppliedAudioSource> {
+    let source = current_applied_source(view)?;
+    let output = view.audio.as_ref()?.control.output_identity()?;
+    (source.output_identity == output
+        && source.context.project_generation == view.project_generation
+        && view.stopped_playback_restore.is_none()
+        && view.recovery.generation().is_none())
+    .then_some(source)
+}
+
+fn refreshable_device(view: &EditorView, device: DeviceId, source: AppliedAudioSource) -> bool {
+    !view.degraded_plugins.contains(device.value())
+        && view.audible_playback.as_ref().is_some_and(|audible| {
+            audible.audio_revision == source.audio_revision
+                && audible.project_generation == source.context.project_generation
+                && super::audible_vst3_processor(view, device) == Some(true)
+        })
+}
+
 fn touch_is_current(view: &EditorView, device: DeviceId, touch: TouchObservation) -> bool {
     if !touch.binding.is_valid() {
         return false;
@@ -300,6 +344,7 @@ pub(in crate::editor) fn touched(
     binding: hex_lattice_contract::ForeignProcessorBinding,
     device_id: u64,
     parameter: u32,
+    sequence: u64,
     value: Option<PluginParameterValue>,
 ) {
     let Some(device) = view
@@ -322,7 +367,7 @@ pub(in crate::editor) fn touched(
     }
     view.device_panel.vst3_parameters.last_touched_device = Some(device);
     if let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) {
-        panel.observe_value(touch, value);
+        panel.observe_value(touch, sequence, value);
         queue_native_touch(panel, touch);
     }
 }
@@ -570,7 +615,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             }
             return;
         }
-        view.device_panel.vst3_parameters.panels.remove(&device);
+        retire_panel(view, device);
     }
     let query = PluginParameterQuery {
         context,
@@ -682,7 +727,7 @@ pub(in crate::editor) fn install_result(
     result: PluginParameterResult,
     revision: u64,
 ) {
-    let Some((_, pending)) = view.device_panel.vst3_parameters.in_flight else {
+    let Some((pending, _)) = view.device_panel.vst3_parameters.in_flight else {
         return;
     };
     if pending != result.query {
@@ -695,9 +740,10 @@ fn apply_result(
     view: &mut EditorView,
     result: PluginParameterResult,
     revision: u64,
+    current_source: Option<AppliedAudioSource>,
     cx: &mut Context<EditorView>,
 ) {
-    let Some((device, pending)) = view.device_panel.vst3_parameters.in_flight else {
+    let Some((pending, source)) = view.device_panel.vst3_parameters.in_flight else {
         return;
     };
     if pending != result.query {
@@ -708,15 +754,11 @@ fn apply_result(
         return;
     }
     view.device_panel.vst3_parameters.in_flight = None;
-    let context = current_context(view);
-    let output = view
-        .audio
-        .as_ref()
-        .and_then(|audio| audio.control.output_identity());
-    if result.query.context.project_generation != view.project_generation
+    let device = pending.device;
+    if current_source != Some(source)
+        || view.degraded_plugins.contains(device.value())
         || result.query.context.editor_revision != revision
-        || Some(result.query.context) != context
-        || output != Some(result.query.output_identity)
+        || Some(result.query.context) != current_context(view)
     {
         return;
     }
@@ -743,7 +785,7 @@ fn apply_result(
         panel.mark_values_stale();
         return;
     };
-    panel.reconcile_live_values(result.query, source, &rows);
+    panel.reconcile_live_values(source, &rows);
     if panel.descriptor_signature != result.descriptor_signature {
         panel.live_values.clear();
     }
@@ -1132,8 +1174,9 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     if view.stopped_playback_restore.is_some() || interactions_active(view, cx) {
         return;
     }
+    let source = refresh_source(view);
     if let Some((result, revision)) = view.device_panel.vst3_parameters.deferred_result.take() {
-        apply_result(view, result, revision, cx);
+        apply_result(view, result, revision, source, cx);
         cx.notify();
         return;
     }
@@ -1151,6 +1194,9 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     if view.device_panel.vst3_parameters.in_flight.is_some() {
         return;
     }
+    let Some(source) = source else {
+        return;
+    };
     let now = Instant::now();
     let pending_touch =
         view.device_panel
@@ -1163,11 +1209,12 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
                     .is_some_and(|touch| current_context(view) == Some(touch.source.context))
                     && !panel.cache_loading
                     && panel.retry_count <= MAX_AUTOMATIC_RETRIES
-                    && now >= panel.next_query_at)
-                    .then_some((*device, panel.priority_page))
+                    && now >= panel.next_query_at
+                    && refreshable_device(view, *device, source))
+                .then_some((*device, panel.priority_page))
             });
     if let Some((device, page)) = pending_touch {
-        submit_query(view, device, page, cx);
+        submit_query(view, device, page, source, cx);
         return;
     }
     let Some(owner) = view.device_panel.owner.filter(|_| view.device_panel_active) else {
@@ -1182,7 +1229,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         if panel.owner != owner || panel.cache_loading || now < panel.next_query_at {
             return None;
         }
-        if panel.retry_count > MAX_AUTOMATIC_RETRIES {
+        if panel.retry_count > MAX_AUTOMATIC_RETRIES || !refreshable_device(view, device, source) {
             return None;
         }
         let mut visible_pages = panel.visible_pages.clone();
@@ -1209,7 +1256,26 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         {
             panel.next_page = first.saturating_add(PAGE_SIZE as u16);
         }
-        submit_query(view, device, page, cx);
+        submit_query(view, device, page, source, cx);
+    }
+}
+
+/// Dropping a cached control also drops its event subscription. Cancel only
+/// the exact pointer edit it owns before relying on GPUI to release capture.
+fn retire_panel(view: &mut EditorView, device: DeviceId) {
+    let Some(panel) = view.device_panel.vst3_parameters.panels.remove(&device) else {
+        return;
+    };
+    if !view.device_gesture.has_pending_terminal()
+        && let Some(active) = view.device_gesture.snapshot()
+        && panel
+            .knobs
+            .values()
+            .chain(panel.follow_knob.iter().map(|(_, knob)| knob))
+            .any(|knob| knob.owns(active.key))
+    {
+        let _ = view.cancel_device_gesture();
+        view.pump_device_gesture();
     }
 }
 
@@ -1243,7 +1309,7 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
         })
         .collect::<Vec<_>>();
     for device in &stale {
-        view.device_panel.vst3_parameters.panels.remove(device);
+        retire_panel(view, *device);
     }
     if view
         .device_panel
@@ -1269,11 +1335,11 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
                     .and_then(|rows| rows.iter().find(|row| row.id == touch.parameter))
                     .map(|row| row.page_first)
             });
+            panel.mark_values_stale();
             panel.query.context = context;
             if let Some(output_identity) = output_identity {
                 panel.query.output_identity = output_identity;
             }
-            panel.mark_values_stale();
             panel.pending_touch = pending_touch;
             panel.priority_page = touch_page;
         }
@@ -1285,16 +1351,10 @@ fn submit_query(
     view: &mut EditorView,
     device: DeviceId,
     page_first: Option<u16>,
+    source: AppliedAudioSource,
     cx: &mut Context<EditorView>,
 ) {
     let Some(context) = current_context(view) else {
-        return;
-    };
-    let Some(output_identity) = view
-        .audio
-        .as_ref()
-        .and_then(|audio| audio.control.output_identity())
-    else {
         return;
     };
     let Some(request_id) = view.device_panel.vst3_parameters.serial.checked_add(1) else {
@@ -1311,7 +1371,7 @@ fn submit_query(
     let query = PluginParameterQuery {
         context,
         device,
-        output_identity,
+        output_identity: source.output_identity,
         request_id,
         page_first,
     };
@@ -1319,7 +1379,7 @@ fn submit_query(
         return;
     }
     view.device_panel.vst3_parameters.serial = request_id;
-    view.device_panel.vst3_parameters.in_flight = Some((device, query));
+    view.device_panel.vst3_parameters.in_flight = Some((query, source));
     let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) else {
         return;
     };
@@ -1523,7 +1583,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         });
     }
     let name = row.map(|row| row.name.as_str());
-    let value = row.map(|row| row.value.as_str()).unwrap_or("");
+    let value = row.map(|row| panel.display_text(row)).unwrap_or("");
     let retry = panel.cache_error.is_some() || panel.retry_count > MAX_AUTOMATIC_RETRIES;
     let field = if retry {
         hex_widgets::action(theme::text("retry"), theme::action_style())
@@ -1918,10 +1978,14 @@ pub(in crate::editor) fn test_state(view: &EditorView) -> (Vec<(u64, u32, gpui::
         .panels
         .iter()
         .flat_map(|(device, panel)| {
-            panel
-                .knobs
-                .iter()
-                .map(|(parameter, knob)| (device.value(), *parameter, knob.control.entity_id()))
+            panel.knobs.iter().filter_map(|(parameter, knob)| {
+                let row = panel
+                    .rows()?
+                    .iter()
+                    .find(|row| row.id == *parameter && row.editable)?;
+                knob.matches_source(panel.source?, panel.query, row)
+                    .then_some((device.value(), *parameter, knob.control.entity_id()))
+            })
         })
         .collect::<Vec<_>>();
     controls.sort_by_key(|(device, parameter, _)| (*device, *parameter));
@@ -2155,65 +2219,61 @@ fn create_knob(
     let event_drag = Rc::clone(&drag);
     let steps = row.steps;
     let is_follow = role == "follow";
-    let subscription =
-        cx.subscribe(
-            &control,
-            move |view, emitter, event: &NumericControlEvent, cx| {
-                let origin = event_origin.get();
-                // Pending metadata suspends new follow gestures, but an admitted
-                // pointer gesture must still reach its existing terminal owner.
-                let continuing_pointer =
-                    event.phase != NumericEventPhase::Begin && event.gesture.is_some();
-                if !continuing_pointer && view.device_gesture.snapshot().is_some() {
+    let subscription = cx.subscribe(
+        &control,
+        move |view, emitter, event: &NumericControlEvent, cx| {
+            let origin = event_origin.get();
+            // A redraw can revoke or replace a page while the same numeric
+            // pointer owns an admitted edit. Its later events are fenced by
+            // the pointer ID and Session gesture key inside knob_event.
+            let continuing_pointer =
+                event.phase != NumericEventPhase::Begin && event.gesture.is_some();
+            if !continuing_pointer {
+                if view.device_gesture.snapshot().is_some()
+                    || current_context(view) != Some(origin.context)
+                {
                     return;
                 }
-                let current =
-                    view.device_panel
-                        .vst3_parameters
-                        .panels
-                        .get(&device)
-                        .filter(|panel| {
-                            (!is_follow
-                                || continuing_pointer
-                                || (panel.pending_touch.is_none() && panel.queued_touch.is_none()))
-                                && panel.source == Some(source)
-                                && panel.query.context == origin.context
-                                && panel.query.output_identity == query.output_identity
-                        })
-                        .and_then(Panel::rows)
-                        .and_then(|rows| rows.iter().find(|row| row.id == origin.parameter))
-                        .is_some_and(|row| {
-                            row.editable
-                                && row.metadata_revision != 0
-                                && row.metadata_revision == origin.metadata_revision
-                                && row.normalized == origin.initial.normalized()
-                        })
-                        && view
-                            .device_panel
-                            .vst3_parameters
-                            .panels
-                            .get(&device)
-                            .is_some_and(|panel| {
-                                panel.knobs.get(&origin.parameter).is_some_and(|knob| {
-                                    knob.control.entity_id() == emitter.entity_id()
-                                }) || panel.follow_knob.as_ref().is_some_and(|(id, knob)| {
-                                    *id == origin.parameter
-                                        && knob.control.entity_id() == emitter.entity_id()
-                                })
-                            });
-                if !current || current_context(view) != Some(origin.context) {
+                let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
+                    return;
+                };
+                let valid_row = panel
+                    .rows()
+                    .and_then(|rows| rows.iter().find(|row| row.id == origin.parameter))
+                    .is_some_and(|row| {
+                        row.editable
+                            && row.metadata_revision != 0
+                            && row.metadata_revision == origin.metadata_revision
+                            && row.normalized == origin.initial.normalized()
+                    });
+                let current_control = panel
+                    .knobs
+                    .get(&origin.parameter)
+                    .is_some_and(|knob| knob.control.entity_id() == emitter.entity_id())
+                    || panel.follow_knob.as_ref().is_some_and(|(id, knob)| {
+                        *id == origin.parameter && knob.control.entity_id() == emitter.entity_id()
+                    });
+                if panel.source != Some(source)
+                    || panel.query.context != origin.context
+                    || panel.query.output_identity != query.output_identity
+                    || (is_follow
+                        && (panel.pending_touch.is_some() || panel.queued_touch.is_some()))
+                    || !valid_row
+                    || !current_control
+                {
                     return;
                 }
-                if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
-                    view.error = Some(reason.into());
-                }
-                if event.phase == NumericEventPhase::Begin {
-                    queue_host_touch(view, device, origin.parameter, cx);
-                }
-                view.pump_device_gesture();
-                cx.notify();
-            },
-        );
+            }
+            if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
+                view.error = Some(reason.into());
+            }
+            if event.phase == NumericEventPhase::Begin {
+                queue_host_touch(view, device, origin.parameter, cx);
+            }
+            view.pump_device_gesture();
+            cx.notify();
+        },
+    );
     Some(Knob {
         source,
         output: query.output_identity,
@@ -2290,6 +2350,92 @@ fn knob_event(
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    mod gesture_release;
+
+    #[gpui::test]
+    fn vst3_refresh_waits_for_an_installed_output(cx: &mut gpui::TestAppContext) {
+        let _output_serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let client = output.take_client().unwrap();
+        let (project, track, device) = parameter_project();
+        let (_, editor) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        editor.update(cx, |view, cx| {
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "vst3 refresh fixture".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.error = None;
+            view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+            view.device_panel_active = true;
+            ensure_panel(view, device, cx);
+            view.device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap()
+                .cache_loading = false;
+            tick(view, cx);
+            assert!(
+                !query_pending(view),
+                "an open output is not an installed VST3 source"
+            );
+            assert!(view.error.is_none());
+
+            let query = view.device_panel.vst3_parameters.panels[&device].query;
+            let first = AppliedAudioSource {
+                context: query.context,
+                output_identity: query.output_identity,
+                audio_revision: 1,
+            };
+            let recovered = AppliedAudioSource {
+                audio_revision: 2,
+                ..first
+            };
+            let failed = || PluginParameterResult {
+                query,
+                source: None,
+                total: 0,
+                descriptor_signature: None,
+                rows: Err("vst3 parameter source unavailable".into()),
+            };
+            view.device_panel.vst3_parameters.in_flight = Some((query, first));
+            apply_result(
+                view,
+                failed(),
+                query.context.editor_revision,
+                Some(recovered),
+                cx,
+            );
+            assert!(!query_pending(view));
+            assert!(
+                view.device_panel.vst3_parameters.panels[&device]
+                    .cache_error
+                    .is_none()
+            );
+
+            view.device_panel.vst3_parameters.in_flight = Some((query, recovered));
+            apply_result(
+                view,
+                failed(),
+                query.context.editor_revision,
+                Some(recovered),
+                cx,
+            );
+            assert!(report_panel_state(view));
+            assert_eq!(
+                view.error.as_deref(),
+                Some("vst3 parameter source unavailable")
+            );
+        });
+        drop(backend);
+        output.publication.close();
+    }
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
@@ -3188,11 +3334,18 @@ mod tests {
                 assert_eq!(panel.priority_page, Some(0));
                 assert_eq!(panel.next_query_at, refresh_due);
             }
-            // A native receipt can paint ahead of an already submitted page.
-            // It must never change the edit origin or be overwritten by that page.
-            panel.query.request_id = 12;
-            panel.observe_value(touch, Some(PluginParameterValue::new(0.7).unwrap()));
-            let row = panel.rows().unwrap()[0].clone();
+            // A main-lane page may observe the latest native edit before the
+            // processing queue delivers an older Perform for the same parameter.
+            let mut row = panel.rows().unwrap()[0].clone();
+            row.editor_sequence = 10;
+            row.value = "current".into();
+            panel.result = Some(Arc::new(vec![row.clone()]));
+            panel.observe_value(touch, 2, Some(PluginParameterValue::new(0.25).unwrap()));
+            assert_eq!(panel.display_value(&row), 0.4);
+            // The next Perform leads the page. An older receipt or a lagging
+            // page must not undo it or flicker the SDK's formatted text.
+            panel.observe_value(touch, 12, Some(PluginParameterValue::new(0.7).unwrap()));
+            panel.observe_value(touch, 11, Some(PluginParameterValue::new(0.55).unwrap()));
             assert_eq!(panel.display_value(&row), 0.7);
             assert_eq!(
                 parameter_origin(panel.query, &row)
@@ -3201,15 +3354,25 @@ mod tests {
                     .normalized(),
                 0.4
             );
-            panel.reconcile_live_values(panel.query, binding, std::slice::from_ref(&row));
-            assert_eq!(panel.display_value(&row), 0.7);
-            let newer = PluginParameterQuery {
-                request_id: 13,
-                ..panel.query
+            let lagging = PluginParameterRow {
+                value: "earlier".into(),
+                normalized: 0.55,
+                editor_sequence: 11,
+                ..row.clone()
             };
-            panel.reconcile_live_values(newer, binding, std::slice::from_ref(&row));
-            assert_eq!(panel.display_value(&row), 0.4);
-            panel.observe_value(touch, Some(PluginParameterValue::new(0.8).unwrap()));
+            panel.reconcile_live_values(binding, std::slice::from_ref(&lagging));
+            assert_eq!(panel.display_value(&lagging), 0.7);
+            assert_eq!(panel.display_text(&lagging), "current");
+            let current = PluginParameterRow {
+                value: "formatted".into(),
+                normalized: 0.7,
+                editor_sequence: 12,
+                ..row.clone()
+            };
+            panel.reconcile_live_values(binding, std::slice::from_ref(&current));
+            assert_eq!(panel.display_value(&current), 0.7);
+            assert_eq!(panel.display_text(&current), "formatted");
+            panel.observe_value(touch, 13, Some(PluginParameterValue::new(0.8).unwrap()));
             panel.source = Some(hex_lattice_contract::ForeignProcessorBinding {
                 epoch: 5,
                 ..binding
@@ -3219,7 +3382,7 @@ mod tests {
             panel.live_values.clear();
 
             let query = panel.query;
-            panel.observe_value(touch, Some(PluginParameterValue::new(0.9).unwrap()));
+            panel.observe_value(touch, 14, Some(PluginParameterValue::new(0.9).unwrap()));
             let control = knob(view, device, query, &row, cx).unwrap();
             assert_eq!(control.read(cx).value(), 0.9);
             let panel = view
@@ -3377,6 +3540,7 @@ mod tests {
                 PluginParameterRow {
                     id: 9,
                     metadata_revision: 0,
+                    editor_sequence: 0,
                     ..live
                 },
             ]));
@@ -3499,6 +3663,7 @@ mod tests {
             automation_class: Some([6; 16]).filter(|_| editable),
             page_first: 0,
             metadata_revision,
+            editor_sequence: 0,
         }
     }
 }

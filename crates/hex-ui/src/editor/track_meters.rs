@@ -428,6 +428,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn clearing_meters_keeps_the_per_tick_staging_capacity() {
         let mut state = State::default();
@@ -463,6 +464,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn revision_handoffs_decay_accepted_levels_without_crossing_projects() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

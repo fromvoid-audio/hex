@@ -11,6 +11,14 @@ pub(super) enum Handle {
     OutCurve,
 }
 impl Handle {
+    pub(super) fn curve_side(self) -> Option<bool> {
+        match self {
+            Self::InCurve => Some(false),
+            Self::OutCurve => Some(true),
+            _ => None,
+        }
+    }
+
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::InTop => "fade-in-top",
@@ -106,6 +114,10 @@ pub(super) fn edited_fade(
         .ok()?
         .with_curve_positions(in_position, out_position)
         .ok()
+        .map(|next| {
+            next.with_curve_laws(fade.curve_laws())
+                .with_new_ramp_defaults(fade)
+        })
 }
 
 // Each handle belongs to its own ramp, including legacy bends. Overlapping

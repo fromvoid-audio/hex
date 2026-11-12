@@ -117,7 +117,7 @@ impl DegradedDevices {
     pub(crate) fn contains(&self, device: u64) -> bool {
         self.0.binary_search(&device).is_ok()
     }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn as_slice(&self) -> &[u64] {
         &self.0
     }
@@ -148,7 +148,7 @@ pub enum EditorPublicationState {
     Fault(String),
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::DegradedDevices;
 

@@ -278,6 +278,8 @@ class SelectionTests(unittest.TestCase):
         # Tooling owner boundary: a script with its own test module selects that
         # module plus shared invariants, never unrelated tooling suites.
         for path, owner in (
+            ("scripts/cargo-slot.py", "test_cargo_slot"),
+            ("scripts/tests/test_cargo_slot.py", "test_cargo_slot"),
             ("scripts/check-architecture.py", "test_check_architecture"),
             ("scripts/tests/test_architecture.py", "test_architecture"),
             ("scripts/hex-update-entry.py", "test_hex_update_entry"),

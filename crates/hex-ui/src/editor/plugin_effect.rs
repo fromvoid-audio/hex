@@ -142,6 +142,14 @@ impl EditorView {
             (hex_plugin_catalog::PluginRole::Instrument, PluginEffectDestination::Track(track)) => {
                 (PluginEffectDestination::Instrument(track), None)
             }
+            (
+                hex_plugin_catalog::PluginRole::Instrument,
+                PluginEffectDestination::ReplaceInstrument { .. }
+                | PluginEffectDestination::NewTrack {
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    ..
+                },
+            ) => (destination, None),
             (hex_plugin_catalog::PluginRole::Instrument, _) => {
                 self.error = Some("select a track for the vst3 instrument".into());
                 return;
@@ -170,6 +178,8 @@ impl EditorView {
             },
             destination,
             before,
+            track_device_name: matches!(destination, PluginEffectDestination::NewTrack { .. })
+                .then(|| selection.class_name.clone()),
             control: Arc::clone(&control),
         };
         let trace = crate::diagnostics::PluginLoad::new(

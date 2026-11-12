@@ -134,6 +134,6 @@ impl super::EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 #[path = "midi_origin_view_tests.rs"]
 mod tests;

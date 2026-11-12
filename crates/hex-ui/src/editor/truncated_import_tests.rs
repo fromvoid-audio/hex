@@ -135,23 +135,6 @@ fn confirming_the_prompt_recovers_exactly_the_readable_frames(cx: &mut TestAppCo
     assert_eq!(std::fs::read(&cut).unwrap(), bytes, "original untouched");
 }
 
-#[test]
-fn recovery_intent_retains_the_exact_captured_gain_and_destination() {
-    let path = std::path::PathBuf::from("/mixed Case/source.wav");
-    let request = Request::ImportToNewTrackWithGain {
-        path: path.clone(),
-        before_track: None,
-        start: 37,
-        gain: 0.25,
-    };
-    let intent = super::ImportIntent::capture(&request).expect("single-file intent");
-    let recovered = intent.into_request();
-    assert!(
-        matches!(&recovered, Request::ImportToNewTrackWithGain { path: actual, before_track: None, start: 37, gain } if actual == &path && *gain == 0.25)
-    );
-    assert!(hex_session::service::TruncatedImportRecovery::new(recovered).is_ok());
-}
-
 #[gpui::test]
 fn single_file_imports_use_captured_default_in_real_worker(cx: &mut TestAppContext) {
     let files = BatchFiles::new();

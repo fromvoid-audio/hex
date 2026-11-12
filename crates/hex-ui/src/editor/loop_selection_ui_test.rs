@@ -224,13 +224,13 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
         editor.update(&mut visual, |v, _| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.time_selection = Some(TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 0,
                 end_frame: 48_000,
             });
             v.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track,
+                track: Some(track),
                 frame: 0,
                 generation: v.project_generation,
                 pulse_color: 0,
@@ -384,15 +384,15 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
         editor.update(&mut visual, |v, _| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.time_selection = Some(TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 36_000,
                 end_frame: 12_000,
             });
             v.time_selection_project_scope = project_scope;
             // The real body gesture owns a matching generation-scoped edit cursor.
             v.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track,
+                track: Some(track),
                 frame: 36_000,
                 generation: v.project_generation,
                 pulse_color: 0,
@@ -422,7 +422,7 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
         else {
             panic!("track")
         };
-        v.time_selection.as_mut().unwrap().end_track = stale;
+        v.time_selection.as_mut().unwrap().end_track = Some(stale);
     });
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     visual.simulate_keystrokes("l");
@@ -700,14 +700,14 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
         editor.update(&mut visual, |v, _| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.time_selection = Some(TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 36_000,
                 end_frame: 12_000,
             });
             v.time_selection_project_scope = project_scope;
             v.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track,
+                track: Some(track),
                 frame: 36_000,
                 generation: v.project_generation,
                 pulse_color: 0,
@@ -741,7 +741,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
         else {
             panic!("track")
         };
-        v.time_selection.as_mut().unwrap().end_track = stale;
+        v.time_selection.as_mut().unwrap().end_track = Some(stale);
     });
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
@@ -1538,13 +1538,13 @@ fn command_l_toggles_active_loop_preserves_bounds_and_keeps_selection_play_origi
     editor.update(&mut visual, |view, cx| {
         let track = view.state.as_ref().unwrap().project.tracks()[0].id();
         view.time_selection = Some(TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 36_000,
             end_frame: 72_000,
         });
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track,
+            track: Some(track),
             frame: 96_000,
             generation: view.project_generation,
             pulse_color: 0,
@@ -1881,7 +1881,7 @@ fn new_selection_loop_takes_play_start_only_after_ack_and_later_cursor_wins(
     });
     editor.update(&mut visual, |v, _| {
         v.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track,
+            track: Some(track),
             frame: 18_000,
             generation: v.project_generation,
             pulse_color: 0,
@@ -1925,7 +1925,7 @@ fn selection_loop_does_not_override_a_new_cursor_or_a_refused_terminal(cx: &mut 
         editor.update(&mut visual, |v, _| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track,
+                track: Some(track),
                 frame: 18_000,
                 generation: v.project_generation,
                 pulse_color: 0,

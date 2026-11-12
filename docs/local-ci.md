@@ -43,6 +43,25 @@ clippy, build or runner) at a time. A session's own worktree target may need
 Do not edit a checkout while a runner is using it: a changed tree marks the
 run stale, and Python self-tests that start scripts would test the edit.
 
+For cooperating sessions, wrap the entire command (including scripts that may
+spawn Cargo) in the shared slot:
+
+```sh
+python3 scripts/cargo-slot.py cargo test -p OWNER --locked
+python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
+```
+
+All participating Hex and Yield worktrees on the same user account must use the
+same `~/.cache/hex/cargo-slot.lock`. From a Yield worktree, invoke this wrapper
+by its absolute path in a Hex checkout. The wrapper waits for the slot and passes
+its open lock to the child, so killing the wrapper does not free it while the
+child retains the descriptor. Leave the lock file in place; an unlocked file is
+not a stale owner and must not be deleted. This is advisory, separate from the
+runner's target-custody lock, and cannot exclude direct Cargo commands or other
+scripts that do not participate. Check for nonparticipants and coordinate with
+their owners before starting; do not kill their work. `HEX_CARGO_SLOT_FILE` is
+for isolated tests: different values do not coordinate with each other.
+
 Reviewed check set template for a PR description:
 
 ```text
@@ -140,12 +159,28 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 Editor logic tests, including Session route view state, EQ response sampling,
 overview-waveform, loop and stretch projections, waveform-grid, peak and fade paint geometry,
 clip-drag geometry,
-arrangement-map and group-overview projections, browser tree and sample state, session-receipt reconciliation,
+arrangement-map and group-overview projections, browser tree and sample state, recent-project labels, session-receipt reconciliation,
 output-meter logic, project tempo value conversion, and passive time-move interval splitting, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 ```
+
+The seven default standalone targets run with the default package tests.
+Whole-package plans that elide the default package run select those standalone
+targets directly. A change confined to reviewed standalone unit test targets and
+harnesses runs the owning unit targets and keeps the reviewed feature Clippy
+checks. Changes to product source still select its unit and rendered support
+coverage.
+
+The windowed library and standalone MIDI pressure test use
+`ui-test-support` in separate invocations:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --lib --locked
+cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+```
+
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
@@ -228,9 +263,11 @@ Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
 example or bench, so building and linking those targets was pure overhead
 (hex-session has 28 test and 7 example targets, hex-storage 34). Explicit
-source-by-path consumers are exceptions: arrangement focus, track indentation
-and track-reorder subtree changes also select the separate `hex-ui`
-`track_group_focus` integration target.
+source-by-path targets are exceptions. Arrangement focus, track indentation and
+track-reorder subtree changes also select the standalone `hex-ui`
+`track_group_focus` unit target. It owns the in-memory visibility and indentation
+assertions. Changes to those sources also select the rendered consumers in the
+`ui-test-support` library.
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
@@ -269,6 +306,10 @@ prints its own `test result`; every listed test runs exactly once (70 s).
 Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
+The hex-ui gesture barrier and waveform geometry unit tests use the default
+library. Merge plans select the relevant modules,
+`editor::device_gesture::unit_tests::` and `editor::waveform_geometry::tests::`.
+Run either directly with `cargo test -p hex-ui --lib --locked MODULE`.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
 feature tests. Consumers lint in two invocations: default features

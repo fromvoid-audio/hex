@@ -220,7 +220,9 @@ fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
     );
     let observed = h.next();
     assert_eq!(observed.state.project, accepted.state.project);
-    let rows = observed.plugin_parameters.unwrap().rows.unwrap();
+    let observed = observed.plugin_parameters.unwrap();
+    let original_binding = observed.source.unwrap();
+    let rows = observed.rows.unwrap();
     let [row] = rows.as_slice() else {
         panic!("expected one SDK parameter")
     };
@@ -284,7 +286,32 @@ fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
     }
     assert!(event.error.is_none(), "{:?}", event.error);
     assert_eq!(event.state.revision, revision + 1);
-    let mut applied = h.applied(applied).0;
+    let (mut applied, applied_metadata) = h.applied(applied);
+    if variant == "92" {
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let query = hex_session::service::PluginParameterQuery {
+            context: applied_metadata.context,
+            request_id: 2,
+            ..query
+        };
+        h.run(Request::QueryPluginParameters(query));
+        let observed = h.next().plugin_parameters.unwrap();
+        let successor = observed.source.unwrap();
+        assert_eq!(successor.root, original_binding.root);
+        assert_eq!(successor.instance, original_binding.instance);
+        assert_ne!(
+            successor.graph, original_binding.graph,
+            "stopped automation edit replaces the editor's original worker"
+        );
+    }
     let lane = event
         .state
         .project

@@ -38,9 +38,12 @@ pub(super) struct PendingKinds {
     track_reorder: bool,
     duplicate: bool,
     track_clipboard: bool,
+    device_duplicate: bool,
     midi_drag: bool,
     fade: bool,
+    locator_move: bool,
     clip_gain: bool,
+    clip_activation: bool,
     gain: bool,
     gain_take: bool,
     device_automation: bool,
@@ -101,9 +104,12 @@ impl EditorView {
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
                 track_clipboard: self.pending_track_clipboard_matches(request),
+                device_duplicate: self.device_panel.pending_duplicate_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
+                locator_move: self.locators.matches(request),
                 clip_gain: self.clip_gain_matches(request),
+                clip_activation: self.clip_activation_matches(request),
                 gain: self.pending_gain_matches(request),
                 gain_take: self.pending_gain_take_matches(request),
                 device_automation: self.pending_device_automation_matches(request),
@@ -199,17 +205,27 @@ impl EditorView {
         if kinds.track_clipboard {
             self.track_clipboard_submitted();
         }
+        if kinds.device_duplicate {
+            self.device_panel
+                .duplicate_submitted(self.worker_requests_pending);
+        }
         if kinds.duplicate {
             self.duplicate_submitted();
         }
         if kinds.midi_drag {
             self.midi_drag_submitted();
         }
+        if kinds.locator_move {
+            self.locators.submitted(self.worker_requests_pending);
+        }
         if kinds.fade {
             self.fade_submitted();
         }
         if kinds.clip_gain {
             self.clip_gain_submitted();
+        }
+        if kinds.clip_activation {
+            self.clip_activation_submitted();
         }
         if kinds.gain {
             self.gain_submitted();
@@ -256,6 +272,7 @@ impl EditorView {
         if matches!(
             request,
             Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
@@ -307,6 +324,9 @@ impl EditorView {
         if kinds.track_clipboard {
             visible |= self.pending_track_clipboard.take().is_some();
         }
+        if kinds.device_duplicate {
+            visible |= self.device_panel.pending_duplicate.take().is_some();
+        }
         if kinds.duplicate {
             visible |= self.duplicate_intent.reject();
         }
@@ -316,8 +336,14 @@ impl EditorView {
         if kinds.fade {
             visible |= self.retire_pending_fade();
         }
+        if kinds.locator_move {
+            visible |= self.locators.refuse();
+        }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();
+        }
+        if kinds.clip_activation {
+            visible |= self.retire_clip_activation();
         }
         if kinds.gain {
             visible |= self.retire_pending_gain();
@@ -342,7 +368,7 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod observation_tests {
     use super::*;
 

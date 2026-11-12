@@ -36,6 +36,55 @@ fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_sparse_authored_request_delivers_the_full_point_capacity() {
+    use crate::transport::MAX_PARAMETER_POINTS;
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let mut input = request(instance.configuration(), 0);
+    for index in 0..MAX_PARAMETER_POINTS {
+        input
+            .parameters
+            .push(ParameterPoint {
+                frame: (index * 2) as u16,
+                id: 0,
+                normalized: if index % 2 == 0 { 0.75 } else { 0.125 },
+            })
+            .unwrap();
+    }
+    let reply = instance
+        .exchange_authored_on_worker(input, &metadata)
+        .unwrap();
+    for point in input.parameters.as_slice() {
+        let frame = usize::from(point.frame);
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (point.normalized * 2.0) as f32)
+        );
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
     exercise_native_dense_request(false);
 }
@@ -961,7 +1010,9 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
         .unwrap();
         fs::write(case.release(), b"finish the editor drag").unwrap();
         let until = Instant::now() + Duration::from_secs(2);
-        while instance.poll_parameter_edits_on_worker().unwrap().ready == 0 {
+        while usize::from(instance.poll_parameter_edits_on_worker().unwrap().ready)
+            < protocol::MAX_PARAMETER_EDITS
+        {
             assert!(Instant::now() < until, "the drag must reach the worker");
             thread::yield_now();
         }
@@ -985,26 +1036,51 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
                 normalized: if authored { 0.5 } else { 0.25 },
             }]
         );
-        instance
-            .begin_parameter_page_on_worker(ParameterPageQuery::default())
-            .unwrap();
-        let until = Instant::now() + Duration::from_secs(2);
-        loop {
-            match instance.poll_parameter_page_on_worker().unwrap() {
-                ParameterPageProgress::Page(page) => {
-                    assert_eq!(
-                        page.as_slice()[0].normalized,
-                        if authored { 0.5 } else { 0.875 }
-                    );
-                    break;
+        let page = |instance: &mut Prepared| {
+            instance
+                .begin_parameter_page_on_worker(ParameterPageQuery::default())
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                match instance.poll_parameter_page_on_worker().unwrap() {
+                    ParameterPageProgress::Page(page) => return page.as_slice()[0],
+                    ParameterPageProgress::Pending => {
+                        assert!(Instant::now() < until, "controller feedback must settle");
+                        thread::yield_now();
+                    }
+                    other => panic!("expected a controller page, got {other:?}"),
                 }
-                ParameterPageProgress::Pending => {
-                    assert!(Instant::now() < until, "controller feedback must settle");
-                    thread::yield_now();
-                }
-                other => panic!("expected a controller page, got {other:?}"),
             }
-        }
+        };
+        let expected = if authored { 0.5 } else { 0.875 };
+        let first = page(&mut instance);
+        assert_eq!(first.normalized, expected);
+        // Keep the completed receipt batch full so this second quantum
+        // reports processor feedback before it can admit the final Perform.
+        let input = request(instance.configuration(), 1);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: input.frames - 1,
+                id: 7,
+                normalized: if authored { 0.5 } else { 0.25 },
+            }]
+        );
+        assert_eq!(page(&mut instance).normalized, expected);
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        let delayed = edits
+            .as_slice()
+            .iter()
+            .rev()
+            .find(|edit| edit.kind == protocol::ParameterEditKind::Perform)
+            .expect("delayed native Perform after the page");
+        assert_eq!(delayed.normalized, 0.25);
+        assert!(delayed.sequence < first.editor_sequence);
+        println!(
+            "controller page {}, delayed Perform {} at {}",
+            first.normalized, delayed.normalized, delayed.sequence
+        );
         assert!(
             instance
                 .stop_and_reap_on_control()

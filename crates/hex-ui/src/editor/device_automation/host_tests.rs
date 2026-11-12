@@ -111,7 +111,9 @@ pub(in crate::editor) fn window_with_gain(
                 project_generation: 0,
                 revision,
                 track,
-                empty_sampler: None,
+                slot: hex_session::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
                 path: path.to_path_buf(),
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             })
@@ -944,13 +946,22 @@ fn lane_plain_blank_drag_adds_a_point_and_drags_it_without_a_marquee(cx: &mut Te
     // Unsnapped (Cmd) so the dragged point lands exactly under the pointer.
     let from = lane_point(&mut visual, device, target, [0.6, 0.5]);
     let to = lane_point(&mut visual, device, target, [0.6, 0.2]);
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    let assert_draft_only = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            assert!(view.automation_view.devices.marquee.is_none());
+            assert!(view.automation_view.devices.draft.is_some());
+            assert!(view.automation_view.devices.pending.is_none());
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    };
     visual.simulate_mouse_down(from, MouseButton::Left, CMD);
-    editor.read_with(&visual, |view, _| {
-        assert!(view.automation_view.devices.marquee.is_none());
-        assert!(view.automation_view.devices.draft.is_some());
-    });
+    assert_draft_only(&visual);
     // Shift arriving after the press must not turn the gesture into a band.
     visual.simulate_mouse_move(to, Some(MouseButton::Left), SHIFT_CMD);
+    visual.run_until_parked();
+    assert_draft_only(&visual);
     visual.simulate_mouse_up(to, MouseButton::Left, SHIFT_CMD);
     visual.run_until_parked();
     pump(&mut visual, &editor);
@@ -1217,6 +1228,7 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
         automation_class: Some([2; 16]),
         page_first: 0,
         metadata_revision: 1,
+        editor_sequence: 0,
     };
     let (generation, revision) = editor.update(&mut visual, |view, cx| {
         let state = view.state.as_ref().unwrap();
@@ -1919,6 +1931,7 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
         automation_class: Some([2; 16]),
         page_first: 0,
         metadata_revision: 1,
+        editor_sequence: 0,
     };
     editor.update(&mut visual, |view, _| {
         view.selected_track = Some(track);

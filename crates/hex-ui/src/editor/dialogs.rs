@@ -98,6 +98,7 @@ impl EditorView {
         if !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
             || !self.finalize_section_name_for_open(window, cx)
+            || !self.finalize_locator_name_for_open(window, cx)
         {
             cx.notify();
             return;
@@ -246,6 +247,7 @@ impl EditorView {
             || !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
             || !self.finalize_section_name_for_open(window, cx)
+            || !self.finalize_locator_name_for_open(window, cx)
         {
             return;
         }
@@ -409,7 +411,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::ImportPromptTarget;
     use hex_project::{Command, Created, Editor, Project};
