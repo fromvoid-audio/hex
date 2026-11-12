@@ -28,6 +28,7 @@ impl Playback {
             performance_clock_exhausted: _,
             transport_fade,
             playing: _,
+            section_end: _,
         } = self;
         if resident_pcm_publication.is_some()
             || tuning_audition.is_some()
