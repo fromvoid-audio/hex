@@ -542,6 +542,7 @@ impl Callback {
                 pending_play: self.stream_pending_play.is_some(),
                 command_prefix: self.stream_prefix,
                 frames,
+                fenced_restart: false,
             });
             next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {
