@@ -124,6 +124,9 @@ impl DegradedDevices {
 }
 
 /// UI-safe summary of a worker-owned publication attempt.
+// Resident metadata is bounded scalar data. Keeping it inline avoids an allocation
+// for each control-side publication while retaining exact callback correlation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum EditorPublicationState {
     Preparing,

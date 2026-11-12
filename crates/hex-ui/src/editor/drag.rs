@@ -970,7 +970,8 @@ impl super::EditorView {
         };
         if target.is_some_and(|(track, position, mode)| {
             audition.target.as_ref().is_some_and(|last| {
-                (last.track, last.position, last.mode) == (track, position, mode)
+                matches!(&last.destination, hex_session::service::ArrangementMoveDestination::Existing(actual) if *actual == track)
+                    && (last.position, last.mode) == (position, mode)
             })
         }) || target.is_none() && audition.target.is_none()
         {
@@ -997,7 +998,7 @@ impl super::EditorView {
             sequence,
             clips: std::sync::Arc::clone(&audition.clips),
             anchor: drag.clip,
-            track,
+            destination: hex_session::service::ArrangementMoveDestination::Existing(track),
             position,
             mode,
         };

@@ -35,9 +35,66 @@ pub struct ArrangementMoveAudition {
     pub sequence: u64,
     pub clips: Arc<[ClipId]>,
     pub anchor: ClipId,
-    pub track: hex_project::TrackId,
+    pub destination: ArrangementMoveDestination,
     pub position: hex_project::ClipGroupPosition,
     pub mode: ArrangementMoveMode,
+}
+
+/// Destination data is captured once on the control side, before preparation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArrangementMoveDestination {
+    Existing(hex_project::TrackId),
+    NewTrack(NewTrackMoveDestination),
+}
+
+/// Validated bounded inputs for the existing canonical new-track commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewTrackMoveDestination {
+    name: Arc<str>,
+    before_track: Option<hex_project::TrackId>,
+    gain_bits: u32,
+}
+
+impl NewTrackMoveDestination {
+    /// Captures a valid track name, insertion anchor, and finite initial gain.
+    /// Returns `None` when the name or gain is outside the project contract.
+    pub fn new(
+        name: Arc<str>,
+        before_track: Option<hex_project::TrackId>,
+        gain: f32,
+    ) -> Option<Self> {
+        if name.trim().is_empty()
+            || name.len() > hex_project::MAX_NAME_BYTES
+            || name.chars().any(char::is_control)
+            || !gain.is_finite()
+            || !(0.0..=2.0).contains(&gain)
+        {
+            return None;
+        }
+        Some(Self {
+            name,
+            before_track,
+            gain_bits: gain.to_bits(),
+        })
+    }
+}
+
+/// Scalar destination sufficient to correlate callback-applied placement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipMovePreviewDestination {
+    Existing(hex_project::TrackId),
+    NewTrack {
+        before_track: Option<hex_project::TrackId>,
+    },
+}
+impl ClipMovePreviewDestination {
+    /// Returns the existing track, if the applied destination is not new.
+    pub fn existing_track(self) -> Option<hex_project::TrackId> {
+        match self {
+            Self::Existing(track) => Some(track),
+            Self::NewTrack { .. } => None,
+        }
+    }
 }
 
 /// Selects the same authored placement semantics used by the eventual drag.
@@ -59,7 +116,7 @@ pub struct ClipMovePreviewIdentity {
     pub gesture: u64,
     pub sequence: u64,
     /// The anchor placement represented by this publication, in project units.
-    pub track: hex_project::TrackId,
+    pub destination: ClipMovePreviewDestination,
     pub position: hex_project::ClipGroupPosition,
     pub mode: ArrangementMoveMode,
 }
@@ -70,7 +127,16 @@ impl ArrangementMoveAudition {
             context: self.context,
             gesture: self.gesture,
             sequence: self.sequence,
-            track: self.track,
+            destination: match &self.destination {
+                ArrangementMoveDestination::Existing(track) => {
+                    ClipMovePreviewDestination::Existing(*track)
+                }
+                ArrangementMoveDestination::NewTrack(track) => {
+                    ClipMovePreviewDestination::NewTrack {
+                        before_track: track.before_track,
+                    }
+                }
+            },
             position: self.position,
             mode: self.mode,
         }
@@ -79,6 +145,8 @@ impl ArrangementMoveAudition {
         !self.clips.is_empty()
             && self.clips.len() <= hex_project::MAX_CLIPS
             && self.clips.contains(&self.anchor)
+            && (!matches!(self.destination, ArrangementMoveDestination::NewTrack(_))
+                || self.clips.len() == 1)
     }
 }
 
@@ -228,48 +296,119 @@ impl Target {
                 frame: target.frame,
             },
             Self::PlayStart(target) => target.edit.command(),
-            Self::Move(target) => match (target.clips.len(), target.mode, target.position) {
-                (_, ArrangementMoveMode::AliasCopy, position) => Command::DuplicateAliasClipsAt {
-                    clips: target.clips.to_vec(),
-                    anchor: target.anchor,
-                    track: target.track,
-                    position,
-                },
-                (1, ArrangementMoveMode::Move, hex_project::ClipGroupPosition::Audio(start)) => {
-                    Command::MoveClipWithOverwrite {
-                        clip: target.anchor,
-                        track: target.track,
-                        start,
+            Self::Move(target) => match &target.destination {
+                ArrangementMoveDestination::Existing(track) => {
+                    match (target.clips.len(), target.mode, target.position) {
+                        (_, ArrangementMoveMode::AliasCopy, position) => {
+                            Command::DuplicateAliasClipsAt {
+                                clips: target.clips.to_vec(),
+                                anchor: target.anchor,
+                                track: *track,
+                                position,
+                            }
+                        }
+                        (
+                            1,
+                            ArrangementMoveMode::Move,
+                            hex_project::ClipGroupPosition::Audio(start),
+                        ) => Command::MoveClipWithOverwrite {
+                            clip: target.anchor,
+                            track: *track,
+                            start,
+                        },
+                        (
+                            1,
+                            ArrangementMoveMode::Move,
+                            hex_project::ClipGroupPosition::Midi(start),
+                        ) => Command::MoveMidiClipWithOverwrite {
+                            clip: target.anchor,
+                            track: *track,
+                            start,
+                        },
+                        (
+                            1,
+                            ArrangementMoveMode::Copy,
+                            hex_project::ClipGroupPosition::Audio(start),
+                        ) => Command::CopyClipTo {
+                            clip: target.anchor,
+                            track: *track,
+                            start,
+                        },
+                        (
+                            1,
+                            ArrangementMoveMode::Copy,
+                            hex_project::ClipGroupPosition::Midi(start),
+                        ) => Command::CopyMidiClipTo {
+                            clip: target.anchor,
+                            track: *track,
+                            start,
+                        },
+                        (_, mode, position) => Command::MoveClipsWithOverwrite {
+                            clips: target.clips.to_vec(),
+                            anchor: target.anchor,
+                            track: *track,
+                            position,
+                            copy: mode == ArrangementMoveMode::Copy,
+                        },
                     }
                 }
-                (1, ArrangementMoveMode::Move, hex_project::ClipGroupPosition::Midi(start)) => {
-                    Command::MoveMidiClipWithOverwrite {
-                        clip: target.anchor,
-                        track: target.track,
-                        start,
+                ArrangementMoveDestination::NewTrack(destination) => {
+                    let name = destination.name.to_string();
+                    let before_track = destination.before_track;
+                    let initial_gain = Some(f32::from_bits(destination.gain_bits));
+                    let clip = target.anchor;
+                    match (target.mode, target.position) {
+                        (ArrangementMoveMode::AliasCopy, position) => {
+                            Command::DuplicateAliasClipToNewTrack {
+                                clip,
+                                name,
+                                before_track,
+                                position,
+                                initial_gain,
+                            }
+                        }
+                        (
+                            ArrangementMoveMode::Move,
+                            hex_project::ClipGroupPosition::Audio(start),
+                        ) => Command::MoveClipToNewTrack {
+                            clip,
+                            name,
+                            before_track,
+                            start,
+                            initial_gain,
+                        },
+                        (
+                            ArrangementMoveMode::Move,
+                            hex_project::ClipGroupPosition::Midi(start),
+                        ) => Command::MoveMidiClipToNewTrack {
+                            clip,
+                            name,
+                            before_track,
+                            start,
+                            initial_gain,
+                        },
+                        (
+                            ArrangementMoveMode::Copy,
+                            hex_project::ClipGroupPosition::Audio(start),
+                        ) => Command::CopyClipToNewTrack {
+                            clip,
+                            name,
+                            before_track,
+                            start,
+                            initial_gain,
+                        },
+                        (
+                            ArrangementMoveMode::Copy,
+                            hex_project::ClipGroupPosition::Midi(start),
+                        ) => Command::CopyMidiClipToNewTrack {
+                            clip,
+                            name,
+                            before_track,
+                            start,
+                            initial_gain,
+                        },
                     }
                 }
-                (1, ArrangementMoveMode::Copy, hex_project::ClipGroupPosition::Audio(start)) => {
-                    Command::CopyClipTo {
-                        clip: target.anchor,
-                        track: target.track,
-                        start,
-                    }
-                }
-                (1, ArrangementMoveMode::Copy, hex_project::ClipGroupPosition::Midi(start)) => {
-                    Command::CopyMidiClipTo {
-                        clip: target.anchor,
-                        track: target.track,
-                        start,
-                    }
-                }
-                (_, mode, position) => Command::MoveClipsWithOverwrite {
-                    clips: target.clips.to_vec(),
-                    anchor: target.anchor,
-                    track: target.track,
-                    position,
-                    copy: mode == ArrangementMoveMode::Copy,
-                },
             },
         }
     }
@@ -298,8 +437,18 @@ impl Target {
             },
         ) = (self, request)
         {
+            let new_track_command = matches!(
+                command,
+                Command::MoveClipToNewTrack { .. }
+                    | Command::MoveMidiClipToNewTrack { .. }
+                    | Command::CopyClipToNewTrack { .. }
+                    | Command::CopyMidiClipToNewTrack { .. }
+                    | Command::DuplicateAliasClipToNewTrack { .. }
+            );
             return *project_generation == target.context.project_generation
                 && *revision == target.context.editor_revision
+                && new_track_command
+                    == matches!(target.destination, ArrangementMoveDestination::NewTrack(_))
                 && match command {
                     Command::MoveClipsWithOverwrite { clips, anchor, .. }
                     | Command::DuplicateAliasClipsAt { clips, anchor, .. } => {
@@ -308,7 +457,12 @@ impl Target {
                     Command::MoveClipWithOverwrite { clip, .. }
                     | Command::MoveMidiClipWithOverwrite { clip, .. }
                     | Command::CopyClipTo { clip, .. }
-                    | Command::CopyMidiClipTo { clip, .. } => {
+                    | Command::CopyMidiClipTo { clip, .. }
+                    | Command::MoveClipToNewTrack { clip, .. }
+                    | Command::MoveMidiClipToNewTrack { clip, .. }
+                    | Command::CopyClipToNewTrack { clip, .. }
+                    | Command::CopyMidiClipToNewTrack { clip, .. }
+                    | Command::DuplicateAliasClipToNewTrack { clip, .. } => {
                         target.clips.len() == 1 && *clip == target.anchor
                     }
                     _ => false,
@@ -334,7 +488,14 @@ impl Target {
                 .clips
                 .len()
                 .saturating_mul(std::mem::size_of::<ClipId>())
-                .saturating_add(2 * std::mem::size_of::<usize>()),
+                .saturating_add(2 * std::mem::size_of::<usize>())
+                .saturating_add(match &target.destination {
+                    ArrangementMoveDestination::NewTrack(destination) => destination
+                        .name
+                        .len()
+                        .saturating_add(2 * std::mem::size_of::<usize>()),
+                    ArrangementMoveDestination::Existing(_) => 0,
+                }),
             _ => 0,
         }
     }
@@ -565,7 +726,7 @@ mod tests {
             sequence: 1,
             anchor: clips[0],
             clips: clips.into(),
-            track,
+            destination: ArrangementMoveDestination::Existing(track),
             position: ClipGroupPosition::Midi(BeatTime::from_quarters(4).unwrap()),
             mode: ArrangementMoveMode::Move,
         }
@@ -604,10 +765,172 @@ mod tests {
     }
 
     #[test]
+    fn new_track_targets_match_canonical_commands_and_reject_invalid_inputs() {
+        let mut single = target();
+        single.clips = vec![single.anchor].into();
+        let before = match single.destination {
+            ArrangementMoveDestination::Existing(track) => Some(track),
+            _ => panic!("track"),
+        };
+        for gain in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+            assert!(NewTrackMoveDestination::new(Arc::from("track 2"), before, gain).is_none());
+        }
+        for name in [
+            String::new(),
+            "bad\nname".into(),
+            "x".repeat(hex_project::MAX_NAME_BYTES + 1),
+        ] {
+            assert!(NewTrackMoveDestination::new(Arc::from(name), before, 1.25).is_none());
+        }
+        let destination = NewTrackMoveDestination::new(Arc::from("track 2"), before, 1.25).unwrap();
+        single.destination = ArrangementMoveDestination::NewTrack(destination);
+        let mut at_end = single.clone();
+        at_end.destination = ArrangementMoveDestination::NewTrack(
+            NewTrackMoveDestination::new(Arc::from("track 2"), None, 1.25).unwrap(),
+        );
+        assert_eq!(
+            at_end.identity().destination,
+            ClipMovePreviewDestination::NewTrack { before_track: None }
+        );
+        let mut invalid_group = single.clone();
+        invalid_group.clips = vec![single.anchor, single.anchor].into();
+        assert!(!invalid_group.valid());
+        assert!(single.valid());
+        assert!(Target::Move(single.clone()).retained_bytes() >= "track 2".len());
+        for position in [
+            ClipGroupPosition::Audio(123),
+            ClipGroupPosition::Midi(BeatTime::ONE),
+        ] {
+            for mode in [
+                ArrangementMoveMode::Move,
+                ArrangementMoveMode::Copy,
+                ArrangementMoveMode::AliasCopy,
+            ] {
+                single.position = position;
+                single.mode = mode;
+                let target = Target::Move(single.clone());
+                assert_eq!(
+                    single.identity().destination,
+                    ClipMovePreviewDestination::NewTrack {
+                        before_track: before
+                    }
+                );
+                let command = target.command();
+                let request = Request::MoveExistingClips {
+                    project_generation: single.context.project_generation,
+                    revision: single.context.editor_revision,
+                    command: command.clone(),
+                };
+                assert!(target.matches_release(&request));
+                let (
+                    actual_mode,
+                    actual_clip,
+                    actual_name,
+                    actual_before,
+                    actual_position,
+                    actual_gain,
+                ) = match command {
+                    Command::MoveClipToNewTrack {
+                        clip,
+                        name,
+                        before_track,
+                        start,
+                        initial_gain,
+                    } => (
+                        ArrangementMoveMode::Move,
+                        clip,
+                        name,
+                        before_track,
+                        ClipGroupPosition::Audio(start),
+                        initial_gain,
+                    ),
+                    Command::CopyClipToNewTrack {
+                        clip,
+                        name,
+                        before_track,
+                        start,
+                        initial_gain,
+                    } => (
+                        ArrangementMoveMode::Copy,
+                        clip,
+                        name,
+                        before_track,
+                        ClipGroupPosition::Audio(start),
+                        initial_gain,
+                    ),
+                    Command::MoveMidiClipToNewTrack {
+                        clip,
+                        name,
+                        before_track,
+                        start,
+                        initial_gain,
+                    } => (
+                        ArrangementMoveMode::Move,
+                        clip,
+                        name,
+                        before_track,
+                        ClipGroupPosition::Midi(start),
+                        initial_gain,
+                    ),
+                    Command::CopyMidiClipToNewTrack {
+                        clip,
+                        name,
+                        before_track,
+                        start,
+                        initial_gain,
+                    } => (
+                        ArrangementMoveMode::Copy,
+                        clip,
+                        name,
+                        before_track,
+                        ClipGroupPosition::Midi(start),
+                        initial_gain,
+                    ),
+                    Command::DuplicateAliasClipToNewTrack {
+                        clip,
+                        name,
+                        before_track,
+                        position,
+                        initial_gain,
+                    } => (
+                        ArrangementMoveMode::AliasCopy,
+                        clip,
+                        name,
+                        before_track,
+                        position,
+                        initial_gain,
+                    ),
+                    other => panic!("unexpected command: {other:?}"),
+                };
+                assert_eq!(
+                    (
+                        actual_mode,
+                        actual_clip,
+                        actual_name.as_str(),
+                        actual_before,
+                        actual_position,
+                        actual_gain
+                    ),
+                    (mode, single.anchor, "track 2", before, position, Some(1.25))
+                );
+                let mut existing = single.clone();
+                existing.destination = ArrangementMoveDestination::Existing(before.unwrap());
+                assert!(!Target::Move(existing).matches_release(&request));
+            }
+        }
+    }
+
+    #[test]
     fn group_custody_cancels_old_work_and_matches_only_its_source() {
         let first = target();
         let identity = first.identity();
-        assert_eq!(identity.track, first.track);
+        assert_eq!(
+            identity.destination,
+            ClipMovePreviewDestination::Existing(match first.destination {
+                ArrangementMoveDestination::Existing(track) => track,
+                _ => panic!("existing"),
+            })
+        );
         assert_eq!(identity.position, first.position);
         assert_eq!(identity.mode, first.mode);
         let mailbox = Mailbox::default();

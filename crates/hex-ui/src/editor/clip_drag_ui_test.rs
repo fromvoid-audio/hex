@@ -4507,11 +4507,11 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
         view.sync_held_clip_move_audition();
         let expected = view.expected_clip_preview.unwrap();
         assert_ne!(expected.position, identity.position);
-        assert_ne!(expected.track, identity.track);
+        assert_ne!(expected.destination, identity.destination);
         let (track, frame) = view
             .audible_clip_move_anchor()
             .expect("actual A while B prepares");
-        assert_eq!(track, identity.track);
+        assert_eq!(Some(track), identity.destination.existing_track());
         let saved = view.applied_clip_preview;
         view.applied_clip_preview = saved.map(|(revision, actual)| (revision + 1, actual));
         assert!(
@@ -4538,7 +4538,10 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
         .expect("actual placement marker");
     assert!(visual.debug_bounds("clip-audition-audible-label").is_some());
     editor.read_with(&visual, |view, _| {
-        let lane = view.drag_lanes.get(&identity.track).unwrap();
+        let lane = view
+            .drag_lanes
+            .get(&identity.destination.existing_track().unwrap())
+            .unwrap();
         let expected_x = lane.left + lane.width * marker_fraction;
         assert!((f32::from(marker.left()) - expected_x).abs() < 2.0);
         assert!((f32::from(marker.top()) - lane.top).abs() < 2.0);
@@ -4594,7 +4597,7 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
         .expect("applied B marker");
     editor.read_with(&visual, |view, _| {
         let (track, frame) = view.audible_clip_move_anchor().unwrap();
-        assert_eq!(track, next_identity.track);
+        assert_eq!(Some(track), next_identity.destination.existing_track());
         let lane = view.drag_lanes.get(&track).unwrap();
         let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
         let expected_x = lane.left + lane.width * viewport.fraction(frame).unwrap();
