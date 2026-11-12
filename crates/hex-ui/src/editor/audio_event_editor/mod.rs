@@ -111,6 +111,7 @@ pub(super) struct State {
     fade_handle_hover: Option<(u64, super::fade_handles::Handle)>,
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
+    pan: Option<navigation::Pan>,
     clipboard: Option<Clipboard>,
     pending: Option<pending::Pending>,
 }
