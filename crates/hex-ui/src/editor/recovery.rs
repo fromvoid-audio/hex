@@ -1,7 +1,7 @@
 //! Output lifecycle admission and graph/cursor restoration, without canonical edits.
-use super::{EditorView, audio_admission::ProjectRevision, recovery_state::DeferredNativeEffect};
-use hex_engine::NativeDeviceClass;
+use super::{EditorView, recovery_state::DeferredNativeEffect};
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
+use hex_engine::{AudioSourceContext, NativeDeviceClass};
 use hex_session::service::{NativeDeviceDropSource, Request};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
@@ -71,9 +71,9 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let project = ProjectRevision {
-            generation: self.project_generation,
-            revision: state.revision,
+        let context = AudioSourceContext {
+            project_generation: self.project_generation,
+            editor_revision: state.revision,
         };
         let current = match &request {
             Request::DropBrowserDeviceOnArrangement {
@@ -85,7 +85,10 @@ impl EditorView {
                 project_generation,
                 revision,
                 ..
-            } => (*project_generation, *revision) == (project.generation, project.revision),
+            } => {
+                (*project_generation, *revision)
+                    == (context.project_generation, context.editor_revision)
+            }
             Request::AddNativeDevice { track, .. } => state.project.track(*track).is_some(),
             _ => false,
         };
@@ -102,7 +105,7 @@ impl EditorView {
             return false;
         }
         self.recovery.native_effect = Some(DeferredNativeEffect {
-            project,
+            context,
             request: Box::new(request),
         });
         if playing {
@@ -116,11 +119,11 @@ impl EditorView {
         let Some(pending) = self.recovery.native_effect.take() else {
             return;
         };
-        if pending.project.generation != self.project_generation
+        if pending.context.project_generation != self.project_generation
             || self
                 .state
                 .as_ref()
-                .is_none_or(|state| state.revision != pending.project.revision)
+                .is_none_or(|state| state.revision != pending.context.editor_revision)
         {
             self.error =
                 Some("device insertion canceled · project changed during audio recovery".into());

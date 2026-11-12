@@ -1,9 +1,9 @@
 //! Readiness belongs to the new control's counters, never an old stream's tickets.
-use super::audio_admission::ProjectRevision;
+use hex_engine::AudioSourceContext;
 use hex_session::service::Request;
 
 pub(super) struct DeferredNativeEffect {
-    pub(super) project: ProjectRevision,
+    pub(super) context: AudioSourceContext,
     pub(super) request: Box<Request>,
 }
 #[derive(Default)]
