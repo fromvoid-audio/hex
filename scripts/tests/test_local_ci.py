@@ -798,32 +798,54 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertNotIn("cargo clean", self.call_log.read_text())
         self.assertIsNone(runner.target_lock)
 
-    def test_reserved_release_refuses_target_or_pending_owner_replacement_before_ready(self):
-        for replacement in ("target", "owner"):
+    def test_reserved_release_refuses_replacements_during_ready_marker_staging(self):
+        for replacement in ("target", "owner", "staging"):
             with self.subTest(replacement=replacement):
                 runner, reservation, target = self._reserved_release_runner(
                     f"reserved-release-replace-{replacement}")
                 owner = self._release_owner_path(target)
                 replacement_target = target.with_name(target.name + ".original")
-                if replacement == "target":
-                    def mutate():
+                write_owner = runner._write_release_owner
+                fsync = os.fsync
+                changed = False
+
+                def sync_then_replace(descriptor):
+                    nonlocal changed
+                    fsync(descriptor)
+                    if changed:
+                        return
+                    changed = True
+                    if replacement == "target":
                         target.rename(replacement_target)
                         target.mkdir()
-                else:
-                    def mutate():
+                    elif replacement == "owner":
                         owner.unlink()
                         owner.write_bytes(b"competing pending owner\n")
-                with patch.object(runner, "_completed_workspace_inputs", side_effect=mutate), \
+                    else:
+                        staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                        staging.unlink()
+                        staging.write_bytes(b"competing ready staging entry\n")
+
+                def write_with_race(path, payload, **options):
+                    with patch.object(local_ci.os, "fsync", side_effect=sync_then_replace):
+                        write_owner(path, payload, **options)
+
+                with patch.object(runner, "_write_release_owner", side_effect=write_with_race), \
                         self.assertRaises(local_ci.TargetCacheError):
                     with runner.guarded_release(reservation=reservation) as report:
                         self._finish_reserved_release(runner, report, target)
+                self.assertTrue(changed)
                 self.assertNotIn("cargo clean", self.call_log.read_text())
                 if replacement == "target":
                     self.assertTrue(replacement_target.is_dir())
                     self.assertTrue(target.is_dir())
                     self.assertEqual(json.loads(owner.read_text())["state"], "pending")
-                else:
+                elif replacement == "owner":
                     self.assertEqual(owner.read_bytes(), b"competing pending owner\n")
+                else:
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                    staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                    self.assertEqual(staging.read_bytes(), b"competing ready staging entry\n")
 
     def test_release_unknown_pending_and_explicit_recovery(self):
         target = self.repo / "cargo-target"

@@ -2088,7 +2088,7 @@ class LocalCiRunner:
             raise TargetCacheError("release toolchain/config/dependency inputs changed during build")
 
     @staticmethod
-    def _write_release_owner(path: Path, payload: dict[str, object]) -> None:
+    def _write_release_owner(path: Path, payload: dict[str, object], *, before_replace=None) -> None:
         if path.is_symlink():
             raise TargetCacheError("release ownership marker is a symlink")
         temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
@@ -2097,6 +2097,11 @@ class LocalCiRunner:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
+            if before_replace is not None:
+                before_replace()
+                if not FreshTargetReservation._same_regular_file(
+                        temporary.lstat(), os.fstat(stream.fileno())):
+                    raise TargetCacheError("ready release staging marker identity changed")
         temporary.replace(path)
         descriptor = os.open(path.parent, os.O_RDONLY)
         try:
@@ -2465,10 +2470,14 @@ class LocalCiRunner:
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed during release: " + error)
             if reservation is not None:
-                reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
-                reservation._require_owner_payload(owner_path.name, fresh_owner, pending_bytes)
-                reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
-            self._write_release_owner(owner_path, pending)
+                def verify_pending_owner():
+                    reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
+                    reservation._require_owner_payload(owner_path.name, fresh_owner, pending_bytes)
+                    reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
+
+                self._write_release_owner(owner_path, pending, before_replace=verify_pending_owner)
+            else:
+                self._write_release_owner(owner_path, pending)
             report["state"] = "ready"
         except BaseException as error:
             if lock is not None:
