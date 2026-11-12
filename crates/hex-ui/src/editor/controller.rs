@@ -3800,6 +3800,9 @@ impl EditorView {
             self.pending_requests.push_back(request);
             return true;
         }
+        if self.native_effect_insert_needs_recovery(&request) {
+            return self.recover_before_native_effect_insert(request);
+        }
         if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 < UI_REQUEST_CAPACITY
