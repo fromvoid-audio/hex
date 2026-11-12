@@ -1,6 +1,6 @@
-//! The latest held Arrangement clip timing edit. A gesture sends only a scalar target
-//! to the session worker. Prepared PCM and publication stay with the existing
-//! resident overlay, and neither a preview nor its cancellation edits history.
+//! The latest held Arrangement clip edit. Scalar targets and bounded shared
+//! group selections stay on control/worker threads. Prepared PCM and publication
+//! stay with the resident overlay; preview and cancellation never edit history.
 use super::*;
 use hex_project::ClipId;
 use std::{
@@ -21,6 +21,28 @@ pub struct ArrangementStretchAudition {
 pub struct ArrangementPlayStartAudition {
     pub context: hex_engine::AudioSourceContext,
     pub edit: PlayStartEdit,
+}
+
+/// A resident-playback group move or ordinary copy. Callers freeze the full
+/// selection and reuse its allocation as the pointer target changes. Alias
+/// copies are not represented. Project validation still owns destination,
+/// duplicate-ID and clip compatibility checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArrangementMoveAudition {
+    pub context: hex_engine::AudioSourceContext,
+    pub clips: Arc<[ClipId]>,
+    pub anchor: ClipId,
+    pub track: hex_project::TrackId,
+    pub position: hex_project::ClipGroupPosition,
+    pub copy: bool,
+}
+
+impl ArrangementMoveAudition {
+    pub(super) fn valid(&self) -> bool {
+        !self.clips.is_empty()
+            && self.clips.len() <= hex_project::MAX_CLIPS
+            && self.clips.contains(&self.anchor)
+    }
 }
 
 /// Clip-local marker edits admitted to the Arrangement audition lane.
@@ -123,34 +145,38 @@ impl PlayStartEdit {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
     Stretch(ArrangementStretchAudition),
     PlayStart(ArrangementPlayStartAudition),
+    Move(ArrangementMoveAudition),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Stretch,
     PlayStart,
+    Move,
 }
 
 impl Target {
-    fn kind(self) -> Kind {
+    fn kind(&self) -> Kind {
         match self {
             Self::Stretch(_) => Kind::Stretch,
             Self::PlayStart(_) => Kind::PlayStart,
+            Self::Move(_) => Kind::Move,
         }
     }
 
-    pub(super) fn context(self) -> hex_engine::AudioSourceContext {
+    pub(super) fn context(&self) -> hex_engine::AudioSourceContext {
         match self {
             Self::Stretch(target) => target.context,
             Self::PlayStart(target) => target.context,
+            Self::Move(target) => target.context,
         }
     }
 
-    pub(super) fn command(self) -> Command {
+    pub(super) fn command(&self) -> Command {
         match self {
             Self::Stretch(target) => Command::StretchAudioClipEdge {
                 clip: target.clip,
@@ -158,21 +184,43 @@ impl Target {
                 frame: target.frame,
             },
             Self::PlayStart(target) => target.edit.command(),
+            Self::Move(target) => Command::MoveClipsWithOverwrite {
+                clips: target.clips.to_vec(),
+                anchor: target.anchor,
+                track: target.track,
+                position: target.position,
+                copy: target.copy,
+            },
         }
     }
 
-    fn same_gesture(self, other: Self) -> bool {
+    fn same_gesture(&self, other: &Self) -> bool {
         if self.context() != other.context() {
             return false;
         }
         match (self, other) {
             (Self::Stretch(a), Self::Stretch(b)) => a.clip == b.clip && a.edge == b.edge,
             (Self::PlayStart(a), Self::PlayStart(b)) => a.edit.clip() == b.edit.clip(),
+            (Self::Move(a), Self::Move(b)) => a.anchor == b.anchor && a.clips == b.clips,
             _ => false,
         }
     }
 
-    pub(super) fn matches_release(self, request: &Request) -> bool {
+    pub(super) fn matches_release(&self, request: &Request) -> bool {
+        if let (
+            Self::Move(target),
+            Request::MoveExistingClips {
+                project_generation,
+                revision,
+                command,
+            },
+        ) = (self, request)
+        {
+            return *project_generation == target.context.project_generation
+                && *revision == target.context.editor_revision
+                && matches!(command, Command::MoveClipsWithOverwrite { clips, anchor, .. }
+                    if *anchor == target.anchor && clips.as_slice() == target.clips.as_ref());
+        }
         let Request::Edit(command) = request else {
             return false;
         };
@@ -183,11 +231,23 @@ impl Target {
             ),
             Self::PlayStart(target) => PlayStartEdit::from_command(command)
                 .is_some_and(|edit| edit.clip() == target.edit.clip()),
+            Self::Move(_) => false,
+        }
+    }
+
+    pub(super) fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Move(target) => target
+                .clips
+                .len()
+                .saturating_mul(std::mem::size_of::<ClipId>())
+                .saturating_add(2 * std::mem::size_of::<usize>()),
+            _ => 0,
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Intent {
     Idle,
     Held(Target),
@@ -223,7 +283,7 @@ impl Mailbox {
 
     pub(super) fn clear(&self, kind: Option<Kind>, held_only: bool) {
         let mut state = self.lock();
-        let target = match state.intent {
+        let target = match &state.intent {
             Intent::Held(target) => target,
             Intent::Released(target) if !held_only => target,
             _ => return,
@@ -235,16 +295,17 @@ impl Mailbox {
 
     pub(super) fn release(&self, kind: Kind) {
         let mut state = self.lock();
-        if let Intent::Held(target) = state.intent
+        if let Intent::Held(target) = &state.intent
             && target.kind() == kind
         {
+            let target = target.clone();
             Self::replace(&mut state, Intent::Released(target));
         }
     }
 
     #[cfg(feature = "source-overview-test-support")]
     pub(super) fn held(&self) -> Option<Target> {
-        match self.lock().intent {
+        match self.lock().intent.clone() {
             Intent::Held(target) => Some(target),
             _ => None,
         }
@@ -292,9 +353,11 @@ impl Lane {
         admission: sampler_export::Admission<'_>,
         available: bool,
     ) -> bool {
-        let desired = mailbox.lock().intent;
-        let held = match desired {
-            Intent::Held(target) if target.context() == context && available => Some(target),
+        let desired = mailbox.lock().intent.clone();
+        let held = match &desired {
+            Intent::Held(target) if target.context() == context && available => {
+                Some(target.clone())
+            }
             _ => None,
         };
         if held.is_none() {
@@ -303,10 +366,10 @@ impl Lane {
         let audition = preview
             .as_ref()
             .and_then(resident_preview::Preview::clip_target);
-        let releasing = matches!(desired, Intent::Released(target) if target.context() == context
-            && audition.is_some_and(|active| active.same_gesture(target)));
+        let releasing = matches!(&desired, Intent::Released(target) if target.context() == context
+            && audition.as_ref().is_some_and(|active| active.same_gesture(target)));
         let restore = audition.is_some() && held.is_none() && !releasing;
-        let prepare = held.filter(|target| Some(*target) != self.attempted);
+        let prepare = held.filter(|target| Some(target) != self.attempted.as_ref());
         if !restore && prepare.is_none() {
             return false;
         }
@@ -339,9 +402,9 @@ impl Lane {
         if restore {
             let _ = resident_preview::restore(session, context, current, preview, sink, admission);
         } else if let Some(target) = prepare
-            && let Some(cancel) = mailbox.claim(target)
+            && let Some(cancel) = mailbox.claim(target.clone())
         {
-            self.attempted = Some(target);
+            self.attempted = Some(target.clone());
             let _ = resident_preview::clip_audition(
                 session, target, current, preview, sink, admission, &cancel,
             );
@@ -350,5 +413,114 @@ impl Lane {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{BeatTime, ClipGroupPosition, Created, Editor, Project};
+
+    fn target() -> ArrangementMoveAudition {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "source".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let mut clips = Vec::new();
+        for start in [BeatTime::ZERO, BeatTime::from_quarters(2).unwrap()] {
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start,
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            clips.push(clip);
+        }
+        ArrangementMoveAudition {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 3,
+                editor_revision: 7,
+            },
+            anchor: clips[0],
+            clips: clips.into(),
+            track,
+            position: ClipGroupPosition::Midi(BeatTime::from_quarters(4).unwrap()),
+            copy: false,
+        }
+    }
+
+    #[test]
+    fn group_custody_cancels_old_work_and_matches_only_its_source() {
+        let first = target();
+        let mailbox = Mailbox::default();
+        let a = Target::Move(first.clone());
+        mailbox.set(a.clone());
+        let canceled = mailbox.claim(a.clone()).unwrap();
+        let mut moved = first.clone();
+        moved.position = ClipGroupPosition::Midi(BeatTime::from_quarters(6).unwrap());
+        let b = Target::Move(moved.clone());
+        mailbox.set(b.clone());
+        assert!(canceled.load(Ordering::Acquire));
+        assert!(mailbox.claim(a.clone()).is_none());
+        let Intent::Held(Target::Move(retained)) = mailbox.lock().intent.clone() else {
+            panic!("held group")
+        };
+        assert!(Arc::ptr_eq(&first.clips, &retained.clips));
+        assert!(a.same_gesture(&b));
+        let mut other = moved.clone();
+        other.context.editor_revision += 1;
+        assert!(!a.same_gesture(&Target::Move(other)));
+        mailbox.release(Kind::Move);
+        assert!(
+            matches!(&mailbox.lock().intent, Intent::Released(target) if target.same_gesture(&b))
+        );
+        let request = Request::MoveExistingClips {
+            project_generation: moved.context.project_generation,
+            revision: moved.context.editor_revision,
+            command: b.command(),
+        };
+        assert!(a.matches_release(&request));
+        let Request::MoveExistingClips {
+            project_generation,
+            revision,
+            command,
+        } = request
+        else {
+            panic!("move request")
+        };
+        assert!(!a.matches_release(&Request::MoveExistingClips {
+            project_generation,
+            revision: revision + 1,
+            command
+        }));
+        mailbox.clear(Some(Kind::Move), false);
+        assert!(matches!(mailbox.lock().intent, Intent::Idle));
+    }
+
+    #[test]
+    fn retained_group_bytes_cover_the_complete_selection() {
+        let group = target();
+        assert!(group.valid());
+        let mut invalid = group.clone();
+        invalid.clips = Arc::from([]);
+        assert!(!invalid.valid());
+        invalid.clips = vec![group.clips[1]].into();
+        assert!(!invalid.valid());
+        invalid.clips = vec![group.anchor; hex_project::MAX_CLIPS + 1].into();
+        assert!(!invalid.valid());
+        let target = Target::Move(group.clone());
+        assert!(target.retained_bytes() >= group.clips.len() * std::mem::size_of::<ClipId>());
+        assert!(
+            matches!(target.command(), Command::MoveClipsWithOverwrite { clips, anchor, .. } if clips.as_slice() == group.clips.as_ref() && anchor == group.anchor)
+        );
     }
 }

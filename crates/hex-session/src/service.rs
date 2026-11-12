@@ -69,7 +69,10 @@ pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
-pub use clip_audition::{ArrangementPlayStartAudition, ArrangementStretchAudition, PlayStartEdit};
+pub use clip_audition::{
+    ArrangementMoveAudition, ArrangementPlayStartAudition, ArrangementStretchAudition,
+    PlayStartEdit,
+};
 mod publication_wait;
 mod resident_audio;
 mod resident_preview;
@@ -1836,6 +1839,33 @@ impl Service {
     pub fn retire_arrangement_play_start_audition(&self) {
         self.clip_audition
             .clear(Some(clip_audition::Kind::PlayStart), false);
+    }
+
+    /// Replace the complete held group target. An invalid target cancels the
+    /// held audition; it can never admit only part of a selection.
+    pub fn audition_arrangement_move(&self, target: Option<ArrangementMoveAudition>) -> bool {
+        match target {
+            Some(target) if target.valid() => {
+                self.clip_audition.set(clip_audition::Target::Move(target));
+                true
+            }
+            _ => {
+                self.clip_audition
+                    .clear(Some(clip_audition::Kind::Move), true);
+                false
+            }
+        }
+    }
+
+    /// Retain the admitted group preview until its matching canonical request.
+    pub fn finish_arrangement_move_audition(&self) {
+        self.clip_audition.release(clip_audition::Kind::Move);
+    }
+
+    /// Retire the preview after the matching terminal or refusal.
+    pub fn retire_arrangement_move_audition(&self) {
+        self.clip_audition
+            .clear(Some(clip_audition::Kind::Move), false);
     }
 
     #[cfg(feature = "source-overview-test-support")]
