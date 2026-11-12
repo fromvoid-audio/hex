@@ -1745,27 +1745,7 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
-        let inputs = Inputs {
-            native_parameter_input: None,
-            plugin_effect: None,
-            restoring_plugin_state: false,
-            preparing_edit: false,
-            native: NativeSamplerSources::Committed(&self.native_assets),
-            limits: self.native_reservation.ok_or(SessionError::Invalid(
-                "resident resource reservation unavailable",
-            ))?,
-            max_frames: self.max_resident_frames,
-            shutdown: &self.shutdown,
-            cancel: None,
-            admission,
-            current,
-            predecessor: Some(old),
-            legacy: self
-                .media
-                .values()
-                .flat_map(|media| [&media.source_audio, &media.audio])
-                .collect(),
-        };
+        let inputs = self.document_replacement_inputs(old, admission, current)?;
         let mut snapshot = inputs.prepare(
             self.project(),
             sink,
@@ -1799,6 +1779,36 @@ impl Session {
             .map_err(SessionError::NativeAudio)?;
         // The caller now performs only fixed canonical/document moves.
         Ok(snapshot)
+    }
+
+    /// Bind the exact candidate and predecessor owners before preparation.
+    fn document_replacement_inputs<'a>(
+        &'a self,
+        old: &'a Session,
+        admission: sampler_export::Admission<'a>,
+        current: Option<&'a Snapshot>,
+    ) -> Result<Inputs<'a>, SessionError> {
+        Ok(Inputs {
+            native_parameter_input: None,
+            plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: None,
+            admission,
+            current,
+            predecessor: Some(old),
+            legacy: self
+                .media
+                .values()
+                .flat_map(|media| [&media.source_audio, &media.audio])
+                .collect(),
+        })
     }
 
     pub(super) fn publish_resident_snapshot(
@@ -2662,6 +2672,7 @@ pub(super) mod tests {
     mod native_automation_recording;
     mod plugin_effect_tests;
     mod source_binding_tests;
+    mod verified_replacement_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;
