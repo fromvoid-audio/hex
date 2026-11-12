@@ -504,6 +504,84 @@ fn provider_and_two_host_lanes_edit_clear_and_undo_independently(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn shift_a_reveals_authored_and_remembered_lanes_across_tracks(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, first) = window(cx, "hex.utility", Slot::Track);
+    let empty = DeviceAutomationTarget::HostInputGain;
+    let authored = DeviceAutomationTarget::HostOutputGain;
+    header_assign(&mut visual, &editor, owner, empty);
+    header_menu(&mut visual, owner);
+    choose_label(&mut visual, &editor, "show used automation lanes");
+
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddTrack {
+            name: "other track".into(),
+        })));
+    });
+    pump(&mut visual, &editor);
+    let other = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[1].id()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::InsertDevice {
+                track: other,
+                before: None,
+                state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                    "hex.utility"
+                ))
+                .unwrap(),
+            }))
+        );
+    });
+    pump(&mut visual, &editor);
+    let second = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(other)
+            .unwrap()
+            .devices()[0]
+            .id()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device: second,
+                target: authored,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::from_raw(0),
+                    value: AutomationValue::new(0.4).unwrap(),
+                    outgoing: AutomationInterpolation::Linear,
+                }],
+            }))
+        );
+        view.selected_track = Some(track);
+    });
+    pump(&mut visual, &editor);
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("a");
+    let before = editor.read_with(&visual, |view, _| {
+        assert!(!view.automation_view.enabled);
+        assert!(view.automation_view.devices.extra.is_empty());
+        view.state.as_ref().unwrap().revision
+    });
+    for _ in 0..2 {
+        visual.simulate_keystrokes("shift-a");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.automation_view.enabled);
+            assert_eq!(view.automation_view.devices.extra.len(), 2);
+            assert_eq!(view.selected_track, Some(track));
+            assert_eq!(view.state.as_ref().unwrap().revision, before);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        assert!(plot(&mut visual, first, empty).size.height > px(0.0));
+        assert!(plot(&mut visual, second, authored).size.height > px(0.0));
+    }
+}
+
+#[gpui::test]
 fn moved_host_target_refusal_retires_only_its_own_receipt_without_new_history(
     cx: &mut TestAppContext,
 ) {

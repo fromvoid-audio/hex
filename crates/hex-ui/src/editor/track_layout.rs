@@ -166,23 +166,31 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
-    /// Arrangement-only A/H/Q after child input; text and capture retain ownership.
+    /// Arrangement-only A/Shift+A/H/Q after child input. Text and capture retain ownership.
     pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let reset = event.keystroke.key == "h"
-            && event.keystroke.modifiers
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        let reset = key == "h"
+            && modifiers
                 == (Modifiers {
                     platform: true,
                     ..Modifiers::default()
                 });
-        if (!reset
-            && (!matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
-                || event.keystroke.modifiers != Modifiers::default()
-                || self.computer_keyboard.enabled))
+        let reveal_automation = key == "a"
+            && modifiers
+                == (Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                });
+        let plain = matches!(key, "a" | "h" | "q")
+            && modifiers == Modifiers::default()
+            && !self.computer_keyboard.enabled;
+        if !(reset || plain || reveal_automation)
             || event.is_held
             || !(self.focus.is_focused(window)
                 || self.track_header_focused(window)
@@ -198,10 +206,13 @@ impl EditorView {
             cx.notify();
             return true;
         }
-        if event.keystroke.key == "a" {
+        if reveal_automation {
+            return self.reveal_arrangement_automation(cx);
+        }
+        if key == "a" {
             return self.toggle_automation_view(cx);
         }
-        if event.keystroke.key == "q" {
+        if key == "q" {
             self.toggle_arrangement_focus();
             cx.notify();
             return true;
