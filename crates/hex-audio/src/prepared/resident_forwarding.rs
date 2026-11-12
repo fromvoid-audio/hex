@@ -120,6 +120,7 @@ impl Client {
     ) -> Result<ResidentPublicationToken, PublishError> {
         let Some(endpoint) = self.owner_ref() else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "audio client is closed",
                 playback,
             });
@@ -129,30 +130,35 @@ impl Client {
             || !endpoint.status.client_exposed.load(Acquire)
         {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident publication unavailable",
                 playback,
             });
         }
         let Ok(mut slot) = endpoint.resident_forwarding.slot.try_lock() else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident publication busy",
                 playback,
             });
         };
         if slot.worker_owned {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "graph publication belongs to the audio worker for this output",
                 playback,
             });
         }
         if slot.suspended {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident publication suspended for fresh output",
                 playback,
             });
         }
         if slot.busy {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident publication busy",
                 playback,
             });
@@ -162,12 +168,14 @@ impl Client {
             .and_then(|n| slot.pcm_frames.checked_add(n))
         else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation overflow",
                 playback,
             });
         };
         let Some(next) = slot.next.checked_add(1) else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident publication token exhausted",
                 playback,
             });
