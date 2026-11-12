@@ -381,6 +381,11 @@ pub enum StorageError {
         source: io::Error,
     },
     Invalid(&'static str),
+    /// A failed project-folder save did not remove its staging pathname.
+    ProjectStageRetained {
+        path: PathBuf,
+        source: Box<StorageError>,
+    },
     /// The project document bytes differ from the snapshot captured when it was
     /// loaded, typically because another hex instance or editor saved it. Its
     /// message names the next steps: save as, then reopen or compare.
@@ -436,6 +441,11 @@ impl fmt::Display for StorageError {
             }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
+            Self::ProjectStageRetained { path, source } => write!(
+                f,
+                "{source} · staging path {} was not removed by hex · inspect it before using or removing it",
+                crate::text::verbatim(path.display())
+            ),
             Self::Conflict { path } => write!(
                 f,
                 "project changed outside hex at {}; your version was not saved. \
@@ -477,6 +487,7 @@ impl std::error::Error for StorageError {
             Self::JournalLockRelease { source, .. } => Some(source),
             Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
+            Self::ProjectStageRetained { source, .. } => Some(source.as_ref()),
             Self::Invalid(_) | Self::Conflict { .. } | Self::JournalConflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
             | Self::RecoveryBackupPublished { source, .. } => Some(source),
