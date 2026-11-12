@@ -576,15 +576,6 @@ fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestApp
                 mode,
                 Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str()),
             );
-            editor.read_with(cx, |view, _| {
-                let request = view
-                    .last_enqueued_native_device_drop
-                    .as_ref()
-                    .expect("header move dispatch");
-                assert_eq!(request.track, target);
-                assert_eq!(request.before, None);
-                assert_eq!(request.replace, None);
-            });
             pump_until(&editor, cx, idle);
             let changed = editor.read_with(cx, |view, _| {
                 assert!(view.error.is_none(), "{:?}", view.error);
@@ -613,6 +604,92 @@ fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestApp
                     assert_eq!(view.state.as_ref().unwrap().project, expected);
                 });
             }
+        }
+    }
+}
+
+#[gpui::test]
+fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        let (service, _, source, first, _, _) = actor_utility_fixture();
+        let add_effect = |track| {
+            service
+                .submit(Request::AddNativeDevice {
+                    track,
+                    class: NativeDeviceClass::Effect,
+                    type_id: Box::new(hex_devices::utility::UTILITY_TYPE_ID),
+                    before: None,
+                })
+                .unwrap();
+            receive_service_event(&service).state
+        };
+        let middle = add_effect(source).project.track(source).unwrap().devices()[1].id();
+        let last = add_effect(source).project.track(source).unwrap().devices()[2].id();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "destination".into(),
+            }))
+            .unwrap();
+        let Created::Track(target) = receive_service_event(&service).created.unwrap() else {
+            panic!("destination track");
+        };
+        let state = add_effect(target);
+        let original = state.project.clone();
+        let existing = original.track(target).unwrap().devices()[0].id();
+        let (handle, editor) = header_window(cx, service, state, source, mode);
+        editor.update(cx, |view, cx| {
+            view.device_panel_active = true;
+            view.clip_view_open = true;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1800.), px(800.)));
+        visual.run_until_parked();
+        let title = |device: DeviceId| -> &'static str {
+            Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str())
+        };
+        let last_title = visual.debug_bounds(title(last)).unwrap().center();
+        let first_title = visual.debug_bounds(title(first)).unwrap().center();
+        visual.simulate_click(last_title, Modifiers::default());
+        visual.simulate_click(
+            first_title,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(view.device_panel.is_selected(first) && view.device_panel.is_selected(last));
+            assert!(!view.device_panel.is_selected(middle));
+        });
+        drag_to_header(&mut visual, target, mode, title(last));
+        pump_until(&editor, cx, idle);
+        let moved = editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            let effects = |track| {
+                project
+                    .track(track)
+                    .unwrap()
+                    .devices()
+                    .iter()
+                    .map(hex_project::Device::id)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(effects(source), [middle]);
+            assert_eq!(effects(target), [existing, first, last]);
+            for id in [existing, first, last, middle] {
+                assert_eq!(project.device(id), original.device(id));
+            }
+            project.clone()
+        });
+        for (request, expected) in [(Request::Undo, original), (Request::Redo, moved)] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, expected);
+            });
         }
     }
 }

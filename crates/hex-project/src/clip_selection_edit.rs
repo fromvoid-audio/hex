@@ -638,6 +638,7 @@ impl Command {
             | Self::PasteTracks { .. }
             | Self::PasteDevices { .. }
             | Self::RemoveDevices { .. }
+            | Self::MoveTrackDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }

@@ -139,7 +139,7 @@ pub(super) struct DevicePanelState {
     selection_anchor: Option<DeviceId>,
     /// View-only chain gap chosen for paste; exclusive with device selection.
     insertion: Option<InsertionPoint>,
-    pub(super) drag_copy: Option<DeviceDragCopy>,
+    pub(super) drag_selection: Option<DeviceDragSelection>,
     pub(super) pending_duplicate: Option<keyboard::PendingDuplicate>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, device_meter::MeterState>,
@@ -202,7 +202,7 @@ struct OperatorPreviewInventory {
 }
 
 #[derive(Clone)]
-pub(super) struct DeviceDragCopy {
+pub(super) struct DeviceDragSelection {
     generation: u64,
     revision: u64,
     owner: DevicePanelOwner,
@@ -675,7 +675,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
-        view.device_panel.drag_copy = None;
+        view.device_panel.drag_selection = None;
         view.device_panel.select_only(None);
         view.device_panel.generation = view.project_generation;
     }
@@ -780,7 +780,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
-        view.device_panel.drag_copy = None;
+        view.device_panel.drag_selection = None;
         view.device_panel.select_only(None);
         view.device_panel.message = None;
     }
@@ -1927,10 +1927,10 @@ fn device_selection_listener(
         } else {
             vec![device]
         };
-        view.device_panel.drag_copy =
+        view.device_panel.drag_selection =
             hex_project::DeviceSelectionIds::new(&members)
                 .ok()
-                .map(|selected| DeviceDragCopy {
+                .map(|selected| DeviceDragSelection {
                     generation,
                     revision: state.revision,
                     owner,
@@ -2244,26 +2244,29 @@ fn duplicate_device_action(
 }
 
 impl EditorView {
+    pub(super) fn device_drag_selection(
+        &self,
+        drag: &drag::NativeDeviceDrag,
+    ) -> Option<(DevicePanelOwner, &hex_project::DeviceSelectionIds)> {
+        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
+            return None;
+        };
+        let snapshot = self.device_panel.drag_selection.as_ref()?;
+        (snapshot.device == device
+            && snapshot.generation == drag.project_generation
+            && snapshot.revision == drag.revision)
+            .then_some((snapshot.owner, &snapshot.selected))
+    }
+
     pub(super) fn duplicate_device_drag_request(
         &self,
         drag: &drag::NativeDeviceDrag,
         destination: hex_project::DeviceChainOwner,
         before: Option<DeviceId>,
     ) -> Result<Request, &'static str> {
-        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
-            return Err("device copy canceled · selection changed");
-        };
-        let snapshot = self
-            .device_panel
-            .drag_copy
-            .as_ref()
+        let (owner, selected) = self
+            .device_drag_selection(drag)
             .ok_or("device copy canceled · selection changed")?;
-        if snapshot.device != device
-            || snapshot.generation != drag.project_generation
-            || snapshot.revision != drag.revision
-        {
-            return Err("device copy canceled · selection changed");
-        }
         let project = &self
             .state
             .as_ref()
@@ -2272,13 +2275,7 @@ impl EditorView {
         Ok(Request::DeviceClipboard {
             project_generation: drag.project_generation,
             revision: drag.revision,
-            action: duplicate_device_action(
-                project,
-                snapshot.owner,
-                snapshot.selected.clone(),
-                destination,
-                before,
-            )?,
+            action: duplicate_device_action(project, owner, selected.clone(), destination, before)?,
         })
     }
 
