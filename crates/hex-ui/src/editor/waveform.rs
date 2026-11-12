@@ -6,8 +6,8 @@ use hex_widgets::{WaveformColors, WaveformEmphasis, waveform_plot};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
-    WaveformGeometryCache, WaveformGeometryRequest, WaveformMapping, cached_waveform_geometry,
-    prepare_waveform_geometry,
+    WaveformGeometryRequest, WaveformMapping, WaveformViewCache, cached_waveform_geometry,
+    prepare_waveform_geometry_with_scale,
 };
 
 pub(super) use super::waveform_geometry::WaveformGrid;
@@ -44,7 +44,7 @@ pub(super) fn preview_waveform_view_cached(
     request: WaveformPreview<'_>,
     visible_start: u64,
     visible_end: u64,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     grid: Option<WaveformGrid>,
 ) -> Option<Div> {
     preview_waveform_view_cached_inner(request, visible_start, visible_end, cache, grid)
@@ -58,7 +58,7 @@ fn prefix_waveform_view(
     request: WaveformPreview<'_>,
     visible_start: u64,
     visible_end: u64,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     grid: Option<WaveformGrid>,
 ) -> Option<Div> {
     let WaveformPreview {
@@ -175,7 +175,7 @@ fn preview_waveform_view_cached_inner(
     request: WaveformPreview<'_>,
     visible_start: u64,
     visible_end: u64,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     grid: Option<WaveformGrid>,
 ) -> Option<Div> {
     let WaveformPreview {
@@ -343,7 +343,7 @@ pub(super) fn prepared_waveform_view_cached(
     clip: &Clip,
     visible_start: u64,
     visible_end: u64,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     ink: u32,
 ) -> Div {
     clip_waveform_activity(
@@ -371,7 +371,7 @@ pub(super) fn timeline_waveform_view_cached(
     mapping: WaveformMapping,
     visible_start: u64,
     visible_end: u64,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     grid: Option<WaveformGrid>,
     ink: u32,
 ) -> Div {
@@ -391,7 +391,7 @@ pub(super) fn waveform_view_cached(
     clip: &Clip,
     visible_start: u64,
     visible_end: u64,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     ink: u32,
 ) -> Div {
     clip_waveform_activity(
@@ -436,7 +436,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
     visible: Range<u64>,
     gain: hex_project::ClipGain,
     detail: bool,
-    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    cache: Rc<WaveformViewCache>,
     ink: u32,
 ) -> Div {
     waveform_canvas(
@@ -464,7 +464,7 @@ pub(super) fn waveform_canvas(
     mapping: WaveformMapping,
     visible_start: u64,
     visible_end: u64,
-    cache: Option<Rc<std::cell::RefCell<WaveformGeometryCache>>>,
+    cache: Option<Rc<WaveformViewCache>>,
     grid: Option<WaveformGrid>,
     ink: u32,
 ) -> Div {
@@ -493,32 +493,25 @@ pub(super) fn waveform_canvas(
                 return None;
             }
             let columns = waveform_column_count(width, paint.scale);
-            let geometry = cache.as_ref().and_then(|cache| {
-                let request = WaveformGeometryRequest {
-                    amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
-                        false,
-                    ),
-                    mapping: &mapping,
-                    visible_start,
-                    visible_end,
-                    bounds,
-                    scale: paint.scale,
-                    columns,
-                    grid,
-                };
-                cached_waveform_geometry(cache, &waveform, &request)
-            });
+            let request = WaveformGeometryRequest {
+                amplitude_scale: cache
+                    .as_ref()
+                    .map_or(WaveformAmplitudeScale::default(), |cache| {
+                        cache.amplitude_scale()
+                    }),
+                mapping: &mapping,
+                visible_start,
+                visible_end,
+                bounds,
+                scale: paint.scale,
+                columns,
+                grid,
+            };
+            let geometry = cache
+                .as_ref()
+                .and_then(|cache| cached_waveform_geometry(cache, &waveform, &request));
             let geometry = geometry.or_else(|| {
-                prepare_waveform_geometry(
-                    &waveform,
-                    &mapping,
-                    visible_start,
-                    visible_end,
-                    bounds,
-                    columns,
-                    grid,
-                )
-                .map(Arc::new)
+                prepare_waveform_geometry_with_scale(&waveform, &request).map(Arc::new)
             });
             #[cfg(all(test, feature = "ui-test-support"))]
             if let Some(geometry) = &geometry

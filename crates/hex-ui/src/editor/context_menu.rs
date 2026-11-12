@@ -70,6 +70,10 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    WaveformDecibels {
+        generation: u64,
+        enabled: bool,
+    },
     InputQuantization {
         generation: u64,
         policy: hex_project::InputQuantization,
@@ -698,6 +702,17 @@ impl EditorView {
                     cx.notify();
                 }
             }
+            EditorContextAction::WaveformDecibels {
+                generation,
+                enabled,
+            } => {
+                if generation == self.project_generation {
+                    self.waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
+                    );
+                    cx.notify();
+                }
+            }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
@@ -979,6 +994,7 @@ impl EditorView {
                     *generation != self.project_generation
                 }
                 EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::WaveformDecibels { generation, .. }
                 | EditorContextAction::LaunchQuantization { generation, .. }
                 | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
