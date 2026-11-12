@@ -9497,7 +9497,11 @@ fn run_worker(
         if stage_recovery {
             // Acknowledge this committed source before waiting for the older
             // checkpoint, while retaining both ordered terminals on control.
-            finish_pending_recovery!();
+            let previous = pending_recovery_outcome.take().map(|mut previous| {
+                let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
+                previous.finish_recovery(elapsed, result, recovery_tracker.failure());
+                previous
+            });
             let started = std::time::Instant::now();
             let result = if let Some(untitled_path) = recovery.as_deref() {
                 recovery_tracker.start_async(recovery::RecoveryContext {
@@ -9511,6 +9515,14 @@ fn run_worker(
             } else {
                 Err("automatic recovery path is unavailable".into())
             };
+            // Admit this already committed edit before delivering the older
+            // terminal. If its consumer has closed, dropping the tracker joins
+            // the admitted checkpoint instead of abandoning this edit.
+            if let Some(previous) = previous
+                && !deliver_outcome!(previous)
+            {
+                return;
+            }
             match result {
                 Ok(true) => pending_recovery_outcome = Some(outcome),
                 Ok(false) => {

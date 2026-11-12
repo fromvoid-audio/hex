@@ -1066,6 +1066,99 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn committed_second_paste_is_checkpointed_when_event_consumer_closes() {
+        check_second_paste_custody_on_exit(true);
+    }
+
+    #[test]
+    fn committed_second_paste_is_checkpointed_when_shutdown_begins() {
+        check_second_paste_custody_on_exit(false);
+    }
+
+    fn check_second_paste_custody_on_exit(close_consumer: bool) {
+        use std::time::{Duration, Instant};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "hex-paste-exit-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let _first = service.try_arrangement_edit_view().unwrap();
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break view;
+            }
+            assert!(Instant::now() < until, "second paste did not commit");
+            std::thread::yield_now();
+        };
+        let second = second.state.upgrade().unwrap();
+        let context = second.canonical_audio_source.as_ref().unwrap().context();
+        let until = Instant::now() + Duration::from_millis(180);
+        while sources.lock().unwrap().last().copied() != Some(context) {
+            assert!(Instant::now() < until, "second source was not acknowledged");
+            std::thread::yield_now();
+        }
+        if close_consumer {
+            let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let replacement = super::super::diagnostics::EventReceiver::new(
+                receiver,
+                Arc::clone(&service.diagnostics),
+            );
+            drop(std::mem::replace(&mut service.events, replacement));
+        } else {
+            assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while !service
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            assert!(
+                Instant::now() < until,
+                "service did not stop after consumer closure"
+            );
+            std::thread::yield_now();
+        }
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(hex_storage::load_journal(&path).unwrap(), *second.project);
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[derive(Clone, Copy)]
     enum PasteFence {
         Save,
