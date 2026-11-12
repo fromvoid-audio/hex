@@ -1437,6 +1437,36 @@ impl super::EditorView {
             .map(|bottom| (None, timeline, bottom))
     }
 
+    /// Resolve a captured insertion anchor using only the current painted rows.
+    pub(super) fn painted_track_insertion_line(&self, before: Option<TrackId>) -> Option<f32> {
+        let state = self.state.as_ref()?;
+        let tracks = self.arrangement_track_indices();
+        match before {
+            Some(id) => {
+                let index = tracks.iter().position(|index| {
+                    state
+                        .project
+                        .tracks()
+                        .get(*index)
+                        .is_some_and(|track| track.id() == id)
+                })?;
+                let next = self.painted_track_drop_lane(id)?;
+                if index == 0 {
+                    Some(next.top)
+                } else {
+                    let previous = state.project.tracks().get(*tracks.get(index - 1)?)?;
+                    let previous = self.painted_track_drop_lane(previous.id())?;
+                    Some((previous.top + previous.height + next.top) * 0.5)
+                }
+            }
+            None => {
+                let last = state.project.tracks().get(*tracks.last()?)?;
+                let last = self.painted_track_drop_lane(last.id())?;
+                Some(last.top + last.height)
+            }
+        }
+    }
+
     pub(super) fn browser_audio_drop_position(
         &self,
         drag: &BrowserAudioDrag,
