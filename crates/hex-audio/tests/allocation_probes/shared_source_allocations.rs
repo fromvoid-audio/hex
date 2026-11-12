@@ -148,6 +148,11 @@ fn shared_analytic_receiver_handoff_pause_and_live_off_allocate_and_free_nothing
 #[test]
 fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
+    shared_source_live_pressure(false)?;
+    shared_source_live_pressure(true)
+}
+
+fn shared_source_live_pressure(simultaneous: bool) -> Result<(), Box<dyn Error>> {
     use hex_devices::operator_state::parameter;
     use hex_lattice_contract::ParameterId;
 
@@ -165,7 +170,7 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
         state = registry.patch_parameter(
             &state,
             parameter::envelope(operator, parameter::EnvelopeField::Release),
-            ParameterValue::Float(1.0),
+            ParameterValue::Float(if simultaneous { 0.001 } else { 1.0 }),
         )?;
     }
     let Created::Track(receiver) = editor.execute(Command::InsertTrackWithDevice {
@@ -207,14 +212,14 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
         for pitch in pitches {
             editor.execute(Command::AddMidiNote {
                 clip,
-                // The receiver enters last so Operator's eight physical slots
-                // actually contain a peer voice before the contributor fades.
-                start: if track == receiver {
+                // A late peer occupies a physical slot in the first case;
+                // simultaneous onsets leave it eligible for voice stealing.
+                start: if !simultaneous && track == receiver {
                     BeatTime::from_ratio(1, 128)?
                 } else {
                     BeatTime::ZERO
                 },
-                duration: if track == receiver {
+                duration: if !simultaneous && track == receiver {
                     BeatTime::from_ratio(127, 128)?
                 } else {
                     BeatTime::ONE
@@ -318,9 +323,34 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
             .iter()
             .flatten()
             .any(|sample| sample.abs() > 0.000_001),
-        "the shared peer must remain audible"
+        "the shared source must remain audible during the mute transition"
     );
     render(&mut callback, &mut output)?;
+    if simultaneous {
+        assert!(
+            output
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() <= 0.000_001),
+            "stolen peer and faded contributors must be silent before live input"
+        );
+        input.set_key(0, Some((67, 100, 1)))?;
+        render(&mut callback, &mut output)?;
+        assert!(
+            input.rejected(),
+            "a live note with no reserved capacity must report refusal"
+        );
+        assert!(!input.is_cancelled());
+        assert!(control.status.render_fault_snapshot().is_none());
+        control.stop();
+        render(&mut callback, &mut output)?;
+        assert!(
+            input.is_cancelled(),
+            "stop must remain effective under pressure"
+        );
+        control.reclaim();
+        return Ok(());
+    }
     assert!(
         output
             .iter()
