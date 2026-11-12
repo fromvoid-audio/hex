@@ -279,6 +279,7 @@ fn exact_decode_receipts(ordinary: bool) {
     let (release_tx, release_rx) = mpsc::sync_channel(1);
     let (publication_tx, publication_rx) = mpsc::sync_channel(2);
     let (_wav, control, pages, key) = pair_with_hooks(Some(crate::worker::TestWorkerHooks {
+        read_gate: None,
         scalar_steps: None,
         entered: entered_tx,
         release: release_rx,
@@ -615,4 +616,173 @@ fn readiness_reservation_and_wrong_pair_refusals_preserve_actual_owners() {
     second.return_pages_on_control(&mut b).unwrap();
     assert!(finish(&mut first).accounting_complete);
     assert!(finish(&mut second).accounting_complete);
+}
+
+#[test]
+fn active_audio_and_transition_target_keep_distinct_protection_until_commit() {
+    let Some(mut owner) = artifact() else { return };
+    let (_wav, control, pages, key) = pair_with_frames(None, 24000);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let extent = |page_index| StreamPageExtent {
+        source: key,
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let old = [extent(0)];
+    let target = [extent(1)];
+    let old_stamp = stamp(&owner, 1);
+    let target_stamp = stamp(&owner, 2);
+    loan.submit(ProtectionRole::Active, old_stamp, &old)
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if loan
+            .service(ProtectionRole::Active, old_stamp, 3, 3)
+            .unwrap()
+            == ReadinessProgress::InstalledProtected
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "old page did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge(ProtectionRole::Active, old_stamp, &old));
+    let overflow = [extent(1), extent(2), extent(3)];
+    assert_eq!(
+        loan.submit(ProtectionRole::Transition, target_stamp, &overflow),
+        Err(ReadinessRefusal::Capacity)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .is_some()
+    );
+    loan.submit(ProtectionRole::Transition, target_stamp, &target)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Transition, target_stamp, 0, 0),
+        Ok(ReadinessProgress::Pending)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .is_some()
+    );
+    let mut stale = target_stamp;
+    stale.admitted_command_prefix += 1;
+    assert!(!loan.acknowledge(ProtectionRole::Transition, stale, &target));
+    loop {
+        if loan
+            .service(ProtectionRole::Transition, target_stamp, 3, 3)
+            .unwrap()
+            == ReadinessProgress::InstalledProtected
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "target page did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(!loan.can_promote(ProtectionRole::Transition, target_stamp, &target));
+    assert!(loan.acknowledge(ProtectionRole::Transition, target_stamp, &target));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .unwrap()
+            .page(key, 0)
+            .is_some()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Transition, target_stamp, &target)
+            .unwrap()
+            .page(key, 1)
+            .is_some()
+    );
+    assert!(!loan.promote_to_active(ProtectionRole::Transition, stale, &target));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .is_some()
+    );
+    assert!(loan.cancel(ProtectionRole::Transition, target_stamp.request_epoch));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .is_some()
+    );
+    let next = stamp(&owner, 3);
+    loan.submit(ProtectionRole::Transition, next, &target)
+        .unwrap();
+    loop {
+        if loan
+            .service(ProtectionRole::Transition, next, 3, 3)
+            .unwrap()
+            == ReadinessProgress::InstalledProtected
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "replacement target did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge(ProtectionRole::Transition, next, &target));
+    {
+        let mut prepared = loan
+            .prepare_promotion(ProtectionRole::Transition, next, &target)
+            .unwrap();
+        assert!(prepared.pages().page(key, 1).is_some());
+        // Dropping a prepared promotion must not switch custody.
+    }
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .is_some()
+    );
+    #[cfg(feature = "allocation-probe")]
+    let measured = allocation_counter::measure(|| {
+        loan.prepare_promotion(ProtectionRole::Transition, next, &target)
+            .unwrap()
+            .commit()
+    });
+    #[cfg(not(feature = "allocation-probe"))]
+    loan.prepare_promotion(ProtectionRole::Transition, next, &target)
+        .unwrap()
+        .commit();
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, old_stamp, &old)
+            .is_none()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, next, &target)
+            .is_some()
+    );
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
 }

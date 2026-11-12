@@ -456,7 +456,7 @@ mod tests {
             },
             occurrence_id: frame / 2 + 1,
             performance_frame: frame,
-            event: if frame % 2 == 0 {
+            event: if frame.is_multiple_of(2) {
                 MidiCaptureEvent::On {
                     pitch: 60,
                     velocity: 100,

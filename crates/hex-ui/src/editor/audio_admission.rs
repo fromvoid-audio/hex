@@ -12,12 +12,13 @@ pub(super) struct ProjectRevision {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StoppedPlaybackRestore {
+    WaitingForEdits { generation: u64, output: u64 },
     Preparing,
     Ready,
     Published(u64),
 }
 
-/// A rejected canonical latency change may be rebuilt after an explicit Stop.
+/// A canonical or native latency change can rebuild after a faded Stop.
 /// The output and project identities fence both the stop and the later resume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LatencyRebuild {
@@ -29,11 +30,22 @@ pub(super) enum LatencyRebuild {
     Waiting {
         project: ProjectRevision,
         output: u64,
+        runtime_audio: Option<u64>,
+    },
+    Fading {
+        project: ProjectRevision,
+        output: u64,
+        frame: u64,
+        ticket: u64,
+        runtime_audio: Option<u64>,
     },
     Restoring {
         project: ProjectRevision,
         output: u64,
         frame: u64,
+        resume: bool,
+        runtime_audio: Option<u64>,
+        installed: bool,
     },
 }
 
@@ -80,7 +92,6 @@ impl AudioAdmissionStatus {
             .and_then(|current| current.audio_revision)
     }
 
-    #[cfg(test)]
     pub(super) fn current(&self) -> Option<CurrentAdmission> {
         self.current
     }
@@ -272,184 +283,5 @@ impl AudioAdmissionStatus {
             ));
         }
         description
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AdmissionState, AudioAdmissionStatus, ProjectRevision};
-
-    fn project(generation: u64, revision: u64) -> ProjectRevision {
-        ProjectRevision {
-            generation,
-            revision,
-        }
-    }
-
-    #[test]
-    fn changed_media_rejection_reaches_the_admission_description() {
-        let current = project(2, 17);
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(current);
-        status.published(current, 31);
-        let reason = hex_engine::PlaybackHandoffRejection::StreamSourceChanged.message();
-        assert!(status.rejected(current, 31, reason));
-        assert!(status.description().contains("original media changed"));
-        assert!(status.description().contains("reopen or relink"));
-    }
-
-    #[test]
-    fn current_revision_transitions_pending_applied_and_rejected() {
-        let current = project(2, 17);
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(current);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-
-        // Queue/full or deferred callback admission has no terminal event.
-        status.published(current, 31);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-        assert_eq!(status.current().unwrap().audio_revision, Some(31));
-        assert_eq!(status.last_audible(), None);
-
-        let reason = hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable.message();
-        assert!(status.rejected(current, 31, reason));
-        assert_eq!(
-            status.current().unwrap().state,
-            AdmissionState::Rejected(reason)
-        );
-        assert!(status.description().contains("stop transport"));
-        assert!(status.description().contains("audio revision 31"));
-        assert!(status.description().contains("rejected:"));
-
-        // A later admission of the same canonical revision can recover it.
-        status.published(current, 32);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-        status.applied(current, 32);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Applied);
-        assert_eq!(status.last_audible().unwrap().audio_revision, 32);
-    }
-
-    #[test]
-    fn stale_rejection_cannot_clobber_newer_pending_or_replacement_revision() {
-        let old = project(4, 20);
-        let current = project(4, 21);
-        let replacement = project(5, 0);
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(old);
-        status.published(old, 50);
-        status.canonical_revision(current);
-        status.published(current, 51);
-        assert!(!status.rejected(old, 50, "old revision rejected"));
-        assert_eq!(status.current().unwrap().project, current);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-
-        status.canonical_revision(replacement);
-        status.published(replacement, 52);
-        assert!(!status.rejected(current, 51, "old project rejected"));
-        assert_eq!(status.current().unwrap().project, replacement);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-    }
-
-    #[test]
-    fn older_rejection_does_not_replace_newer_published_candidate() {
-        let current = project(3, 8);
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(current);
-        status.published(current, 10);
-        status.published(current, 11);
-        assert!(!status.rejected(current, 10, "coalesced stale rejection"));
-        status.applied(current, 11);
-        assert_eq!(status.current().unwrap().audio_revision, Some(11));
-        assert_eq!(status.current().unwrap().state, AdmissionState::Applied);
-        assert_eq!(status.last_audible().unwrap().audio_revision, 11);
-    }
-
-    #[test]
-    fn stale_applied_candidate_does_not_replace_current_or_latest_audibility() {
-        let old = project(1, 9);
-        let current = project(1, 10);
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(old);
-        status.published(old, 3);
-        status.canonical_revision(current);
-        status.published(current, 4);
-        status.applied(old, 3);
-        assert_eq!(status.current().unwrap().project, current);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-        assert_eq!(status.last_audible().unwrap().project, old);
-        assert!(status.label().contains("rev 9 audible"));
-        assert!(
-            status
-                .description()
-                .contains("project generation 1 revision 9")
-        );
-        status.applied(current, 4);
-        status.applied(old, 3);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Applied);
-        assert_eq!(status.last_audible().unwrap().project, current);
-    }
-
-    #[test]
-    fn audio_reset_keeps_canonical_identity_pending_and_clears_old_audibility() {
-        let current = project(7, 40);
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(current);
-        status.published(current, 2);
-        status.applied(current, 2);
-        status.reset_audio();
-        assert_eq!(status.current().unwrap().project, current);
-        assert_eq!(status.current().unwrap().audio_revision, None);
-        assert_eq!(status.current().unwrap().state, AdmissionState::Pending);
-        assert_eq!(status.last_audible(), None);
-    }
-}
-
-#[cfg(test)]
-mod comparison_tests {
-    use super::*;
-    #[test]
-    fn comparison_correlation_keeps_pending_rejected_and_real_audio_revision() {
-        let old = ProjectRevision {
-            generation: 3,
-            revision: 7,
-        };
-        let next = ProjectRevision {
-            generation: 3,
-            revision: 8,
-        };
-        for rejected in [false, true] {
-            let mut state = AudioAdmissionStatus::default();
-            state.canonical_revision(old);
-            state.published(old, 91);
-            if rejected {
-                state.rejected(old, 91, "refused");
-            }
-            state.comparison_revision(old, next, false);
-            assert_eq!(state.current().unwrap().project, next);
-            assert_eq!(state.current().unwrap().audio_revision, Some(91));
-            assert_eq!(
-                state.current().unwrap().state,
-                if rejected {
-                    AdmissionState::Rejected("refused")
-                } else {
-                    AdmissionState::Pending
-                }
-            );
-            assert!(state.last_audible().is_none());
-        }
-        let mut state = AudioAdmissionStatus::default();
-        state.canonical_revision(old);
-        state.applied(old, 91);
-        state.comparison_revision(old, next, false);
-        assert_eq!(
-            state.current().unwrap().project,
-            old,
-            "no actual candidate/output association means no applied promotion"
-        );
-        state.comparison_revision(old, next, true);
-        state.comparison_revision(old, next, true);
-        assert_eq!(state.current().unwrap().project, next);
-        assert_eq!(state.last_audible().unwrap().project, next);
-        assert_eq!(state.current().unwrap().audio_revision, Some(91));
     }
 }

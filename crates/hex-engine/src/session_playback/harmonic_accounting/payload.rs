@@ -180,6 +180,9 @@ pub(super) enum Guard {
 }
 pub(super) struct HostOwner {
     guard: Guard,
+    frozen_parameters: crate::mutable_instrument::frozen_parameters::FrozenParameters,
+    modulation: Option<Box<hex_lattice::ModulationRuntime>>,
+    output_trim: Option<crate::mutable_instrument::output_trim::OutputTrim>,
     // Mirror the actual inline optional lease header. Harmonic fixtures have no
     // resource lease; source/configuration owners use the separate resource ledger.
     resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,

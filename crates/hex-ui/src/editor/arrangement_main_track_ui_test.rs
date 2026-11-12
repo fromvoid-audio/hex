@@ -62,13 +62,17 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        plugin_parameter_observation: false,
+        plugin_parameters: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
+        device_automation_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,
@@ -118,7 +122,7 @@ fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut Test
         .debug_bounds("arrangement-content")
         .expect("regular tracks remain independently scrollable");
     let detail = visual
-        .debug_bounds("clip-view-toggle-row")
+        .debug_bounds("clip-view")
         .expect("detail pane remains available");
     assert_eq!(returns.size.height, px(88.0));
     assert!(
@@ -222,7 +226,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
             .debug_bounds("arrangement-content")
             .expect("scrollable regular track and append region");
         let detail = visual
-            .debug_bounds("clip-view-toggle-row")
+            .debug_bounds("clip-view")
             .expect("shared detail panel remains below arrangement");
         assert_eq!(row.size.height, px(super::tracks::TRACK_ROW_HEIGHT));
         assert!(row.origin.y >= content.origin.y + content.size.height - px(1.0));
@@ -248,23 +252,20 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext) {
+fn main_gain_slider_composes_with_lane_selection_in_both_views(cx: &mut TestAppContext) {
     let (handle, editor) = editor_window(cx, project_with_tracks(1), Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let button = visual
-        .debug_bounds("main-gain-up")
-        .expect("main gain control");
-    let button_point = point(button.center().x, button.center().y);
-    visual.simulate_mouse_down(button_point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(button_point, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
-        ));
-    });
-
+    let slider = visual
+        .debug_bounds("main-volume-slider")
+        .expect("shared Main gain slider");
+    assert!(visual.debug_bounds("main-gain-up").is_none());
+    assert!(
+        visual
+            .debug_bounds("main-track-controls")
+            .unwrap()
+            .contains(&slider.center())
+    );
     let lane = visual
         .debug_bounds("main-track-lane")
         .expect("main timeline lane");
@@ -284,17 +285,10 @@ fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext
     });
     visual.run_until_parked();
     let session_gain = visual
-        .debug_bounds("main-gain-up")
-        .expect("session keeps its master controls");
-    let session_click = point(session_gain.center().x, session_gain.center().y);
-    visual.simulate_mouse_down(session_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(session_click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
-        ));
-    });
+        .debug_bounds("main-volume-slider")
+        .expect("Console shares the Main slider");
+    assert_eq!(session_gain.size.height, slider.size.height);
+    assert!(visual.debug_bounds("main-gain-up").is_none());
 }
 
 #[gpui::test]
@@ -445,8 +439,8 @@ fn empty_project_main_lane_does_not_create_an_invalid_selection(cx: &mut TestApp
     let stale_track = project_with_tracks(1).tracks()[0].id();
     editor.update(cx, |view, _| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: stale_track,
-            end_track: stale_track,
+            anchor_track: Some(stale_track),
+            end_track: Some(stale_track),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -466,13 +460,13 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: track_ids[0],
-            end_track: *track_ids.last().expect("tracks"),
+            anchor_track: Some(track_ids[0]),
+            end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track: track_ids[0],
+            track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
@@ -487,6 +481,7 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             source_revision: state.revision,
             selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
+            keyboard: None,
         });
         let event = completed_event(state);
         view.move_time_selection_complete(&event);
@@ -504,14 +499,14 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: track_ids[0],
-            end_track: *track_ids.last().expect("tracks"),
+            anchor_track: Some(track_ids[0]),
+            end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
         view.time_selection_project_scope = true;
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track: track_ids[0],
+            track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
@@ -526,6 +521,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
             source_revision: state.revision,
             selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
+            keyboard: None,
         });
         let event = completed_event(state);
         view.move_time_selection_complete(&event);
@@ -533,7 +529,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
         assert_eq!(
             view.time_selection
                 .map(|selection| (selection.anchor_track, selection.end_track)),
-            Some((track_ids[0], *track_ids.last().expect("tracks")))
+            Some((Some(track_ids[0]), track_ids.last().copied()))
         );
         assert_eq!(view.selected_track, None);
     });
@@ -546,8 +542,8 @@ fn main_selection_handle_option_drag_copies_the_project_rectangle(cx: &mut TestA
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: track_ids[0],
-            end_track: *track_ids.last().expect("tracks"),
+            anchor_track: Some(track_ids[0]),
+            end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: 48_000,
             end_frame: 144_000,
         });
@@ -638,7 +634,7 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                 assert_eq!(header.size, ordinary.size);
                 assert_eq!(header.right(), ordinary.right());
                 if count == 1 {
-                    // The minimum window correctly clamps headers to 176px.
+                    // The minimum window clamps headers to the shared minimum.
                     // Give the shared width owner room for a real resize.
                     visual.simulate_resize(size(px(1280.0), px(800.0)));
                     visual.run_until_parked();
@@ -679,14 +675,9 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                         format!("return-track-header-{}", id.value()).into_boxed_str(),
                     ))
                     .unwrap();
-                let gain_prefix = if mode == hex_session::DocumentAudioMode::Resident {
-                    "return-volume"
-                } else {
-                    "return-gain-up"
-                };
                 for prefix in [
                     "return-track-focus",
-                    gain_prefix,
+                    "return-volume",
                     "return-mute",
                     "return-remove",
                 ] {
@@ -859,6 +850,14 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
             Box::leak(format!("clip-visual-{}", next_audio.value()).into_boxed_str());
         let next_midi_selector: &'static str =
             Box::leak(format!("midi-clip-visual-{}", next_midi.value()).into_boxed_str());
+        let bar_selectors: [&'static str; 2] = editor.read_with(&visual, |v, _| {
+            let tracks = v.state.as_ref().unwrap().project.tracks();
+            [&tracks[0], &tracks[1]].map(|track| {
+                let selector: &'static str =
+                    Box::leak(format!("narrow-clip-bars-{}", track.id().value()).into_boxed_str());
+                selector
+            })
+        });
         for (width, viewport) in [
             (
                 1280.0,
@@ -894,6 +893,9 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
             let expected = lane.left()
                 + lane.size.width
                     * ((offset + 48_000 - viewport.start) as f32 / viewport.length as f32);
+            let projected_start = lane.left()
+                + lane.size.width
+                    * ((offset + 48_000 - tail - viewport.start) as f32 / viewport.length as f32);
             let endpoint = visual
                 .debug_bounds("arrangement-section-0")
                 .unwrap()
@@ -914,11 +916,47 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                 assert_eq!(endpoint, grid.left());
                 assert_eq!(section_edge.left(), grid.left());
             }
-            for (prefix, id) in [("clip-trailing", audio), ("midi-clip-trailing", midi)] {
-                let name = Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
-                let edge = visual.debug_bounds(name).unwrap();
-                assert_eq!(edge.left(), endpoint);
-                assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+            if tail == 48 {
+                let inks = editor.read_with(&visual, |view, _| {
+                    let project = &view.state.as_ref().unwrap().project;
+                    let a = project.clip(audio).unwrap();
+                    let m = project.midi_clip(midi).unwrap();
+                    let tracks = project.tracks();
+                    [
+                        (audio, tracks[0].color(), a.flavor(), a.active()),
+                        (midi, tracks[1].color(), m.flavor(), m.active()),
+                    ]
+                    .map(|(id, color, flavor, active)| {
+                        let header = crate::theme::clip_activity_fill(color, flavor, false, active);
+                        crate::theme::arrangement_clip_body_fill(header, view.clip_is_selected(id))
+                    })
+                });
+                // The bar covers every device pixel touched by the shared
+                // interval, including a partial column at either edge.
+                let first = f64::from(projected_start.scale(scale)).floor();
+                let end = f64::from(expected.scale(scale)).ceil();
+                assert!(first < end);
+                for (selector, ink) in bar_selectors.into_iter().zip(inks) {
+                    let canvas = visual.debug_bounds(selector).unwrap().scale(scale);
+                    let fills = visual.rendered_filled_quads(selector);
+                    assert!(
+                        fills.iter().any(|(paint, fill)| {
+                            *fill == gpui::rgb(ink).into()
+                                && paint.top() == canvas.top()
+                                && paint.bottom() == canvas.bottom()
+                                && f64::from(paint.left()) == first
+                                && f64::from(paint.right()) == end
+                        }),
+                        "actual {selector} paint must cover device columns {first}..{end}, offset={offset}, viewport={viewport:?}, fills={fills:?}"
+                    );
+                }
+            } else {
+                for (prefix, id) in [("clip-trailing", audio), ("midi-clip-trailing", midi)] {
+                    let name = Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
+                    let edge = visual.debug_bounds(name).unwrap();
+                    assert_eq!(edge.left(), endpoint);
+                    assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+                }
             }
             for selector in [audio_selector, midi_selector, "arrangement-section-0"] {
                 let bounds = visual.debug_bounds(selector).unwrap();
@@ -928,10 +966,40 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                     bounds.right()
                 );
                 if bounds.size.width > px(0.0) {
-                    assert!(
-                        visual.rendered_surface_geometry(selector).is_some(),
-                        "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
-                    );
+                    if selector == "arrangement-section-0" {
+                        // Section fill is a shaped canvas, not one full rectangular
+                        // scene quad. Its upper piece must retain the same endpoint.
+                        let cut = crate::section_surface::cut(
+                            f32::from(bounds.size.width),
+                            f32::from(bounds.size.height),
+                            crate::section_surface::CHAMFER,
+                        );
+                        let projected = bounds.scale(scale);
+                        assert!(
+                            visual
+                                .rendered_filled_quads(selector)
+                                .iter()
+                                .any(|(paint, _)| (f64::from(paint.left())
+                                    - f64::from(projected.left()))
+                                .abs()
+                                    < 0.1
+                                    && (f64::from(paint.right()) - f64::from(projected.right()))
+                                        .abs()
+                                        < 0.1
+                                    && (f64::from(paint.top()) - f64::from(projected.top())).abs()
+                                        < 0.1
+                                    && (f64::from(paint.size.height)
+                                        - f64::from((bounds.size.height - px(cut)).scale(scale)))
+                                    .abs()
+                                        < 0.1),
+                            "actual shaped section: {bounds:?}, offset={offset}, tail={tail}"
+                        );
+                    } else if tail != 48 {
+                        assert!(
+                            visual.rendered_surface_geometry(selector).is_some(),
+                            "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
+                        );
+                    }
                 }
             }
             for selector in [
@@ -956,9 +1024,6 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                 audio_bounds.left(),
                 visual.debug_bounds("arrangement-section-0").unwrap().left()
             );
-            let projected_start = lane.left()
-                + lane.size.width
-                    * ((offset + 48_000 - tail - viewport.start) as f32 / viewport.length as f32);
             assert!((audio_bounds.left() - projected_start).abs() <= px(0.25));
             if tail == 480 {
                 let header = visual

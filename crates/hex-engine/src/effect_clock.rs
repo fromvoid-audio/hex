@@ -1,4 +1,4 @@
-//! Borrowed Arrangement clock for uncompensated effect segments.
+//! Borrowed Arrangement content clock before downstream alignment.
 //! Tempo maps and transport origins stay host-owned; no callback allocation.
 use crate::PreparedTempoMap;
 use hex_lattice::NativeInstrumentClock;
@@ -59,7 +59,7 @@ impl NativeInstrumentClock for ArrangementEffectClock<'_> {
             crate::MidiTiming::tempo_micro_bpm_at_frame(self.prepared?, frame)
         }
     }
-    // This effect-only view deliberately does not synthesize performance beats.
+    // This control-only view deliberately does not synthesize performance beats.
     fn beat_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
@@ -80,6 +80,10 @@ impl NativeInstrumentClock for ArrangementEffectClock<'_> {
     fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.running.then_some(())?;
         self.frame(self.performance_start?, offset)
+    }
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.running.then_some(())?;
+        self.frame(self.start, offset)
     }
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         self.pass

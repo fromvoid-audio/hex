@@ -1,6 +1,5 @@
 //! Display-only geometry for control-prepared Arrangement note samples.
 //! Source projection and tempo conversion never run here.
-pub(super) const ROW_NOTE_SHAPE_LIMIT: usize = 128;
 
 /// A one-pitch clip draws its notes one third of the body tall, centred.
 const MIN_FIT_ROWS: u8 = 3;
@@ -94,33 +93,6 @@ pub(super) fn paint_bounds(
     ))
 }
 
-/// One note for per-note preview layouts. The div spans the body height at the
-/// note's horizontal extent and paints the same fitted row as the batched
-/// body canvas, so previews and resting clips draw identical note heights.
-pub(super) fn note_column(x: f32, width: f32, pitch: u8, fit: PitchFit) -> gpui::Div {
-    use gpui::{Styled, canvas, div, prelude::*, relative, rgb};
-    div()
-        .absolute()
-        .left(relative(x))
-        .w(relative(width))
-        .top_0()
-        .bottom_0()
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    if let Some(note) =
-                        paint_bounds(bounds, 0.0, 1.0, pitch, fit, window.scale_factor())
-                    {
-                        window.paint_quad(gpui::fill(note, rgb(0x000000)));
-                    }
-                },
-            )
-            .absolute()
-            .inset_0(),
-        )
-}
-
 pub(super) fn note_shape(
     frame_start: u64,
     frame_gate_end: u64,
@@ -153,14 +125,24 @@ pub(super) fn rendered_notes(
     clip: hex_project::ClipId,
     dragging: bool,
 ) -> Vec<(gpui::Bounds<gpui::Pixels>, gpui::Background)> {
-    let selector = Box::leak(
-        format!(
+    rendered_note_layer(
+        visual,
+        &format!(
             "clip-{}notes-{}",
             if dragging { "drag-" } else { "" },
             clip.value()
-        )
-        .into_boxed_str(),
-    );
+        ),
+    )
+}
+
+/// Completed note rectangles of the note layer named `selector`, in logical
+/// pixels.
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn rendered_note_layer(
+    visual: &mut gpui::VisualTestContext,
+    selector: &str,
+) -> Vec<(gpui::Bounds<gpui::Pixels>, gpui::Background)> {
+    let selector: &'static str = Box::leak(selector.to_owned().into_boxed_str());
     let scale = visual.update(|window, _| window.scale_factor());
     visual
         .rendered_filled_quads(selector)
@@ -182,72 +164,4 @@ pub(super) fn rendered_notes(
             )
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn malformed_display_geometry_never_reaches_the_scene() {
-        let bounds = gpui::Bounds::new(
-            gpui::point(gpui::px(1.0), gpui::px(2.0)),
-            gpui::size(gpui::px(100.0), gpui::px(50.0)),
-        );
-        let full = PitchFit::from_pitches([0, 127]);
-        assert!(paint_bounds(bounds, 0.1, 0.2, 60, full, 2.0).is_some());
-        for (x, width, pitch, scale) in [
-            (f32::NAN, 0.2, 60, 2.0),
-            (0.1, f32::INFINITY, 60, 2.0),
-            (0.9, 0.2, 60, 2.0),
-            (-0.1, 0.2, 60, 2.0),
-            (0.1, 0.0, 60, 2.0),
-            (0.1, 0.2, 128, 2.0),
-            (0.1, 0.2, 60, 0.0),
-            (0.1, 0.2, 60, f32::NAN),
-        ] {
-            assert!(paint_bounds(bounds, x, width, pitch, full, scale).is_none());
-        }
-    }
-
-    #[test]
-    fn pitch_fit_zooms_rows_to_the_used_range() {
-        let height = |fit: PitchFit, pitch| note_rows(fit, pitch, 30.0).unwrap().1;
-        // A single pitch fills a centred third of the body.
-        let single = PitchFit::from_pitches([60, 60]);
-        assert_eq!(note_rows(single, 60, 30.0), Some((10.0, 9.0)));
-        assert_eq!(note_rows(single, 72, 30.0), None);
-        // An octave is thinner; the full keyboard bottoms out at 1px.
-        let octave = PitchFit::from_pitches([60, 72]);
-        assert!(height(octave, 60) < height(single, 60));
-        assert_eq!(note_rows(octave, 72, 26.0).map(|(top, _)| top), Some(0.0));
-        assert_eq!(height(PitchFit::from_pitches([0, 127]), 64), 1.0);
-        // Highest pitch on top, lowest at the bottom, short ranges stay inside MIDI.
-        let (top, row) = note_rows(octave, 60, 26.0).unwrap();
-        assert!((top + row - 26.0).abs() < 1e-3);
-        for edge in [0, 127] {
-            let fit = PitchFit::from_pitches([edge]);
-            assert!(note_rows(fit, edge, 30.0).is_some());
-        }
-        // No notes keeps the full-range scale.
-        assert_eq!(PitchFit::from_pitches([]), PitchFit::from_pitches([0, 127]));
-    }
-
-    #[test]
-    fn cropped_view_uses_visible_clip_coordinates_and_excludes_hidden_notes() {
-        assert_eq!(note_shape(90, 120, 60, 100, 200), Some((0.0, 0.2, 60)));
-        assert_eq!(note_shape(175, 225, 62, 100, 200), Some((0.75, 0.25, 62)));
-        assert_eq!(note_shape(0, 100, 60, 100, 200), None);
-        assert_eq!(note_shape(200, 220, 60, 100, 200), None);
-    }
-
-    #[test]
-    fn tiny_samples_at_large_endpoints_stay_positive_and_inside_the_clip() {
-        let (x, width, _) = note_shape(u64::MAX - 1, u64::MAX, 127, 0, u64::MAX).unwrap();
-        assert!(x.is_finite() && width.is_finite());
-        assert!((0.0..1.0).contains(&x) && width > 0.0 && x + width <= 1.0);
-        assert_eq!(note_shape(10, 10, 60, 0, 20), None);
-        assert_eq!(note_shape(0, 10, 128, 0, 20), None);
-        assert_eq!(note_shape(0, 10, 60, 10, 10), None);
-    }
 }

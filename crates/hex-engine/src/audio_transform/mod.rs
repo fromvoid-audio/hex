@@ -21,13 +21,14 @@ mod budget;
 mod content;
 mod events;
 mod group;
-pub(crate) use group::GroupSource;
+pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
 use hex_project::{
     Asset, AudioClipDomain, AudioClipEdit, BeatsTail, Project as CanonicalProject, WarpMode,
+    WarpResampler,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -76,6 +77,19 @@ fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     })
 }
 
+/// Saved reconstruction law of the root pitch/warp render. The cache key holds
+/// the whole domain, so a law change never reuses another law's output.
+fn render_resampler(domain: &AudioClipDomain) -> hex_warp::Resampler {
+    warp_law(domain.warp_resampler)
+}
+
+fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
+    match law {
+        WarpResampler::V1 => hex_warp::Resampler::V1,
+        WarpResampler::V2 => hex_warp::Resampler::V2,
+    }
+}
+
 /// Check the existing renderer's projected stretch capability without PCM or
 /// preparation/cache ownership. Allocates the same bounded metadata map (at most
 /// 8192 segments and 1024 explicit attacks); this is control-side work, not a
@@ -118,6 +132,7 @@ enum EntryKey {
     },
     Group {
         root_only: bool,
+        sparse: bool,
         edit: AudioClipEdit,
         duration: u64,
         sources: Vec<(Audio, u32, u32)>,
@@ -175,6 +190,7 @@ pub struct AudioTransformPreparation {
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
     shutdown: Arc<AtomicBool>,
+    preview_cancel: RefCell<Option<Arc<AtomicBool>>>,
     budget: Arc<budget::Budget>,
     cache_limit: usize,
     source_limit: usize,
@@ -209,6 +225,7 @@ impl AudioTransformPreparation {
             pending: RefCell::new(None),
             tempo: RefCell::new(None),
             shutdown,
+            preview_cancel: RefCell::new(None),
             budget: budget::production_budget(),
             cache_limit: MAX_CACHED_DERIVED_BYTES,
             source_limit: MAX_CACHED_SOURCE_BYTES,
@@ -227,6 +244,23 @@ impl AudioTransformPreparation {
             self.cancel_after_polls.set(Some(remaining - 1));
         }
         self.shutdown.load(Ordering::Acquire)
+            || self
+                .preview_cancel
+                .borrow()
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+    }
+    /// Cooperatively abandon a superseded control-side preview without
+    /// cancelling the document's canonical preparation.
+    pub fn with_preview_cancellation<T>(
+        &self,
+        cancel: &Arc<AtomicBool>,
+        prepare: impl FnOnce() -> T,
+    ) -> T {
+        let previous = self.preview_cancel.replace(Some(Arc::clone(cancel)));
+        let result = prepare();
+        self.preview_cancel.replace(previous);
+        result
     }
     pub fn retained_pcm_bytes(&self) -> usize {
         self.budget.used()
@@ -572,13 +606,37 @@ impl AudioTransformPreparation {
                 cache.evict_oldest()?;
             }
         }
+        let source_edit = edit
+            .domain
+            .musical_event_source
+            .map(|source| {
+                let origin = edit.processing_origin()? + i128::from(source.zero_in_destination);
+                let mut root = view::occurrence_edit(edit, origin, self, tempo_map)?;
+                root.view_end = source.length.raw();
+                let domain = Arc::make_mut(&mut root.domain);
+                domain.clock = hex_project::AudioDomainClock::Beats(source.length);
+                domain.musical_event_source = None;
+                domain.events = None;
+                Ok::<_, Invalid>(root)
+            })
+            .transpose()?;
+        let read_root = source_edit.as_ref().unwrap_or(edit);
+        let read_length = if source_edit.is_some() {
+            read_root.projected_domain(tempo_map)?.1
+        } else {
+            length
+        };
         let reservation = self.reserve_with_eviction(bytes)?;
         let scratch_reservation = if edit.domain.events.is_some() {
-            Some(self.reserve_with_eviction(bytes)?)
+            let scratch_bytes = usize::try_from(read_length)
+                .ok()
+                .and_then(|length| length.checked_mul(std::mem::size_of::<crate::Frame>()))
+                .ok_or(Invalid("audio event source byte count overflow"))?;
+            Some(self.reserve_with_eviction(scratch_bytes)?)
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(edit, tempo_map, &self.shutdown)?;
+        let (map, attacks) = mapping::prepare_map(read_root, tempo_map, &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -606,17 +664,32 @@ impl AudioTransformPreparation {
             attacks: &attacks,
             input,
             map: &map,
-            output_frames: length as usize,
+            output_frames: read_length as usize,
             pitch_cents: domain.pitch_cents,
             mode,
         };
         let mut rendered =
-            hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+            hex_warp::render_with_resampler(&request, render_resampler(domain), &mut || {
+                self.cancelled()
+            })
+            .map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames = events::compose(&rendered.frames, edit, tempo_map, &self.shutdown)?;
+            rendered.frames = events::compose(
+                events::EventSource {
+                    frames: &rendered.frames,
+                    root: read_root,
+                    zero_in_destination: edit
+                        .domain
+                        .musical_event_source
+                        .map_or(0, |source| source.zero_in_destination),
+                },
+                edit,
+                tempo_map,
+                &self.shutdown,
+            )?;
         }
         drop(scratch_reservation);
-        mapping::apply_fade(&mut rendered.frames, edit, tempo_map, &self.shutdown)?;
+        mapping::apply_fade(&mut rendered.frames, 0, edit, tempo_map, &self.shutdown)?;
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),

@@ -1,6 +1,6 @@
-//! Explicit piano selection intent, arbitrated through the existing keyboard input owner.
-//! Only pointer/keyboard selection actions capture a bank. Paint, ACK and project load
-//! never do. Preparation remains a bounded Session request; engine owns the finite gate.
+//! Explicit piano selection and edit audition through the existing keyboard input owner.
+//! Edit previews audition only after their own accepted receipt installs the result.
+//! Preparation remains a bounded Session request; the engine owns the finite gate.
 use super::EditorView;
 use hex_engine::computer_keyboard::{ComputerKeyboardInput, MAX_NOTE_AUDITION_NOTES};
 use hex_project::{ClipId, TrackId};
@@ -25,13 +25,23 @@ pub(super) struct Selection {
 }
 struct Active {
     selection: Selection,
-    request: u64,
-    triggered: bool,
+    output: AuditionOutput,
+}
+
+enum AuditionOutput {
+    Standalone { request: u64, triggered: bool },
+    Live(Arc<ComputerKeyboardInput>),
 }
 impl MidiAudition {
     pub(super) fn clear(&mut self) {
         self.pending = None;
-        self.active = None;
+        if let Some(Active {
+            output: AuditionOutput::Live(input),
+            ..
+        }) = self.active.take()
+        {
+            input.cancel_live_note_audition_on_control();
+        }
     }
 }
 impl Selection {
@@ -52,6 +62,7 @@ impl Selection {
 }
 impl EditorView {
     pub(super) fn cancel_midi_audition(&mut self) {
+        self.cancel_pending_midi_edit_audition();
         self.midi_audition.clear();
         if self
             .computer_keyboard
@@ -62,6 +73,36 @@ impl EditorView {
             self.retire_computer_keyboard_audio();
         }
     }
+    /// Retire the departing focus's physical keys and preserve an explicit
+    /// selection captured by the click that just moved focus into the piano roll.
+    /// Hardware keeps the same admitted route across the focus handoff.
+    pub(super) fn blur_computer_keyboard(&mut self, window: &gpui::Window) {
+        let entering_piano_roll = self.midi_focus.is_focused(window);
+        if !entering_piano_roll {
+            self.cancel_pending_midi_edit_audition();
+        }
+        let pending = if entering_piano_roll {
+            self.midi_audition.pending.take()
+        } else {
+            None
+        };
+        if self.controller_wants_live_notes()
+            && let Some(input) = self
+                .computer_keyboard
+                .input
+                .as_ref()
+                .filter(|input| input.live_notes().is_some() && !input.is_cancelled())
+        {
+            input.clear_keys_on_control();
+            self.computer_keyboard.release_all();
+            self.midi_audition.clear();
+        } else {
+            self.cancel_computer_keyboard();
+            self.computer_keyboard.suspended = true;
+        }
+        self.midi_audition.pending = pending;
+    }
+
     /// Capture at most 17 complete notes in one bounded pass over the selected source.
     /// More notes refuse the whole chord; no velocity quantization or truncation.
     pub(super) fn audition_midi_selection(&mut self) {
@@ -128,6 +169,7 @@ impl EditorView {
             notes,
             len,
         });
+        self.wake_poll();
     }
     pub(super) fn cancel_marquee_audition(
         &mut self,
@@ -149,8 +191,8 @@ impl EditorView {
         }
     }
 
-    /// Some means the audition owns the existing input, so physical preparation must
-    /// not replace it. Physical held keys always win and defer only the latest intent.
+    /// Standalone audition takes the keyboard slot. With a hardware port
+    /// selected, physical preparation runs separately and retains its root.
     pub(super) fn tick_midi_audition(&mut self) -> Option<bool> {
         let invalid = self
             .midi_audition
@@ -166,14 +208,18 @@ impl EditorView {
             self.cancel_midi_audition();
             return Some(true);
         }
-        if self.computer_keyboard.physical_notes().next().is_some()
-            || self.controller_wants_live_notes()
-        {
+        if self.computer_keyboard.physical_notes().next().is_some() {
             return None;
         }
-        if self.midi_audition.active.is_some() {
+        if let Some(active) = &self.midi_audition.active {
             let failed = self.computer_keyboard.input.as_ref().is_none_or(|input| {
-                !input.is_note_audition()
+                let same = match &active.output {
+                    AuditionOutput::Standalone { .. } => input.is_note_audition(),
+                    AuditionOutput::Live(root) => {
+                        self.controller_wants_live_notes() && Arc::ptr_eq(input, root)
+                    }
+                };
+                !same
                     || input.is_cancelled()
                     || input.rejected()
                     || (self.worker_owns_keyboard_publication()
@@ -209,6 +255,39 @@ impl EditorView {
         }
         let selection = selection.clone();
         let sample_rate = self.state.as_ref()?.project.sample_rate();
+        let gate_frames = u64::from(sample_rate / 4).max(1);
+        if self.controller_wants_live_notes() {
+            // The editor and the hardware share an admitted track root. Wait
+            // for that exact route; never send a clip preview to another track.
+            if self.selected_track != Some(selection.track) {
+                self.error =
+                    Some("select the clip’s instrument track to audition its notes".into());
+                self.cancel_midi_audition();
+                return Some(true);
+            }
+            if !self.computer_keyboard.prepared
+                || self.computer_keyboard.target
+                    != Some((selection.generation, selection.revision, selection.track))
+            {
+                return Some(false);
+            }
+            let input = Arc::clone(self.computer_keyboard.input.as_ref()?);
+            let result = input.trigger_live_note_audition_on_control(
+                &selection.notes[..selection.len],
+                gate_frames,
+            );
+            self.midi_audition.pending = None;
+            match result {
+                Ok(()) => {
+                    self.midi_audition.active = Some(Active {
+                        selection,
+                        output: AuditionOutput::Live(input),
+                    })
+                }
+                Err(error) => self.error = Some(error.to_string().into()),
+            }
+            return Some(true);
+        }
         let fresh = if self.worker_owns_keyboard_publication() {
             self.audio
                 .as_ref()
@@ -218,10 +297,7 @@ impl EditorView {
             Ok(ComputerKeyboardInput::default())
         };
         let input = match fresh.and_then(|input| {
-            input.with_note_audition(
-                &selection.notes[..selection.len],
-                u64::from(sample_rate / 4).max(1),
-            )
+            input.with_note_audition(&selection.notes[..selection.len], gate_frames)
         }) {
             Ok(input) => Arc::new(input),
             Err(error) => {
@@ -244,8 +320,10 @@ impl EditorView {
         self.midi_audition.pending = None;
         self.midi_audition.active = Some(Active {
             selection: selection.clone(),
-            request,
-            triggered: false,
+            output: AuditionOutput::Standalone {
+                request,
+                triggered: false,
+            },
         });
         if !self.enqueue(Request::PrepareComputerKeyboard {
             project_generation: selection.generation,
@@ -260,7 +338,7 @@ impl EditorView {
     }
     pub(super) fn midi_audition_preparation_matches(&self, request: u64, revision: u64) -> bool {
         self.midi_audition.active.as_ref().is_some_and(|active| {
-            active.request == request
+            matches!(active.output, AuditionOutput::Standalone { request: id, .. } if id == request)
                 && active.selection.revision == revision
                 && active.selection.matches(self)
         }) && self
@@ -275,13 +353,18 @@ impl EditorView {
             .active
             .as_mut()
             .ok_or(hex_engine::Invalid("note audition intent expired"))?;
-        if !active.triggered {
+        let AuditionOutput::Standalone { triggered, .. } = &mut active.output else {
+            return Err(hex_engine::Invalid(
+                "note audition does not own the keyboard input",
+            ));
+        };
+        if !*triggered {
             self.computer_keyboard
                 .input
                 .as_ref()
                 .ok_or(hex_engine::Invalid("note audition input expired"))?
                 .trigger_note_audition()?;
-            active.triggered = true;
+            *triggered = true;
         }
         Ok(())
     }
@@ -292,7 +375,15 @@ impl EditorView {
             self.midi_audition
                 .active
                 .as_ref()
-                .filter(|active| !active.triggered)
+                .filter(|active| {
+                    matches!(
+                        active.output,
+                        AuditionOutput::Standalone {
+                            triggered: false,
+                            ..
+                        }
+                    )
+                })
                 .map(|active| active.selection.clone())
         });
         self.cancel_midi_audition();

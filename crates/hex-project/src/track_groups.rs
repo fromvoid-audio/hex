@@ -334,27 +334,39 @@ impl Project {
             .first()
             .and_then(|i| hierarchy.rows.get(*i))
             .ok_or(Invalid("track selection is empty"))?;
-        if roots.iter().any(|index| {
-            hierarchy
-                .rows
-                .get(*index)
-                .is_none_or(|row| row.parent_group != first.parent_group)
-        }) {
-            return Err(Invalid("grouped tracks must share an immediate parent"));
-        }
+        let anchor = selection
+            .ids()
+            .last()
+            .and_then(|id| hierarchy.row(*id))
+            .ok_or(Invalid("group destination track is missing"))?;
+        let root_rows = || roots.iter().filter_map(|index| hierarchy.rows.get(*index));
+        // A selected ancestor moves as a whole, so its row is the destination
+        // when the last selected track is inside it.
+        let destination = root_rows()
+            .find(|row| row.subtree_range().contains(&anchor.start))
+            .ok_or(Invalid("group destination subtree is missing"))?;
         let flags = hierarchy.selected(&roots)?;
-        if first.depth >= MAX_GROUP_DEPTH
-            || hierarchy.rows.iter().enumerate().any(|(index, row)| {
-                flags.get(index).copied().unwrap_or(false)
-                    && row.kind == TrackKind::Group
-                    && row
-                        .depth
-                        .checked_add(1)
-                        .is_none_or(|depth| depth >= MAX_GROUP_DEPTH)
-            })
-        {
+        if destination.depth >= MAX_GROUP_DEPTH {
             return Err(Invalid("group nesting limit reached"));
         }
+        for root in root_rows() {
+            let subtree = hierarchy
+                .rows
+                .get(root.subtree_range())
+                .ok_or(Invalid("track subtree exceeds inventory"))?;
+            if subtree.iter().any(|row| {
+                row.kind == TrackKind::Group
+                    && destination.depth + 1 + (row.depth - root.depth) >= MAX_GROUP_DEPTH
+            }) {
+                return Err(Invalid("group nesting limit reached"));
+            }
+        }
+        let insertion = flags
+            .get(..destination.start)
+            .ok_or(Invalid("group insertion exceeds inventory"))?
+            .iter()
+            .filter(|selected| !**selected)
+            .count();
         let capacity = self
             .tracks
             .len()
@@ -373,7 +385,8 @@ impl Project {
             .get(first.start)
             .ok_or(Invalid("selected track is missing"))?
             .color;
-        let mut group = crate::edit::new_track(self, name, TrackKind::Group, first.parent_group)?;
+        let mut group =
+            crate::edit::new_track(self, name, TrackKind::Group, destination.parent_group)?;
         group.color = color;
         let id = group.id();
         for (index, mut track) in std::mem::take(&mut self.tracks).into_iter().enumerate() {
@@ -395,7 +408,6 @@ impl Project {
                 kept.push(track);
             }
         }
-        let insertion = first.start;
         if insertion > kept.len() {
             return Err(Invalid("group insertion exceeds inventory"));
         }
@@ -511,6 +523,22 @@ impl Project {
         Ok(Created::None)
     }
     fn remove_track_rows(&mut self, ids: &[TrackId]) -> Result<(), Invalid> {
+        for receiver in self
+            .tracks()
+            .iter()
+            .filter(|track| ids.contains(&track.id()) && track.retained_source_path())
+        {
+            if let Some(source) = receiver.source_id()
+                && self
+                    .tracks()
+                    .iter()
+                    .any(|track| track.source_id() == Some(source) && !ids.contains(&track.id()))
+            {
+                return Err(Invalid(
+                    "cannot delete the retained source path while linked tracks remain",
+                ));
+            }
+        }
         let receivers = self
             .native_sources()
             .iter()

@@ -213,9 +213,13 @@ fn legacy_operator_export_matches_independent_pcm16_oracle_across_blocks_and_rel
         let left = i16::from_le_bytes([samples[0], samples[1]]);
         let right = i16::from_le_bytes([samples[2], samples[3]]);
         let expected_sample = (expected(frame_index as u64) * 32_767.0).round() as i16;
-        assert_eq!(left, right, "centered mono at frame {frame_index}");
+        // Independent per-channel dither: centred mono within two LSB.
         assert!(
-            (i32::from(left) - i32::from(expected_sample)).abs() <= 1,
+            (i32::from(left) - i32::from(right)).abs() <= 2,
+            "centered mono at frame {frame_index}"
+        );
+        assert!(
+            (i32::from(left) - i32::from(expected_sample)).abs() <= 2,
             "PCM16 mismatch at frame {frame_index}: got {left}, expected {expected_sample}"
         );
     }
@@ -255,8 +259,7 @@ fn mixed_waveform_operator_export_matches_partitioned_prepared_playback() {
         for (channel, sample) in frame.into_iter().enumerate() {
             let offset = channel * 2;
             let actual = i16::from_le_bytes([samples[offset], samples[offset + 1]]);
-            let expected = (sample.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
-            assert_eq!(actual, expected, "export and playback disagree");
+            assert_pcm16_near(actual, sample, "export and playback disagree");
         }
     }
 }
@@ -376,8 +379,18 @@ fn modulation_export(lfo: Option<bool>, filter: bool, selected: bool) {
     {
         let left = i16::from_le_bytes([samples[0], samples[1]]);
         let right = i16::from_le_bytes([samples[2], samples[3]]);
-        let expected = (expected[0].clamp(-1.0, 1.0) * 32_767.0).round() as i16;
-        assert_eq!(left, expected, "feedback export mismatch at {frame_index}");
-        assert_eq!(right, expected, "centered mono at {frame_index}");
+        let context = format!("feedback export mismatch at {frame_index}");
+        assert_pcm16_near(left, expected[0], &context);
+        assert_pcm16_near(right, expected[0], &context);
     }
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither, so each sample lands within one
+/// LSB of plain rounding.
+fn assert_pcm16_near(actual: i16, expected: f32, context: &str) {
+    let rounded = (expected.clamp(-1.0, 1.0) * 32_767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{context}: {actual} not within one lsb of {rounded}"
+    );
 }

@@ -1,10 +1,16 @@
 //! Arrangement time selection, range movement and worker clipboard routing.
-use super::edit_cursor::EditCursor;
-use super::{EditorMode, EditorView};
+use super::{
+    EditorMode, EditorView,
+    duplicate::MAX_QUEUED_REPEATS,
+    edit_cursor::EditCursor,
+    pending_edit::{Disposition, Receipt},
+};
 use crate::theme;
-use gpui::{CursorStyle, Div, Stateful, Window, div, prelude::*, px, relative, rgb};
-use hex_project::{Command, TrackId};
-use hex_session::service::Request;
+use gpui::{
+    Context, CursorStyle, Div, Stateful, Window, canvas, div, prelude::*, px, relative, rgb,
+};
+use hex_project::{ClipId, Command, TrackId};
+use hex_session::service::{Event, Request};
 use hex_widgets::{RangeSelectionTarget, RangeSelectionZones};
 use std::time::Instant;
 
@@ -24,8 +30,9 @@ pub(super) fn header_hit_height(row_height: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimeSelection {
-    pub(super) anchor_track: TrackId,
-    pub(super) end_track: TrackId,
+    // An empty project's Main range has no ordinary track anchors.
+    pub(super) anchor_track: Option<TrackId>,
+    pub(super) end_track: Option<TrackId>,
     pub(super) anchor_frame: u64,
     pub(super) end_frame: u64,
 }
@@ -77,7 +84,7 @@ pub(super) struct TimeRangeMoveDisplay<'a> {
     pub copy_modifier: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct PendingTimeRangeMove {
     pub source: hex_project::TimeRange,
     pub range: hex_project::TimeRange,
@@ -87,6 +94,14 @@ pub(super) struct PendingTimeRangeMove {
     pub source_revision: u64,
     pub selection_intent_epoch: u64,
     pub copy_modifier: bool,
+    pub(super) keyboard: Option<KeyboardTimeCopy>,
+}
+
+#[derive(Debug)]
+pub(super) struct KeyboardTimeCopy {
+    receipt: Receipt,
+    /// Cancellation drops future repeats while retaining the released copy.
+    repeats: Option<u8>,
 }
 
 impl EditorView {
@@ -94,6 +109,14 @@ impl EditorView {
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
     pub(super) fn advance_selection_intent(&mut self) {
+        self.play_start_at_beginning = false;
+        self.escape_stop_armed = false;
+        if self
+            .edit_cursor
+            .is_some_and(|cursor| cursor.track.is_none())
+        {
+            self.edit_cursor = None;
+        }
         self.selection_intent_epoch = self
             .selection_intent_epoch
             .and_then(|epoch| epoch.checked_add(1));
@@ -134,10 +157,11 @@ impl EditorView {
         }
         self.edit_cursor.filter(|cursor| {
             cursor.generation == self.project_generation
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+                && self.state.as_ref().is_some_and(|state| {
+                    cursor
+                        .track
+                        .is_some_and(|track| state.project.track(track).is_some())
+                })
         })
     }
 
@@ -195,8 +219,8 @@ impl EditorView {
             return false;
         };
         let selection = TimeSelection {
-            anchor_track: first.id(),
-            end_track: last.id(),
+            anchor_track: Some(first.id()),
+            end_track: Some(last.id()),
             anchor_frame: start,
             end_frame: end,
         };
@@ -230,13 +254,8 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let Some(first_track) = state.project.tracks().first().map(|track| track.id()) else {
-            // An empty project has no valid whole-project time range.
-            return false;
-        };
-        let Some(last_track) = state.project.tracks().last().map(|track| track.id()) else {
-            return false;
-        };
+        let first_track = state.project.tracks().first().map(|track| track.id());
+        let last_track = state.project.tracks().last().map(|track| track.id());
         let Some(lane) = self.main_track_lane_bounds.filter(|lane| {
             self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
         }) else {
@@ -254,9 +273,17 @@ impl EditorView {
         ) else {
             return false;
         };
-        let anchor = self.time_selection_cursor_anchor(extend);
+        let anchor = self.time_selection_cursor_anchor(extend).or_else(|| {
+            self.edit_cursor.filter(|cursor| {
+                extend
+                    && self.time_selection_project_scope
+                    && cursor.track.is_none()
+                    && cursor.generation == self.project_generation
+            })
+        });
         let generation = self.project_generation;
         let revision = state.revision;
+        self.clear_automation_range();
         let selection = TimeSelection {
             anchor_track: first_track,
             end_track: last_track,
@@ -414,7 +441,8 @@ impl EditorView {
         ) else {
             return false;
         };
-        let (ordinary_handle, priority_control) = self.clip_pointer_handles(track, x, y, viewport);
+        let (ordinary_handle, priority_control, _, _) =
+            self.clip_pointer_handles(track, x, y, viewport, self.option_held, true);
         if !self.time_selection_key_held
             && (priority_control || ((extend || !inside_selection) && ordinary_handle))
         {
@@ -423,15 +451,17 @@ impl EditorView {
         let anchor = self.time_selection_cursor_anchor(extend);
         let generation = self.project_generation;
         let revision = state.revision;
+        let anchor_track = anchor.and_then(|cursor| cursor.track).unwrap_or(track);
+        self.clear_automation_range();
         let selection = TimeSelection {
-            anchor_track: anchor.map_or(track, |cursor| cursor.track),
-            end_track: track,
+            anchor_track: Some(anchor_track),
+            end_track: Some(track),
             anchor_frame: anchor.map_or(frame, |cursor| cursor.frame),
             end_frame: frame,
         };
         self.advance_selection_intent();
         self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
-            track,
+            track: Some(track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
@@ -449,7 +479,7 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
-        self.select_lane_span(selection.anchor_track, track);
+        self.select_lane_span(anchor_track, track);
         // The pressed clip stays the clip editor subject, not an object selection.
         let pressed = self.arrangement_clip_at(track, frame, self.detail_clip_id());
         if anchor.is_none() {
@@ -552,7 +582,7 @@ impl EditorView {
         gesture.pointer_x = x;
         gesture.pointer_y = y;
         gesture.free_modifier = free;
-        let Some((pointer_track, lane)) = self.time_gesture_lane_near_y(y) else {
+        let Some((Some(pointer_track), lane)) = self.time_gesture_lane_near_y(y) else {
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
@@ -710,6 +740,7 @@ impl EditorView {
                 destination_last_index: last,
                 source_revision,
                 copy_modifier: gesture.copy_modifier,
+                keyboard: None,
             });
         }
         true
@@ -721,12 +752,10 @@ impl EditorView {
         if self.time_selection_project_scope {
             return Some((0, tracks.len().checked_sub(1)?));
         }
-        let anchor = tracks
-            .iter()
-            .position(|track| track.id() == selection.anchor_track)?;
-        let end = tracks
-            .iter()
-            .position(|track| track.id() == selection.end_track)?;
+        let anchor_track = selection.anchor_track?;
+        let end_track = selection.end_track?;
+        let anchor = tracks.iter().position(|track| track.id() == anchor_track)?;
+        let end = tracks.iter().position(|track| track.id() == end_track)?;
         Some(if anchor <= end {
             (anchor, end)
         } else {
@@ -735,7 +764,8 @@ impl EditorView {
     }
 
     /// Duplicate the bounded Arrangement rectangle through the existing atomic
-    /// copy edit. Normal overwrite semantics match Option-drag range copying.
+    /// copy edit. Each repeat starts from a committed destination and receives
+    /// its own undo step.
     pub(super) fn duplicate_time_selection(&mut self, window: &Window) -> bool {
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
@@ -753,7 +783,49 @@ impl EditorView {
             self.error = Some("time selection no longer belongs to current tracks".into());
             return true;
         };
-        if self.edit_pending()
+        if self.time_duplicate_input_blocked() {
+            self.error = Some("finish the current edit before duplicating time".into());
+            return true;
+        }
+        let revision = self.state.as_ref().map_or(0, |state| state.revision);
+        if let Some(pending) = &mut self.pending_time_range_move
+            && let Some(keyboard) = &mut pending.keyboard
+        {
+            if pending.source != range
+                || pending.source_revision != revision
+                || self.selection_intent_epoch != Some(pending.selection_intent_epoch)
+                || self.time_selection_project_scope != pending.project_scope
+            {
+                self.error = Some("time duplicate is still completing".into());
+                return true;
+            }
+            let keyboard = self
+                .ahead_time_range_move
+                .as_mut()
+                .and_then(|ahead| ahead.keyboard.as_mut())
+                .unwrap_or(keyboard);
+            match &mut keyboard.repeats {
+                Some(repeats) if *repeats < MAX_QUEUED_REPEATS => *repeats += 1,
+                Some(_) => {
+                    self.error = Some("duplicate queue full · maximum 32 queued repeats".into());
+                }
+                None => self.error = Some("time duplicate is still completing".into()),
+            }
+            self.start_ahead_time_duplicate();
+            return true;
+        }
+        if self.edit_pending() {
+            self.error = Some("finish the current edit before duplicating time".into());
+            return true;
+        }
+        self.start_time_duplicate(range, 0);
+        true
+    }
+
+    fn time_duplicate_input_blocked(&self) -> bool {
+        self.opening_project
+            || self.close_prompt_open
+            || self.automation_close_preflight.frozen()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.clip_name_edit.is_some()
@@ -762,21 +834,20 @@ impl EditorView {
             || self.context_menu.is_some()
             || self.save_dialog_open
             || self.export_dialog_open
-        {
-            self.error = Some("finish the current edit before duplicating time".into());
-            return true;
-        }
+    }
+
+    fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
         let Some(end) = range.end().checked_add(range.duration()) else {
             self.error = Some("duplicated time range would overflow".into());
-            return true;
+            return;
         };
         let Some((first, last)) = self.time_selection_track_indices() else {
-            return true;
+            return;
         };
         let Ok(destination) =
             hex_project::TimeRange::new(range.tracks().to_vec(), range.end(), end)
         else {
-            return true;
+            return;
         };
         let revision = self.state.as_ref().map_or(0, |state| state.revision);
         let command = Command::CopyTimeRangeTo {
@@ -789,21 +860,87 @@ impl EditorView {
                 "selection intent exhausted · reopen the editor before moving or copying time"
                     .into(),
             );
-            return true;
+            return;
         };
-        if self.enqueue(Request::Edit(command)) {
-            self.pending_time_range_move = Some(PendingTimeRangeMove {
-                selection_intent_epoch,
-                source: range,
-                range: destination,
-                project_scope: self.time_selection_project_scope,
-                destination_first_index: first,
-                destination_last_index: last,
-                source_revision: revision,
-                copy_modifier: true,
-            });
+        self.pending_time_range_move = Some(PendingTimeRangeMove {
+            selection_intent_epoch,
+            source: range,
+            range: destination,
+            project_scope: self.time_selection_project_scope,
+            destination_first_index: first,
+            destination_last_index: last,
+            source_revision: revision,
+            copy_modifier: true,
+            keyboard: Some(KeyboardTimeCopy {
+                receipt: Receipt::new(self.project_generation),
+                repeats: Some(repeats),
+            }),
+        });
+        if !self.enqueue(Request::Edit(command)) {
+            self.pending_time_range_move = None;
         }
-        true
+    }
+
+    pub(super) fn continue_time_duplicate(&mut self, repeats: u8) {
+        if let Some(remaining) = repeats.checked_sub(1)
+            && self.mode == EditorMode::Arrangement
+            && !self.edit_pending()
+            && !self.time_duplicate_input_blocked()
+            && let Some(range) = self.normalized_time_selection()
+        {
+            self.start_time_duplicate(range, remaining);
+        }
+    }
+
+    pub(super) fn cancel_time_duplicate_repeats(&mut self) {
+        if let Some(keyboard) = self
+            .ahead_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            keyboard.repeats = None;
+        }
+        if let Some(keyboard) = self
+            .pending_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            keyboard.repeats = None;
+        }
+    }
+
+    pub(super) fn pending_time_duplicate_matches(&self, request: &Request) -> bool {
+        self.pending_time_range_move
+            .iter()
+            .chain(self.ahead_time_range_move.iter())
+            .any(|pending| {
+                pending
+                    .keyboard
+                    .as_ref()
+                    .is_some_and(|keyboard| keyboard.receipt.is_queued())
+                    && matches!(
+                        request,
+                        Request::Edit(Command::CopyTimeRangeTo { range, track, frame })
+                            if *range == pending.source
+                                && pending.range.tracks().first() == Some(track)
+                                && pending.range.start() == *frame
+                    )
+            })
+    }
+
+    pub(super) fn time_duplicate_submitted(&mut self) {
+        for pending in self
+            .pending_time_range_move
+            .iter_mut()
+            .chain(self.ahead_time_range_move.iter_mut())
+        {
+            if let Some(keyboard) = &mut pending.keyboard
+                && keyboard.receipt.is_queued()
+            {
+                keyboard.receipt.submitted(self.worker_requests_pending);
+                break;
+            }
+        }
     }
 
     pub(super) fn copy_time_selection(&mut self, cut: bool, window: &Window) {
@@ -860,11 +997,22 @@ impl EditorView {
         let Some((track, frame)) = self.time_selection_paste_target() else {
             return;
         };
-        self.enqueue(if insert {
+        let request = if insert {
             Request::InsertTimeRange { track, frame }
         } else {
             Request::PasteTimeRange { track, frame }
-        });
+        };
+        // A clip-clipboard paste selects its acknowledged births.
+        let intent = super::group_copy::Pending::capture_paste(self, &request);
+        let before_pending = self.worker_requests_pending;
+        if self.enqueue(request)
+            && let Some(mut intent) = intent
+        {
+            if self.worker_requests_pending > before_pending {
+                intent.submitted(self.worker_requests_pending);
+            }
+            self.pending_group_copy = Some(intent);
+        }
     }
 
     pub(super) fn time_selection_paste_target(&self) -> Option<(TrackId, u64)> {
@@ -876,7 +1024,10 @@ impl EditorView {
                     .copied()
                     .map(|track| (track, range.start()))
             })
-            .or_else(|| self.edit_cursor.map(|cursor| (cursor.track, cursor.frame)))
+            .or_else(|| {
+                self.edit_cursor
+                    .and_then(|cursor| Some((cursor.track?, cursor.frame)))
+            })
     }
 
     pub(super) fn delete_time_selection(&mut self, window: &Window) -> bool {
@@ -896,20 +1047,237 @@ impl EditorView {
         true
     }
 
-    pub(super) fn move_time_selection_complete(&mut self, event: &hex_session::service::Event) {
-        let Some(pending) = self.pending_time_range_move.take() else {
+    /// A committed view paints exact copied content; the pending receipt still
+    /// owns selection, history and the terminal outcome.
+    pub(super) fn observe_time_range_copy_view(
+        &mut self,
+        observation: hex_session::service::ArrangementEditViewObservation,
+    ) -> bool {
+        use hex_session::service::ArrangementEditViewKind;
+        let Some(pending) = self.pending_time_range_move.as_ref() else {
+            return false;
+        };
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || !matches!(observation.kind, ArrangementEditViewKind::TimeRangeCopy)
+            || observation.project_generation != self.project_generation
+            || observation.first_previous_revision != observation.previous_revision
+        {
+            return false;
+        }
+        let matching = std::iter::once(pending)
+            .chain(self.ahead_time_range_move.iter())
+            .find(|candidate| {
+                candidate.copy_modifier
+                    && candidate
+                        .keyboard
+                        .as_ref()
+                        .is_none_or(|keyboard| !keyboard.receipt.is_queued())
+                    && candidate.source_revision == observation.previous_revision
+            });
+        let Some(matching) = matching else {
+            return false;
+        };
+        let predecessor_valid = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.revision == matching.source_revision)
+            || (self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == pending.source_revision)
+                && self
+                    .committed_time_range_copy_view
+                    .as_ref()
+                    .is_some_and(|view| view.revision == matching.source_revision));
+        if !predecessor_valid {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if matching.source_revision.checked_add(1) != Some(state.revision)
+            || self
+                .committed_time_range_copy_view
+                .as_ref()
+                .is_some_and(|view| view.revision > state.revision)
+        {
+            return false;
+        }
+        self.committed_time_range_copy_view = Some(state);
+        self.start_ahead_time_duplicate();
+        self.time_range_copy_view().is_some()
+    }
+
+    /// Admit at most one successor after the source copy has committed.
+    pub(super) fn start_ahead_time_duplicate(&mut self) {
+        if self.ahead_time_range_move.is_some()
+            || self.time_duplicate_input_blocked()
+            || self.worker_requests_pending != 1
+            || !self.pending_requests.is_empty()
+            || !self.device_gesture_barriers.is_empty()
+        {
+            return;
+        }
+        let Some(pending) = self.pending_time_range_move.as_ref() else {
             return;
         };
-        if !event.request_complete {
-            self.pending_time_range_move = Some(pending);
+        let Some(keyboard) = pending.keyboard.as_ref() else {
             return;
+        };
+        let Some(remaining) = keyboard.repeats.and_then(|repeats| repeats.checked_sub(1)) else {
+            return;
+        };
+        let Some(view) = self.committed_time_range_copy_view.as_ref() else {
+            return;
+        };
+        if pending.source_revision.checked_add(1) != Some(view.revision)
+            || self.selection_intent_epoch != Some(pending.selection_intent_epoch)
+            || self.time_selection_project_scope != pending.project_scope
+            || self.normalized_time_selection().as_ref() != Some(&pending.source)
+            || self.mode != EditorMode::Arrangement
+        {
+            return;
+        }
+        let source = pending.range.clone();
+        let Some(end) = source.end().checked_add(source.duration()) else {
+            self.error = Some("duplicated time range would overflow".into());
+            return;
+        };
+        let Ok(range) = hex_project::TimeRange::new(source.tracks().to_vec(), source.end(), end)
+        else {
+            return;
+        };
+        let command = Command::CopyTimeRangeTo {
+            range: source.clone(),
+            track: source.tracks()[0],
+            frame: source.end(),
+        };
+        self.ahead_time_range_move = Some(PendingTimeRangeMove {
+            source,
+            range,
+            project_scope: pending.project_scope,
+            destination_first_index: pending.destination_first_index,
+            destination_last_index: pending.destination_last_index,
+            source_revision: view.revision,
+            selection_intent_epoch: pending.selection_intent_epoch,
+            copy_modifier: true,
+            keyboard: Some(KeyboardTimeCopy {
+                receipt: Receipt::new(self.project_generation),
+                repeats: Some(remaining),
+            }),
+        });
+        if let Some(keyboard) = self
+            .pending_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            keyboard.repeats = None;
+        }
+        if !self.enqueue(Request::Edit(command)) {
+            self.ahead_time_range_move = None;
+        }
+    }
+
+    pub(super) fn time_range_copy_view(
+        &self,
+    ) -> Option<&std::sync::Arc<hex_session::service::ViewState>> {
+        let pending = self.pending_time_range_move.as_ref()?;
+        let state = self.state.as_ref()?;
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || state.revision != pending.source_revision
+        {
+            return None;
+        }
+        self.committed_time_range_copy_view.as_ref().filter(|view| {
+            pending.source_revision.checked_add(1) == Some(view.revision)
+                || self.ahead_time_range_move.as_ref().is_some_and(|ahead| {
+                    pending.source_revision.checked_add(1) == Some(ahead.source_revision)
+                        && ahead.source_revision.checked_add(1) == Some(view.revision)
+                })
+        })
+    }
+
+    pub(super) fn complete_time_duplicate_pair(&mut self, event: &Event) -> u8 {
+        if let Some(keyboard) = self
+            .ahead_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            let disposition = keyboard.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete && !event.plugin_parameter_observation,
+            );
+            if disposition == Disposition::Invalidated {
+                self.ahead_time_range_move = None;
+            }
+        }
+        let repeats = self.move_time_selection_complete(event);
+        if self.pending_time_range_move.is_none()
+            && let Some(mut ahead) = self.ahead_time_range_move.take()
+        {
+            if (event.error.is_some()
+                || self.selection_intent_epoch != Some(ahead.selection_intent_epoch))
+                && let Some(keyboard) = &mut ahead.keyboard
+            {
+                keyboard.repeats = None;
+            }
+            self.pending_time_range_move = Some(ahead);
+        }
+        repeats
+    }
+
+    pub(super) fn refuse_time_duplicate(&mut self, request: &Request) -> bool {
+        let matches_ahead = self.ahead_time_range_move.as_ref().is_some_and(|pending| {
+            matches!(request, Request::Edit(Command::CopyTimeRangeTo { range, track, frame })
+                if *range == pending.source && pending.range.tracks().first() == Some(track)
+                    && pending.range.start() == *frame)
+        });
+        if matches_ahead {
+            self.ahead_time_range_move.take().is_some()
+        } else {
+            self.pending_time_range_move.take().is_some()
+        }
+    }
+
+    pub(super) fn move_time_selection_complete(&mut self, event: &Event) -> u8 {
+        let Some(mut pending) = self.pending_time_range_move.take() else {
+            return 0;
+        };
+        let mut repeats = 0;
+        if let Some(keyboard) = &mut pending.keyboard {
+            match keyboard.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete && !event.plugin_parameter_observation,
+            ) {
+                Disposition::Waiting => {
+                    self.pending_time_range_move = Some(pending);
+                    return 0;
+                }
+                Disposition::Invalidated => return 0,
+                Disposition::Terminal => {}
+            }
+            if pending.source_revision.checked_add(1) != Some(event.state.revision) {
+                return 0;
+            }
+            if event.error.is_none() {
+                repeats = keyboard.repeats.unwrap_or(0);
+            }
+        } else if !event.request_complete || event.gesture_request || event.tuning_gesture_request {
+            self.pending_time_range_move = Some(pending);
+            return 0;
         }
         // The copy/move is admitted with no other pending edit. Its advanced
         // canonical revision witnesses the commit; a later recovery checkpoint
         // can still attach an error to that same completion. Keep that diagnostic,
         // but settle the committed destination. Refused edits do not advance it.
         if event.state.revision <= pending.source_revision {
-            return;
+            return 0;
         }
         // The accepted copy still commits, but its selection intent does not
         // own a later pointer choice or a range the user has cancelled.
@@ -920,37 +1288,37 @@ impl EditorView {
             || self.time_selection_project_scope != pending.project_scope
             || self.normalized_time_selection().as_ref() != Some(&pending.source)
         {
-            return;
+            return 0;
         }
         let (first_track, last_track) = if pending.project_scope {
             let Some(first) = event.state.project.tracks().first().map(|track| track.id()) else {
                 self.time_selection = None;
                 self.time_selection_project_scope = false;
                 self.edit_cursor = None;
-                return;
+                return 0;
             };
             let Some(last) = event.state.project.tracks().last().map(|track| track.id()) else {
                 self.time_selection = None;
                 self.time_selection_project_scope = false;
                 self.edit_cursor = None;
-                return;
+                return 0;
             };
             (first, last)
         } else {
             let Some((&first, rest)) = pending.range.tracks().split_first() else {
-                return;
+                return 0;
             };
             (first, rest.last().copied().unwrap_or(first))
         };
         let start_frame = pending.range.start();
         self.time_selection = Some(TimeSelection {
-            anchor_track: first_track,
-            end_track: last_track,
+            anchor_track: Some(first_track),
+            end_track: Some(last_track),
             anchor_frame: start_frame,
             end_frame: pending.range.end(),
         });
         if let Some(cursor) = &mut self.edit_cursor {
-            cursor.track = last_track;
+            cursor.track = Some(last_track);
             cursor.frame = start_frame;
         }
         self.time_selection_project_scope = pending.project_scope;
@@ -958,6 +1326,7 @@ impl EditorView {
             self.selected_track = Some(last_track);
         }
         self.selected_clip = None;
+        repeats
     }
 
     pub(super) fn update_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
@@ -1003,15 +1372,7 @@ impl EditorView {
             return false;
         };
         let next = TimeSelection {
-            end_track: if self.time_selection_project_scope {
-                state
-                    .project
-                    .tracks()
-                    .last()
-                    .map_or(track, |item| item.id())
-            } else {
-                track
-            },
+            end_track: track,
             end_frame: frame,
             ..gesture.selection
         };
@@ -1023,8 +1384,10 @@ impl EditorView {
         gesture.moved = true;
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
-        if !self.time_selection_project_scope {
-            self.select_lane_span(next.anchor_track, track);
+        if !self.time_selection_project_scope
+            && let (Some(anchor), Some(track)) = (next.anchor_track, track)
+        {
+            self.select_lane_span(anchor, track);
         }
         self.selected_clip = None;
         true
@@ -1035,8 +1398,18 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
+        if gesture.selection.anchor_track.is_none()
+            && gesture.selection.anchor_frame == gesture.selection.end_frame
+        {
+            self.time_selection = None;
+            self.time_selection_project_scope = false;
+            self.edit_cursor = None;
+            return true;
+        }
         if gesture.moved {
             self.fit_clip_editor_to_time_selection();
+        } else {
+            self.update_locked_play_start_from_point();
         }
         true
     }
@@ -1072,10 +1445,12 @@ impl EditorView {
         if had_gesture || had_range {
             self.advance_selection_intent();
         }
-        if let Some(cursor) = self.edit_cursor {
+        if let Some(cursor) = self.edit_cursor
+            && let Some(track) = cursor.track
+        {
             self.time_selection = Some(TimeSelection {
-                anchor_track: cursor.track,
-                end_track: cursor.track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: cursor.frame,
                 end_frame: cursor.frame,
             });
@@ -1104,47 +1479,87 @@ impl EditorView {
         Some((*track, *lane))
     }
 
-    /// Reserve clip headers and visible edge trims; bodies share empty-lane input.
+    /// Explicit controls win; ordinary headers yield only to double-press painting.
     pub(super) fn clip_handle_at_pointer(
         &self,
         track: TrackId,
         x: f32,
         y: f32,
         viewport: super::viewport::Viewport,
+        painting: bool,
     ) -> bool {
-        let (ordinary, priority) = self.clip_pointer_handles(track, x, y, viewport);
+        let (ordinary, priority, _, _) =
+            self.clip_pointer_handles(track, x, y, viewport, self.option_held, !painting);
         ordinary || priority
     }
-    pub(super) fn pointer_hits_priority_clip_control(&self, x: f32, y: f32) -> bool {
+    /// Hit the topmost painted clip body using the same bounds as its controls.
+    pub(super) fn visible_clip_at_pointer(&self, track: TrackId, x: f32, y: f32) -> Option<ClipId> {
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        self.clip_pointer_handles(track, x, y, viewport, false, true)
+            .3
+    }
+
+    pub(super) fn pointer_hits_priority_clip_control(&self, x: f32, y: f32, option: bool) -> bool {
         let Some((track, _)) = self.visible_lane_at(x, y) else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        self.clip_pointer_handles(track, x, y, self.visible_viewport(state.timeline_frames))
-            .1
+        self.clip_pointer_handles(
+            track,
+            x,
+            y,
+            self.visible_viewport(state.timeline_frames),
+            option,
+            true,
+        )
+        .1
+    }
+    fn pointer_hits_option_repeat_edge(&self, x: f32, y: f32) -> bool {
+        if self.time_selection_key_held {
+            return false;
+        }
+        let Some((track, _)) = self.visible_lane_at(x, y) else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        self.clip_pointer_handles(
+            track,
+            x,
+            y,
+            self.visible_viewport(state.timeline_frames),
+            true,
+            true,
+        )
+        .2
     }
     /// Ordinary headers/trim edges may yield to a selected time range; visible
-    /// fade and loop controls always retain their own pointer-down/drag route.
+    /// fade and loop controls and an eligible Option-repeat edge take priority.
+    /// Returns ordinary, priority and Option-repeat hits plus the topmost clip.
     fn clip_pointer_handles(
         &self,
         track: TrackId,
         x: f32,
         y: f32,
         viewport: super::viewport::Viewport,
-    ) -> (bool, bool) {
+        option: bool,
+        include_header: bool,
+    ) -> (bool, bool, bool, Option<ClipId>) {
         let Some(state) = self.state.as_ref() else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let Some(track) = state.project.track(track) else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let Some(lane) = self.drag_lanes.get(&track.id()) else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
-            return (true, false);
+            return (true, false, false, None);
         };
         let handle_hit = |start: u64, end: u64| {
             let visible_start = start.max(viewport.start);
@@ -1165,10 +1580,13 @@ impl EditorView {
             let edge = super::trim::handle_width(width);
             let on_edge = (visible_start == start && x < left + edge)
                 || (visible_end == end && x >= left + width - edge);
-            Some(
-                y < lane.top + header_hit_height(lane.height)
-                    || (on_edge && y < lane.top + super::trim::edge_trim_height(lane.height)),
-            )
+            let in_edge_rail = y < lane.top + super::trim::edge_trim_height(lane.height);
+            let right_edge = visible_end == end && x >= left + width - edge && in_edge_rail;
+            Some((
+                (include_header && y < lane.top + header_hit_height(lane.height))
+                    || (on_edge && in_edge_rail),
+                right_edge,
+            ))
         };
         // MIDI is drawn after audio; later clips cover earlier clips of each kind.
         // A visible body must win over any obscured header or resize edge.
@@ -1181,16 +1599,22 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end).map(|ordinary| {
+                handle_hit(preview.frame_start, preview.frame_end).map(|(ordinary, right_edge)| {
+                    let repeat = option
+                        && right_edge
+                        && super::trim::loop_handles::midi_repeat_available(clip);
                     (
                         ordinary,
-                        super::trim::loop_handles::midi_controls(
-                            clip,
-                            &state.project,
-                            *lane,
-                            viewport,
-                        )
-                        .is_some_and(|c| c.hit(x, y)),
+                        repeat
+                            || super::trim::loop_handles::midi_controls(
+                                clip,
+                                &state.project,
+                                *lane,
+                                viewport,
+                            )
+                            .is_some_and(|c| c.hit(x, y)),
+                        repeat,
+                        Some(clip.id()),
                     )
                 })
             })
@@ -1200,10 +1624,17 @@ impl EditorView {
                         return None;
                     }
                     let end = clip.start().checked_add(clip.duration())?;
-                    handle_hit(clip.start(), end).map(|ordinary| {
+                    handle_hit(clip.start(), end).map(|(ordinary, right_edge)| {
+                        let repeat = option
+                            && right_edge
+                            && super::trim::loop_handles::audio_repeat_available(
+                                clip,
+                                &state.project,
+                            );
                         (
                             ordinary,
-                            self.fade_handle_hit(track.id(), clip, x, y, viewport)
+                            repeat
+                                || self.fade_handle_hit(track.id(), clip, x, y, viewport)
                                 || super::trim::loop_handles::audio_controls(
                                     clip,
                                     &state.project,
@@ -1211,11 +1642,13 @@ impl EditorView {
                                     viewport,
                                 )
                                 .is_some_and(|c| c.hit(x, y)),
+                            repeat,
+                            Some(clip.id()),
                         )
                     })
                 })
             })
-            .unwrap_or((false, false))
+            .unwrap_or((false, false, false, None))
     }
 
     /// Paint one opaque marker at the true dragged endpoint, above the range's
@@ -1256,7 +1689,9 @@ impl EditorView {
         track: TrackId,
         viewport: super::viewport::Viewport,
         scale_factor: f32,
+        cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
+        let cursor_owner = cx.entity();
         let raw_selection = self.time_selection?;
         let state = self.state.as_ref()?;
         state.project.track(track)?;
@@ -1277,6 +1712,11 @@ impl EditorView {
         let viewport_end = viewport.end()?;
         let stroke = 1.0 / scale_factor.max(1.0);
         if raw_selection.anchor_frame == raw_selection.end_frame {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
+                return None;
+            }
             let frame = raw_selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;
@@ -1339,7 +1779,38 @@ impl EditorView {
                                 .top_0()
                                 .w_full()
                                 .h(px(header_hit_height(self.track_height(track))))
-                                .cursor(CursorStyle::OpenHand)
+                                .when(!self.option_held, |handle| {
+                                    handle.cursor(CursorStyle::OpenHand)
+                                })
+                                .children(self.option_held.then(|| {
+                                    canvas(
+                                        |bounds, window, _| {
+                                            window
+                                                .insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                        },
+                                        move |_, hitbox, window, cx| {
+                                            if hitbox.is_hovered(window) {
+                                                let position = window.mouse_position();
+                                                let repeat = cursor_owner
+                                                    .read(cx)
+                                                    .pointer_hits_option_repeat_edge(
+                                                        f32::from(position.x),
+                                                        f32::from(position.y),
+                                                    );
+                                                window.set_cursor_style(
+                                                    if repeat {
+                                                        CursorStyle::Loop
+                                                    } else {
+                                                        CursorStyle::OpenHand
+                                                    },
+                                                    &hitbox,
+                                                );
+                                            }
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0()
+                                }))
                                 .hover(|style| {
                                     style.bg(rgb(theme::color(theme::PaletteRole::Text)))
                                 }),
@@ -1365,6 +1836,11 @@ impl EditorView {
         let selection = self.time_selection?;
         let viewport_end = viewport.end()?;
         if selection.anchor_frame == selection.end_frame {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
+                return None;
+            }
             let frame = selection.anchor_frame;
             if frame < viewport.start || frame > viewport_end {
                 return None;

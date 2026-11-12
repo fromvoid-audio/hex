@@ -11,7 +11,7 @@ pub(super) const fn descriptors() -> [ParameterDescriptor; COUNT] {
         id: ParameterId::from_static(601),
         label: "voices",
         kind: ParameterKind::Choice { labels: &LABELS },
-        default: ParameterValue::Choice(14),
+        default: ParameterValue::Choice(7),
         presentation: ParameterPresentation::Linear,
     }; COUNT];
     let labels = [
@@ -69,7 +69,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             active: true,
-            voices: 14,
+            voices: 7,
             retrigger: true,
             interpolation: true,
             antialias: true,
@@ -83,6 +83,8 @@ impl Settings {
     pub fn legacy() -> Self {
         Self {
             active: false,
+            // Pre-global states retain their historical count when mode is enabled.
+            voices: 14,
             ..Self::default()
         }
     }
@@ -208,6 +210,47 @@ impl Settings {
 mod tests {
     use super::*;
     #[test]
+    fn fresh_devices_use_eight_voices_and_saved_counts_remain_explicit() {
+        let fresh = super::super::OPERATOR_METADATA.default_state().unwrap();
+        let settings = OperatorSettings::from_state(&fresh).unwrap();
+        assert!(settings.global.active);
+        assert_eq!(settings.global.capacity(), 8);
+        assert_eq!(
+            descriptors()[0].default,
+            ParameterValue::Choice(settings.global.voices)
+        );
+        for voices in 0..VOICE_COUNTS.len() as u32 {
+            for active in [false, true] {
+                let mut saved = settings;
+                saved.global.voices = voices;
+                saved.global.active = active;
+                let state = saved.to_state().unwrap();
+                let decoded = OperatorSettings::from_state(&state).unwrap();
+                assert_eq!(decoded.global, saved.global);
+                assert_eq!(decoded.to_state().unwrap(), state);
+                assert_eq!(
+                    super::super::OPERATOR_METADATA
+                        .migrate_state(&state)
+                        .unwrap(),
+                    state
+                );
+                // Version 15 already stored its count; adding fine tuning must not reset it.
+                let old = NativeDeviceState::new(
+                    super::super::OPERATOR_TYPE_ID,
+                    15,
+                    state.payload()[..super::super::MODULATION_PAYLOAD_BYTES].to_vec(),
+                )
+                .unwrap();
+                let migrated = super::super::OPERATOR_METADATA.migrate_state(&old).unwrap();
+                assert_eq!(
+                    OperatorSettings::from_state(&migrated).unwrap().global,
+                    saved.global
+                );
+            }
+        }
+    }
+
+    #[test]
     fn suffix_rejects_invalid_words_and_roundtrips_explicit_legacy_mode() {
         for settings in [Settings::default(), Settings::legacy()] {
             let mut bytes = Vec::new();
@@ -236,6 +279,13 @@ mod tests {
         let bytes = state.payload()[..super::super::COMPANION_PAYLOAD_BYTES].to_vec();
         let old = NativeDeviceState::new(super::super::OPERATOR_TYPE_ID, 14, bytes).unwrap();
         let migrated = super::super::OPERATOR_METADATA.migrate_state(&old).unwrap();
+        assert_eq!(
+            OperatorSettings::from_state(&migrated)
+                .unwrap()
+                .global
+                .capacity(),
+            32
+        );
         assert!(
             !OperatorSettings::from_state(&migrated)
                 .unwrap()

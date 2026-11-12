@@ -11,6 +11,8 @@ fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<Prepar
     let project = with_test_instrument(&project(1.0, start, duration), definition.metadata.id, 0);
     let mut snapshot = project.snapshot();
     let device = DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: snapshot.next_id,
@@ -83,6 +85,54 @@ fn chased_mutable_note_keeps_pcm_and_note_off_through_an_ordinary_handoff() {
             .flatten()
             .all(|sample| *sample == 0.0)
     );
+}
+
+#[test]
+fn play_from_restarts_a_held_session_note_across_render_partitions() {
+    // At 120 bpm and 48 kHz this gate lasts 1,500 frames; the fixture's
+    // release and feedback tail last at most 16 more. The first instance is
+    // still held at the cut.
+    let (prepared, _) = mutable_checkpoint_fixture(1 << 28);
+    let clip = prepared.session().midi_clips()[0].id;
+    let launch = |runtime: &mut SessionPlayback| {
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    };
+
+    // A fresh literal launch at the destination is independent of the old
+    // voice and gives the expected onset, gate and release PCM.
+    let mut literal = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    literal.apply(SessionPlaybackCommand::Seek(12_000)).unwrap();
+    launch(&mut literal);
+    literal.apply(SessionPlaybackCommand::Play).unwrap();
+    let expected = render_checkpoint_partitioned(&mut literal, &[512], 1_520);
+    assert!(
+        expected[..1_500]
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
+    assert!(
+        expected[1_518..]
+            .iter()
+            .flatten()
+            .all(|sample| *sample == 0.0)
+    );
+
+    for block_size in [1, 7, 64, 128, 256, 512] {
+        let mut actual = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        launch(&mut actual);
+        actual.apply(SessionPlaybackCommand::Play).unwrap();
+        let held = render_checkpoint_partitioned(&mut actual, &[128], 100);
+        assert!(held.iter().flatten().any(|sample| *sample != 0.0));
+        actual.play_from(12_000).unwrap();
+        let rendered = render_checkpoint_partitioned(&mut actual, &[block_size], 1_520);
+        assert_eq!(rendered, expected, "block size {block_size}");
+    }
 }
 
 #[test]
@@ -535,6 +585,8 @@ fn shared_chase_and_handoff(limiter: Option<bool>, handoff_frames: &[usize]) {
         let mut snapshot = editor.project().snapshot();
         if let Some(main) = limiter {
             let device = DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,

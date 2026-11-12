@@ -99,10 +99,34 @@ fn selector(f: &Fixture, kind: &str) -> &'static str {
         .into_boxed_str(),
     )
 }
+/// The right clip header edge, where option starts an outer repeat (#3796).
+fn right_edge(f: &Fixture) -> &'static str {
+    Box::leak(
+        format!(
+            "{}clip-trim-right-{}",
+            if f.midi { "midi-" } else { "" },
+            f.clip.value()
+        )
+        .into_boxed_str(),
+    )
+}
+/// `"outer"` option-drags the right header edge; `"cycle"` drags the first
+/// repeat boundary.
 fn drag(f: &mut Fixture, kind: &str, dx: f32, modifiers: Modifiers) -> gpui::Point<gpui::Pixels> {
+    let (selector, modifiers) = if kind == "outer" {
+        (
+            right_edge(f),
+            Modifiers {
+                alt: true,
+                ..modifiers
+            },
+        )
+    } else {
+        (selector(f, kind), modifiers)
+    };
     let down = f
         .visual
-        .debug_bounds(selector(f, kind))
+        .debug_bounds(selector)
         .expect("loop handle")
         .center();
     f.visual
@@ -124,14 +148,9 @@ fn drag(f: &mut Fixture, kind: &str, dx: f32, modifiers: Modifiers) -> gpui::Poi
 fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge(
     cx: &mut TestAppContext,
 ) {
-    for (midi, reversed, selected_range) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (true, true, false),
-        (false, false, true),
-        (true, false, true),
-    ] {
+    // A covering time selection owns the header rail, where option-drag
+    // copies the range, so outer repeat is exercised without one.
+    for (midi, reversed) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut f = fixture(cx, midi);
         if reversed {
             f.editor.update(&mut f.visual, |v, _| {
@@ -139,85 +158,45 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             });
             pump(&f.editor, &mut f.visual);
         }
-        if selected_range {
-            f.editor.update(&mut f.visual, |v, cx| {
-                let state = v.state.as_ref().unwrap();
-                let track = state
-                    .project
-                    .tracks()
-                    .iter()
-                    .find(|track| {
-                        track.clips().iter().any(|clip| clip.id() == f.clip)
-                            || track.midi_clips().iter().any(|clip| clip.id() == f.clip)
-                    })
-                    .unwrap()
-                    .id();
-                v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                    anchor_track: track,
-                    end_track: track,
-                    anchor_frame: 0,
-                    end_frame: state.timeline_frames,
-                });
-                v.time_selection_project_scope = false;
-                v.selected_clip = None;
-                cx.notify();
-            });
-            f.visual.run_until_parked();
-        }
         let before = f.editor.read_with(&f.visual, |v, _| {
             v.state.as_ref().unwrap().project.snapshot()
         });
-        let handle = f.visual.debug_bounds(selector(&f, "outer")).unwrap();
+        assert!(
+            f.visual.debug_bounds(selector(&f, "outer")).is_none(),
+            "no separate repeat corner"
+        );
         assert!(
             f.visual
                 .debug_bounds("clip-loop-corner-affordance")
                 .is_none(),
             "loop action belongs to the edge cursor, not a painted clip icon"
         );
-        let trim_selector = Box::leak(
-            format!(
-                "{}clip-trim-right-{}",
-                if midi { "midi-" } else { "" },
-                f.clip.value()
-            )
-            .into_boxed_str(),
-        );
-        // Edge trim lives in the header rail; the loop corner keeps the
-        // bottom of the same edge, with ordinary body between them.
-        let trim = f.visual.debug_bounds(trim_selector).unwrap();
-        assert!((handle.right() - trim.right()).abs() <= px(1.0));
-        assert!(trim.bottom() < handle.top());
-        f.visual
-            .simulate_mouse_move(handle.center(), None, Modifiers::default());
-        f.visual.run_until_parked();
-        assert_eq!(
-            f.visual.rendered_cursor_style(),
-            Some(gpui::CursorStyle::Loop)
-        );
+        let trim = f.visual.debug_bounds(right_edge(&f)).unwrap();
         f.visual
             .simulate_mouse_move(trim.center(), None, Modifiers::default());
         f.visual.run_until_parked();
-        // A covering time selection owns the header rail (it moves the range).
-        if !selected_range {
-            assert_eq!(
-                f.visual.rendered_cursor_style(),
-                Some(gpui::CursorStyle::ResizeRightBracket),
-                "header right edge trims"
-            );
-        }
-        f.visual.simulate_mouse_move(
-            point(handle.center().x, handle.top() - px(3.0)),
-            None,
-            Modifiers::default(),
-        );
-        f.visual.run_until_parked();
-        assert_ne!(
+        assert_eq!(
             f.visual.rendered_cursor_style(),
             Some(gpui::CursorStyle::ResizeRightBracket),
-            "the lower right edge above the loop corner no longer trims"
+            "header right edge trims"
         );
+        let option = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        f.visual.simulate_modifiers_change(option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Loop),
+            "option over the header right edge offers repeat"
+        );
+        f.visual.simulate_modifiers_change(Modifiers::default());
+        f.visual.run_until_parked();
+        // Option wins over shift: the gesture repeats rather than stretches.
         let modifiers = Modifiers {
-            shift: !selected_range,
+            shift: true,
+            alt: true,
             ..Default::default()
         };
         let target = drag(&mut f, "outer", 70.0, modifiers);
@@ -248,7 +227,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
                         .unwrap()
                         .domain
                         .warp_enabled,
-                    "Shift does not turn a loop handle into Warp"
+                    "Shift does not turn an option repeat into Warp"
                 );
             }
         });
@@ -258,6 +237,9 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             "trim-live-preview"
         };
         let held = f.visual.debug_bounds(overlay).expect("held painted loop");
+        let header = Box::leak(format!("clip-name-{}", f.clip.value()).into_boxed_str());
+        let gradients = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
+        assert!(!gradients.is_empty());
         let marker = f
             .visual
             .debug_bounds("clip-repeat-marker-0")
@@ -284,6 +266,11 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             f.visual.debug_bounds("clip-repeat-marker-0"),
             Some(marker),
             "marker stays at prospective boundary before ACK"
+        );
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradients,
+            "released header keeps the prospective gradient until acknowledgement"
         );
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.pending_trim.is_some());
@@ -328,6 +315,11 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert_eq!(directed, reversed, "loop resizing retains direction");
             project.snapshot()
         });
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradients,
+            "the committed header paints the acknowledged cycle positions"
+        );
         if reversed {
             assert!(
                 f.visual.debug_bounds(selector(&f, "cycle")).is_none(),
@@ -473,7 +465,7 @@ fn clip_loop_no_motion_stale_and_refused_capture_leave_no_edit(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn clip_loop_compact_track_corner_keeps_ordinary_edge_above(cx: &mut TestAppContext) {
+fn clip_loop_compact_row_option_edge_repeats_and_keeps_first_boundary(cx: &mut TestAppContext) {
     for midi in [false, true] {
         let mut f = fixture(cx, midi);
         let track = f.editor.read_with(&f.visual, |v, _| {
@@ -509,26 +501,13 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_above(cx: &mut TestAppCont
                 super::super::track_layout::HEADER_ONLY_HEIGHT
             )
         });
-        let corner = f
-            .visual
-            .debug_bounds(selector(&f, "outer"))
-            .expect("compact loop handle");
-        let edge = Box::leak(
-            format!(
-                "{}clip-trim-right-{}",
-                if midi { "midi-" } else { "" },
-                f.clip.value()
-            )
-            .into_boxed_str(),
-        );
-        let edge = f.visual.debug_bounds(edge).unwrap();
-        assert!((corner.right() - edge.right()).abs() <= px(1.0));
-        assert!(corner.top() > edge.top() + px(3.0));
-        f.visual.simulate_mouse_move(
-            point(corner.center().x, corner.top() - px(2.0)),
-            None,
-            Modifiers::default(),
-        );
+        // A compact row is all header: the whole right edge trims, and
+        // option on it repeats.
+        assert!(f.visual.debug_bounds(selector(&f, "outer")).is_none());
+        let edge = f.visual.debug_bounds(right_edge(&f)).unwrap();
+        assert_eq!(edge.size.height, px(23.0));
+        f.visual
+            .simulate_mouse_move(edge.center(), None, Modifiers::default());
         f.visual.run_until_parked();
         assert_eq!(
             f.visual.rendered_cursor_style(),
@@ -540,7 +519,7 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_above(cx: &mut TestAppCont
         pump(&f.editor, &mut f.visual);
         assert!(
             f.visual.debug_bounds(selector(&f, "cycle")).is_some(),
-            "compact row retains the first-boundary target beside the corner"
+            "compact row retains the first-boundary target"
         );
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
@@ -642,12 +621,21 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
             .simulate_mouse_move(target, MouseButton::Left, shift);
         f.visual.run_until_parked();
         let held = f.visual.debug_bounds("trim-live-preview").unwrap();
+        let header = Box::leak(format!("clip-name-{}", f.clip.value()).into_boxed_str());
+        let gradient = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
+        assert!(!gradient.is_empty());
+
         f.editor.read_with(&f.visual,|v,_|assert!(v.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
             p.bounds.right()>=held.right()-px(2.0) && p.ordinates.iter().any(|(lo,hi)| hi-lo>1.0)
         ),"ordinary Shift-Warp retains accepted processed root peaks on an existing repeat; warped={warped}"));
         f.visual.simulate_mouse_up(target, MouseButton::Left, shift);
         f.visual.run_until_parked();
         assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradient
+        );
+
         pump(&f.editor, &mut f.visual);
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error)
@@ -716,93 +704,168 @@ fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppCon
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum EdgeMode {
+    None,
+    Trim,
+    Stretch,
+    Repeat,
+    Fade,
+}
+
+/// Press, move past the drag threshold (optionally changing modifiers on the
+/// way), and report which gesture the held drag is in.
+fn edge_mode(
+    f: &mut Fixture,
+    at: gpui::Point<gpui::Pixels>,
+    start: Modifiers,
+    during: Modifiers,
+) -> EdgeMode {
+    f.visual.simulate_mouse_down(at, MouseButton::Left, start);
+    f.visual
+        .simulate_mouse_move(point(at.x - px(12.0), at.y), MouseButton::Left, start);
+    f.visual.run_until_parked();
+    f.visual.simulate_modifiers_change(during);
+    f.visual
+        .simulate_mouse_move(point(at.x - px(16.0), at.y), MouseButton::Left, during);
+    f.visual.run_until_parked();
+    let mode = f.editor.read_with(&f.visual, |v, _| {
+        let trim = v
+            .active_trim_drag
+            .as_ref()
+            .map(|d| (d.loop_kind, d.repeat.get(), d.stretch_modifier.get()))
+            .or_else(|| {
+                v.active_midi_trim_drag
+                    .as_ref()
+                    .map(|d| (d.loop_kind, d.repeat.get(), d.stretch_modifier.get()))
+            });
+        match trim {
+            Some((None, true, _)) => EdgeMode::Repeat,
+            Some((None, false, true)) => EdgeMode::Stretch,
+            Some((None, false, false)) => EdgeMode::Trim,
+            Some(_) => panic!("unexpected loop control drag"),
+            None if v.active_fade_drag.is_some() => EdgeMode::Fade,
+            None => EdgeMode::None,
+        }
+    });
+    f.visual.simulate_keystrokes("escape");
+    f.visual.simulate_mouse_up(at, MouseButton::Left, during);
+    f.visual.simulate_modifiers_change(Modifiers::default());
+    f.visual.run_until_parked();
+    mode
+}
+
 #[gpui::test]
-fn edge_trim_starts_only_in_the_header_and_loop_corner_and_fade_handle_stay_apart(
+fn header_right_edge_modes_follow_the_modifier_at_drag_start_and_the_corner_is_the_fade_handle(
     cx: &mut TestAppContext,
 ) {
-    let mut f = fixture(cx, false);
-    let id = f.clip.value();
-    let bounds = |f: &mut Fixture, name: String| {
-        f.visual.run_until_parked();
-        f.visual
-            .debug_bounds(Box::leak(name.into_boxed_str()))
-            .unwrap_or_else(|| panic!("painted {id}"))
+    let none = Modifiers::default();
+    let shift = Modifiers {
+        shift: true,
+        ..none
     };
-    let clip = bounds(&mut f, format!("clip-visual-{id}"));
-    let trim = bounds(&mut f, format!("clip-trim-right-{id}"));
-    let outer = f.visual.debug_bounds(selector(&f, "outer")).unwrap();
-    let header = edge_trim_height(f32::from(clip.size.height));
-    assert!(
-        trim.bottom() <= clip.top() + px(header + 1.0),
-        "trim strip is the header rail"
-    );
-    // Hover reveals the f handle set; the fade-out corner sits inside the loop corner.
-    f.visual
-        .simulate_mouse_move(clip.center(), None, Modifiers::default());
-    let fade = bounds(&mut f, format!("fade-out-bottom-{id}"));
-    assert!(!fade.intersects(&outer), "fade {fade:?} loop {outer:?}");
-    let cursor_at = |f: &mut Fixture, at| {
-        f.visual.simulate_mouse_move(at, None, Modifiers::default());
+    let option = Modifiers { alt: true, ..none };
+    for midi in [false, true] {
+        let mut f = fixture(cx, midi);
+        let id = f.clip.value();
         f.visual.run_until_parked();
-        f.visual.rendered_cursor_style()
-    };
-    assert_eq!(
-        cursor_at(&mut f, outer.center()),
-        Some(gpui::CursorStyle::Loop)
-    );
-    assert_eq!(
-        cursor_at(&mut f, trim.center()),
-        Some(gpui::CursorStyle::ResizeRightBracket)
-    );
-    let lower_edge = point(trim.center().x, outer.top() - px(4.0));
-    assert_ne!(
-        cursor_at(&mut f, lower_edge),
-        Some(gpui::CursorStyle::ResizeRightBracket)
-    );
-    let press = |f: &mut Fixture, at: gpui::Point<gpui::Pixels>| {
-        f.visual
-            .simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
-        f.visual.simulate_mouse_move(
-            point(at.x - px(12.0), at.y),
+        let named = |f: &mut Fixture, name: String| {
+            f.visual.run_until_parked();
+            f.visual.debug_bounds(Box::leak(name.into_boxed_str()))
+        };
+        let clip = named(
+            &mut f,
+            format!("{}clip-visual-{id}", if midi { "midi-" } else { "" }),
+        )
+        .expect("painted clip");
+        let trim = f.visual.debug_bounds(right_edge(&f)).unwrap();
+        assert!(f.visual.debug_bounds(selector(&f, "outer")).is_none());
+        let header = edge_trim_height(f32::from(clip.size.height));
+        assert!(
+            trim.bottom() <= clip.top() + px(header + 1.0),
+            "header rail"
+        );
+        let edge = trim.center();
+        assert_eq!(edge_mode(&mut f, edge, none, none), EdgeMode::Trim);
+        assert_eq!(edge_mode(&mut f, edge, shift, shift), EdgeMode::Stretch);
+        assert_eq!(edge_mode(&mut f, edge, option, option), EdgeMode::Repeat);
+        assert_eq!(
+            edge_mode(
+                &mut f,
+                edge,
+                Modifiers {
+                    shift: true,
+                    ..option
+                },
+                shift
+            ),
+            EdgeMode::Repeat,
+            "option wins over shift, and releasing it mid-drag keeps repeat"
+        );
+        assert_eq!(
+            edge_mode(&mut f, edge, none, option),
+            EdgeMode::Trim,
+            "pressing option mid-drag does not switch to repeat"
+        );
+        let lower_edge = point(edge.x, clip.bottom() - px(12.0));
+        assert!(!matches!(
+            edge_mode(&mut f, lower_edge, none, none),
+            EdgeMode::Trim | EdgeMode::Stretch | EdgeMode::Repeat
+        ));
+        if !midi {
+            // Audio fade handles: the fade-out handle sits in the true corner.
+            f.visual
+                .simulate_mouse_move(clip.center(), None, Modifiers::default());
+            let fade = named(&mut f, format!("fade-out-bottom-{id}")).expect("hover fade");
+            assert!((f32::from(fade.center().x - clip.right())).abs() <= 6.0);
+            assert!((f32::from(fade.center().y - clip.bottom())).abs() <= 6.0);
+            assert_eq!(edge_mode(&mut f, fade.center(), none, none), EdgeMode::Fade);
+        }
+    }
+}
+
+#[gpui::test]
+fn option_drag_on_the_header_edge_repeats_with_one_undo(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        let mut f = fixture(cx, midi);
+        let before = f.editor.read_with(&f.visual, |v, _| {
+            v.state.as_ref().unwrap().project.snapshot()
+        });
+        let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        f.visual.simulate_mouse_up(
+            target,
             MouseButton::Left,
-            Modifiers::default(),
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
         );
         f.visual.run_until_parked();
-        let state = f.editor.read_with(&f.visual, |v, _| {
-            (
-                v.active_trim_drag.as_ref().map(|d| d.loop_kind),
-                v.active_fade_drag.is_some(),
-            )
+        let edit = f
+            .editor
+            .read_with(&f.visual, |v, _| v.last_enqueued_edit.clone());
+        assert!(
+            matches!(
+                edit,
+                Some(Command::ResizeAudioClipView {
+                    operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { .. },
+                    ..
+                }) | Some(Command::ResizeMidiClipView {
+                    operation: hex_project::MidiViewResizeOperation::RepeatOuterEnd { .. },
+                    ..
+                })
+            ),
+            "{edit:?}"
+        );
+        pump(&f.editor, &mut f.visual);
+        f.editor.update(&mut f.visual, |v, _| {
+            assert!(v.enqueue(Request::Undo));
         });
-        f.visual.simulate_keystrokes("escape");
-        f.visual
-            .simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-        f.visual.run_until_parked();
-        state
-    };
-    assert_eq!(
-        press(&mut f, trim.center()),
-        (Some(None), false),
-        "header edge trims"
-    );
-    assert_eq!(
-        press(&mut f, lower_edge).0,
-        None,
-        "lower edge is body, not trim"
-    );
-    assert_eq!(
-        press(&mut f, outer.center()),
-        (Some(Some(LoopHandleKind::Outer)), false),
-        "loop corner keeps its own hit box"
-    );
-    f.visual
-        .simulate_mouse_move(clip.center(), None, Modifiers::default());
-    let fade = bounds(&mut f, format!("fade-out-bottom-{id}"));
-    assert_eq!(
-        press(&mut f, fade.center()),
-        (None, true),
-        "fade handle drags"
-    );
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
 }
 
 #[gpui::test]
@@ -893,6 +956,112 @@ fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
             let canonical = state.project.clip(clip).unwrap();
             assert_eq!(canonical.start() + canonical.duration(), project_frame);
             assert!(loop_handles::audio_repeats(canonical));
+        });
+    }
+}
+
+#[gpui::test]
+fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestAppContext) {
+    for (midi, boundary) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut f = fixture(cx, midi);
+        f.editor.update(&mut f.visual, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let track = state
+                .project
+                .tracks()
+                .iter()
+                .find(|track| {
+                    if midi {
+                        track.midi_clips().iter().any(|clip| clip.id() == f.clip)
+                    } else {
+                        track.clips().iter().any(|clip| clip.id() == f.clip)
+                    }
+                })
+                .unwrap()
+                .id();
+            let clip_end = if midi {
+                state.midi_preview.get(f.clip).unwrap().frame_end
+            } else {
+                let clip = state.project.clip(f.clip).unwrap();
+                clip.start() + clip.duration()
+            };
+            view.time_selection = Some(super::super::time_selection::TimeSelection {
+                anchor_track: Some(track),
+                end_track: Some(track),
+                anchor_frame: 0,
+                end_frame: if boundary {
+                    clip_end
+                } else {
+                    state.timeline_frames
+                },
+            });
+            cx.notify();
+        });
+        f.visual.run_until_parked();
+        let down = f.visual.debug_bounds(right_edge(&f)).unwrap().center();
+        let selection_handle = f
+            .visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "time-selection-handle-{}",
+                    f.editor.read_with(&f.visual, |view, _| view
+                        .time_selection
+                        .unwrap()
+                        .anchor_track
+                        .unwrap()
+                        .value())
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap();
+        let away = point(
+            selection_handle.left() + px(5.0),
+            selection_handle.center().y,
+        );
+        f.visual
+            .simulate_mouse_move(away, None, Modifiers::default());
+        let option = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        f.visual.simulate_modifiers_change(option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::OpenHand),
+            "range remains movable away from the clip edge"
+        );
+        f.visual.simulate_mouse_move(down, None, option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Loop),
+            "midi={midi}"
+        );
+        let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        f.editor.read_with(&f.visual, |view, _| {
+            assert!(
+                view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none()
+            );
+            assert!(if midi {
+                view.active_midi_trim_drag.is_some()
+            } else {
+                view.active_trim_drag.is_some()
+            });
+        });
+        f.visual
+            .simulate_mouse_up(target, MouseButton::Left, option);
+        f.visual.run_until_parked();
+        f.editor
+            .read_with(&f.visual, |view, _| assert!(view.pending_trim.is_some()));
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(if midi {
+                project.midi_clip(f.clip).unwrap().looping()
+            } else {
+                loop_handles::audio_repeats(project.clip(f.clip).unwrap())
+            });
         });
     }
 }

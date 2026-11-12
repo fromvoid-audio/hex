@@ -3,39 +3,47 @@
 //! Project owns section identity, validation and song-wide permutation. This
 //! module projects marker geometry and gesture-owned feedback. Release transfers immutable paint to
 //! an ordinary FIFO receipt; Escape/blur cancel held input, never admitted work.
-//! Command before or during capture latches marker-only intent independently of
-//! Control's live snapping. Option-drag copies song content at structural edges.
+//! Option-Command before or during capture latches marker-only intent. Command
+//! alone live-inverts snapping; Control remains a snap alias, including marker
+//! edits. Option alone copies song content at structural edges.
 //! Leaving the lane retains the last valid preview. Body moves/copies use the
 //! existing Window pointer lease; its painted cursor follows the held command,
 //! while released preview custody remains independent of input capture.
 //! Five-pixel inner edges resize one section; a touching seam resizes both, or
-//! the left marker's end under Command. Paint and input share native bracket cursors.
-//! Shift-click toggles section membership throughout the lane. Header drags own
+//! the left marker's end under Option-Command. Paint and input share native bracket cursors.
+//! Shift-click selects the song-order range from the last plain-clicked anchor;
+//! Command+Shift-click toggles membership and moves the anchor. Header drags own
 //! section edits; ordinary lower-body drags use Main's all-track range owner,
-//! including tracks hidden by section focus.
+//! including tracks hidden by section focus. A double press in empty lane space
+//! paints a section at every height; existing sections retain their input owner.
 use super::{
-    EditorMode, EditorView,
+    EditorMode, EditorView, ViewState,
     musical_time::SnapGrid,
     pending_edit::{Disposition, Receipt},
     viewport::Viewport,
 };
 use crate::{
     context_menu::{MenuItem, PopupMenu},
-    theme,
+    section_appearance,
+    section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
+    section_input, section_reorder, section_resize, section_selection, theme,
 };
 use gpui::{
     AnyElement, AppContext, Context, Entity, Subscription, Window, div, prelude::*, px, relative,
-    rgb, rgba,
+    rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
-use hex_session::service::{Event, Request};
+use hex_session::service::{ArrangementEditViewObservation, Event, Request};
 use hex_widgets::{
-    RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
-    TextInput,
+    RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
+use std::sync::Arc;
 
-const INNER_EDGE_WIDTH: f32 = 5.0;
-const SHARED_EDGE_RADIUS: f32 = 1.0;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod beyond_end_tests;
+mod clipboard;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod drop_tests;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionEdge {
@@ -69,6 +77,19 @@ struct Display {
     // Owned gesture feedback, frozen with the exact released display. Ordinary
     // hover resumes elsewhere without repainting this receipt's final fill.
     pointer_hover: Option<BeatTime>,
+    // Sections under the held edge or body keep one hovered fill for the whole
+    // gesture and its receipt; a snapped edge crossing the pointer must not
+    // toggle it.
+    held: [Option<SectionId>; 2],
+    marker_only: bool,
+    drop_feedback: Option<DropDisplay>,
+}
+#[derive(Clone)]
+struct DropDisplay {
+    feedback: section_reorder::DropFeedback,
+    // Earlier FIFO completions may install a different clock while this exact
+    // receipt still owns paint. Never reproject its original target with it.
+    tempo: TempoMap,
 }
 impl Display {
     fn pointer_hover_at(
@@ -110,8 +131,36 @@ enum Mode {
     ContentStart(SectionId),
     ContentEnd(SectionId),
 }
+impl Mode {
+    fn marker_only(self) -> bool {
+        matches!(
+            self,
+            Self::Start(_)
+                | Self::End(_)
+                | Self::Move(_)
+                | Self::Shared {
+                    marker_only: true,
+                    ..
+                }
+        )
+    }
+
+    fn held(self) -> [Option<SectionId>; 2] {
+        match self {
+            Mode::Paint => [None; 2],
+            Mode::Shared { left, right, .. } => [Some(left), Some(right)],
+            Mode::Start(id)
+            | Mode::End(id)
+            | Mode::Move(id)
+            | Mode::Reorder(id)
+            | Mode::ContentStart(id)
+            | Mode::ContentEnd(id) => [Some(id), None],
+        }
+    }
+}
 struct Gesture {
     launch_eligible: bool,
+    gap_appearance: Option<(String, ElementColor)>,
     generation: u64,
     revision: u64,
     viewport: Viewport,
@@ -130,6 +179,9 @@ struct Pending {
     revision: u64,
     command: Command,
     display: Display,
+    // Projected clip rows at submission, superseded by an exact copy view
+    // when available. Retired with the receipt and canonical installation.
+    layout: Option<Arc<ViewState>>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
 }
@@ -151,11 +203,24 @@ struct SectionCursor {
 pub(super) struct Sections {
     pub(super) selected: Option<SectionId>,
     selection: Vec<SectionId>,
+    // Shift ranges start here; ignored once it leaves the selection.
+    anchor: Option<SectionId>,
     cursor: Option<SectionCursor>,
+    clipboard: Option<clipboard::Reference>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
+    // One keyboard/menu follow-up typed while an edit is in flight (latest
+    // wins). It is validated and submitted against the acknowledged revision.
+    queued: Option<Queued>,
     name: Option<Name>,
+    launch_focus: std::cell::RefCell<std::collections::BTreeMap<SectionId, gpui::FocusHandle>>,
 }
+struct Queued {
+    generation: u64,
+    command: Command,
+}
+/// Visible refusal for section input that cannot wait for an in-flight edit.
+const SECTION_BUSY: &str = "applying section edit · try again when it finishes";
 impl Sections {
     pub(super) fn selected_ids(&self) -> &[SectionId] {
         if self.selected.is_some_and(|id| self.selection.contains(&id)) {
@@ -166,6 +231,9 @@ impl Sections {
     }
     pub(super) fn held(&self) -> bool {
         self.gesture.is_some()
+    }
+    pub(super) fn pending(&self) -> bool {
+        self.pending.is_some()
     }
     pub(super) fn naming(&self) -> bool {
         self.name.is_some()
@@ -185,6 +253,8 @@ enum MenuKind {
     Remove,
     Delete,
     Duplicate,
+    Copy,
+    Paste,
     Merge,
 }
 
@@ -195,10 +265,7 @@ impl EditorView {
             return None;
         }
         Some(
-            if matches!(
-                g.command,
-                Some(Command::DuplicateArrangementSectionAt { .. })
-            ) {
+            if g.command.as_ref().and_then(copied_section_source).is_some() {
                 super::drag::copy_cursor(true)
             } else if g.capture.displaced(4.0) {
                 gpui::CursorStyle::ClosedHand
@@ -242,8 +309,10 @@ impl EditorView {
                         return;
                     }
                     if !view.focus.is_focused(window) {
+                        crate::diagnostics::record_section_capture(cx, "focus_cancel");
                         view.cancel_section_pointer();
                     } else if released.is_some() {
+                        crate::diagnostics::record_section_capture(cx, "release");
                         view.finish_section_pointer(
                             f32::from(position.x),
                             f32::from(position.y),
@@ -262,6 +331,7 @@ impl EditorView {
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.sections.gesture.as_ref().is_some_and(matches) {
+                        crate::diagnostics::record_section_capture(cx, "cancel");
                         view.cancel_section_pointer();
                         cx.notify();
                     }
@@ -299,9 +369,14 @@ impl EditorView {
                         return;
                     }
                     let captured = down.update(cx, |view, cx| {
-                        if view.gain_numeric_editing(cx)
+                        if view.context_menu.is_some()
+                            || view.gain_numeric_editing(cx)
                             || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
+                            || view.pointer_hits_section_launch(
+                                f32::from(event.position.x),
+                                f32::from(event.position.y),
+                            )
                         {
                             return false;
                         }
@@ -421,6 +496,84 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
+    /// Arrangement rows display a frozen structural edit or committed copy or paste
+    /// until its exact terminal installs the canonical state.
+    pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
+        let state = self.state.as_ref()?;
+        self.sections
+            .pending
+            .as_ref()
+            .filter(|p| p.generation == self.project_generation)
+            .and_then(|p| p.layout.clone())
+            .or_else(|| self.arrangement_duplicate_view().cloned())
+            .or_else(|| self.arrangement_paste_view().cloned())
+            .or_else(|| self.time_range_copy_view().cloned())
+            .or_else(|| Some(Arc::clone(state)))
+    }
+
+    /// Replace the projected rows and marker geometry with the exact committed
+    /// copy. The ordinary receipt continues to own input, selection and history.
+    pub(super) fn observe_section_copy_view(
+        &mut self,
+        observation: ArrangementEditViewObservation,
+        copy: SectionId,
+    ) -> bool {
+        let Some(current) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(pending) = self.sections.pending.as_mut() else {
+            return false;
+        };
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || pending.receipt.is_queued()
+            || pending.generation != self.project_generation
+            || observation.project_generation != pending.generation
+            || observation.previous_revision != pending.revision
+            || current.revision != pending.revision
+            || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
+                || copied_section_source(&pending.command).is_some())
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade().filter(|state| {
+            pending.revision.checked_add(1) == Some(state.revision)
+                && current.project.arrangement_section(copy).is_none()
+                && state.project.arrangement_section(copy).is_some()
+        }) else {
+            return false;
+        };
+        pending.display.markers = state
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|section| {
+                let mut marker = Marker::from(section);
+                // New markers keep their preview presentation and remain
+                // noninteractive until the terminal installs their IDs.
+                if section.id().value() >= current.project.next_identity() {
+                    marker.id = None;
+                }
+                marker
+            })
+            .collect();
+        pending.display.tempo = state.project.tempo_map().clone();
+        pending.layout = Some(state);
+        true
+    }
+
+    pub(super) fn committed_section_copy_view(&self) -> Option<&Arc<ViewState>> {
+        let pending = self.sections.pending.as_ref()?;
+        pending.layout.as_ref().filter(|layout| {
+            pending.generation == self.project_generation
+                && pending.revision.checked_add(1) == Some(layout.revision)
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == pending.revision)
+        })
+    }
+
     pub(super) fn section_install_pending(&self) -> bool {
         self.sections.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -436,6 +589,9 @@ impl EditorView {
                     | Command::DeleteArrangementSection(_)
                     | Command::DuplicateArrangementSection(_)
                     | Command::DuplicateArrangementSectionAt { .. }
+                    | Command::AppendArrangementSectionCopy { .. }
+                    | Command::MoveArrangementSectionBeyondEnd { .. }
+                    | Command::ReplaceArrangementSection { .. }
             )
         }) || self
             .audio
@@ -448,6 +604,7 @@ impl EditorView {
         self.duplicate_intent.cancel_chain();
         self.sections.selected = id;
         self.sections.selection = id.into_iter().collect();
+        self.sections.anchor = id;
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
@@ -486,14 +643,20 @@ impl EditorView {
             && self.device_panel.main_selected == Some(self.project_generation)
     }
     fn sections_available(&self) -> bool {
+        self.sections_idle() && self.section_input_open()
+    }
+    /// No section or other project edit is in flight.
+    fn sections_idle(&self) -> bool {
+        !self.edit_pending() && self.sections.pending.is_none() && !self.section_install_pending()
+    }
+    /// No modal owner, text field or other gesture holds editor input.
+    fn section_input_open(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && !self.edit_pending()
-            && self.sections.pending.is_none()
-            && !self.section_install_pending()
             && self.sections.name.is_none()
             && self.clip_name_edit.is_none()
             && !self.track_name.is_editing()
             && self.context_menu.is_none()
+            && !super::device_panel::picker_is_open(self)
             && !self.save_dialog_open
             && !self.export_dialog_open
             && !self.project_open.busy()
@@ -563,10 +726,27 @@ impl EditorView {
             .find(|s| s.start() <= beat && beat < s.end())
             .map(|s| s.id())
     }
+    /// Sections from `anchor` through `clicked` in song order, inclusive.
+    fn section_range(&self, anchor: SectionId, clicked: SectionId) -> Vec<SectionId> {
+        let Some(project) = self.state.as_ref().map(|state| &state.project) else {
+            return vec![clicked];
+        };
+        crate::section_selection::range(
+            project
+                .arrangement_sections()
+                .iter()
+                .map(|section| (section.id(), section.start())),
+            anchor,
+            clicked,
+        )
+    }
     fn section_edge_hit(&self, x: f32) -> Option<SectionEdge> {
+        self.section_edge_hit_in(x, self.section_layout()?)
+    }
+    fn section_edge_hit_in(&self, x: f32, geometry: [f32; 4]) -> Option<SectionEdge> {
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
-        let [left, _, width, _] = self.section_layout()?;
+        let [left, _, width, _] = geometry;
         let position = |beat| {
             state
                 .project
@@ -578,36 +758,18 @@ impl EditorView {
                         * width
                 })
         };
-        let sections = state.project.arrangement_sections();
-        for pair in sections.windows(2) {
-            if pair[0].end() == pair[1].start()
-                && position(pair[0].end())
-                    .is_some_and(|edge| RectangleEdges::seam_hit(x, edge, SHARED_EDGE_RADIUS))
-            {
-                return Some(SectionEdge::Shared(pair[0].id(), pair[1].id()));
-            }
-        }
-        for section in sections {
-            let (Some(start), Some(end)) = (position(section.start()), position(section.end()))
-            else {
-                continue;
-            };
-            let part = RectangleEdges {
-                width: INNER_EDGE_WIDTH,
-                minimum_body: 0.0,
-            }
-            .hit(x, start, end);
-            let edge = match part {
-                Some(RectanglePart::Leading) => Some(hex_project::TrimEdge::Left),
-                Some(RectanglePart::Trailing) => Some(hex_project::TrimEdge::Right),
-                _ => None,
-            };
-            if let Some(edge) = edge {
-                return Some(SectionEdge::Single(section.id(), edge));
-            }
-        }
-        None
+        let sections = state
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|section| (section.id(), section.start(), section.end()));
+        section_hit::hit(sections, x, position).map(|hit| match hit {
+            section_hit::Hit::Leading(id) => SectionEdge::Single(id, hex_project::TrimEdge::Left),
+            section_hit::Hit::Trailing(id) => SectionEdge::Single(id, hex_project::TrimEdge::Right),
+            section_hit::Hit::Seam(left, right) => SectionEdge::Shared(left, right),
+        })
     }
+
     fn section_current(&self, g: &Gesture) -> bool {
         self.sections_available()
             && g.generation == self.project_generation
@@ -617,6 +779,99 @@ impl EditorView {
                 s.revision == g.revision && self.visible_viewport(s.timeline_frames) == g.viewport
             })
     }
+    pub(super) fn pointer_hits_section_launch(&self, x: f32, y: f32) -> bool {
+        let Some([left, top, width, _]) = self.section_layout() else {
+            return false;
+        };
+        let Some(state) = &self.state else {
+            return false;
+        };
+        let viewport = self.visible_viewport(state.timeline_frames);
+        state.project.arrangement_sections().iter().any(|section| {
+            let tempo = state.project.tempo_map();
+            let (Ok(start), Ok(end)) = (
+                tempo.beat_to_frame(section.start()),
+                tempo.beat_to_frame(section.end()),
+            ) else {
+                return false;
+            };
+            let Some((l, r)) = super::arrangement_map::project_interval(
+                super::arrangement_map::Interval { start, end },
+                viewport,
+                width,
+            ) else {
+                return false;
+            };
+            super::section_launch::action_bounds(left + l, top, r - l)
+                .is_some_and(|bounds| bounds.contains(&gpui::point(px(x), px(y))))
+        })
+    }
+
+    fn section_launch_action(
+        &self,
+        id: SectionId,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let generation = self.project_generation;
+        let focus = self
+            .sections
+            .launch_focus
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
+            .clone();
+        let click_focus = focus.clone();
+        hex_widgets::action(theme::text("▶"), theme::action_style())
+            .id(("section-launch", id.value()))
+            .debug_selector(move || format!("section-launch-{}", id.value()))
+            .absolute()
+            .left(px(super::section_launch::ACTION_LEFT))
+            .top(px(super::section_launch::ACTION_TOP))
+            .size(px(super::section_launch::ACTION_SIZE))
+            .rounded_full()
+            .text_size(px(8.0))
+            .line_height(px(12.0))
+            .track_focus(&focus)
+            .key_context("hex_section_launch")
+            .focus(|style| {
+                style
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Text)))
+            })
+            .tooltip(|_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: "play section · hold l to loop".into(),
+                })
+                .into()
+            })
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                if generation == view.project_generation
+                    && view.sections_available()
+                    && !view.sections.held()
+                {
+                    click_focus.focus(window);
+                    let looped = view.use_section_loop_key();
+                    view.launch_section(id, looped);
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(
+                move |view, _: &super::section_launch::ActivateSectionLaunch, _, cx| {
+                    cx.stop_propagation();
+                    if generation == view.project_generation
+                        && view.sections_available()
+                        && !view.sections.held()
+                    {
+                        view.launch_section(id, false);
+                        cx.notify();
+                    }
+                },
+            ))
+    }
+
     pub(super) fn begin_section_pointer(
         &mut self,
         x: f32,
@@ -625,10 +880,11 @@ impl EditorView {
         modifiers: gpui::Modifiers,
         cx: &Context<Self>,
     ) -> bool {
-        let extend =
-            RectangleSelectionPolicy::Toggle.intent(modifiers) == RectangleSelection::Toggle;
-        let free = modifiers.control;
-        let marker_only = modifiers.platform;
+        let intent = RectangleSelectionPolicy::Section.intent(modifiers);
+        let extend = intent != RectangleSelection::Replace;
+        let edit = section_input::EditModifiers::from(modifiers);
+        let free = edit.invert_snap;
+        let marker_only = edit.marker_only;
         let launch_eligible =
             self.section_autoplay && !double && !extend && !marker_only && !free && !modifiers.alt;
         // This capture also sees clicks on track headers and the focus toggle.
@@ -648,7 +904,11 @@ impl EditorView {
             return false;
         };
         if !self.sections_available() {
-            return self.section_hit(x, y).is_some();
+            let hit = self.section_hit(x, y).is_some();
+            if hit && !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
+            return hit;
         }
         let edge = self.section_edge_hit(x);
         let Some([_, top, _, height]) = self.section_layout() else {
@@ -658,24 +918,37 @@ impl EditorView {
             Some(SectionEdge::Single(id, _)) | Some(SectionEdge::Shared(id, _)) => Some(id),
             None => self.section_hit(x, y),
         };
+        let Some(time_range) = section_input::routes_to_time_range(
+            edge.is_some(),
+            double && id.is_none(),
+            y,
+            top,
+            height,
+            super::clip_name::CLIP_NAME_HEIGHT,
+        ) else {
+            return false;
+        };
         // Section membership takes precedence over the lower-body range owner,
         // edge resizing and autoplay; Shift never creates a time rectangle here.
         if extend && let Some(id) = id {
-            let mut selection = self.sections.selection.clone();
+            let selection = section_selection::extend(
+                self.sections.selected_ids().to_vec(),
+                self.sections.selected,
+                self.sections.anchor,
+                id,
+                intent == RectangleSelection::Toggle,
+                |anchor, clicked| self.section_range(anchor, clicked),
+            );
             self.select_section_metadata(Some(id));
-            if selection.contains(&id) {
-                selection.retain(|old| *old != id);
-            } else {
-                selection.push(id);
-            }
-            self.sections.selected = selection.last().copied();
-            self.sections.selection = selection;
+            self.sections.selected = selection.selected;
+            self.sections.selection = selection.members;
+            self.sections.anchor = Some(selection.anchor);
             self.sections.cursor = None;
             self.cancel_section_pointer();
             self.suppress_cursor_click = true;
             return true;
         }
-        if edge.is_none() && y >= top + super::time_selection::header_hit_height(height) {
+        if time_range {
             // Do not start a competing capture. Main's existing range receiver
             // sees this same press next and keeps canonical all-track scope.
             self.retire_section_pointer_context_for_range();
@@ -698,11 +971,12 @@ impl EditorView {
             revision: state.revision,
         });
         if id.is_none() && !double {
-            let empty = state.project.tracks().is_empty();
-            self.select_section_metadata(None);
-            // Keep Main's existing all-track range gesture. A stationary point
-            // uses this lane cursor; a completed range keeps the clip contract.
-            return empty;
+            if !extend || !self.time_selection_project_scope {
+                self.select_section_metadata(None);
+            }
+            // The Main range receiver also owns empty projects. A stationary
+            // point still uses this lane cursor for section shortcuts.
+            return false;
         }
         let viewport = self.visible_viewport(state.timeline_frames);
         let Some(layout) = self.section_layout() else {
@@ -742,26 +1016,8 @@ impl EditorView {
         } else {
             Mode::Paint
         };
-        if matches!(
-            mode,
-            Mode::ContentStart(_)
-                | Mode::ContentEnd(_)
-                | Mode::Shared {
-                    marker_only: false,
-                    ..
-                }
-        ) && self
-            .audio
-            .as_ref()
-            .and_then(|a| a.control.status())
-            .is_some_and(|s| s.playing.load(std::sync::atomic::Ordering::Acquire))
-        {
-            self.select_section_metadata(id);
-            self.error = Some("stop playback before resizing song sections".into());
-            return true;
-        }
         if matches!(mode, Mode::Paint) {
-            let (name, color) = new_marker_appearance(&state.project);
+            let (name, color) = section_appearance::new_marker(&state.project);
             original = Some(Marker {
                 id: None,
                 name,
@@ -779,6 +1035,9 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
+            marker_only: mode.marker_only(),
+            drop_feedback: None,
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -803,10 +1062,11 @@ impl EditorView {
             mode,
             display,
             command: None,
+            gap_appearance: None,
         });
         self.select_section_metadata(id);
         self.status = if matches!(mode, Mode::Reorder(_)) {
-            "section drag · reorder song content · option copies · command edits markers only"
+            "section drag · insert or replace song content · option copies · option-command edits markers only · command toggles snap"
         } else if matches!(
             mode,
             Mode::ContentStart(_)
@@ -816,7 +1076,7 @@ impl EditorView {
                     ..
                 }
         ) {
-            "section resize · crossed time becomes empty · command preserves music"
+            "section resize · crossed time becomes empty · option-command preserves music"
         } else {
             "section marker edit · musical content stays in place"
         }
@@ -830,15 +1090,16 @@ impl EditorView {
         y: f32,
         modifiers: gpui::Modifiers,
     ) -> bool {
-        let free = modifiers.control;
+        let edit = section_input::EditModifiers::from(modifiers);
+        let free = edit.invert_snap;
         let Some(mut g) = self.sections.gesture.take() else {
             return false;
         };
         if !self.section_current(&g) || self.section_layout().is_none() {
             return true;
         }
-        if modifiers.platform {
-            // One-way marker intent prevents releasing Command from unexpectedly
+        if edit.marker_only {
+            // One-way marker intent prevents releasing Option-Command from unexpectedly
             // turning a preview into a destructive song-content permutation.
             g.mode = match g.mode {
                 Mode::Reorder(id) => Mode::Move(id),
@@ -849,7 +1110,7 @@ impl EditorView {
             };
             g.launch_eligible = false;
         }
-        if modifiers.alt || modifiers.control {
+        if edit.copy_content || edit.invert_snap {
             g.launch_eligible = false;
         }
         if g.capture.update(x).is_none() {
@@ -880,59 +1141,43 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
+            marker_only: g.mode.marker_only(),
+            drop_feedback: None,
         };
         match g.mode {
             Mode::Reorder(id) => {
-                // Structural destinations are fixed edges, independent of grid snap.
-                // A click must never move music, even when it snaps outside its marker.
+                // Interior destinations retain stable edges. Beyond the end,
+                // the absolute pointer uses the grid. A click never moves music.
                 let raw_beat = self
                     .section_pointer(g.last_pointer.0, g.last_pointer.1, true)
                     .unwrap_or(beat);
-                if g.capture.displaced(4.0)
-                    && let Some((target, after)) =
-                        insertion_target(&state.project, id, raw_beat, modifiers.alt)
-                {
-                    if modifiers.alt {
-                        let command = Command::DuplicateArrangementSectionAt {
-                            section: id,
-                            target,
-                            after,
-                        };
-                        match state.project.preview_arrangement_section_edit(&command) {
-                            Ok(preview) => {
-                                g.display.markers =
-                                    preview.sections().iter().map(Marker::from).collect();
-                                g.display.tempo = preview.tempo_map().clone();
-                                g.command = Some(command);
-                            }
-                            Err(error) => self.error = Some(error.to_string().into()),
-                        }
-                    } else {
-                        let preview = if after {
-                            state.project.preview_section_reorder_after(id, target)
-                        } else {
-                            state.project.preview_section_reorder(id, target)
-                        };
-                        match preview {
-                            Ok(preview) if !preview.is_noop() => {
-                                g.display.markers =
-                                    preview.sections().iter().map(Marker::from).collect();
-                                g.display.tempo = preview.tempo_map().clone();
-                                g.command = Some(if after {
-                                    Command::ReorderSectionAfter {
-                                        section: id,
-                                        after: target,
-                                    }
-                                } else {
-                                    Command::ReorderSectionBefore {
-                                        section: id,
-                                        before: target,
-                                    }
+                if g.capture.displaced(4.0) {
+                    match crate::section_hit::drop_edge_frames(g.viewport.length, g.layout[2])
+                        .and_then(|edge_frames| {
+                            section_reorder::drop_preview(
+                                &state.project,
+                                id,
+                                raw_beat,
+                                beat,
+                                edit.copy_content,
+                                edge_frames,
+                                &mut g.gap_appearance,
+                            )
+                        }) {
+                        Ok(Some(preview)) => {
+                            g.display.markers =
+                                preview.sections().iter().map(Marker::from).collect();
+                            g.display.tempo = preview.tempo_map().clone();
+                            g.display.drop_feedback =
+                                preview.feedback().map(|feedback| DropDisplay {
+                                    feedback,
+                                    tempo: state.project.tempo_map().clone(),
                                 });
-                            }
-                            Ok(_) => {}
-                            Err(error) => self.error = Some(error.to_string().into()),
+                            g.command = Some(preview.command);
                         }
+                        Ok(None) => {}
+                        Err(error) => self.error = Some(error.to_string().into()),
                     }
                 }
             }
@@ -966,18 +1211,18 @@ impl EditorView {
                 marker_only,
             } => {
                 if g.capture.displaced(4.0) {
-                    let command = Command::ResizeArrangementSectionBoundary {
+                    let edit = section_resize::Edit::Shared {
                         left,
                         right,
                         boundary: beat,
                         marker_only,
                     };
-                    match state.project.preview_arrangement_section_edit(&command) {
+                    match section_resize::preview(&state.project, edit) {
                         Ok(preview) => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
                             g.display.tempo = preview.tempo_map().clone();
-                            g.command = Some(command);
+                            g.command = Some(preview.command);
                         }
                         Err(error) => self.error = Some(error.to_string().into()),
                     }
@@ -998,17 +1243,17 @@ impl EditorView {
                             hex_project::TrimEdge::Right => marker.end,
                         }
                     {
-                        let command = Command::ResizeArrangementSectionEdge {
+                        let edit = section_resize::Edit::Content {
                             section: id,
                             edge,
                             boundary: beat,
                         };
-                        match state.project.preview_arrangement_section_edit(&command) {
+                        match section_resize::preview(&state.project, edit) {
                             Ok(preview) => {
                                 g.display.markers =
                                     preview.sections().iter().map(Marker::from).collect();
                                 g.display.tempo = preview.tempo_map().clone();
-                                g.command = Some(command);
+                                g.command = Some(preview.command);
                             }
                             Err(error) => self.error = Some(error.to_string().into()),
                         }
@@ -1030,16 +1275,16 @@ impl EditorView {
                         marker.end
                     };
                     if beat != original_boundary {
-                        let command = Command::ResizeArrangementSectionMarker {
+                        let edit = section_resize::Edit::Marker {
                             section: id,
                             edge,
                             boundary: beat,
                         };
-                        match state.project.preview_arrangement_section_edit(&command) {
+                        match section_resize::preview(&state.project, edit) {
                             Ok(preview) => {
                                 g.display.markers =
                                     preview.sections().iter().map(Marker::from).collect();
-                                g.command = Some(command);
+                                g.command = Some(preview.command);
                             }
                             Err(error) => self.error = Some(error.to_string().into()),
                         }
@@ -1095,6 +1340,7 @@ impl EditorView {
         g.display.pointer_hover = g
             .display
             .pointer_hover_at(g.viewport, g.layout, g.last_pointer);
+        g.display.held = g.mode.held();
         self.sections.gesture = Some(g);
         true
     }
@@ -1137,11 +1383,17 @@ impl EditorView {
         generation: u64,
         revision: u64,
     ) {
+        let layout = self
+            .state
+            .as_ref()
+            .filter(|state| state.revision == revision)
+            .and_then(|state| super::section_layout_preview::build(state, &command));
         self.sections.pending = Some(Pending {
             generation,
             revision,
             command: command.clone(),
             display,
+            layout,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
         });
@@ -1207,6 +1459,20 @@ impl EditorView {
                 self.sections.selected = Some(kept.id());
                 self.sections.selection = vec![kept.id()];
             }
+            if event.error.is_none()
+                && !event.project_replaced
+                && let (Some(reference), Some(pending)) = (
+                    self.sections.clipboard.as_mut(),
+                    self.sections.pending.as_ref(),
+                )
+            {
+                reference.acknowledge_copy(
+                    &pending.command,
+                    pending.generation,
+                    pending.revision,
+                    &event.state,
+                );
+            }
             let copy_source = self.sections.pending.as_ref().and_then(|pending| {
                 if pending
                     .selection_intent_epoch
@@ -1214,10 +1480,7 @@ impl EditorView {
                 {
                     return None;
                 }
-                match pending.command {
-                    Command::DuplicateArrangementSectionAt { section, .. } => Some(section),
-                    _ => None,
-                }
+                copied_section_source(&pending.command)
             });
             let select_copy = event.error.is_none()
                 && !event.project_replaced
@@ -1229,6 +1492,13 @@ impl EditorView {
             {
                 self.sections.selected = Some(*id);
                 self.sections.selection = vec![*id];
+            }
+            if (event.error.is_some() || event.project_replaced)
+                && self.sections.queued.take().is_some()
+            {
+                // It was chosen against the refused preview; never apply it
+                // to different content. The terminal error stays visible.
+                self.status = "queued section edit dropped".into();
             }
             self.retire_pending_section();
         }
@@ -1243,10 +1513,59 @@ impl EditorView {
             self.cancel_section_pointer();
         }
     }
+    /// Submit the queued follow-up once its predecessor is acknowledged.
+    /// It is validated against the installed revision like a fresh key press.
+    pub(super) fn submit_queued_section(&mut self) -> bool {
+        if self
+            .sections
+            .queued
+            .as_ref()
+            .is_some_and(|q| q.generation != self.project_generation)
+        {
+            self.sections.queued = None;
+            return true;
+        }
+        if self.sections.queued.is_none() || !self.sections_available() {
+            return false;
+        }
+        let Some(Queued { command, .. }) = self.sections.queued.take() else {
+            return false;
+        };
+        self.status = "applying queued section edit".into();
+        self.section_metadata(command);
+        true
+    }
+    /// Undo/Redo order behind the in-flight edit; a queued section follow-up
+    /// was aimed at the state they replace, so it is dropped visibly.
+    pub(super) fn cancel_queued_section(&mut self) {
+        if self.sections.queued.take().is_some() {
+            self.status = "queued section edit cancelled by undo/redo".into();
+        }
+    }
     pub(super) fn reconcile_sections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(edit) = &self.sections.name {
             super::browser_input::restyle(&edit.input, cx);
         }
+        let removed_focus = self
+            .sections
+            .launch_focus
+            .borrow()
+            .iter()
+            .any(|(id, focus)| {
+                focus.is_focused(window)
+                    && self
+                        .state
+                        .as_ref()
+                        .is_none_or(|state| state.project.arrangement_section(*id).is_none())
+            });
+        if removed_focus {
+            self.focus.focus(window);
+        }
+        self.sections.launch_focus.borrow_mut().retain(|id, _| {
+            self.state
+                .as_ref()
+                .is_some_and(|s| s.project.arrangement_section(*id).is_some())
+        });
         self.sections.selection.retain(|id| {
             self.state
                 .as_ref()
@@ -1269,6 +1588,12 @@ impl EditorView {
                 || self.device_panel.main_selected != Some(self.project_generation)
                 || (!self.focus.is_focused(window)
                     && !self.section_focus_toggle_focused(window, cx)
+                    && !self
+                        .sections
+                        .launch_focus
+                        .borrow()
+                        .values()
+                        .any(|focus| focus.is_focused(window))
                     && !self.sections.naming()
                     && self.context_menu.is_none()))
         {
@@ -1321,6 +1646,9 @@ impl EditorView {
             return false;
         };
         if !self.sections_available() {
+            if !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
             return true;
         }
         self.cancel_section_pointer();
@@ -1352,7 +1680,7 @@ impl EditorView {
             return;
         };
         let name = n.input.read(cx).text().to_owned();
-        if self.section_stamp_current(n.generation, n.revision, n.id) && !self.edit_pending() {
+        if self.section_stamp_current(n.generation, n.revision, n.id) {
             self.section_metadata(Command::RenameArrangementSection {
                 section: n.id,
                 name,
@@ -1411,7 +1739,7 @@ impl EditorView {
         if !self.section_has_focus(window) {
             return false;
         }
-        if self.sections_available() {
+        if self.section_input_open() {
             self.cancel_section_pointer();
             if self.sections.selection.len() > 1 {
                 self.error = Some(
@@ -1456,6 +1784,10 @@ impl EditorView {
             return false;
         };
         if !self.sections_available() || self.sections.held() {
+            if !self.sections_idle() {
+                // The cursor is revision-bound, so a split cannot be queued.
+                self.error = Some(SECTION_BUSY.into());
+            }
             return true;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1484,15 +1816,100 @@ impl EditorView {
         if !self.section_has_focus(window) || self.sections.selected.is_none() {
             return false;
         }
-        if self.sections.selection.len() >= 2 {
+        self.merge_selected_sections();
+        true
+    }
+    /// Diagnostic projection of the inputs that route `g` (counts and flags only).
+    pub(super) fn group_selection_route(&self, window: &Window) -> String {
+        format!(
+            "mode={:?} focused={} section_focus={} event_focus={} midi_focus={} keyboard_g={} \
+             sections={} section_primary={} clips={} clip={} track={} time_range={} \
+             section_cursor={} main_selected={} return={} edit_pending={}",
+            self.mode,
+            self.focus.is_focused(window),
+            self.section_has_focus(window),
+            self.audio_event_focus.is_focused(window),
+            self.midi_focus.is_focused(window),
+            self.computer_keyboard.accepts_key("g"),
+            self.sections.selection.len(),
+            self.sections.selected.is_some(),
+            self.selected_clip_ids().len(),
+            self.selected_clip.is_some(),
+            self.selected_track.is_some(),
+            self.time_selection
+                .is_some_and(|range| range.anchor_frame != range.end_frame),
+            self.sections.cursor.is_some(),
+            self.device_panel.main_selected == Some(self.project_generation),
+            self.focused_return.is_some(),
+            self.edit_pending(),
+        )
+    }
+    /// `g` with a section span as the only grouping selection merges it, even
+    /// when the stricter section-focus test fails (Pulse #3812). False when
+    /// there is no such span, so the caller explains the empty selection.
+    pub(super) fn merge_section_span_selection(&mut self) -> bool {
+        if self.sections.selection.len() < 2 || self.selected_clip.is_some() {
+            return false;
+        }
+        self.merge_selected_sections();
+        true
+    }
+    /// `g` on a Main gap creates a marker without cutting the tracks below it.
+    /// Occupied ranges keep the existing project-scope grouping route.
+    pub(super) fn create_section_in_selected_gap(&mut self) -> bool {
+        let (Some(selection), Some(state)) = (self.time_selection, self.state.as_ref()) else {
+            return false;
+        };
+        let start = selection.anchor_frame.min(selection.end_frame);
+        let end = selection.anchor_frame.max(selection.end_frame);
+        let tempo = state.project.tempo_map();
+        let (Ok(start), Ok(end)) = (tempo.frame_to_beat(start), tempo.frame_to_beat(end)) else {
+            self.error = Some("section range is outside the timeline".into());
+            return true;
+        };
+        if start >= end {
+            self.error = Some("select a longer time range to create a section".into());
+            return true;
+        }
+        if state
+            .project
+            .arrangement_sections()
+            .iter()
+            .any(|section| section.start() < end && section.end() > start)
+        {
+            return false;
+        }
+        let (name, color) = section_appearance::new_marker(&state.project);
+        self.section_metadata(Command::AddArrangementSection {
+            name,
+            color,
+            start,
+            end,
+        });
+        true
+    }
+    /// Merge the current section selection, or explain why it cannot merge.
+    pub(super) fn merge_selected_sections(&mut self) {
+        if self.sections.selection.len() < 2 {
+            self.error = Some("shift-click another section to merge a span".into());
+        } else if !self.section_input_open() {
+            self.error = Some("applying edit · wait before merging sections".into());
+        } else {
             self.section_metadata(Command::MergeArrangementSections(
                 self.sections.selection.clone(),
             ));
         }
-        true
     }
     fn section_metadata(&mut self, command: Command) {
-        if !self.sections_available() {
+        if !self.section_input_open() {
+            return;
+        }
+        if !self.sections_idle() {
+            self.sections.queued = Some(Queued {
+                generation: self.project_generation,
+                command,
+            });
+            self.status = "section edit queued · applies after the current edit".into();
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1507,8 +1924,31 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
+            marker_only: false,
+            drop_feedback: None,
         };
         match &command {
+            Command::AddArrangementSection {
+                name,
+                color,
+                start,
+                end,
+            } => {
+                let index = display
+                    .markers
+                    .partition_point(|marker| marker.start < *start);
+                display.markers.insert(
+                    index,
+                    Marker {
+                        id: None,
+                        name: name.clone(),
+                        color: *color,
+                        start: *start,
+                        end: *end,
+                    },
+                );
+            }
             Command::RenameArrangementSection { section, name } => {
                 if let Some(m) = display.markers.iter_mut().find(|m| m.id == Some(*section)) {
                     m.name = name.clone();
@@ -1526,6 +1966,9 @@ impl EditorView {
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
+            | Command::AppendArrangementSectionCopy { .. }
+            | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_) => {
                 match state.project.preview_arrangement_section_edit(&command) {
@@ -1551,6 +1994,9 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         if !self.sections_available() {
+            if !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
             return;
         }
         self.cancel_section_pointer();
@@ -1584,6 +2030,18 @@ impl EditorView {
                 action: make(MenuKind::Duplicate),
             },
             MenuItem {
+                label: "copy section · cmd-c",
+                swatch: None,
+                checked: false,
+                action: make(MenuKind::Copy),
+            },
+            MenuItem {
+                label: "paste section at cursor · cmd-v",
+                swatch: None,
+                checked: false,
+                action: make(MenuKind::Paste),
+            },
+            MenuItem {
                 label: "delete section and close time",
                 swatch: None,
                 checked: false,
@@ -1596,7 +2054,7 @@ impl EditorView {
                 action: make(MenuKind::Rename),
             },
             MenuItem {
-                label: "remove marker only · command-delete",
+                label: "remove marker only · option-command-delete",
                 swatch: None,
                 checked: false,
                 action: make(MenuKind::Remove),
@@ -1671,6 +2129,14 @@ impl EditorView {
                 self.focus.focus(window);
                 self.duplicate_section(window);
             }
+            MenuKind::Copy => {
+                self.focus.focus(window);
+                self.copy_section(window);
+            }
+            MenuKind::Paste => {
+                self.focus.focus(window);
+                self.paste_section(window);
+            }
             MenuKind::Merge => {
                 self.focus.focus(window);
                 self.merge_sections(window);
@@ -1682,6 +2148,7 @@ impl EditorView {
         &self,
         viewport: Viewport,
         scale: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(state) = self.state.as_ref() else {
@@ -1707,6 +2174,9 @@ impl EditorView {
                     .collect(),
                 tempo: state.project.tempo_map().clone(),
                 pointer_hover: None,
+                held: [None; 2],
+                marker_only: false,
+                drop_feedback: None,
             };
             &canonical
         };
@@ -1716,6 +2186,30 @@ impl EditorView {
         if viewport.length == 0 {
             return Vec::new();
         }
+        let hover_marker = (self.sections.gesture.is_none()
+            && self.sections.pending.is_none()
+            && self.sections.name.is_none()
+            && section_input::EditModifiers::from(window.modifiers()).marker_only)
+            .then(|| {
+                let position = window.mouse_position();
+                // Rendering advances the epoch before layout measurement. Hover
+                // uses cached paint geometry; admitted input still requires freshness.
+                let geometry = self.section_geometry()?;
+                let beat = display.pointer_hover_at(
+                    viewport,
+                    geometry,
+                    (position.x.into(), position.y.into()),
+                )?;
+                match self.section_edge_hit_in(position.x.into(), geometry) {
+                    Some(SectionEdge::Single(id, _)) | Some(SectionEdge::Shared(id, _)) => Some(id),
+                    None => display
+                        .markers
+                        .iter()
+                        .find(|m| m.start <= beat && beat < m.end)
+                        .and_then(|m| m.id),
+                }
+            })
+            .flatten();
         let mut elements = Vec::new();
         let mut selected_edges = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
@@ -1725,11 +2219,16 @@ impl EditorView {
             ) else {
                 continue;
             };
+            let chamfer = if end <= limit {
+                crate::section_surface::CHAMFER
+            } else {
+                0.0
+            };
             let (start, end) = (start.max(viewport.start), end.min(limit));
             if end <= start {
                 continue;
             }
-            let copy_preview = self
+            let copy_command = self
                 .sections
                 .gesture
                 .as_ref()
@@ -1743,16 +2242,27 @@ impl EditorView {
                                 .is_some_and(|epoch| Some(epoch) == self.selection_intent_epoch)
                         })
                         .map(|p| &p.command)
-                })
-                .is_some_and(|c| matches!(c, Command::DuplicateArrangementSectionAt { .. }));
-            let selected = (copy_preview && m.id.is_none())
-                || (!copy_preview
-                    && m.id.is_some_and(|id| {
-                        self.sections.selection.contains(&id) || self.sections.selected == Some(id)
-                    }));
-            let owned_hover = display
-                .pointer_hover
-                .is_some_and(|beat| m.start <= beat && beat <= m.end);
+                });
+            let copy_preview = copy_command.and_then(copied_section_source).is_some();
+            let new_copy = m.id.is_none()
+                && copy_command.is_some_and(|command| match command {
+                    Command::AppendArrangementSectionCopy { start, .. } => m.start == *start,
+                    Command::DuplicateArrangementSectionAt { .. }
+                    | Command::ReplaceArrangementSection { copy: true, .. } => true,
+                    _ => false,
+                });
+            let canonical_selected = m.id.is_some_and(|id| {
+                self.sections.selection.contains(&id) || self.sections.selected == Some(id)
+            });
+            let selected = (copy_preview && new_copy) || (!copy_preview && canonical_selected);
+            let focused = self.arrangement_focus.projection.enabled && canonical_selected;
+            let owned_hover = crate::section_surface::Hover {
+                held: display.held,
+                pointer: display.pointer_hover,
+            }
+            .contains(m.id, m.start, m.end);
+            let marker_only = (display.marker_only && owned_hover)
+                || m.id.is_some_and(|id| hover_marker == Some(id));
             let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
@@ -1761,9 +2271,10 @@ impl EditorView {
             });
             let stroke = 1.0 / scale.max(1.0);
             let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
-            let mut element = hex_widgets::rectangle_surface(
+            let mut element = crate::section_surface::surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
-                (end - start) as f32 / viewport.length as f32, pixel_width,
+                (end - start) as f32 / viewport.length as f32,
+                pixel_width, chamfer, m.color, selected, owned_hover,
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
@@ -1771,36 +2282,32 @@ impl EditorView {
                 .bottom_0()
                 .left_0()
                 .w_full()
-                .border_l(px(if has_border { stroke } else { 0.0 }))
-                .border_r(px(0.0))
-                .cursor(gpui::CursorStyle::Arrow)
-                .border_color(rgb(border))
-                .bg(section_fill(colors.0))
-                .text_color(rgb(colors.1))
-                .hover(move |style| style.bg(section_fill(hover.0)).text_color(rgb(hover.1)).border_color(rgb(hover.2)))
-                .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select · g: merge · cmd-d: duplicate · e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · option-command: markers only · command: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
                             .into(),
                     })
                     .into()
                 });
-            let mut header = hex_widgets::rectangle_body(-1.0, super::clip_name::CLIP_NAME_HEIGHT)
-                // Resolve against this layout, including a single H/resize frame.
-                // Previous lane measurements still own pointer geometry, not paint height.
-                .h(relative(super::time_selection::SELECTION_HANDLE_FRACTION))
-                .min_h(px(super::clip_name::CLIP_NAME_HEIGHT))
-                .max_h(relative(1.0))
-                .id(("arrangement-section-header", index))
-                .debug_selector(move || format!("arrangement-section-header-{index}"))
-                .bg(rgb(colors.0))
-                .text_color(rgb(colors.1))
-                .text_xs()
-                .line_height(px(14.0))
-                .px_1()
-                .overflow_hidden()
-                .hover(move |style| style.bg(rgb(hover.0)).text_color(rgb(hover.1)));
+            if marker_only {
+                element = element.child(
+                    crate::section_surface::marker_only_overlay(m.color, chamfer, selected)
+                        .debug_selector(move || {
+                            format!("arrangement-section-markers-only-{index}")
+                        }),
+                );
+            }
+            let mut header = crate::section_surface::header(
+                m.color,
+                selected,
+                owned_hover,
+                super::clip_name::CLIP_NAME_HEIGHT,
+            )
+            .when(marker_only, |header| {
+                header.text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            })
+            .id(("arrangement-section-header", index))
+            .debug_selector(move || format!("arrangement-section-header-{index}"));
             if let Some(id) = m.id {
                 element = element.on_mouse_down(
                     gpui::MouseButton::Right,
@@ -1813,13 +2320,29 @@ impl EditorView {
             let name_edit =
                 m.id.and_then(|id| self.sections.name.as_ref().filter(|name| name.id == id));
             if name_edit.is_none() {
-                header = header.child(theme::text(if selected {
-                    format!("✓ {}", m.name)
+                if let Some(id) = m.id.filter(|_| {
+                    super::section_launch::action_bounds(0.0, 0.0, pixel_width).is_some()
+                }) {
+                    header = header
+                        .pl(px(16.0))
+                        .child(self.section_launch_action(id, cx));
+                }
+                header = header.child(theme::text(if marker_only {
+                    format!("◇ {}", m.name)
                 } else {
                     m.name.clone()
                 }));
             }
-            element = element.child(header);
+            if focused {
+                element =
+                    element.children([crate::section_surface::focus::overlay(m.color, chamfer)
+                        .debug_selector(move || {
+                            format!("arrangement-section-focus-hatch-{index}")
+                        })]);
+            }
+            element = element
+                .child(super::arrangement_map::section(self, start, end, chamfer))
+                .child(header);
             if let Some(name) = name_edit {
                 // Name editing keeps its existing full-size native field; held
                 // pointer/range captures are disabled for its entire lifetime.
@@ -1836,7 +2359,7 @@ impl EditorView {
                     element.children([hex_widgets::rectangle_edge(part, INNER_EDGE_WIDTH, 0.0)]);
             }
             elements.push(
-                super::tracks::clip_boundary_shell(
+                super::clip_boundary::clip_boundary_shell(
                     element,
                     (start - viewport.start) as f32 / viewport.length as f32,
                     (end - start) as f32 / viewport.length as f32,
@@ -1844,8 +2367,8 @@ impl EditorView {
                     border,
                     hover.2,
                     true,
-                    has_border,
-                    0.0,
+                    has_border && (selected || owned_hover),
+                    chamfer,
                     move || format!("arrangement-section-trailing-{index}"),
                 )
                 .into_any_element(),
@@ -1858,7 +2381,7 @@ impl EditorView {
                         })
                         .absolute()
                         .top_0()
-                        .bottom_0()
+                        .bottom(px(chamfer))
                         .left(relative(
                             (end - viewport.start) as f32 / viewport.length as f32,
                         ))
@@ -1915,55 +2438,89 @@ impl EditorView {
                     .into_any_element(),
             );
         }
+        if let Some(drop) = &display.drop_feedback {
+            let fraction = |beat| {
+                drop.tempo.beat_to_frame(beat).ok().map(|frame| {
+                    (frame as f64 - viewport.start as f64) as f32 / viewport.length as f32
+                })
+            };
+            match drop.feedback {
+                section_reorder::DropFeedback::Insert(at) => {
+                    if let Some(left) = fraction(at) {
+                        elements.push(
+                            crate::section_surface::insertion_indicator(left)
+                                .debug_selector(|| "section-drop-insertion".into())
+                                .into_any_element(),
+                        );
+                    }
+                }
+                section_reorder::DropFeedback::Replace { start, end, .. } => {
+                    if let (Some(left), Some(right)) = (fraction(start), fraction(end)) {
+                        elements.push(
+                            crate::section_surface::replacement_indicator(left, right - left)
+                                .debug_selector(|| "section-drop-replace".into())
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
+        }
         elements
     }
 }
-/// Body tint leaves the existing Main grid and range overlay visible. The
-/// header paints its own opaque fill; label and border never inherit opacity.
-fn section_fill(color: u32) -> gpui::Rgba {
-    rgba((color << 8) | 0x38)
-}
-fn insertion_target(
-    project: &hex_project::Project,
-    source: SectionId,
-    beat: BeatTime,
-    copy: bool,
-) -> Option<(SectionId, bool)> {
-    if !copy
-        && project
-            .arrangement_section(source)
-            .is_some_and(|s| s.start() <= beat && beat < s.end())
-    {
-        return None;
+fn copied_section_source(command: &Command) -> Option<SectionId> {
+    match command {
+        Command::DuplicateArrangementSectionAt { section, .. }
+        | Command::AppendArrangementSectionCopy { section, .. } => Some(*section),
+        Command::ReplaceArrangementSection {
+            source, copy: true, ..
+        } => Some(*source),
+        _ => None,
     }
-    project
-        .arrangement_sections()
-        .iter()
-        .filter(|s| copy || s.id() != source)
-        .flat_map(|s| [(s.id(), false, s.start()), (s.id(), true, s.end())])
-        .min_by_key(|(_, _, at)| at.raw().abs_diff(beat.raw()))
-        .map(|(id, after, _)| (id, after))
 }
-fn new_marker_appearance(project: &hex_project::Project) -> (String, ElementColor) {
-    use std::hash::BuildHasher;
-    // Pick once at capture; preview/release and saved history retain that choice.
-    let ticket = std::collections::hash_map::RandomState::new()
-        .hash_one(project.arrangement_sections().len());
-    let color =
-        ElementColor::TRACK_CHOICES[(ticket % ElementColor::TRACK_CHOICES.len() as u64) as usize];
-    let number = (1..=hex_project::MAX_ARRANGEMENT_SECTIONS + 1)
-        .find(|n| {
-            let name = format!("section {n}");
-            !project
-                .arrangement_sections()
-                .iter()
-                .any(|s| s.name() == name)
-        })
-        .unwrap_or(hex_project::MAX_ARRANGEMENT_SECTIONS + 1);
-    (format!("section {number}"), color)
-}
+
 fn same_command(a: &Command, b: &Command) -> bool {
     match (a, b) {
+        (
+            Command::ReplaceArrangementSection {
+                source: a,
+                target: at,
+                copy: ac,
+            },
+            Command::ReplaceArrangementSection {
+                source: b,
+                target: bt,
+                copy: bc,
+            },
+        ) => (a, at, ac) == (b, bt, bc),
+        (
+            Command::AppendArrangementSectionCopy {
+                section: a,
+                start: at,
+                gap_name: an,
+                gap_color: ac,
+            },
+            Command::AppendArrangementSectionCopy {
+                section: b,
+                start: bt,
+                gap_name: bn,
+                gap_color: bc,
+            },
+        )
+        | (
+            Command::MoveArrangementSectionBeyondEnd {
+                section: a,
+                start: at,
+                gap_name: an,
+                gap_color: ac,
+            },
+            Command::MoveArrangementSectionBeyondEnd {
+                section: b,
+                start: bt,
+                gap_name: bn,
+                gap_color: bc,
+            },
+        ) => (a, at, an, ac) == (b, bt, bn, bc),
         (
             Command::DuplicateArrangementSectionAt {
                 section: a,
@@ -2116,8 +2673,11 @@ fn same_command(a: &Command, b: &Command) -> bool {
     }
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
+pub(super) mod tests;
+
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use gpui::{
         Modifiers, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext, point, px,
@@ -2126,8 +2686,29 @@ mod tests {
     use hex_session::service::Service;
     use std::time::{Duration, Instant};
 
+    fn painted_fill(visual: &mut VisualTestContext, index: usize) -> Option<gpui::Background> {
+        let selector = Box::leak(format!("arrangement-section-{index}").into_boxed_str());
+        painted_fill_for(visual, selector)
+    }
+    fn painted_fill_for(
+        visual: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> Option<gpui::Background> {
+        let body = visual.debug_bounds(selector)?;
+        let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+        visual
+            .rendered_filled_quads(selector)
+            .into_iter()
+            .filter(|(b, _)| {
+                (b.top() / scale - f32::from(body.top())).abs() < 0.1
+                    && (b.size.width / scale - f32::from(body.size.width)).abs() < 0.1
+                    && b.size.height / scale > 2.0
+            })
+            .map(|(_, color)| color)
+            .next_back()
+    }
     #[track_caller]
-    fn next(service: &Service) -> Event {
+    pub(in crate::editor) fn next(service: &Service) -> Event {
         let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
@@ -2137,7 +2718,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-    fn fixture(
+    pub(in crate::editor) fn fixture(
         cx: &mut TestAppContext,
     ) -> (gpui::AnyWindowHandle, Entity<EditorView>, [SectionId; 2]) {
         cx.update(super::super::bind_editor_keys);
@@ -2200,7 +2781,123 @@ mod tests {
             .unwrap();
         (handle, editor, [ids[0], ids[1]])
     }
-    fn position(view: &EditorView, quarters: u64) -> gpui::Point<gpui::Pixels> {
+
+    #[gpui::test]
+    fn g_on_a_main_gap_leaves_underlying_clips_untouched(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::pump;
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("main-track-lane").unwrap();
+        let (start, end, before) = editor.read_with(&visual, |view, _| {
+            (
+                position(view, 5).x,
+                position(view, 7).x,
+                view.state.as_ref().unwrap().project.clone(),
+            )
+        });
+        let start = point(start, lane.center().y);
+        let end = point(end, start.y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("g");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(
+                project.tracks()[0].midi_clips(),
+                before.tracks()[0].midi_clips()
+            );
+            let [intro, section, chorus] = project.arrangement_sections() else {
+                panic!("three sections");
+            };
+            assert_eq!(
+                (intro, chorus),
+                (
+                    &before.arrangement_sections()[0],
+                    &before.arrangement_sections()[1]
+                )
+            );
+            assert_eq!(
+                (section.start(), section.end()),
+                (
+                    BeatTime::from_quarters(5).unwrap(),
+                    BeatTime::from_quarters(7).unwrap()
+                )
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn dragging_main_gap_then_g_creates_a_section_even_without_tracks(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::pump;
+        cx.update(super::super::bind_editor_keys);
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        let state = next(&service).state;
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline section ui test".into()))
+                });
+                editor.update(cx, |view, cx| {
+                    view.state = Some(state);
+                    view.focus.focus(window);
+                    view.snap_grid = SnapGrid::Quarter;
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("main-track-lane").unwrap();
+        let start = point(lane.origin.x + lane.size.width * 0.1, lane.center().y);
+        let end = point(lane.origin.x + lane.size.width * 0.4, start.y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        let (start, end) = editor.read_with(&visual, |view, _| {
+            assert!(view.time_selection_project_scope);
+            assert!(view.normalized_time_selection().is_none());
+            let selection = view.time_selection.unwrap();
+            assert!(selection.anchor_frame < selection.end_frame);
+            let map = view.state.as_ref().unwrap().project.tempo_map();
+            (
+                map.frame_to_beat(selection.anchor_frame).unwrap(),
+                map.frame_to_beat(selection.end_frame).unwrap(),
+            )
+        });
+        visual.simulate_keystrokes("g");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(project.tracks().is_empty());
+            let [section] = project.arrangement_sections() else {
+                panic!("created section");
+            };
+            assert_eq!((section.start(), section.end()), (start, end));
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .is_empty()
+            );
+        });
+    }
+    pub(in crate::editor) fn position(
+        view: &EditorView,
+        quarters: u64,
+    ) -> gpui::Point<gpui::Pixels> {
         let [left, top, width, _] = view.section_layout().unwrap();
         let state = view.state.as_ref().unwrap();
         let viewport = view.visible_viewport(state.timeline_frames);
@@ -2224,6 +2921,88 @@ mod tests {
             ))
             .expect("painted section")
     }
+    #[gpui::test]
+    fn marker_only_paint_tracks_hover_latched_drag_and_exact_ack(cx: &mut TestAppContext) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (from, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 6)));
+        let marker = Modifiers {
+            platform: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        visual.update(|window, cx| {
+            window.dispatch_input(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: from,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        visual.simulate_modifiers_change(marker);
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_some()
+        );
+        let hover_fill = painted_fill_for(&mut visual, "arrangement-section-markers-only-0");
+        visual.simulate_modifiers_change(Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_none()
+        );
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_none()
+        );
+        visual.simulate_modifiers_change(marker);
+        visual.simulate_modifiers_change(Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_some(),
+            "released modifiers retain the actual latched marker-only mode"
+        );
+        assert_ne!(
+            painted_fill_for(&mut visual, "arrangement-section-markers-only-0"),
+            hover_fill,
+            "selection remains visible within marker-only feedback",
+        );
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(cx, |view, _| next(&view.service));
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-section-markers-only-0")
+                    .is_some()
+            );
+            assert!(painted_fill_for(&mut visual, "arrangement-section-markers-only-0").is_some());
+        }
+        editor.update(cx, |view, cx| {
+            view.receive(terminal);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_none()
+        );
+    }
+
     #[gpui::test]
     fn option_drag_copies_sections_with_live_modifiers_and_acknowledged_selection(
         cx: &mut TestAppContext,
@@ -2257,7 +3036,7 @@ mod tests {
             let before =
                 editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
             let (from, to) =
-                editor.read_with(cx, |view, _| (position(view, 2), position(view, 13)));
+                editor.read_with(cx, |view, _| (position(view, 2), position(view, 12)));
             let copy = Modifiers {
                 alt: true,
                 ..Modifiers::default()
@@ -2292,7 +3071,7 @@ mod tests {
                     if section == ids[0] && target == ids[1]));
                 assert_eq!(view.state.as_ref().unwrap().project, before);
             });
-            // Option is live copy intent, unlike latched marker-only Command.
+            // Option is live copy intent, unlike latched marker-only Option-Command.
             visual.simulate_modifiers_change(Modifiers::default());
             visual.run_until_parked();
             assert_eq!(
@@ -2312,20 +3091,23 @@ mod tests {
                 bounds(&mut visual, 1),
                 bounds(&mut visual, 2),
             ];
-            let selected_fill = visual.rendered_background("arrangement-section-2");
+            let selected_fill = painted_fill(&mut visual, 2);
+            let preview = before
+                .preview_arrangement_section_edit(&Command::DuplicateArrangementSectionAt {
+                    section: ids[0],
+                    target: ids[1],
+                    after: true,
+                })
+                .unwrap();
+            let copy_color = preview
+                .sections()
+                .iter()
+                .find(|section| section.id().value() == 0)
+                .unwrap()
+                .color();
             assert_eq!(
                 selected_fill,
-                Some(
-                    section_fill(
-                        theme::section_colors(
-                            before.arrangement_section(ids[0]).unwrap().color(),
-                            true,
-                            true,
-                        )
-                        .0
-                    )
-                    .into()
-                ),
+                Some(rgb(theme::section_colors(copy_color, true, true).0).into()),
                 "the captured copy retains its gesture-owned target feedback"
             );
             visual.simulate_mouse_up(to, MouseButton::Left, copy);
@@ -2354,10 +3136,7 @@ mod tests {
                     ],
                     frozen
                 );
-                assert_eq!(
-                    visual.rendered_background("arrangement-section-2"),
-                    selected_fill
-                );
+                assert_eq!(painted_fill(&mut visual, 2), selected_fill);
             }
             editor.update(cx, |view, cx| {
                 if select_elsewhere {
@@ -2394,9 +3173,11 @@ mod tests {
                 frozen
             );
             if !select_elsewhere {
+                // At the exact insertion edge, the pointer is outside the new
+                // copy's hover fill after ACK; pending target paint above stays frozen.
                 assert_eq!(
-                    visual.rendered_background("arrangement-section-2"),
-                    selected_fill
+                    painted_fill(&mut visual, 2),
+                    Some(rgb(theme::section_colors(copy_color, true, false).0).into())
                 );
             }
         }
@@ -2459,7 +3240,7 @@ mod tests {
         }
     }
     #[gpui::test]
-    fn command_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
+    fn option_command_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor, ids) = fixture(cx);
@@ -2471,10 +3252,11 @@ mod tests {
         let (from, to) = editor.read_with(cx, |view, _| (position(view, 2), position(view, 9)));
         let marker_modifier = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         // Start a structural copy, then switch to marker adjustment without
-        // moving the pointer. Command must replace the insertion-edge preview.
+        // moving the pointer. Option-Command replaces the insertion-edge preview.
         let copy = Modifiers {
             alt: true,
             ..Modifiers::default()
@@ -2557,7 +3339,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn command_resize_live_modifier_carves_both_edges_and_commits_outside_lane(
+    fn option_command_resize_live_modifier_carves_both_edges_and_commits_outside_lane(
         cx: &mut TestAppContext,
     ) {
         for (left, late) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -2579,6 +3361,7 @@ mod tests {
             });
             let marker_modifier = Modifiers {
                 platform: true,
+                alt: true,
                 ..Modifiers::default()
             };
             visual.simulate_mouse_down(
@@ -2662,7 +3445,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn command_move_latches_marker_mode_and_preserves_control_snap_inversion(
+    fn option_command_move_latches_marker_mode_and_preserves_control_snap_inversion(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor, ids) = fixture(cx);
@@ -2682,10 +3465,11 @@ mod tests {
                 MouseButton::Left,
                 Modifiers {
                     platform: true,
+                    alt: true,
                     ..Modifiers::default()
                 },
             );
-            // Releasing Command during capture must not turn this into a music edit.
+            // Releasing Option-Command must not turn this into a music edit.
             visual.simulate_mouse_move(
                 to,
                 MouseButton::Left,
@@ -2715,6 +3499,98 @@ mod tests {
                 assert!(view.sections.pending.is_none());
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
             });
+        }
+    }
+
+    #[gpui::test]
+    fn paint_empty_section_lane_at_every_height(cx: &mut TestAppContext) {
+        for (fraction, reverse) in [(0.1, false), (0.5, true), (0.9, false)] {
+            let (handle, editor, _) = fixture(cx);
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
+            let (from, to) = editor.read_with(cx, |v, _| {
+                let [_, top, _, height] = v.section_layout().unwrap();
+                let mut from = position(v, if reverse { 7 } else { 5 });
+                let mut to = position(v, if reverse { 5 } else { 7 });
+                from.y = px(top + height * fraction);
+                to.y = from.y;
+                (from, to)
+            });
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_event(MouseDownEvent {
+                position: from,
+                button: MouseButton::Left,
+                click_count: 2,
+                modifiers: Modifiers::default(),
+                first_mouse: false,
+            });
+            visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(cx, |v, _| {
+                assert!(
+                    matches!(v.sections.gesture.as_ref().and_then(|g| g.command.as_ref()),
+                    Some(Command::AddArrangementSection { start, end, .. })
+                    if *start == BeatTime::from_quarters(5).unwrap()
+                        && *end == BeatTime::from_quarters(7).unwrap()),
+                    "height {fraction}"
+                );
+                assert!(v.time_selection_gesture.is_none());
+            });
+            let preview = bounds(&mut visual, 2);
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            let terminal = editor.update(cx, |v, _| next(&v.service));
+            assert!(terminal.error.is_none(), "{:?}", terminal.error);
+            for _ in 0..2 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert_eq!(bounds(&mut visual, 2), preview);
+            }
+            editor.update(cx, |v, cx| {
+                v.receive(terminal);
+                assert_eq!(
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .arrangement_sections()
+                        .len(),
+                    3
+                );
+                v.service.submit(Request::Undo).unwrap();
+                let terminal = next(&v.service);
+                assert!(terminal.error.is_none());
+                v.receive(terminal);
+                let restored = v.state.as_ref().unwrap().project.snapshot();
+                let mut expected = before.clone();
+                assert!(restored.next_id >= expected.next_id);
+                expected.next_id = restored.next_id;
+                assert_eq!(restored, expected, "one undo restores all content");
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let first = bounds(&mut visual, 0);
+            let occupied = point(first.center().x, first.top() + first.size.height * fraction);
+            visual.simulate_event(MouseDownEvent {
+                position: occupied,
+                button: MouseButton::Left,
+                click_count: 2,
+                modifiers: Modifiers::default(),
+                first_mouse: false,
+            });
+            editor.read_with(cx, |v, _| {
+                if fraction < 0.3 {
+                    assert!(matches!(
+                        v.sections.gesture.as_ref().map(|g| g.mode),
+                        Some(Mode::Reorder(_))
+                    ));
+                } else {
+                    assert!(v.sections.gesture.is_none());
+                    assert!(v.time_selection_gesture.is_some());
+                }
+            });
+            visual.simulate_keystrokes("escape");
         }
     }
 
@@ -2758,6 +3634,7 @@ mod tests {
             MouseButton::Left,
             Modifiers {
                 platform: true,
+                alt: true,
                 ..Modifiers::default()
             },
         );
@@ -2767,6 +3644,7 @@ mod tests {
             MouseButton::Left,
             Modifiers {
                 platform: true,
+                alt: true,
                 ..Modifiers::default()
             },
         );
@@ -2793,6 +3671,7 @@ mod tests {
         let (anchor, destination) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
         let alt = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(anchor, MouseButton::Left, alt);
@@ -2809,55 +3688,12 @@ mod tests {
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         visual.simulate_keystrokes("escape");
     }
-    #[test]
-    fn section_insertion_uses_edges_and_does_not_move_a_clicked_source() {
-        let mut e = hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
-        let mut ids = Vec::new();
-        for (start, end) in [(0, 4), (8, 12)] {
-            let Created::ArrangementSection(id) = e
-                .execute(Command::AddArrangementSection {
-                    name: format!("section {}", ids.len() + 1),
-                    color: ElementColor::Cyan,
-                    start: BeatTime::from_quarters(start).unwrap(),
-                    end: BeatTime::from_quarters(end).unwrap(),
-                })
-                .unwrap()
-            else {
-                panic!("section")
-            };
-            ids.push(id);
-        }
-        let p = e.project();
-        assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(2).unwrap(), false),
-            None
-        );
-        assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(9).unwrap(), false),
-            Some((ids[1], false))
-        );
-        assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(13).unwrap(), false),
-            Some((ids[1], true))
-        );
-        assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(1).unwrap(), true),
-            Some((ids[0], false))
-        );
-        assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(3).unwrap(), true),
-            Some((ids[0], true))
-        );
-        let (name, color) = new_marker_appearance(p);
-        assert_eq!(name, "section 3");
-        assert!(ElementColor::TRACK_CHOICES.contains(&color));
-    }
     #[gpui::test]
     fn first_section_can_be_inserted_after_last(cx: &mut TestAppContext) {
         let (handle, editor, _) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 12)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -2971,6 +3807,66 @@ mod tests {
     }
 
     #[gpui::test]
+    fn lost_section_button_records_cancel_and_allows_loop_before_late_release(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-section-loop-diagnostic-test-{}",
+            std::process::id()
+        ));
+        let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
+        cx.update(|cx| {
+            crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+            crate::diagnostics::install_action_diagnostics(cx, true);
+        });
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let from = editor.read_with(cx, |v, _| position(v, 2));
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.held());
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "a real held gesture still blocks loop creation"
+            );
+        });
+        visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            assert!(
+                !v.sections.held(),
+                "button loss cancels before any late release"
+            )
+        });
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
+        editor.read_with(cx, |v, _| {
+            assert!(matches!(
+                v.last_enqueued_edit,
+                Some(Command::SetLoopRegion { .. })
+            ))
+        });
+        editor.update(cx, |view, cx| {
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let point = editor.read_with(cx, |view, _| position(view, 10));
+        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(contents.contains("section_held"));
+        assert!(contents.contains("stage=section_capture outcome=cancel"));
+        assert!(contents.contains("stage=section_capture outcome=release"));
+    }
+
+    #[gpui::test]
     fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
         cx: &mut TestAppContext,
     ) {
@@ -2998,7 +3894,7 @@ mod tests {
             v.last_enqueued_edit = None;
             v.computer_keyboard.enabled = true;
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.update(cx, |v, _| {
             assert!(
                 v.last_enqueued_edit.is_none(),
@@ -3015,7 +3911,7 @@ mod tests {
         visual.run_until_parked();
         let chorus = editor.read_with(cx, |v, _| position(v, 10));
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3046,13 +3942,13 @@ mod tests {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             // A retained range from another context must not win over Main sections.
             v.time_selection = Some(super::super::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 1,
                 end_frame: 2,
             });
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -3075,7 +3971,7 @@ mod tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
-        let base = visual.rendered_background("arrangement-section-0");
+        let base = painted_fill(&mut visual, 0);
         visual.simulate_event(gpui::MouseMoveEvent {
             position: a,
             pressed_button: None,
@@ -3084,13 +3980,13 @@ mod tests {
         visual.run_until_parked();
         assert_ne!(
             base,
-            visual.rendered_background("arrangement-section-0"),
+            painted_fill(&mut visual, 0),
             "hover changes section surface"
         );
         visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        let selected = visual.rendered_background("arrangement-section-0");
+        let selected = painted_fill(&mut visual, 0);
         assert_ne!(base, selected, "selection changes entire section surface");
         let shift = Modifiers {
             shift: true,
@@ -3247,6 +4143,151 @@ mod tests {
         });
     }
     #[gpui::test]
+    fn launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections(
+        cx: &mut TestAppContext,
+    ) {
+        for empty in [false, true] {
+            let (handle, editor, ids) = fixture(cx);
+            if empty {
+                editor.update(cx, |view, cx| {
+                    let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+                    view.service
+                        .submit(Request::Edit(Command::RemoveTrack(track)))
+                        .unwrap();
+                    let event = next(&view.service);
+                    assert!(event.error.is_none());
+                    view.receive(event);
+                    cx.notify();
+                });
+            }
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            for width in [880.0, 1440.0] {
+                visual.simulate_resize(gpui::size(px(width), px(700.0)));
+                for start in [0, 72_000] {
+                    editor.update(cx, |view, cx| {
+                        view.viewport = Some(Viewport {
+                            start,
+                            length: 384_000,
+                        });
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    for (index, id) in ids.iter().enumerate() {
+                        let header = visual
+                            .debug_bounds(Box::leak(
+                                format!("arrangement-section-header-{index}").into_boxed_str(),
+                            ))
+                            .unwrap();
+                        let selector =
+                            Box::leak(format!("section-launch-{}", id.value()).into_boxed_str());
+                        let expected = super::super::section_launch::action_bounds(
+                            f32::from(header.left()),
+                            f32::from(header.top()),
+                            f32::from(header.size.width),
+                        );
+                        assert_eq!(visual.debug_bounds(selector), expected);
+                        if let Some(bounds) = expected {
+                            let at = bounds.center();
+                            editor.read_with(cx, |view, _| {
+                                assert!(
+                                    view.pointer_hits_section_launch(
+                                        f32::from(at.x),
+                                        f32::from(at.y)
+                                    )
+                                );
+                                assert!(
+                                    !view.pointer_hits_section_launch(
+                                        f32::from(header.left()) + 1.0,
+                                        f32::from(at.y)
+                                    ),
+                                    "leading resize edge remains available"
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+            let play = visual
+                .debug_bounds(Box::leak(
+                    format!("section-launch-{}", ids[1].value()).into_boxed_str(),
+                ))
+                .unwrap()
+                .center();
+            let before = editor.read_with(cx, |view, _| {
+                view.state.as_ref().unwrap().project.snapshot()
+            });
+            for range_key in [false, true] {
+                editor.update(cx, |view, _| {
+                    view.error = None;
+                    view.time_selection_key_held = range_key;
+                });
+                visual.simulate_mouse_down(play, MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_up(play, MouseButton::Left, Modifiers::default());
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(
+                        view.error.as_deref(),
+                        Some("section playback source is unavailable")
+                    );
+                    assert!(!view.sections.held());
+                    assert!(view.time_selection_gesture.is_none());
+                    assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+                });
+            }
+            editor.update(cx, |view, _| view.time_selection_key_held = false);
+            let tiny = editor.update(cx, |view, cx| {
+                let start = BeatTime::from_quarters(6).unwrap();
+                view.service
+                    .submit(Request::EditArrangementSection {
+                        project_generation: view.project_generation,
+                        revision: view.state.as_ref().unwrap().revision,
+                        command: Command::AddArrangementSection {
+                            name: "tiny".into(),
+                            color: ElementColor::Red,
+                            start,
+                            end: BeatTime::from_raw(start.raw() + 1),
+                        },
+                    })
+                    .unwrap();
+                let event = next(&view.service);
+                assert!(event.error.is_none());
+                let Some(Created::ArrangementSection(id)) = event.created else {
+                    panic!("tiny section");
+                };
+                view.receive(event);
+                cx.notify();
+                id
+            });
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("section-launch-{}", tiny.value()).into_boxed_str()
+                    ))
+                    .is_none()
+            );
+            editor.update(cx, |view, cx| {
+                view.service
+                    .submit(Request::EditArrangementSection {
+                        project_generation: view.project_generation,
+                        revision: view.state.as_ref().unwrap().revision,
+                        command: Command::RemoveArrangementSection(ids[1]),
+                    })
+                    .unwrap();
+                let event = next(&view.service);
+                assert!(event.error.is_none());
+                view.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                let view = editor.read(cx);
+                assert!(!view.sections.launch_focus.borrow().contains_key(&ids[1]));
+                assert!(view.focus.is_focused(window));
+            });
+        }
+    }
+
+    #[gpui::test]
     fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         cx: &mut TestAppContext,
     ) {
@@ -3266,6 +4307,20 @@ mod tests {
                 Err(error) => panic!("{error}"),
             }
         };
+        let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
+        editor.update(cx, |view, _| {
+            view.service
+                .submit(Request::Edit(Command::SetLoopRegion {
+                    start: region.start(),
+                    end: region.end(),
+                    enabled: true,
+                }))
+                .unwrap();
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            view.pending_playback = None;
+        });
         let source = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         let prepared = Arc::new(
             hex_engine::PreparedRevision::prepare(
@@ -3321,15 +4376,13 @@ mod tests {
         visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
         editor.update(cx, |view, _| {
+            view.tick_section_launch();
             let pending = view
                 .prepared_seek
                 .as_ref()
                 .expect("stationary section click prepares a seek even without stateful devices");
-            let section = pending.section.unwrap();
-            assert_eq!(
-                section.region,
-                hex_project::LoopRegion::new(0, 96_000, true).unwrap()
-            );
+            let section = pending.kind.section().unwrap();
+            assert_eq!(section.region, region);
             assert_eq!(
                 section.quantization,
                 hex_engine::LaunchQuantization::QuarterTriplet
@@ -3338,7 +4391,7 @@ mod tests {
             assert_eq!(
                 view.state.as_ref().unwrap().project,
                 source,
-                "launch has no canonical edit or history"
+                "an already-matching loop needs no new history edit"
             );
             let cancellation = Arc::clone(&pending.worker_cancel);
             view.toggle_section_autoplay();
@@ -3357,7 +4410,7 @@ mod tests {
                 .unwrap();
         });
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let end = editor.read_with(cx, |view, _| position(view, 11));
+        let end = editor.read_with(cx, |view, _| position(view, 12));
         visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -3383,6 +4436,52 @@ mod tests {
         });
         editor.update(cx, |view, _| {
             view.cancel_section_pointer();
+        });
+        visual.update(|window, cx| {
+            window.cancel_pointer_capture_for(editor.entity_id(), cx);
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(format!("section-launch-{}", ids[0].value()).into_boxed_str());
+        let target = visual
+            .debug_bounds(selector)
+            .expect("explicit section launch")
+            .center();
+        let selected = editor.read_with(cx, |view, _| view.sections.selected);
+        visual.update(|window, cx| {
+            editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window)
+        });
+        visual.simulate_keystrokes("enter");
+        editor.read_with(cx, |view, _| {
+            let pending = view
+                .pending_loop_region()
+                .expect("enter disables the old loop");
+            assert_eq!(
+                pending,
+                hex_project::LoopRegion::new(0, 96_000, false).unwrap()
+            );
+            assert!(!view.section_autoplay);
+            assert!(!view.sections.held());
+            assert_eq!(view.sections.selected, selected);
+            assert_eq!(view.state.as_ref().unwrap().project, source);
+        });
+        editor.update(cx, |view, _| {
+            view.cancel_section_launch_wait();
+            view.invalidate_prepared_seek();
+            view.save_dialog_open = true;
+        });
+        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(!view.section_launch_waiting());
+            assert!(view.latched_seek_intent.is_none());
+            assert!(
+                view.prepared_seek
+                    .as_ref()
+                    .is_none_or(|pending| pending.cancelled)
+            );
+        });
+        editor.update(cx, |view, _| {
+            view.save_dialog_open = false;
             view.audio = None;
         });
     }
@@ -3436,7 +4535,7 @@ mod tests {
         });
     }
     #[gpui::test]
-    fn command_move_changes_canonical_marker_without_moving_music(cx: &mut TestAppContext) {
+    fn option_command_move_changes_canonical_marker_without_moving_music(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -3446,6 +4545,7 @@ mod tests {
         let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
         let modifiers = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
@@ -3474,7 +4574,7 @@ mod tests {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -3497,6 +4597,7 @@ mod tests {
                 revision: g.revision,
                 command,
                 display: g.display,
+                layout: None,
                 receipt,
             });
             v.worker_requests_pending = 2;
@@ -3546,6 +4647,87 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         editor.read_with(cx, |v, _| assert!(v.sections.pending.is_none()));
+    }
+    fn midi_clip_bounds(
+        visual: &mut VisualTestContext,
+        project: &hex_project::Project,
+    ) -> Vec<(u64, gpui::Bounds<gpui::Pixels>)> {
+        project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .map(|clip| {
+                let id = clip.id().value();
+                let selector = Box::leak(format!("midi-clip-visual-{id}").into_boxed_str());
+                (id, visual.debug_bounds(selector).expect("painted clip"))
+            })
+            .collect()
+    }
+    #[gpui::test]
+    fn pending_reorder_draws_final_clips_until_exact_terminal_and_refusal_restores(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let canonical = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+        let original = midi_clip_bounds(&mut visual, &canonical);
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(cx, |v, _| {
+            assert!(v.sections.pending.as_ref().unwrap().layout.is_some());
+            next(&v.service)
+        });
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let committed = std::sync::Arc::clone(&terminal.state.project);
+        assert_ne!(*committed, *canonical, "reorder moves clip content");
+        // Delayed ACK: every completed repaint already shows the final clips.
+        let mut released = Vec::new();
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            released = midi_clip_bounds(&mut visual, &committed);
+            assert_ne!(released, original);
+        }
+        editor.update(cx, |v, cx| {
+            v.receive(terminal);
+            assert!(v.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
+
+        // A stale stamp previews the move, then its refusal restores canonical clips.
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let renamed = editor.update(cx, |v, _| {
+            v.service
+                .submit(Request::Edit(Command::RenameTrack {
+                    track: committed.tracks()[0].id(),
+                    name: "renamed".into(),
+                }))
+                .unwrap();
+            next(&v.service)
+        });
+        assert!(renamed.error.is_none(), "{:?}", renamed.error);
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let refused = editor.update(cx, |v, _| next(&v.service));
+        assert!(refused.error.is_some(), "stale section stamp");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_ne!(midi_clip_bounds(&mut visual, &committed), released);
+        editor.update(cx, |v, cx| {
+            // The refusal carries the newer canonical state (the rename).
+            v.receive(refused);
+            assert!(v.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
     }
     #[gpui::test]
     fn section_name_palette_delete_and_text_focus_are_guarded(cx: &mut TestAppContext) {
@@ -3643,7 +4825,7 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
-        let original_fill = visual.rendered_background("arrangement-section-0");
+        let original_fill = painted_fill(&mut visual, 0);
         visual.simulate_mouse_down(down, MouseButton::Right, Modifiers::default());
         visual.run_until_parked();
         let green = editor.read_with(cx, |v, _| {
@@ -3676,14 +4858,11 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
-        assert_ne!(
-            visual.rendered_background("arrangement-section-0"),
-            original_fill
-        );
+        assert_ne!(painted_fill(&mut visual, 0), original_fill);
         let tracks = editor.read_with(cx, |v, _| {
             v.state.as_ref().unwrap().project.tracks().to_vec()
         });
-        visual.simulate_keystrokes("cmd-backspace");
+        visual.simulate_keystrokes("alt-cmd-backspace");
         let terminal = editor.update(cx, |v, _| next(&v.service));
         assert!(terminal.error.is_none(), "{:?}", terminal.error);
         editor.update(cx, |v, cx| {
@@ -3770,7 +4949,7 @@ mod tests {
         // geometry through the canonical installation in the same receive.
         assert_eq!(bounds(&mut visual, 1), preview);
         let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-        let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
         visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -4016,7 +5195,46 @@ mod tests {
         }
     }
     #[gpui::test]
-    fn control_only_inverts_snap_and_command_independently_selects_marker_resize(
+    fn command_snap_changes_live_without_entering_marker_mode(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let edge = bounds(&mut visual, 0);
+        let down = point(edge.right() - px(1.0), edge.center().y);
+        let to = editor.read_with(cx, |v, _| {
+            let a = position(v, 6);
+            let b = position(v, 7);
+            point(a.x + (b.x - a.x) * 0.37, a.y)
+        });
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        for free in [false, true, false, true] {
+            visual.simulate_modifiers_change(Modifiers {
+                platform: free,
+                ..Modifiers::default()
+            });
+            editor.read_with(cx, |v, _| {
+                let Some(Command::ResizeArrangementSectionEdge {
+                    section, boundary, ..
+                }) = &v.sections.gesture.as_ref().unwrap().command
+                else {
+                    panic!("command must invert snapping without selecting marker editing");
+                };
+                assert_eq!(*section, ids[0]);
+                if free {
+                    assert!(*boundary > BeatTime::from_quarters(6).unwrap());
+                    assert!(*boundary < BeatTime::from_quarters(7).unwrap());
+                } else {
+                    assert_eq!(*boundary, BeatTime::from_quarters(6).unwrap());
+                }
+            });
+        }
+        visual.simulate_keystrokes("escape");
+        editor.read_with(cx, |v, _| assert!(v.sections.gesture.is_none()));
+    }
+
+    #[gpui::test]
+    fn control_alias_inverts_snap_and_option_command_selects_marker_resize(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor, ids) = fixture(cx);
@@ -4033,6 +5251,7 @@ mod tests {
                 });
                 let modifiers = Modifiers {
                     platform: marker_only,
+                    alt: marker_only,
                     control: free,
                     ..Modifiers::default()
                 };
@@ -4074,7 +5293,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shared_seam_drags_publish_both_edges_atomically_and_command_preserves_music(
+    fn shared_seam_drags_publish_both_edges_atomically_and_option_command_preserves_music(
         cx: &mut TestAppContext,
     ) {
         for marker_only in [false, true] {
@@ -4087,6 +5306,7 @@ mod tests {
             let to = editor.read_with(cx, |v, _| position(v, 5));
             let modifiers = Modifiers {
                 platform: marker_only,
+                alt: marker_only,
                 ..Modifiers::default()
             };
             visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
@@ -4171,7 +5391,9 @@ mod tests {
         }
     }
     #[gpui::test]
-    fn command_after_shared_seam_capture_can_resize_past_the_neighbor(cx: &mut TestAppContext) {
+    fn option_command_after_shared_seam_capture_can_resize_past_the_neighbor(
+        cx: &mut TestAppContext,
+    ) {
         let (handle, editor, ids) = touching_fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -4181,6 +5403,7 @@ mod tests {
         let to = editor.read_with(cx, |v, _| position(v, 10));
         let marker_modifier = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -4228,6 +5451,7 @@ mod tests {
                 let to = editor.read_with(cx, |v, _| position(v, target));
                 let modifiers = Modifiers {
                     platform: marker_only,
+                    alt: marker_only,
                     ..Modifiers::default()
                 };
                 visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
@@ -4395,7 +5619,7 @@ mod tests {
                     point(a.x + (b.x - a.x) * 0.37, a.y)
                 });
                 let modifiers = Modifiers {
-                    control: free,
+                    platform: free,
                     ..Modifiers::default()
                 };
                 visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
@@ -4415,7 +5639,7 @@ mod tests {
         );
         assert_ne!(
             beats[3], beats[2],
-            "Control with snap off enables adaptive snapping"
+            "Command with snap off enables adaptive snapping"
         );
         editor.update(cx, |v, cx| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
@@ -4544,7 +5768,7 @@ mod tests {
         }
     }
     #[gpui::test]
-    fn section_header_is_opaque_and_body_keeps_grid_visible_across_palettes_and_layouts(
+    fn section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts(
         cx: &mut TestAppContext,
     ) {
         struct RestoreTheme(hex_preferences::ThemePreferences);
@@ -4587,25 +5811,34 @@ mod tests {
                 .expect("actual section header");
             assert!((f32::from(header.top() - body.top())).abs() <= 1.0);
             assert!(
-                (f32::from(header.size.height) * 3.0 - f32::from(body.size.height)).abs() <= 2.0,
-                "header is the compact top third"
+                (f32::from(header.size.height) - super::super::clip_name::CLIP_NAME_HEIGHT).abs()
+                    <= 0.1,
+                "header remains a fixed compact height"
             );
             assert!(header.right() <= body.right() + px(1.0));
             let (fill, _, _) = theme::section_colors(ElementColor::Blue, false, false);
             assert_eq!(
-                visual.rendered_background("arrangement-section-header-0"),
+                painted_fill(&mut visual, 0),
                 Some(rgb(fill).into()),
-                "opaque header preserves title contrast"
+                "opaque tier fill"
             );
-            assert_eq!(
-                visual.rendered_background("arrangement-section-0"),
-                Some(rgba((fill << 8) | 0x38).into()),
-                "completed body paint leaves the underlying Main grid/range visible"
+            let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+            let fills: Vec<_> = visual
+                .rendered_filled_quads("arrangement-section-0")
+                .into_iter()
+                .filter(|(_, c)| *c == gpui::Background::from(rgb(fill)))
+                .collect();
+            assert!(
+                fills.iter().any(
+                    |(b, _)| (b.bottom() / scale - f32::from(body.bottom())).abs() < 0.1
+                        && b.right() / scale < f32::from(body.right()) - 1.0
+                ),
+                "cut leaves the bottom-right corner unfilled"
             );
             for (at, cursor) in [
                 (header.center(), gpui::CursorStyle::OpenHand),
                 (
-                    point(body.center().x, body.top() + body.size.height * 0.75),
+                    point(body.center().x, header.bottom() + px(1.0)),
                     gpui::CursorStyle::Arrow,
                 ),
                 (
@@ -4677,8 +5910,8 @@ mod tests {
             editor.update(cx, |view, cx| {
                 let first = view.state.as_ref().unwrap().project.tracks()[0].id();
                 view.time_selection = Some(super::super::time_selection::TimeSelection {
-                    anchor_track: first,
-                    end_track: first,
+                    anchor_track: Some(first),
+                    end_track: Some(first),
                     anchor_frame: 111,
                     end_frame: 222,
                 });
@@ -4710,7 +5943,7 @@ mod tests {
             editor.read_with(cx, |view, _| {
                 assert!(view.time_selection.is_none());
                 assert!(!view.time_selection_project_scope);
-                assert_eq!(view.sections.selection, vec![ids[1], ids[0]]);
+                assert_eq!(view.sections.selection, vec![ids[0], ids[1]]);
                 assert_eq!(view.sections.selected, Some(ids[0]));
                 assert!(view.selected_clip_ids().is_empty());
                 assert!(
@@ -4737,8 +5970,13 @@ mod tests {
                 );
                 assert_eq!(view.arrangement_focus.projection.enabled, focused);
             });
-            visual.simulate_mouse_down(at, MouseButton::Left, shift);
-            visual.simulate_mouse_up(at, MouseButton::Left, shift);
+            let toggle = Modifiers {
+                shift: true,
+                platform: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(at, MouseButton::Left, toggle);
+            visual.simulate_mouse_up(at, MouseButton::Left, toggle);
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 assert_eq!(view.sections.selection, vec![ids[1]]);
@@ -4746,5 +5984,565 @@ mod tests {
                 assert!(view.time_selection.is_none());
             });
         }
+    }
+    #[gpui::test]
+    fn shift_click_selects_every_section_between_anchor_and_click(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut all = vec![ids[0]];
+        editor.update(cx, |view, cx| {
+            for (start, end, name) in [(4, 8, "Verse"), (12, 16, "Bridge")] {
+                assert!(view.enqueue(Request::EditArrangementSection {
+                    project_generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    command: Command::AddArrangementSection {
+                        name: name.into(),
+                        color: ElementColor::Green,
+                        start: BeatTime::from_quarters(start).unwrap(),
+                        end: BeatTime::from_quarters(end).unwrap(),
+                    },
+                }));
+                let event = next(&view.service);
+                assert!(event.error.is_none(), "{:?}", event.error);
+                let Some(Created::ArrangementSection(id)) = event.created else {
+                    panic!("section result")
+                };
+                all.push(id);
+                view.receive(event);
+            }
+            view.section_autoplay = false;
+            cx.notify();
+        });
+        // Song order: intro, verse, chorus, bridge.
+        let all = [all[0], all[1], ids[1], all[2]];
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let mut click = |quarters, modifiers| {
+            let at = editor.read_with(&visual, |view, _| position(view, quarters));
+            visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
+            visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(view.time_selection.is_none());
+                (
+                    view.sections.selected_ids().to_vec(),
+                    view.sections.selected,
+                )
+            })
+        };
+        click(2, Modifiers::default());
+        assert_eq!(click(14, shift), (all.to_vec(), Some(all[3])));
+        // Same anchor: a shorter range replaces the previous one.
+        assert_eq!(click(10, shift), (all[..3].to_vec(), Some(all[2])));
+        click(14, Modifiers::default());
+        assert_eq!(click(2, shift), (all.to_vec(), Some(all[0])));
+    }
+    #[gpui::test]
+    fn menu_merge_click_over_the_lane_merges_and_undo_restores(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        // One selected section: g explains instead of silently consuming input.
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.pending.is_none());
+            assert!(
+                v.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("shift-click another section to merge a span"))
+            );
+        });
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        let body = editor.read_with(cx, |v, _| {
+            let [_, top, _, height] = v.section_layout().unwrap();
+            point(a.x, px(top + height * 0.75))
+        });
+        visual.simulate_mouse_down(body, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(body, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            assert_eq!(
+                v.context_menu.as_ref().unwrap().items[0].label,
+                "merge selected span · g"
+            )
+        });
+        // The first row opens at the pointer, above the lane's own capture.
+        let panel = visual.debug_bounds("context-menu-panel").unwrap();
+        let row = point(panel.origin.x + px(20.0), panel.origin.y + px(14.0));
+        visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let event = editor.update(cx, |v, _| {
+            assert!(v.context_menu.is_none());
+            assert!(matches!(
+                v.sections.pending.as_ref().map(|p| &p.command),
+                Some(Command::MergeArrangementSections(_))
+            ));
+            next(&v.service)
+        });
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.arrangement_sections().len(), 1);
+            assert_eq!(
+                p.arrangement_section(ids[0]).unwrap().end(),
+                BeatTime::from_quarters(12).unwrap()
+            );
+            assert_eq!(p.tracks(), before.tracks());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-z");
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, _| {
+            v.receive(event);
+            assert_eq!(v.state.as_ref().unwrap().project, before);
+        });
+    }
+    /// Tick the real worker pump until every edit and queued follow-up lands.
+    fn settle(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let idle = editor.update(visual, |v, cx| {
+                v.tick(cx);
+                !v.edit_pending() && v.sections.pending.is_none() && v.sections.queued.is_none()
+            });
+            if idle {
+                break;
+            }
+            assert!(Instant::now() < deadline, "section edits settle");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        visual.run_until_parked();
+    }
+    #[gpui::test]
+    fn section_copy_paints_committed_rows_before_the_terminal(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let source = editor.read_with(cx, |view, _| position(view, 2));
+        visual.simulate_click(source, Modifiers::default());
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-d");
+
+        let terminal = editor.read_with(cx, |view, _| next(&view.service));
+        let observed = editor.read_with(cx, |view, _| {
+            view.service.try_arrangement_edit_view().unwrap()
+        });
+        let Some(Created::ArrangementSection(copy)) = terminal.created else {
+            panic!("section copy");
+        };
+        assert!(matches!(
+            observed.kind,
+            hex_session::service::ArrangementEditViewKind::Duplicate(Created::ArrangementSection(id))
+                if id == copy
+        ));
+        let committed = observed.state.upgrade().unwrap();
+        let marker = committed.project.arrangement_section(copy).unwrap();
+        let midi = committed.project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.start() == marker.start())
+            .unwrap()
+            .id();
+        let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "the old focus cache has no copy"
+        );
+
+        editor.update(cx, |view, cx| {
+            assert!(view.arrangement_focus.projection.enabled);
+            assert_eq!(view.sections.selected, Some(ids[0]));
+            for (generation, revision) in [
+                (observed.project_generation + 1, observed.previous_revision),
+                (observed.project_generation, observed.previous_revision + 1),
+            ] {
+                assert!(
+                    !view.observe_duplicate_view(ArrangementEditViewObservation {
+                        project_generation: generation,
+                        first_previous_revision: revision,
+                        previous_revision: revision,
+                        kind: observed.kind,
+                        state: Arc::downgrade(&committed),
+                    })
+                );
+            }
+            assert!(view.observe_duplicate_view(observed));
+            assert!(view.section_install_pending());
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_section(copy)
+                    .is_none()
+            );
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before_ack = visual
+            .debug_bounds(selector)
+            .expect("committed copy is visible");
+        let marker_bounds = visual.debug_bounds("arrangement-section-1").unwrap();
+        editor.update(cx, |view, cx| {
+            view.receive(terminal);
+            assert!(view.committed_section_copy_view().is_none());
+            assert!(!view.section_install_pending());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before_ack));
+        assert_eq!(
+            visual.debug_bounds("arrangement-section-1"),
+            Some(marker_bounds)
+        );
+    }
+
+    #[gpui::test]
+    fn section_keys_during_a_pending_edit_queue_one_follow_up_or_refuse_visibly(
+        cx: &mut TestAppContext,
+    ) {
+        let sections = |editor: &Entity<EditorView>, cx: &mut TestAppContext| {
+            editor.read_with(cx, |v, _| {
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .iter()
+                    .map(|s| s.id())
+                    .collect::<Vec<_>>()
+            })
+        };
+        // (keys after the pending cmd-d, expected section count, first kept)
+        for (keys, count, kept) in [
+            // Back to back: duplicate, then delete of the same section.
+            ("backspace", 2, false),
+            // Latest wins: the delete is replaced by a second duplicate.
+            ("backspace cmd-d", 4, true),
+            // Undo orders behind the duplicate and drops the queued delete.
+            ("backspace cmd-z", 2, true),
+        ] {
+            let (handle, editor, ids) = fixture(cx);
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let a = editor.read_with(cx, |v, _| position(v, 2));
+            visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_keystrokes("cmd-d");
+            // The acknowledgement is delayed: nothing ticks the worker yet.
+            visual.simulate_keystrokes(keys);
+            editor.read_with(cx, |v, _| {
+                assert!(v.sections.pending.is_some(), "{keys}");
+                let queued = v.sections.queued.as_ref().map(|q| &q.command);
+                match keys {
+                    "backspace" => assert!(
+                        matches!(queued, Some(Command::DeleteArrangementSection(id)) if *id == ids[0])
+                    ),
+                    "backspace cmd-d" => assert!(
+                        matches!(queued, Some(Command::DuplicateArrangementSection(id)) if *id == ids[0])
+                    ),
+                    _ => {
+                        assert!(queued.is_none());
+                        assert_eq!(&*v.status, "queued section edit cancelled by undo/redo");
+                    }
+                }
+                if queued.is_some() {
+                    assert_eq!(
+                        &*v.status,
+                        "section edit queued · applies after the current edit"
+                    );
+                }
+            });
+            settle(&editor, &mut visual);
+            let after = sections(&editor, cx);
+            assert_eq!(after.len(), count, "{keys}: {after:?}");
+            assert_eq!(after.contains(&ids[0]), kept, "{keys}");
+            editor.read_with(cx, |v, _| {
+                assert!(v.error.is_none(), "{keys}: {:?}", v.error)
+            });
+        }
+
+        // g queues a merge behind another in-flight section edit.
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.update(cx, |v, _| {
+            v.section_metadata(Command::SetArrangementSectionColor {
+                section: ids[1],
+                color: ElementColor::Green,
+            });
+            assert!(v.sections.pending.is_some());
+        });
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(matches!(
+                v.sections.queued.as_ref().map(|q| &q.command),
+                Some(Command::MergeArrangementSections(_))
+            ));
+        });
+        settle(&editor, &mut visual);
+        assert_eq!(sections(&editor, cx), vec![ids[0]]);
+
+        // Pointer and split input cannot wait for the edit; they refuse visibly.
+        editor.update(cx, |v, _| {
+            v.section_metadata(Command::SetArrangementSectionColor {
+                section: ids[0],
+                color: ElementColor::Blue,
+            });
+            assert!(v.sections.pending.is_some());
+        });
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |v, _| {
+            assert_eq!(v.error.as_deref(), Some(SECTION_BUSY));
+            assert!(v.sections.gesture.is_none());
+        });
+        settle(&editor, &mut visual);
+    }
+    #[gpui::test]
+    fn resize_keeps_one_selected_surface_every_frame_through_delayed_ack(cx: &mut TestAppContext) {
+        let platform = Modifiers {
+            platform: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        // (touching seam, modifiers, release quarter)
+        for (seam, modifiers, end) in [
+            (false, Modifiers::default(), 7),
+            (false, platform, 7),
+            (false, alt, 7),
+            (true, Modifiers::default(), 6),
+            (true, platform, 6),
+        ] {
+            let (handle, editor, ids) = if seam {
+                touching_fixture(cx)
+            } else {
+                fixture(cx)
+            };
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let edge = bounds(&mut visual, 0);
+            let down = point(
+                if seam {
+                    edge.right()
+                } else {
+                    edge.right() - px(1.0)
+                },
+                edge.origin.y + px(12.0),
+            );
+            let to = editor.read_with(cx, |v, _| position(v, end));
+            visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+            let mut frames = Vec::new();
+            // Sub-grid steps cross snap points, so the pointer alternates
+            // between inside and outside the snapped preview edge.
+            for step in 1..=8 {
+                let x = down.x + (to.x - down.x) * (step as f32 / 8.0);
+                visual.simulate_mouse_move(point(x, down.y), MouseButton::Left, modifiers);
+                visual.run_until_parked();
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-section-selected-trailing-0")
+                        .is_some(),
+                    "seam {seam} {modifiers:?} step {step}: section lost its selected edge"
+                );
+                editor.read_with(cx, |v, _| {
+                    assert_eq!(v.sections.selected, Some(ids[0]));
+                    assert!(v.sections.gesture.is_some());
+                });
+                frames.push((
+                    painted_fill(&mut visual, 0),
+                    painted_fill_for(&mut visual, "arrangement-section-header-0"),
+                ));
+            }
+            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+            let event = editor.update(cx, |v, _| next(&v.service));
+            assert!(event.error.is_none(), "{:?}", event.error);
+            // Delayed acknowledgement: completed repaints keep the frozen look.
+            for _ in 0..3 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-section-selected-trailing-0")
+                        .is_some()
+                );
+                frames.push((
+                    painted_fill(&mut visual, 0),
+                    painted_fill_for(&mut visual, "arrangement-section-header-0"),
+                ));
+            }
+            assert!(frames[0].0.is_some() && frames[0].1.is_some(), "{frames:?}");
+            for (index, frame) in frames.iter().enumerate() {
+                assert_eq!(
+                    frame, &frames[0],
+                    "seam {seam} {modifiers:?} frame {index}: selected surface changed"
+                );
+            }
+            editor.update(cx, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-section-selected-trailing-0")
+                    .is_some()
+            );
+            editor.read_with(cx, |v, _| {
+                assert_eq!(v.sections.selected, Some(ids[0]));
+                assert_eq!(
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .arrangement_section(ids[0])
+                        .unwrap()
+                        .end(),
+                    BeatTime::from_quarters(end).unwrap()
+                );
+            });
+        }
+    }
+    #[gpui::test]
+    fn g_merges_a_click_and_shift_click_section_span(cx: &mut TestAppContext) {
+        g_merge_case(cx, false, false);
+    }
+    #[gpui::test]
+    fn g_merges_a_leftward_shift_click_span(cx: &mut TestAppContext) {
+        g_merge_case(cx, false, true);
+    }
+    #[gpui::test]
+    fn g_merges_a_leftward_shift_click_span_under_section_focus(cx: &mut TestAppContext) {
+        g_merge_case(cx, true, true);
+    }
+    #[gpui::test]
+    fn g_merges_a_shift_click_span_under_section_focus(cx: &mut TestAppContext) {
+        g_merge_case(cx, true, false);
+    }
+    #[gpui::test]
+    fn g_merges_a_selected_span_outside_strict_section_focus_and_explains_empty(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        // Nothing selected: g explains instead of silently doing nothing.
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(
+                v.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("select two or more clips, sections")),
+                "{:?}",
+                v.error
+            );
+        });
+        editor.update(cx, |v, _| {
+            v.error = None;
+            v.sections.selected = Some(ids[0]);
+            v.sections.selection = ids.to_vec();
+            // Main no longer owns the device view, so the strict section-focus
+            // test fails, yet the section span is the only grouping selection.
+            v.device_panel.main_selected = None;
+        });
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(
+                matches!(
+                    v.sections.pending.as_ref().map(|p| &p.command),
+                    Some(Command::MergeArrangementSections(_))
+                ),
+                "{:?}",
+                v.error
+            );
+        });
+    }
+    fn g_merge_case(cx: &mut TestAppContext, focused: bool, leftward: bool) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (mut a, mut b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        if leftward {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        if focused {
+            visual.simulate_keystrokes("q");
+            visual.run_until_parked();
+            visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            let mut selection = v.sections.selection.clone();
+            selection.sort();
+            let mut expected = ids.to_vec();
+            expected.sort();
+            assert_eq!(selection, expected, "error={:?}", v.error);
+        });
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(
+                matches!(
+                    v.sections.pending.as_ref().map(|p| &p.command),
+                    Some(Command::MergeArrangementSections(_))
+                ),
+                "error={:?} status={:?} track={:?} clip={:?} time={:?} main={:?}",
+                v.error,
+                v.status,
+                v.selected_track,
+                v.selected_clip,
+                v.time_selection.map(|t| (t.anchor_frame, t.end_frame)),
+                v.device_panel.main_selected,
+            );
+        });
     }
 }

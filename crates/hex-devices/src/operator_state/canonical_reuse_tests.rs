@@ -89,7 +89,7 @@ fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
     assert_eq!(authored.payload().len(), PAYLOAD_BYTES); // Arc slice, no retained Vec slack.
     assert!(std::ptr::eq(authored.payload(), input.payload()));
-    assert_eq!(prepared.declared_context_bytes(), 3008); // Includes host gains and asset-list metadata.
+    assert_eq!(prepared.declared_context_bytes(), 3056); // Includes host gains and asset-list metadata.
     drop(input);
     assert_eq!(
         operator(prepared.as_ref())

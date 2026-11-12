@@ -52,6 +52,31 @@ fn begin(
 ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
     c.begin_input_on_control(AudioArrangementInput::new(p, 11, b).with_audio_clip_inventory())
 }
+
+#[test]
+fn retained_receiver_refuses_closed_preparation_without_losing_inputs() {
+    let (project, bank, token) = fixture(false, false, 1);
+    let track = project.tracks()[0].id();
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    editor
+        .execute(hex_project::Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(track.value());
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let pointer = bank.sources.as_ptr();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let refusal = match begin(&mut custody, &project, bank) {
+        Ok(_) => panic!("retained path must refuse"),
+        Err(refusal) => refusal,
+    };
+    assert_eq!(refusal.reason, AudioStorageError::UnsupportedGraph);
+    assert_eq!(refusal.inputs.sources.as_ptr(), pointer);
+    assert!(refusal.inputs.source_view(&token).is_ok());
+}
 #[test]
 fn actual_arrangement_clips_preserve_source_handles_geometry_fades_phases_and_metadata_capacity() {
     if !super::session_source_tests::supported("arrangement_final_clips") {
@@ -514,5 +539,115 @@ fn endpoint_only_fades_construct_resident_metadata_and_recover_exact_source_bank
         assert_eq!(bank.sources.as_ptr(), ptr);
         assert_eq!(bank.sources.capacity(), cap);
         assert!(bank.source_view(&old).is_ok());
+    }
+}
+
+#[test]
+fn sparse_native_arrangement_retains_only_event_pcm_and_recovers_source_bank() {
+    use hex_project::{AudioEventEdit, Command, Editor, TrimEdge};
+    if !super::session_source_tests::supported("sparse_native_arrangement") {
+        return;
+    }
+    let mut prior_quote = None;
+    let mut prior_retained = None;
+    for destination in [
+        32_000,
+        hex_project::MAX_AUDIO_DOMAIN_FRAMES as i64 + 4_000_000,
+    ] {
+        let (project, mut bank, original) = fixture(false, false, 1);
+        bank.reservation.handle_obligations = 64;
+        let source_bank = bank.sources.as_ptr();
+        let clip = project.tracks()[0].clips()[0].id();
+        let mut editor = Editor::new(project, 8).unwrap();
+        for operation in [
+            AudioEventEdit::Split { at: 4 },
+            AudioEventEdit::Place {
+                event: 1,
+                start: destination,
+            },
+        ] {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame: destination as u64 + 4,
+            })
+            .unwrap();
+        let project = editor.project();
+        let quote = transformed_audio_quote(project).unwrap();
+        assert_eq!(*prior_quote.get_or_insert(quote), quote);
+        assert!(quote.0 < 1_024, "only eight frames and two span entries");
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_input_on_control(
+                AudioArrangementInput::new(project, 11, bank).with_audio_prepared_revision(),
+            )
+            .ok()
+            .unwrap();
+        assert_eq!(
+            custody.phase(),
+            AudioPreparationPhase::ArrangementAndSessionSources,
+            "{:?}",
+            custody.reason()
+        );
+        let revision = custody.revision.owner_for_test().unwrap().as_ref();
+        let compiled = &revision.arrangement().tracks()[0].clips[0];
+        assert_eq!(compiled.audio.as_ref().unwrap().frames().len(), 8);
+        assert!(compiled.metadata.as_ref().unwrap().sparse.is_some());
+        let mut renderer = crate::Renderer::new(revision.arrangement());
+        renderer.seek(destination as u64 - 2);
+        renderer.play();
+        let mut actual = [[0.0; 2]; 8];
+        for chunk in actual.chunks_mut(3) {
+            renderer.render(chunk).unwrap();
+        }
+        assert_eq!(
+            actual,
+            [
+                [0.0; 2], [0.0; 2], [0.25; 2], [0.25; 2], [0.25; 2], [0.25; 2], [0.0; 2], [0.0; 2]
+            ]
+        );
+        {
+            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 1024,
+                    handle_rows: 128,
+                    root_rows: 8,
+                    max_retained_bytes: usize::MAX,
+                    max_construction_peak_bytes: usize::MAX,
+                },
+            )
+            .unwrap();
+            ledger
+                .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
+                .unwrap();
+            let summary = ledger.summary().unwrap();
+            assert!(summary.require_known_storage().is_ok());
+            assert_eq!(
+                *prior_retained.get_or_insert(summary.retained_bytes),
+                summary.retained_bytes
+            );
+        }
+        assert!(custody.cancel(&token));
+        custody.cleanup_on_control();
+        let mut bank = custody.recover_on_control(&token).unwrap();
+        assert_eq!(bank.sources.as_ptr(), source_bank);
+        assert!(bank.source_view(&original).is_ok());
+
+        bank.reservation.max_prepared_data_bytes = quote.0 - 1;
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let refusal = custody
+            .begin_input_on_control(
+                AudioArrangementInput::new(project, 11, bank).with_audio_prepared_revision(),
+            )
+            .err()
+            .unwrap();
+        assert_eq!(refusal.reason, AudioStorageError::ReservationExceeded);
+        assert_eq!(refusal.inputs.sources.as_ptr(), source_bank);
+        assert!(refusal.inputs.source_view(&original).is_ok());
     }
 }

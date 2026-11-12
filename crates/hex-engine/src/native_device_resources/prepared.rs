@@ -140,18 +140,7 @@ impl PreparedDeviceResources {
         metadata_bytes: usize,
         cancel: &AtomicBool,
     ) -> Result<Self, ResourcePreparationError> {
-        Self::prepare_with_sources(project, metadata_bytes, cancel, |asset| {
-            if stage.staged.asset.0 == asset {
-                Some(&stage.staged.asset.1)
-            } else {
-                stage
-                    .store
-                    .assets
-                    .iter()
-                    .find(|(id, _)| *id == asset)
-                    .map(|(_, source)| source)
-            }
-        })
+        Self::prepare_with_sources(project, metadata_bytes, cancel, |asset| stage.loan(asset))
     }
     fn prepare_with_sources<'a>(
         project: &Project,

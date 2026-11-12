@@ -274,6 +274,8 @@ fn prepared_return_project_with_bus(
             gain: return_gain,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
@@ -350,6 +352,8 @@ fn eq8_return_project(gain_db: f32, q: f32, kind: u32) -> Project {
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -692,9 +696,13 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
             offset += frames;
         }
         for index in 0..8 {
-            let current = if replacement { [0.1, -0.025] } else { [0.0; 2] };
+            let current = if replacement {
+                [0.1, -0.1 + 0.075 * (index + 1) as f32 / 240.0]
+            } else {
+                [0.0; 2]
+            };
             let current_return = if replacement {
-                [(0.1 - 0.025) * 0.5 * 0.25; 2]
+                [(current[0] + current[1]) * 0.5 * 0.25; 2]
             } else {
                 [0.0; 2]
             };

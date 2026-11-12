@@ -98,10 +98,10 @@ impl Sandbox {
         self.ensure(cx);
         let indices = self.configurations();
         for current in &indices {
-            if let Some(sample) = self.samples.get(current) {
-                if let Err(error) = sample.update(cx, |sample, cx| sample.restyle(cx)) {
-                    self.error = Some(error);
-                }
+            if let Some(sample) = self.samples.get(current)
+                && let Err(error) = sample.update(cx, |sample, cx| sample.restyle(cx))
+            {
+                self.error = Some(error);
             }
         }
         if let Some(position) = indices.iter().position(|current| *current == index) {

@@ -1,9 +1,31 @@
 use crate::ControlStyle;
 use gpui::{
-    AnchoredPositionMode, Context, Corner, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, PathBuilder, SharedString, Window, anchored, canvas, deferred, div, point,
-    prelude::*, px, rgb,
+    AnchoredPositionMode, App, Context, Corner, EventEmitter, FocusHandle, Focusable, KeyBinding,
+    MouseButton, MouseDownEvent, PathBuilder, ScrollHandle, SharedString, Window, anchored, canvas,
+    deferred, div, point, prelude::*, px, rgb,
 };
+
+gpui::actions!(
+    hex_widgets_selector,
+    [
+        SelectorToggle,
+        SelectorCancel,
+        SelectorNext,
+        SelectorPrevious
+    ]
+);
+
+/// Install focused popup shortcuts before the host's more general actions.
+/// Closed popups leave Escape and arrows with their host.
+pub fn bind_selector_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", SelectorToggle, Some("hex_selector")),
+        KeyBinding::new("space", SelectorToggle, Some("hex_selector")),
+        KeyBinding::new("escape", SelectorCancel, Some("hex_selector_open")),
+        KeyBinding::new("down", SelectorNext, Some("hex_selector_open")),
+        KeyBinding::new("up", SelectorPrevious, Some("hex_selector_open")),
+    ]);
+}
 
 #[derive(Debug, Clone)]
 pub struct ToggleChanged {
@@ -536,8 +558,8 @@ impl SelectorConfig {
         if choices.is_empty() || selected >= choices.len() {
             return Err("selector requires a valid selected option");
         }
-        if choices.len() > 128 {
-            return Err("selector exceeds 128 options");
+        if choices.len() > 257 {
+            return Err("selector exceeds 257 options");
         }
         Ok(Self {
             accessibility_name: "choice".into(),
@@ -589,6 +611,9 @@ pub struct Selector {
     choices: Vec<SharedString>,
     selected: usize,
     open: bool,
+    confirm_on_enter: bool,
+    highlighted: Option<usize>,
+    popup_scroll: ScrollHandle,
     enabled: bool,
     style: ControlStyle,
     appearance: SelectorAppearance,
@@ -643,6 +668,9 @@ impl Selector {
             choices: config.choices,
             selected: config.selected,
             open: false,
+            confirm_on_enter: false,
+            highlighted: None,
+            popup_scroll: ScrollHandle::new(),
             enabled: true,
             style: config.style,
             appearance: config.appearance,
@@ -689,9 +717,23 @@ impl Selector {
             // An external acknowledged choice invalidates a captured local dial draft.
             self.dial_press = None;
             self.selected = selected;
+            if self.open {
+                self.highlighted = Some(selected);
+                self.popup_scroll.scroll_to_item(selected);
+            }
             cx.notify();
         }
         Ok(())
+    }
+
+    /// Stage popup arrow navigation until Enter/Space confirms. Pointer options
+    /// remain immediate; cancellation never emits a choice. Off by default.
+    pub fn set_confirm_on_enter(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.confirm_on_enter != enabled {
+            self.confirm_on_enter = enabled;
+            self.highlighted = self.open.then_some(self.selected);
+            cx.notify();
+        }
     }
 
     /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
@@ -709,6 +751,7 @@ impl Selector {
         if self.enabled != enabled {
             self.enabled = enabled;
             self.open = false;
+            self.highlighted = None;
             self.dial_press = None;
             let tab_stop = self.tab_navigation && self.enabled;
             if self.focus.tab_stop != tab_stop {
@@ -719,10 +762,49 @@ impl Selector {
     }
 
     fn open_or_close(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_popup(window, cx);
+    }
+
+    fn toggle_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.enabled {
             self.open = !self.open;
+            self.highlighted = self.open.then_some(self.selected);
+            if self.open {
+                // The popup has no previous viewport on its first paint.
+                self.popup_scroll.scroll_to_top_of_item(self.selected);
+            }
             self.focus.focus(window);
             cx.notify();
+        }
+    }
+
+    fn activate_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm_on_enter && self.open {
+            self.choose(self.highlighted.unwrap_or(self.selected), window, cx);
+        } else {
+            self.toggle_popup(window, cx);
+        }
+    }
+
+    fn cancel_popup(&mut self, cx: &mut Context<Self>) {
+        self.open = false;
+        self.highlighted = None;
+        cx.notify();
+    }
+
+    fn navigate_popup(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled || !self.open {
+            return;
+        }
+        let current = self.highlighted.unwrap_or(self.selected);
+        let next =
+            (current + if forward { 1 } else { self.choices.len() - 1 }) % self.choices.len();
+        if self.confirm_on_enter {
+            self.highlighted = Some(next);
+            self.popup_scroll.scroll_to_item(next);
+            cx.notify();
+        } else {
+            self.choose(next, window, cx);
         }
     }
 
@@ -730,6 +812,7 @@ impl Selector {
         if self.enabled && index < self.choices.len() {
             self.selected = index;
             self.open = false;
+            self.highlighted = None;
             self.focus.focus(window);
             cx.emit(SelectorChanged {
                 index,
@@ -927,28 +1010,13 @@ impl Selector {
             return;
         }
         match event.keystroke.key.as_str() {
-            "escape" => {
-                cx.stop_propagation();
-                self.open = false;
-            }
-            "enter" | "space" => {
-                cx.stop_propagation();
-                self.open = !self.open;
-            }
-            "down" if self.open => {
-                cx.stop_propagation();
-                self.choose((self.selected + 1) % self.choices.len(), window, cx)
-            }
-            "up" if self.open => {
-                cx.stop_propagation();
-                self.choose(
-                    (self.selected + self.choices.len() - 1) % self.choices.len(),
-                    window,
-                    cx,
-                )
-            }
+            "escape" if self.open => self.cancel_popup(cx),
+            "enter" | "space" => self.activate_popup(window, cx),
+            "down" if self.open => self.navigate_popup(true, window, cx),
+            "up" if self.open => self.navigate_popup(false, window, cx),
             _ => return,
         }
+        cx.stop_propagation();
         cx.notify();
     }
 }
@@ -967,9 +1035,8 @@ impl gpui::Render for Selector {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |selector, _, cx| {
                 if selector.open || selector.dial_press.is_some() {
-                    selector.open = false;
                     selector.dial_press = None;
-                    cx.notify();
+                    selector.cancel_popup(cx);
                 }
             }));
         }
@@ -1126,6 +1193,29 @@ impl gpui::Render for Selector {
             .min_w_0()
             .relative()
             .track_focus(&self.focus)
+            .when(self.enabled, |root| {
+                root.key_context(if self.open {
+                    "hex_selector hex_selector_open"
+                } else {
+                    "hex_selector"
+                })
+            })
+            .on_action(cx.listener(|selector, _: &SelectorToggle, window, cx| {
+                selector.activate_popup(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|selector, _: &SelectorCancel, _, cx| {
+                selector.cancel_popup(cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|selector, _: &SelectorNext, window, cx| {
+                selector.navigate_popup(true, window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|selector, _: &SelectorPrevious, window, cx| {
+                selector.navigate_popup(false, window, cx);
+                cx.stop_propagation();
+            }))
             .rounded(px(2.0))
             .border_1()
             .border_color(rgb(if self.focus.is_focused(window) {
@@ -1204,7 +1294,7 @@ impl gpui::Render for Selector {
         }
         if self.open && self.enabled {
             let options = self.choices.clone();
-            let current = self.selected;
+            let current = self.highlighted.unwrap_or(self.selected);
             let compact = self.appearance == SelectorAppearance::CompactSelector;
             let field_bounds = self.measured_bounds.get();
             let field_height = if compact {
@@ -1274,6 +1364,7 @@ impl gpui::Render for Selector {
                 .w(popup_width)
                 .max_h(max_popup_height)
                 .overflow_y_scroll()
+                .track_scroll(&self.popup_scroll)
                 .border_1()
                 .border_color(rgb(if compact { style.accent } else { style.border }))
                 .rounded(px(if compact { 0.0 } else { 2.0 }))
@@ -1326,7 +1417,7 @@ impl gpui::Render for Selector {
                             })
                         })
                         // Keep the actual selection distinct while another row is hovered.
-                        .when(index == current, |option| {
+                        .when(index == self.selected, |option| {
                             option.child(
                                 div()
                                     .debug_selector(move || marker_id.clone())
@@ -1355,8 +1446,7 @@ impl gpui::Render for Selector {
             .debug_selector(|| self.id.to_string())
             .on_mouse_down_out(cx.listener(|selector, _, _, cx| {
                 if selector.open {
-                    selector.open = false;
-                    cx.notify();
+                    selector.cancel_popup(cx);
                 }
             }))
             .on_key_down(cx.listener(Self::key_down))
