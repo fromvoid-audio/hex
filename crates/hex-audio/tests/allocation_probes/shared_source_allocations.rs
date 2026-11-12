@@ -207,8 +207,18 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
         for pitch in pitches {
             editor.execute(Command::AddMidiNote {
                 clip,
-                start: BeatTime::ZERO,
-                duration: BeatTime::ONE,
+                // The receiver enters last so Operator's eight physical slots
+                // actually contain a peer voice before the contributor fades.
+                start: if track == receiver {
+                    BeatTime::from_ratio(1, 128)?
+                } else {
+                    BeatTime::ZERO
+                },
+                duration: if track == receiver {
+                    BeatTime::from_ratio(127, 128)?
+                } else {
+                    BeatTime::ONE
+                },
                 pitch,
                 velocity: 100,
                 channel: 0,
@@ -310,10 +320,25 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
             .any(|sample| sample.abs() > 0.000_001),
         "the shared peer must remain audible"
     );
+    render(&mut callback, &mut output)?;
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001),
+        "the peer must remain audible after the mute fade before live input"
+    );
     for key in 0..17 {
         input.set_key(key, Some((67 + key as u8, 100, key as u64 + 1)))?;
     }
     render(&mut callback, &mut output)?;
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001),
+        "live input or the peer must remain audible before the Session launch"
+    );
     assert!(input.rejected(), "live press must report capacity refusal");
     assert!(!input.is_cancelled());
     assert!(control.status.rejected_revision().is_none());
