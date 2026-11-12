@@ -72,10 +72,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let gains: Vec<_> = (1..=VOICES as u64)
         .map(|id| NativeInstrumentOccurrenceGain::new(id, 0.25, 0.75, BLOCK as u64, 0))
         .collect::<Result<_, _>>()?;
+    let composed: Vec<_> = gains
+        .iter()
+        .map(|gain| gain.with_attenuation(1.0, 0.0, BLOCK as u64, 0))
+        .collect::<Result<_, _>>()?;
     println!(
         "rate={RATE} block={BLOCK} voices={VOICES} pitch=60 loop=48000 source=mono warmup={WARMUP} trials={TRIALS} timer=Instant includes=preflight-render-commit"
     );
-    for automated in [false, true] {
+    for mode in ["none", "single", "composed"] {
         let mut pair = NativeInstrumentRuntimePair::new(&prepared, limits)?;
         let mut out = [[0.0_f32; 2]; BLOCK];
         pair.begin_block();
@@ -92,12 +96,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             out.fill([0.0; 2]);
             let start = Instant::now();
             pair.begin_block();
-            if automated {
+            if mode != "none" {
                 pair.process_block_with_clock_and_occurrence_gains(
                     &[],
                     &mut out,
                     None,
-                    &gains,
+                    if mode == "single" { &gains } else { &composed },
                     &resources,
                 )?;
             } else {
@@ -120,8 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         durations.sort_unstable();
         println!(
-            "gain_ramps={} min_ns={} p50_ns={} p95_ns={} p99_ns={} max_ns={} checksum={checksum:.9} hash={hash:016x}",
-            if automated { VOICES } else { 0 },
+            "gain_mode={mode} min_ns={} p50_ns={} p95_ns={} p99_ns={} max_ns={} checksum={checksum:.9} hash={hash:016x}",
             durations[0],
             durations[TRIALS / 2],
             durations[TRIALS * 95 / 100],

@@ -61,7 +61,7 @@ impl Drop for Files {
         let _ = fs::remove_dir_all(self.source.parent().unwrap());
     }
 }
-fn reservation() -> crate::ResidentNativeReservation {
+pub(crate) fn reservation() -> crate::ResidentNativeReservation {
     crate::ResidentNativeReservation {
         storage: hex_engine::AudioStorageLedgerReservation {
             data_rows: 512,
@@ -73,7 +73,7 @@ fn reservation() -> crate::ResidentNativeReservation {
         max_scan_frames: 1024,
     }
 }
-fn event(s: &Service) -> Event {
+pub(crate) fn event(s: &Service) -> Event {
     // Blocks on the event channel; bounded only against hangs.
     match s.events.recv_timeout(crate::test_wait::HANG_BOUND) {
         Ok(event) => event,
@@ -98,7 +98,7 @@ fn edit(s: &Service, c: Command) -> Event {
     assert!(e.error.is_none(), "{:?}", e.error);
     e
 }
-fn assign(s: &Service, path: PathBuf) -> Event {
+pub(crate) fn assign(s: &Service, path: PathBuf) -> Event {
     s.submit(Request::ImportDeviceAsset {
         path,
         cancel: Arc::new(AtomicBool::new(false)),
@@ -1003,4 +1003,91 @@ fn assert_pcm_bytes_near(actual: &[u8], expected: &[u8]) {
             .collect::<Vec<_>>()
     };
     assert_pcm_near(&decode(actual), &decode(expected), "pcm bytes");
+}
+
+#[test]
+fn verified_recovery_candidate_keeps_originals_and_clip_files_in_separate_owners() {
+    use crate::service::verified_source_tests::{
+        Files as VerifiedFiles, reservation as file_reservation,
+    };
+    let originals = Files::new(false);
+    let clips = VerifiedFiles::new();
+    let clip = clips.wav("clip.wav", 16_000, 16, 1024);
+    let saved = originals.source.with_file_name("mixed.hex");
+    let service = Service::with_native_reservation(16_000, 16, 1024, reservation()).unwrap();
+    event(&service);
+    service.submit(Request::Import(clip)).unwrap();
+    let imported = event(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    assign(&service, originals.source.clone());
+    service.submit(Request::SaveNew(saved.clone())).unwrap();
+    assert!(event(&service).error.is_none());
+    let project = hex_storage::load(&saved).unwrap();
+    let current = Session::new(16_000, 16, 1024)
+        .unwrap()
+        .with_native_reservation(reservation())
+        .unwrap();
+    let before = current.project().snapshot();
+    let prepare = |allowance| {
+        super::super::recovery::prepare_project(
+            &current,
+            16,
+            project.clone(),
+            saved.parent().unwrap(),
+            DocumentAudioMode::VerifiedStreaming,
+            Some(file_reservation(2)),
+            Some(reservation()),
+            allowance,
+            Admission::default(),
+        )
+    };
+    let candidate = prepare(1024).unwrap();
+    assert_eq!(candidate.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    assert_eq!(candidate.project(), &project);
+    assert_eq!(candidate.native_assets.ids().count(), 1);
+    assert_eq!(candidate.verified_sources.len(), 1);
+    assert!(candidate.media.is_empty());
+    for id in candidate.native_assets.ids() {
+        assert_eq!(
+            candidate
+                .native_assets
+                .original_source_facts_on_control(id)
+                .unwrap(),
+            project.asset(id).unwrap().original_source().unwrap()
+        );
+        assert!(!candidate.verified_sources.contains_key(&id));
+    }
+    assert!(prepare(3).is_err(), "original exceeds the frame allowance");
+    let original_bytes = fs::read(&originals.source).unwrap();
+    let mut changed = original_bytes.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    fs::write(&originals.source, changed).unwrap();
+    assert!(
+        prepare(1024).is_err(),
+        "changed original content is refused"
+    );
+    fs::remove_file(&originals.source).unwrap();
+    assert!(prepare(1024).is_err(), "missing original is refused");
+    fs::write(&originals.source, original_bytes).unwrap();
+    current.shutdown.store(true, Ordering::Release);
+    assert!(prepare(1024).is_err(), "cancelled candidate is refused");
+    assert_eq!(current.project().snapshot(), before);
+    current.shutdown.store(false, Ordering::Release);
+    let refusal = super::super::recovery::open_source_with_limits(
+        &current,
+        16,
+        &super::super::recovery::ProjectSource::Saved(saved),
+        &Default::default(),
+        DocumentAudioMode::VerifiedStreaming,
+        Some(file_reservation(2)),
+        Some(reservation()),
+        1024,
+        Admission::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        refusal,
+        "device-original verified opening is not yet available"
+    );
 }
