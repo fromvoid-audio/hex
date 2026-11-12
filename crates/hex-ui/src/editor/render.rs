@@ -1166,6 +1166,9 @@ impl Render for EditorView {
                 }
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
+                if view.midi_focus.is_focused(window) {
+                    view.cancel_midi_audition();
+                }
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture()
                     | view.cancel_clip_paint()

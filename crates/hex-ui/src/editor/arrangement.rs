@@ -1028,17 +1028,44 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
-        let labels = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left_0()
-            .right_0()
+        let elapsed = div()
+            .debug_selector(|| "arrangement-elapsed-row".into())
+            .relative()
+            .h(relative(0.5))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children(
+                super::elapsed_time::ruler_ticks(
+                    state.project.sample_rate(),
+                    viewport,
+                    ruler_width,
+                )
+                .into_iter()
+                .filter_map(|tick| {
+                    let x = viewport.fraction(tick.frame)?;
+                    super::timeline_strip::ruler_tick(x, tick.label, false, false, false).map(
+                        |tick_view| {
+                            tick_view
+                                .pb_0()
+                                .line_height(px(10.0))
+                                .debug_selector(move || {
+                                    format!("elapsed-ruler-tick-{}", tick.frame)
+                                })
+                        },
+                    )
+                }),
+            );
+        let beats = div()
+            .debug_selector(|| "arrangement-beat-row".into())
+            .relative()
+            .h(relative(0.5))
+            .flex_shrink_0()
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
                     .filter_map(|tick| {
-                        let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
+                        let x = viewport.fraction(tick.frame)?;
                         super::timeline_strip::ruler_tick(
                             x,
                             tick.label,
@@ -1047,10 +1074,19 @@ impl EditorView {
                             tick.fragmentary_bar,
                         )
                         .map(|tick_view| {
-                            tick_view.debug_selector(move || format!("ruler-tick-{}", tick.frame))
+                            tick_view
+                                .pb_0()
+                                .line_height(px(10.0))
+                                .debug_selector(move || format!("ruler-tick-{}", tick.frame))
                         })
                     }),
             );
+        let labels = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .children([elapsed, beats]);
         let entity = cx.entity();
         let seek_viewport = viewport;
         let cells = div()

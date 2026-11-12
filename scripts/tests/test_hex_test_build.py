@@ -18,23 +18,64 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from contextlib import contextmanager, redirect_stderr
 from test_ci_target_storage import reuse_fixed_scratch_observations
-from test_local_ci import install_delivery_source_fixture
+from test_local_ci import install_delivery_source_fixture, load_delivery_source_fixture
 
-SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
-delivery = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = delivery
-SPEC.loader.exec_module(delivery)
+delivery = load_delivery_source_fixture("hex_test_build")
 SIGNING = {"certificate_sha1": "4EDF56A7ADD0B4786C2EEE23A50D61620BCE7E4E", "team_identifier": "DKTKQ8U5T8"}
 SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_identifier"],
           "designated_requirement": f'designated => identifier "{delivery.IDENTITY}" and anchor apple generic and certificate leaf[subject.OU] = {SIGNING["team_identifier"]}'}
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_direct_delivery_compiles_witnessed_bytes_before_qualifying_source(self):
+        scripts = self.root / "scripts"
+        path = scripts / "hex-test-build.py"
+        shutil.copyfile(Path(__file__).resolve().parents[1] / "changelog.py", scripts / "changelog.py")
+        runner = scripts / "local-ci.py"
+        runner.write_bytes(runner.read_bytes() + b'''
+if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
+    with (ROOT / "scripts/hex-test-build.py").open("ab") as delivery_file:
+        delivery_file.write(b"\\n# changed after the direct entry compiled delivery\\n")
+''')
+        tools = self.root / "fixture-tools"
+        tools.mkdir()
+        git = tools / "git"
+        git.write_text('#!/bin/sh\n: > "$HEX_FIXTURE_GIT_MARKER"\nexit 9\n')
+        git.chmod(0o755)
+        marker = self.root / "git-called"
+        command = [sys.executable, str(path), "--build-only", "--candidate", "a" * 40,
+                   "--included", "unused", "--checklist", "unused"]
+        env = {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+               "HEX_FIXTURE_GIT_MARKER": str(marker), "HEX_FIXTURE_CHANGE_DELIVERY": "0"}
+        matching = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(matching.returncode, 1, matching.stderr)
+        if sys.platform == "darwin":
+            self.assertTrue(marker.is_file(), matching.stderr)
+            marker.unlink()
+        else:
+            self.assertIn("requires macOS", matching.stderr)
+        changed = subprocess.run(command, cwd=self.root, env={**env, "HEX_FIXTURE_CHANGE_DELIVERY": "1"},
+                                 capture_output=True, text=True, timeout=5)
+        self.assertEqual(changed.returncode, 1, changed.stderr)
+        self.assertIn("executed delivery differs from candidate source", changed.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_delivery_rejects_an_unattested_implementation_before_source_capture(self):
+        path = Path(__file__).resolve().parents[1] / "hex-test-build.py"
+        spec = importlib.util.spec_from_file_location("unattested_delivery", path)
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {spec.name: loaded}):
+            spec.loader.exec_module(loaded)
+        runner = Mock(root=self.root)
+        with self.assertRaisesRegex(loaded.DeliveryError, "delivery source witness is unavailable"):
+            loaded.validate_source(runner, "a" * 40)
+        runner._capture_repository_state.assert_not_called()
+
     def test_delivery_refuses_changed_or_missing_candidate_source_before_validation(self):
         runner = delivery.ci.LocalCiRunner(self.root)
         report = self.root / "unused.json"
         report.write_text("{}")
-        for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+        for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
                      "ci_checkpoint.py", "ci_target_storage.py"):
             path = self.root / "scripts" / name
             original = path.read_bytes()
@@ -849,7 +890,7 @@ class DeliveryTests(unittest.TestCase):
     def test_pending_preparation_refuses_unqualified_evidence(self):
         self.workspace.rmdir()
         source = self.root / "repo"
-        (source / "scripts").mkdir(parents=True)
+        install_delivery_source_fixture(source)
         (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
         args = SimpleNamespace(build_only=True, prepare_only=True, dev_profile=False)
         with patch.object(delivery, "ROOT", source), patch.object(delivery.sys, "platform", "darwin"), \
@@ -861,7 +902,7 @@ class DeliveryTests(unittest.TestCase):
     def test_pending_release_recovery_still_refuses_running_installed_app(self):
         self.bundle(self.app, b"old")
         source = self.root / "repo"
-        (source / "scripts").mkdir(parents=True)
+        install_delivery_source_fixture(source)
         (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
         args = SimpleNamespace(build_only=False, prepare_only=True, dev_profile=False,
                                adopt_release_target=True)

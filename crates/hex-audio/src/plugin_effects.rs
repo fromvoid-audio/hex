@@ -764,6 +764,11 @@ impl NativeEffectCallback {
             bypass: bypass::BypassMix::default(),
         }
     }
+    #[cfg(test)]
+    pub(crate) fn with_instrument_profile_for_test(mut self) -> Self {
+        self.configuration.prepared = self.configuration.prepared.with_instrument_profile();
+        self
+    }
     fn matches(&self, node: ForeignProcessorNode<'_>) -> bool {
         let config = &self.configuration;
         node.owner == config.identity.owner()

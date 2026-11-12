@@ -14,6 +14,9 @@
 //! The reference hook is test-only; on legacy stereo both variants calibrate A/A.
 //! HEX_NAVIGATION_SUPPRESS_WAVEFORMS=1 performs diagnostic arranger waveform
 //! ablation with the same layout/input; it is not a shipped display mode.
+//! HEX_NAVIGATION_INTERLEAVE=1 pauses the dense generated probe before each
+//! viewport iteration so a controller can alternate two optimized binaries.
+//! The turn handshake is outside the measured input, draw and clear interval.
 #[path = "navigation_profile/selection.rs"]
 mod selection;
 use selection::Selection;
@@ -21,6 +24,7 @@ use selection::Selection;
 use super::*;
 use crate::editor::navigation_metrics;
 use gpui::{ScrollDelta, ScrollWheelEvent, size};
+use std::io::{Read, Write};
 
 // A project override must point at a disposable copy with media references
 // already resolved. Opening is read-only; this probe never submits Save/Edit.
@@ -308,6 +312,19 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
     })
 }
 
+fn await_navigation_interleave(action: &str, iteration: usize) {
+    println!("NAV_READY,{action},{iteration}");
+    std::io::stdout()
+        .flush()
+        .expect("flush navigation interleave readiness");
+    let mut response = [0; 3];
+    std::io::stdin()
+        .lock()
+        .read_exact(&mut response)
+        .expect("read navigation interleave command");
+    assert_eq!(&response, b"GO\n", "invalid navigation interleave command");
+}
+
 #[gpui::test]
 #[ignore = "manual optimized pan/zoom framework profile; requires generated fixtures or a project copy"]
 fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
@@ -326,6 +343,14 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
         "timing requires --release; debug smoke must be explicit"
     );
     let (rounds, warmup) = selection::iterations(smoke);
+    let interleave = match std::env::var("HEX_NAVIGATION_INTERLEAVE") {
+        Ok(value) if value == "0" || value == "1" => value == "1",
+        Ok(_) => panic!("navigation interleave must be 0 or 1"),
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("navigation interleave must be UTF-8")
+        }
+    };
     let comparison = std::env::var("HEX_NAVIGATION_COMPARE_LAYOUTS");
     assert!(
         !matches!(comparison, Err(std::env::VarError::NotUnicode(_))),
@@ -339,6 +364,23 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
         "navigation scope must be UTF-8"
     );
     let selection = Selection::parse(scope.as_deref().ok()).expect("valid finite navigation scope");
+    if interleave {
+        assert_eq!(
+            selection,
+            Selection::Audio100Dense,
+            "navigation interleave requires audio-100-dense scope"
+        );
+        assert!(
+            !smoke,
+            "navigation interleave requires the full 8+40 rounds"
+        );
+        assert_eq!(
+            trials,
+            &[false],
+            "navigation interleave requires the current single-layout probe"
+        );
+        assert_eq!((rounds, warmup), (48, 8));
+    }
     selection
         .validate_inputs(
             std::env::var_os("HEX_NAVIGATION_PROJECT_PATH").is_some(),
@@ -388,6 +430,12 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
         let tracks = input.tracks;
         let content = input.content;
         for single_row in row_modes {
+            if interleave {
+                assert!(
+                    !single_row,
+                    "navigation interleave requires normal row layout"
+                );
+            }
             let cases = selection.cases(content, tracks, single_row);
             if cases.is_empty() {
                 continue;
@@ -484,6 +532,9 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                     });
                     let mut rows = Vec::with_capacity(rounds);
                     for iteration in 0..rounds {
+                        if interleave {
+                            await_navigation_interleave(action, iteration);
+                        }
                         let before = editor.read_with(cx, |view, _| {
                             view.waveform_geometry_cache
                                 .borrow_mut()

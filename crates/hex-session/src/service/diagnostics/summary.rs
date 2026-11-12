@@ -1359,6 +1359,17 @@ pub(super) fn request(value: &Request) -> Description {
             description.nested("action", self::track_clipboard(action));
             description
         }
+        Request::InsertProjectSample {
+            project_generation,
+            revision,
+            asset,
+            track,
+            start,
+            warp,
+            audition_timing,
+        } => {
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
+        }
         Request::ReorderTracks {
             project_generation,
             revision,
@@ -1490,6 +1501,7 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
+        Request::ContinueRecovery => describe!("continue_recovery"; []; omitted=""),
         Request::TogglePluginEditor {
             project_generation,
             device,

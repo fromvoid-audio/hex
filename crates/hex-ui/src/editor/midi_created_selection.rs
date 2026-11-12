@@ -275,7 +275,11 @@ impl EditorView {
             }
         }
     }
-    pub(super) fn apply_created_note_selection(&mut self, completion: Option<Completion>) {
+    pub(super) fn apply_created_note_selection(
+        &mut self,
+        completion: Option<Completion>,
+        audition: bool,
+    ) {
         let Some(completion) = completion else {
             return;
         };
@@ -306,6 +310,9 @@ impl EditorView {
                     self.error = Some(error.into());
                 } else {
                     self.clear_midi_time_selection();
+                    if audition {
+                        self.audition_midi_selection();
+                    }
                 }
             }
             Ok(None) => {}

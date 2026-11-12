@@ -18,6 +18,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -58,6 +59,7 @@ def module(name, filename):
     if filename == "hex-test-build.py":
         # Delivery authority must reflect source bytes, not a timestamp-valid pyc.
         source = _delivery_source(Path(spec.origin))
+        value._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
         exec(compile(source, spec.origin, "exec", dont_inherit=True), value.__dict__)
     else:
         spec.loader.exec_module(value)
@@ -143,6 +145,7 @@ def ready_releases(store):
 
 def publish_channel(path):
     """Advance the local channel index last, without overwriting a newer build."""
+    delivery.require_delivery_source(ROOT)
     manifest = read(path)
     if (manifest.get("schema") != 1 or manifest.get("status") != "ready"
             or manifest.get("channel") not in {"beta", "nightly", "stable"}
@@ -243,6 +246,7 @@ def prepare_notes(store, through, *, base=None, max_changes=512, timeout=300):
 
 
 def cut(args, store):
+    delivery.require_delivery_source(ROOT)
     through = source()
     version = args.version or delivery.changelog.workspace_version((ROOT / "Cargo.toml").read_text()).split("-")[0]
     if not BASE_VERSION.fullmatch(version):
@@ -325,6 +329,7 @@ def cut(args, store):
 
 
 def validate_plan(candidate):
+    delivery.require_delivery_source(ROOT)
     plan = read(candidate / "plan.json")
     if plan.get("schema") != 1 or plan.get("platform") != "macos-arm64":
         raise Refusal("unsupported release plan")
@@ -452,6 +457,7 @@ def notarize(candidate, app, plan):
 
 
 def package(candidate, *, adopt_release_target=False):
+    delivery.require_delivery_source(ROOT)
     with locked(candidate):
         plan = validate_plan(candidate)
         if (candidate / "release.json").exists():
@@ -592,6 +598,7 @@ def verify_release(path):
 
 
 def install(path):
+    delivery.require_delivery_source(ROOT)
     manifest = verify_release(path)
     configuration = read(ROOT / "scripts/hex-test-build.json")
     common = store_path().parent.parent
@@ -616,6 +623,7 @@ def install(path):
             if delivery.inventory(checked, include_receipt=True) != manifest["app_files"]:
                 raise Refusal("installation app differs from release manifest")
             subprocess.run(["ditto", str(checked), str(workspace / "stage.app")], check=True)
+        delivery.require_delivery_source(ROOT)
         delivery.activate(app, workspace / "stage.app")
         receipt = {"release_manifest": str(path), "manifest_sha256": delivery.sha(path),
                    "source": manifest["source"], "version": manifest["version"], "build": manifest["build"],

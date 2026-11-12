@@ -7,6 +7,48 @@ use hex_session::service::Request;
 use std::{path::PathBuf, sync::atomic::Ordering::Acquire};
 
 impl EditorView {
+    pub(super) fn insert_browser_project_sample(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        asset: hex_project::AssetId,
+        cx: &mut Context<Self>,
+    ) {
+        let request = (|| -> Result<Request, String> {
+            let state = self
+                .state
+                .as_ref()
+                .ok_or("sample insertion refused · no project")?;
+            if generation != self.project_generation || revision != state.revision {
+                return Err("sample insertion canceled · project changed".into());
+            }
+            state
+                .project
+                .existing_import_frames(asset)
+                .map_err(|_| "sample insertion refused · source is unavailable")?;
+            let (track, start, audition_timing) = self.browser_insertion_target(cx)?;
+            Ok(Request::InsertProjectSample {
+                project_generation: generation,
+                revision,
+                asset,
+                track,
+                start,
+                warp: hex_project::AudioImportWarp::Off,
+                audition_timing,
+            })
+        })();
+        match request {
+            Ok(request) => {
+                if self.enqueue(request) {
+                    self.stop_browser_preview_for_drop();
+                    self.error = None;
+                }
+            }
+            Err(error) => self.error = Some(error.into()),
+        }
+        cx.notify();
+    }
+
     pub(super) fn insert_browser_audio(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let result = self.browser_insertion_request(path, cx);
         match result {
@@ -49,6 +91,28 @@ impl EditorView {
         if self.browser_place_unavailable() {
             return Err("sample insertion refused · source is unavailable".into());
         }
+        let (track, start, audition_timing) = self.browser_insertion_target(cx)?;
+        Request::browser_audio_batch(
+            path,
+            track,
+            start,
+            AudioBatchContext {
+                project_generation: self.project_generation,
+                revision: self
+                    .state
+                    .as_ref()
+                    .ok_or("sample insertion refused · no project")?
+                    .revision,
+                active_gesture: false,
+            },
+            audition_timing,
+        )
+    }
+
+    fn browser_insertion_target(
+        &self,
+        cx: &gpui::App,
+    ) -> Result<(hex_project::TrackId, u64, Option<BrowserAuditionTiming>), String> {
         if self.mode != EditorMode::Arrangement {
             return Err("sample insertion refused · select an arrangement track".into());
         }
@@ -92,16 +156,6 @@ impl EditorView {
                     transport_epoch: epoch,
                 })
         });
-        Request::browser_audio_batch(
-            path,
-            track,
-            start,
-            AudioBatchContext {
-                project_generation: self.project_generation,
-                revision: state.revision,
-                active_gesture: false,
-            },
-            audition_timing,
-        )
+        Ok((track, start, audition_timing))
     }
 }

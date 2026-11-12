@@ -34,7 +34,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
     press(&editor, &mut visual);
     let deadline = crate::test_wait::hang_deadline();
     let observation = loop {
-        if let Ok(view) = editor.read_with(&visual, |v, _| v.service.try_duplicate_view()) {
+        if let Ok(view) = editor.read_with(&visual, |v, _| v.service.try_arrangement_edit_view()) {
             break view;
         }
         assert!(Instant::now() < deadline, "committed duplicate observation");
@@ -50,10 +50,11 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
     let selector = Box::leak(format!("clip-name-{}", copied.value()).into_boxed_str());
     assert!(visual.debug_bounds(selector).is_none());
     editor.update(&mut visual, |v, cx| {
-        assert!(!v.observe_duplicate_view(DuplicateViewObservation {
+        assert!(!v.observe_duplicate_view(ArrangementEditViewObservation {
             project_generation: observation.project_generation + 1,
+            first_previous_revision: observation.first_previous_revision,
             previous_revision: observation.previous_revision,
-            created: observation.created,
+            kind: observation.kind,
             state: Arc::downgrade(&observed),
         }));
         assert!(v.arrangement_duplicate_view().is_none());
@@ -85,10 +86,11 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert_eq!(v.selected_clip, Some(copied));
         assert!(!v.duplicate_intent.is_pending());
         assert!(v.arrangement_duplicate_view().is_none());
-        assert!(!v.observe_duplicate_view(DuplicateViewObservation {
+        assert!(!v.observe_duplicate_view(ArrangementEditViewObservation {
             project_generation: v.project_generation,
+            first_previous_revision: observed.revision - 1,
             previous_revision: observed.revision - 1,
-            created: terminal_created,
+            kind: ArrangementEditViewKind::Duplicate(terminal_created),
             state: Arc::downgrade(&observed),
         }));
         cx.notify();

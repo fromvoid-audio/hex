@@ -7,6 +7,24 @@ use std::{fs, thread, time::Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
+#[test]
+fn captured_resident_audition_uses_the_same_conversion_after_path_removal() {
+    let directory = TestDir::new();
+    let path = directory.0.join("resident.wav");
+    fs::write(
+        &path,
+        wav_at(48_000, &[8192, -4096, 2048, -1024].repeat(32)),
+    )
+    .unwrap();
+    let sources = PreviewSources::default();
+    let captured = sources.source(&path, &RUNNING).unwrap();
+    let expected = sources.prepare_playback(&path, 44_100, &RUNNING).unwrap();
+    fs::remove_file(path).unwrap();
+    let actual = PreviewSources::prepare_resident_playback(&captured, 44_100, &RUNNING).unwrap();
+    assert_eq!(actual.sample_rate(), 44_100);
+    assert_eq!(actual.frames(), expected.frames());
+}
+
 /// Uncached single-job playback, as a fresh browser would prepare it.
 fn playback(path: impl AsRef<Path>, rate: u32) -> Result<Audio, String> {
     PreviewSources::default()

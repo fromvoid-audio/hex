@@ -1397,6 +1397,17 @@ impl Playback {
         }
     }
 
+    /// At an accepted, same-project fresh seek, release old authored gates on
+    /// any exact retained foreign instrument. The destination owns transport
+    /// and all internal DSP history. Call only after the final publication
+    /// decision, while the predecessor still owns its accepted note ledger.
+    pub fn cut_retained_foreign_gates_for_fresh_seek(&mut self, previous: &mut Self) {
+        if let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)
+        {
+            next.cut_retained_foreign_gates_from(old);
+        }
+    }
+
     fn reset_metronome(&mut self) {
         if let Some(metronome) = self.metronome.as_mut() {
             metronome.reset();
@@ -1489,16 +1500,16 @@ impl Playback {
             })
     }
 
-    /// Callback-owned boundary for a prepared section seek. The caller keeps
+    /// Callback-owned boundary for a prepared quantized seek. The caller keeps
     /// the current graph rendering until this frame, then installs the fresh
     /// preroll candidate using ordinary seek discontinuity semantics.
-    pub fn section_launch_frame(
+    pub fn quantized_seek_frame(
         &self,
         quantization: crate::LaunchQuantization,
     ) -> Result<u64, Invalid> {
         self.session_runtime
             .as_ref()
-            .ok_or(Invalid("section launch requires prepared session timing"))?
+            .ok_or(Invalid("quantized seek requires prepared session timing"))?
             .scheduled_at(quantization)
             .map(|(frame, _)| frame)
             .map_err(|error| Invalid(error.diagnostic_message()))
