@@ -784,6 +784,14 @@ mod tests {
         }
         let destination = NewTrackMoveDestination::new(Arc::from("track 2"), before, 1.25).unwrap();
         single.destination = ArrangementMoveDestination::NewTrack(destination);
+        let mut at_end = single.clone();
+        at_end.destination = ArrangementMoveDestination::NewTrack(
+            NewTrackMoveDestination::new(Arc::from("track 2"), None, 1.25).unwrap(),
+        );
+        assert_eq!(
+            at_end.identity().destination,
+            ClipMovePreviewDestination::NewTrack { before_track: None }
+        );
         let mut invalid_group = single.clone();
         invalid_group.clips = vec![single.anchor, single.anchor].into();
         assert!(!invalid_group.valid());
