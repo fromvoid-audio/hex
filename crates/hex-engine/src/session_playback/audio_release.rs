@@ -19,8 +19,9 @@
 //! track: it renders through the same source stage, mix and page provider as
 //! the owner it replaces, for resident and streamed clips alike, and stream
 //! demand covers its pages. Stop and seek clear it with the other release
-//! history. A revision handoff keeps it only while the new revision still has
-//! the same clip on the same track; otherwise it ends with the replaced source.
+//! history. A revision handoff keeps it only while both revisions have the
+//! same clip, track and prepared source mapping; otherwise it ends rather than
+//! rendering the replacement as the outgoing source.
 //!
 //! Capacity: an active release counts one entry against the shared Session
 //! release capacity, and a pending transition away from Session audio reserves
