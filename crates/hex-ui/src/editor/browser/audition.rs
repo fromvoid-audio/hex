@@ -112,12 +112,20 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let down = f32::from(event.position.y);
-        if !down.is_finite() || self.browser.preview_selected.is_none() {
+        let project_sample_key = self.browser_selected_item(cx).filter(|key| {
+            matches!(key, BrowserItemKey::ProjectSample(..))
+                && self.browser_history_index(key, cx).is_some()
+                && self.project_sample_waveform(key).is_some()
+        });
+        if !down.is_finite()
+            || (self.browser.preview_selected.is_none() && project_sample_key.is_none())
+        {
             return;
         }
         let initial = self.browser.audition_gain;
         let owner = cx.entity().downgrade();
         let cancelled = owner.clone();
+        let captured_project_key = project_sample_key.clone();
         if !window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
@@ -138,7 +146,11 @@ impl EditorView {
                         return;
                     }
                     if view.browser.open
-                        && view.browser.preview_selected.is_some()
+                        && (view.browser.preview_selected.is_some()
+                            || captured_project_key.as_ref().is_some_and(|key| {
+                                view.browser_selected_item(cx).as_ref() == Some(key)
+                                    && view.browser_history_index(key, cx).is_some()
+                            }))
                         && view.browser.results_focus.is_focused(window)
                         && y.is_finite()
                     {
@@ -179,7 +191,16 @@ impl EditorView {
             |entry| entry.name.clone(),
         );
         let sample = entry.filter(|entry| entry.kind == EntryKind::WaveAudio);
-        let volume = sample.as_ref().map(|_| self.audition_volume(cx));
+        let selected_project_key = self.browser_selected_item(cx).and_then(|key| {
+            (matches!(key, BrowserItemKey::ProjectSample(..))
+                && self.browser_history_index(&key, cx).is_some())
+            .then_some(key)
+        });
+        let project_waveform = selected_project_key
+            .as_ref()
+            .and_then(|key| self.project_sample_waveform(key));
+        let project_key = selected_project_key;
+        let volume = (sample.is_some() || project_key.is_some()).then(|| self.audition_volume(cx));
         let active = matches!(
             self.browser.playback_phase,
             Phase::Preparing | Phase::Playing
@@ -198,6 +219,7 @@ impl EditorView {
             cx,
         );
         let path = sample.as_ref().map(|entry| entry.path.clone());
+        let transport_project_key = project_key.clone();
         let control = self.audition_control(
             "browser-audition-transport",
             if active { "■" } else { "▶" },
@@ -216,6 +238,12 @@ impl EditorView {
                 ) {
                     view.cancel_browser_sample_playback();
                     view.status = "sample preview stopped".into();
+                } else if let Some(key) = &transport_project_key {
+                    if view.browser_history_index(key, cx).is_some()
+                        && view.project_sample_current(key)
+                    {
+                        view.play_browser_project_sample_from(key, 0.0, cx);
+                    }
                 } else if let Some(path) = &path {
                     view.play_browser_sample(path.clone(), cx);
                 }
@@ -223,11 +251,15 @@ impl EditorView {
             cx,
         );
         let click_path = sample.as_ref().map(|entry| entry.path.clone());
+        let click_project_key = project_key.clone();
         let bounds = Rc::clone(&self.browser.waveform_bounds);
         let measured_bounds = Rc::clone(&bounds);
-        let fraction = if sample
+        let fraction = if project_key
             .as_ref()
-            .is_some_and(|entry| self.browser.playback_path.as_ref() == Some(&entry.path))
+            .is_some_and(|key| self.browser.playback_project_sample.as_ref() == Some(key))
+            || sample
+                .as_ref()
+                .is_some_and(|entry| self.browser.playback_path.as_ref() == Some(&entry.path))
         {
             self.browser.playback_fraction
         } else {
@@ -249,20 +281,38 @@ impl EditorView {
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
-                    if let (Some(path), Some(bounds)) = (&click_path, bounds.get())
+                    if let Some(bounds) = bounds.get()
                         && let Some(fraction) = hit_fraction(
                             f32::from(event.position.x),
                             f32::from(bounds.left()),
                             f32::from(bounds.size.width),
                         )
                     {
-                        view.play_browser_sample_from(path.clone(), fraction, cx);
-                        cx.notify();
+                        if let Some(key) = &click_project_key {
+                            if view.browser_history_index(key, cx).is_some()
+                                && view.project_sample_current(key)
+                            {
+                                view.play_browser_project_sample_from(key, fraction, cx);
+                                cx.notify();
+                            }
+                        } else if let Some(path) = &click_path {
+                            view.play_browser_sample_from(path.clone(), fraction, cx);
+                            cx.notify();
+                        }
                     }
                 }),
             );
         self.browser.preview_selected = None;
-        if let Some(entry) = sample {
+        if let Some(project_source) = project_waveform {
+            waveform = waveform.child(super::super::overview_waveform::render(
+                super::super::overview_waveform::Source::Browser(project_source),
+                Rc::clone(&self.overview_waveform_cache),
+                None,
+            ));
+            let label = fallback.clone();
+            waveform =
+                waveform.tooltip(move |_, cx| super::layout::browser_label_tooltip(&label, cx));
+        } else if let Some(entry) = sample {
             let rate = self
                 .state
                 .as_ref()
