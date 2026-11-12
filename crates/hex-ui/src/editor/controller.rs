@@ -2330,7 +2330,7 @@ impl EditorView {
             .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
-        self.midi_drag_request_complete(&event);
+        let midi_edit_audition = self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
         self.locators.observe(self.project_generation, &event);
@@ -3260,7 +3260,14 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
-        self.apply_created_note_selection(created_note_selection);
+        use super::midi_pending_drag::EditAudition;
+        let clip = self.detail_clip_id();
+        let audition_created =
+            matches!(midi_edit_audition, Some(EditAudition::Created(id)) if clip == Some(id));
+        self.apply_created_note_selection(created_note_selection, audition_created);
+        if matches!(midi_edit_audition, Some(EditAudition::Moved(id)) if clip == Some(id)) {
+            self.audition_midi_selection();
+        }
         self.apply_completed_midi_step(midi_step_complete);
         if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
             self.install_drop_cursor(cursor);

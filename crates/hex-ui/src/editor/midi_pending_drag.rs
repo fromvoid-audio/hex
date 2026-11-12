@@ -4,7 +4,7 @@
 //! overwrite resolution and history remain project/Session responsibilities.
 use super::{
     EditorView,
-    midi_drag::NoteGesture,
+    midi_drag::{GestureKind, HitKind, NoteGesture},
     midi_group_drag::GroupGesture,
     pending_edit::{Disposition, Receipt},
 };
@@ -14,13 +14,47 @@ use std::sync::Arc;
 
 pub(super) enum Frozen {
     Single(NoteGesture),
-    /// Keyboard edits retain ordinary canonical paint until their exact ACK;
-    /// this retains only the source-origin adjustment, never held pointer input.
-    OriginNudge,
+    /// Keyboard moves retain canonical paint and use the receipt for source
+    /// origin changes and audition.
+    Nudge,
     Group(GroupGesture),
     Creation(MidiNoteInsert),
     Velocity(super::midi_velocity::Gesture),
     Stroke(Arc<super::midi_stroke::StrokePreview>),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum EditAudition {
+    Created(ClipId),
+    Moved(ClipId),
+}
+
+impl Frozen {
+    fn audition(&self, clip: ClipId, command: &Command) -> Option<EditAudition> {
+        match self {
+            Self::Creation(_) => Some(EditAudition::Created(clip)),
+            Self::Stroke(_)
+                if matches!(
+                    command,
+                    Command::EditMidiNotes { insert, .. }
+                        | Command::EditMidiNotesWithSourceExtent { insert, .. }
+                        if !insert.is_empty()
+                ) =>
+            {
+                Some(EditAudition::Created(clip))
+            }
+            Self::Single(note) if matches!(note.kind, GestureKind::Move { .. }) => {
+                Some(EditAudition::Moved(clip))
+            }
+            Self::Group(group) if group.kind() == HitKind::Move => Some(if group.is_copy() {
+                EditAudition::Created(clip)
+            } else {
+                EditAudition::Moved(clip)
+            }),
+            Self::Nudge => Some(EditAudition::Moved(clip)),
+            _ => None,
+        }
+    }
 }
 
 pub(super) struct Pending {
@@ -30,6 +64,7 @@ pub(super) struct Pending {
     command: Command,
     receipt: Receipt,
     preview: Frozen,
+    audition: Option<(u64, EditAudition)>,
 }
 
 pub(super) fn source_identity(project: &Project, clip: ClipId) -> Option<MidiSourceIdentity> {
@@ -163,6 +198,14 @@ impl EditorView {
         else {
             return;
         };
+        let audition = if self.midi_audition.enabled {
+            preview.audition(clip, &command).map(|intent| {
+                self.cancel_midi_audition();
+                (self.midi_selection.epoch(), intent)
+            })
+        } else {
+            None
+        };
         self.pending_midi_drag = Some(Pending {
             generation: self.project_generation,
             clip,
@@ -170,6 +213,7 @@ impl EditorView {
             command: command.clone(),
             receipt: Receipt::new(self.project_generation),
             preview,
+            audition,
         });
         if !self.enqueue(Request::Edit(command)) {
             self.retire_pending_midi_drag();
@@ -253,22 +297,23 @@ impl EditorView {
     /// Run before state installation in the same synchronous receive. Both
     /// success and refusal replace pending paint with the terminal's canonical
     /// snapshot atomically; earlier completions and background events do not.
-    pub(super) fn midi_drag_request_complete(&mut self, event: &Event) {
-        let disposition = self.pending_midi_drag.as_mut().map(|pending| {
-            pending.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            )
-        });
-        if disposition == Some(Disposition::Waiting) || disposition.is_none() {
-            return;
+    pub(super) fn midi_drag_request_complete(&mut self, event: &Event) -> Option<EditAudition> {
+        let disposition = self.pending_midi_drag.as_mut()?.receipt.observe(
+            self.project_generation,
+            event.project_replaced,
+            event.request_complete && !event.plugin_parameter_observation,
+        );
+        if disposition == Disposition::Waiting {
+            return None;
         }
-        if disposition == Some(Disposition::Terminal)
-            && event.error.is_none()
-            && let Some(pending) = self.pending_midi_drag.as_ref()
-            && let Command::UpdateMidiNotesWithSourcePrefix { clip, prefix, .. } = pending.command
-            && pending.source_current(self)
+        let pending = self.pending_midi_drag.take()?;
+        if disposition != Disposition::Terminal
+            || event.error.is_some()
+            || !pending.source_current(self)
+        {
+            return None;
+        }
+        if let Command::UpdateMidiNotesWithSourcePrefix { clip, prefix, .. } = pending.command
             && self
                 .state
                 .as_ref()
@@ -288,7 +333,23 @@ impl EditorView {
                 prefix.raw(),
             );
         }
-        self.retire_pending_midi_drag();
+        let (epoch, audition) = pending.audition?;
+        // The command's exact terminal supplies the edited source. The
+        // controller will audition it after installing notes and selection.
+        (self.midi_audition.enabled
+            && self.clip_view_open
+            && !self.opening_project
+            && !self.close_prompt_open
+            && self.detail_clip_id() == Some(pending.clip)
+            && self.midi_selection.epoch() == epoch
+            && self.state.as_ref()?.revision.checked_add(1) == Some(event.state.revision))
+        .then_some(audition)
+    }
+
+    pub(super) fn cancel_pending_midi_edit_audition(&mut self) {
+        if let Some(pending) = self.pending_midi_drag.as_mut() {
+            pending.audition = None;
+        }
     }
 
     pub(super) fn retire_pending_midi_drag(&mut self) -> bool {
