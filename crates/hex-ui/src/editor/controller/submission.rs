@@ -297,7 +297,7 @@ impl EditorView {
             self.pending_created_note_selection = None;
         }
         if kinds.time_duplicate {
-            visible |= self.pending_time_range_move.take().is_some();
+            visible |= self.refuse_time_duplicate(request);
         }
         if kinds.trim {
             visible |= self.retire_pending_trim();

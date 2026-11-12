@@ -420,6 +420,118 @@ fn committed_time_copy_view_is_invalidated_by_project_replacement(cx: &mut TestA
 }
 
 #[gpui::test]
+fn queued_time_repeat_commits_before_first_terminal_and_keeps_both_views(cx: &mut TestAppContext) {
+    queued_time_repeat_with_terminal(cx, false, false);
+}
+
+#[gpui::test]
+fn recovery_warning_stops_unadmitted_repeats_but_keeps_the_committed_successor(
+    cx: &mut TestAppContext,
+) {
+    queued_time_repeat_with_terminal(cx, true, false);
+}
+
+#[gpui::test]
+fn later_selection_survives_both_committed_copy_terminals(cx: &mut TestAppContext) {
+    queued_time_repeat_with_terminal(cx, false, true);
+}
+
+fn queued_time_repeat_with_terminal(
+    cx: &mut TestAppContext,
+    recovery_warning: bool,
+    later_selection: bool,
+) {
+    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    let source = pointer_range(&mut visual, &editor, &tracks[..1]);
+    let initial_revision =
+        editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes(if recovery_warning || later_selection {
+        "d d d"
+    } else {
+        "d d"
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    let first_view = loop {
+        if let Ok(view) =
+            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+        {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "first committed copy view");
+        std::thread::yield_now();
+    };
+    let mut first_terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "first copy terminal");
+        std::thread::yield_now();
+    };
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.observe_time_range_copy_view(first_view));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let until = Instant::now() + Duration::from_millis(180);
+    let second_view = loop {
+        if let Ok(view) =
+            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+        {
+            break Some(view);
+        }
+        if Instant::now() >= until {
+            break None;
+        }
+        std::thread::yield_now();
+    };
+    let second_view =
+        second_view.expect("second copy must commit before the first terminal is installed");
+    let second_state = second_view.state.upgrade().unwrap();
+    assert_eq!(second_state.revision, initial_revision + 2);
+    let second_terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "second copy terminal");
+        std::thread::yield_now();
+    };
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.observe_time_range_copy_view(second_view));
+        assert!(Arc::ptr_eq(
+            &view.arrangement_rows_state().unwrap(),
+            &second_state
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let newer = later_selection.then(|| pointer_range(&mut visual, &editor, &tracks[1..]));
+    if recovery_warning {
+        first_terminal.error = Some("automatic recovery: test warning".into());
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(first_terminal);
+        assert!(Arc::ptr_eq(
+            &view.arrangement_rows_state().unwrap(),
+            &second_state
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.receive(second_terminal);
+        assert!(view.pending_time_range_move.is_none());
+        let range = view.normalized_time_selection().unwrap();
+        if let Some(newer) = &newer {
+            assert_eq!(&range, newer);
+        } else {
+            assert_eq!(range.start(), source.start() + 2 * source.duration());
+        }
+        assert_eq!(view.state.as_ref().unwrap().revision, initial_revision + 2);
+        cx.notify();
+    });
+}
+
+#[gpui::test]
 fn repeated_time_duplicates_queue_before_first_receipt(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, tracks, _) = fixture(cx);
     let source = pointer_range(&mut visual, &editor, &tracks);
@@ -464,11 +576,7 @@ fn keyboard_copies(cx: &mut TestAppContext, recovery_failure: bool) {
             let start = expected.end();
             let end = start + expected.duration();
             let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
-            visual.simulate_keystrokes(if recovery_failure {
-                "cmd-d cmd-d"
-            } else {
-                "cmd-d"
-            });
+            visual.simulate_keystrokes("cmd-d");
             editor.read_with(&visual, |view, _| {
                 assert!(view.pending_time_range_move.is_some())
             });
