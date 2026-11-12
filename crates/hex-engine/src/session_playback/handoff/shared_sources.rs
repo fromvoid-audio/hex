@@ -1674,6 +1674,37 @@ mod tests {
                 )
             };
             let old = prepare(editor.project());
+            // Resource-scoped preparation keeps complete predecessor evidence.
+            // Its actual retained metadata must fit the pre-construction quote.
+            let cancel = AtomicBool::new(false);
+            let resources = PreparedDeviceResources::prepare_on_control(
+                &ResidentDeviceAssets::default(),
+                editor.project(),
+                20_000_000,
+                &cancel,
+            )
+            .unwrap();
+            let scoped = PreparedRevision::prepare_with_device_resources(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(crate::SineTable::new()),
+                None,
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                resources
+                    .compiler_scan_work_on_control(editor.project())
+                    .unwrap(),
+                &cancel,
+            )
+            .unwrap();
+            let retained = scoped.device_handoff_metadata_bytes().unwrap();
+            let quoted =
+                PreparedRevision::device_handoff_metadata_construction_bytes(editor.project())
+                    .unwrap();
+            assert!(
+                retained > 0 && retained <= quoted,
+                "retained {retained}, quoted {quoted}"
+            );
             editor
                 .execute(Command::Mute {
                     track: contributor,
