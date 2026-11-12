@@ -3,6 +3,62 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
+fn clip_waveform_scale_toggle_is_independent_and_survives_view_switches(cx: &mut TestAppContext) {
+    use super::super::waveform::WaveformAmplitudeScale;
+
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.waveform_geometry_cache
+            .set_amplitude_scale(WaveformAmplitudeScale::Decibel);
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Linear
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let toggle = visual.debug_bounds("audio-waveform-scale").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+        assert_eq!(
+            view.waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+    });
+    let source = visual.debug_bounds("audio-source-tab").unwrap();
+    visual.simulate_click(source.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.audio_event_editor.source_view);
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+    });
+    let toggle = visual.debug_bounds("audio-waveform-scale").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Linear
+        );
+        assert_eq!(
+            view.waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+    });
+}
+
+#[gpui::test]
 fn retained_source_selector_dispatches_and_acknowledges_event_activation(cx: &mut TestAppContext) {
     use super::super::drag::group_drag_ui_test::pump;
     use hex_session::service::Request;
