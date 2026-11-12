@@ -909,7 +909,7 @@ class FreshTargetReservation:
             return next(entries, None) is None
 
     @classmethod
-    def _open_chain(cls, target: str) -> tuple[list[int], bool]:
+    def _open_chain(cls, target: str, *, require_empty=True) -> tuple[list[int], bool]:
         handles: list[int] = []
         try:
             flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -924,7 +924,7 @@ class FreshTargetReservation:
                         raise
                     absent = True
                     break
-            if not absent and not cls._empty(handles[-1]):
+            if require_empty and not absent and not cls._empty(handles[-1]):
                 raise TargetCacheError("fresh target is not empty")
             return handles, absent
         except BaseException:
@@ -1008,7 +1008,8 @@ class FreshTargetReservation:
             raise TargetCacheError("fresh target lock identity changed")
 
     def _verify(self, selected_target: str, *, pending: os.stat_result | None = None,
-                dev_owner: os.stat_result | None = None) -> None:
+                dev_owner: os.stat_result | None = None,
+                release_owner: os.stat_result | None = None, require_empty=True) -> None:
         """Refuse if the source, target, lock, ancestry, emptiness or state changed."""
         if (error := delivery_source_error(self._root)) is not None:
             raise TargetCacheError("fresh target source mismatch: " + error)
@@ -1019,7 +1020,7 @@ class FreshTargetReservation:
             raise TargetCacheError("selected Cargo target differs from reservation")
         try:
             self._verify_lock_identity()
-            current, absent = self._open_chain(self._target)
+            current, absent = self._open_chain(self._target, require_empty=require_empty)
             try:
                 if absent != self._absent or len(current) != len(self._handles):
                     raise TargetCacheError("fresh target presence or ancestry changed")
@@ -1027,14 +1028,14 @@ class FreshTargetReservation:
                     old, new = os.fstat(pinned), os.fstat(observed)
                     if (old.st_dev, old.st_ino) != (new.st_dev, new.st_ino):
                         raise TargetCacheError("fresh target identity or ancestry changed")
-                if not absent and not self._empty(self._handles[-1]):
+                if require_empty and not absent and not self._empty(self._handles[-1]):
                     raise TargetCacheError("fresh target is no longer empty")
             finally:
                 for descriptor in reversed(current):
                     os.close(descriptor)
             _, owner_path = target_state_paths(Path(self._target), self._lock.path.parent)
             self._require_state_entry(self._state_fd, owner_path.name, dev_owner)
-            self._require_state_entry(self._state_fd, self._release_marker_name(owner_path.name), None)
+            self._require_state_entry(self._state_fd, self._release_marker_name(owner_path.name), release_owner)
             self._require_state_entry(
                 self._state_fd, target_admission_pending_path(self._lock.path).name, pending)
             self._verify_lock_identity()
@@ -1084,7 +1085,16 @@ class FreshTargetReservation:
                 finally:
                     os.close(descriptor)
 
-    def _publish_dev_owner(self, owner_name: str, payload: bytes) -> None:
+    def _require_owner_payload(self, name: str, owner: os.stat_result, payload: bytes) -> None:
+        def open_owner(entry, flags):
+            return os.open(entry, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self._state_fd)
+
+        with open(name, "rb", opener=open_owner) as stream:
+            if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
+                    or stream.read(len(payload) + 1) != payload):
+                raise TargetCacheError("published owner marker identity or bytes changed")
+
+    def _publish_owner(self, owner_name: str, payload: bytes, *, release=False) -> os.stat_result:
         """Publish a verified owner while retaining the same cooperative lock."""
         directory = self._state_fd
         pending_name = target_admission_pending_path(self._lock.path).name
@@ -1092,9 +1102,6 @@ class FreshTargetReservation:
 
         def open_new(name, flags):
             return os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-
-        def open_owner(name, flags):
-            return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
 
         try:
             # Guarded consumers must see a durable refusal before an owner
@@ -1126,19 +1133,19 @@ class FreshTargetReservation:
                         raise original_error from cleanup_error
                     raise
             os.fsync(directory)
-            self._verify(self._target, pending=pending, dev_owner=owner)
-            with open(owner_name, "rb", opener=open_owner) as stream:
-                if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
-                        or stream.read(len(payload) + 1) != payload):
-                    raise TargetCacheError("published dev owner marker identity or bytes changed")
-            self._verify(self._target, pending=pending, dev_owner=owner)
+            owners = {"release_owner" if release else "dev_owner": owner}
+            self._verify(self._target, pending=pending, **owners)
+            self._require_owner_payload(owner_name, owner, payload)
+            self._verify(self._target, pending=pending, **owners)
             # Commit point. The verified owner is already durable. If removal
             # or its sync is interrupted, a crash may restore the sentinel or
             # leave a usable verified owner. The current caller still fails.
             os.unlink(pending_name, dir_fd=directory)
             os.fsync(directory)
+            return owner
         except OSError as error:
-            raise TargetCacheError(f"fresh dev owner publication failed: {error}") from error
+            profile = "release" if release else "dev"
+            raise TargetCacheError(f"fresh {profile} owner publication failed: {error}") from error
 
     def close(self) -> str | None:
         """Invalidate authority before closing pinned handles and releasing lock."""
@@ -1703,7 +1710,7 @@ class LocalCiRunner:
             if len(payload) > 1024 * 1024:
                 raise TargetCacheError("fresh dev owner marker exceeds the bounded publication size")
             self._load_target_owner(owner_path, target, snapshot=payload)
-            reservation._publish_dev_owner(owner_path.name, payload)
+            reservation._publish_owner(owner_path.name, payload)
             transfer = reservation._lock
             self.target_lock = transfer
             if failure := reservation._finish(transfer_lock=True):
@@ -2185,19 +2192,7 @@ class LocalCiRunner:
         except (OSError, KeyError, TypeError, ValueError) as error:
             raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
 
-    @contextmanager
-    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None,
-                        expected_recreated_target_identity: dict[str, int] | None = None,
-                        recovery_inactive_check=None, requested_build_argv: list[str] | None = None,
-                        verification_check=None):
-        """Explicit release handoff; caller must identify its artifact before exit.
-
-        Uses the dev driver's SAME target-wide lock, but a separate durable
-        marker. Exceptions leave pending ownership, requiring explicit recovery.
-        Raw Cargo commands do not participate in this cooperative contract.
-        """
-        if self.target_lock is not None:
-            raise TargetCacheError("release preparation requires an unheld runner")
+    def _prepare_release_target(self, reservation: FreshTargetReservation | None) -> tuple[Path, Path, CargoTargetLock]:
         if (error := self._execution_policy_error()) is not None:
             raise TargetCacheError("runner policy source mismatch at release admission: " + error)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -2207,18 +2202,49 @@ class LocalCiRunner:
             ci_plan.require_qualifying_inputs(self.summary["runtime_inputs"])
         except ValueError as error:
             raise TargetCacheError(str(error)) from error
-        if not self._resolve_cargo_identity() or not self._check_disk_headroom():
+        resolved = (self._resolve_cargo_identity() if reservation is None
+                    else self._resolve_cargo_identity(reservation))
+        if not resolved or not self._check_disk_headroom():
             raise TargetCacheError(f"release preparation failed: {self.summary}")
         target = Path(str(self.cargo_identity["target_directory"]))
         lock_path, dev_owner_path = target_state_paths(target, self.target_state_dir)
-        owner_path = dev_owner_path.with_name(dev_owner_path.name.replace(".owner.json", ".release-owner.json"))
+        owner_path = dev_owner_path.with_name(FreshTargetReservation._release_marker_name(dev_owner_path.name))
+        if reservation is not None:
+            return target, owner_path, reservation._lock
         lock = CargoTargetLock(lock_path, {
             "run_id": self.run_id, "profile": "release", "target_directory": str(target),
             "workspace_root": str(self.root), "commit": self.git_identity["commit"],
         })
         lock.acquire()
-        self.target_lock = lock
+        return target, owner_path, lock
+
+    @contextmanager
+    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None,
+                        expected_recreated_target_identity: dict[str, int] | None = None,
+                        recovery_inactive_check=None, requested_build_argv: list[str] | None = None,
+                        verification_check=None, reservation: FreshTargetReservation | None = None):
+        """Explicit release handoff; caller must identify its artifact before exit.
+
+        An opt-in reservation holds the original lock and target inode through
+        build completion. Its first pending owner is published create-only.
+        Ordinary callers acquire the same target-wide lock as before. Exceptions
+        leave any published pending ownership for explicit recovery.
+        """
+        lock = None
+        cache_key_name = "CARGO_CACHE_RUSTC_INFO"
+        prior_cache_setting = self.env.get(cache_key_name)
         try:
+            if self.target_lock is not None:
+                raise TargetCacheError("release preparation requires an unheld runner")
+            if reservation is not None:
+                if adopt or expected_owner_sha256 is not None or expected_recreated_target_identity is not None:
+                    raise TargetCacheError("fresh release reservation cannot adopt or recover an owner")
+                # Full metadata must leave the reserved target empty. Verify
+                # that property again before admitting the release owner.
+                self.env[cache_key_name] = "0"
+            target, owner_path, lock = self._prepare_release_target(reservation)
+            self.target_lock = lock
+            lock_path = lock.path
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed before release lock: " + error)
             self._check_target_filesystem(target)
@@ -2259,6 +2285,9 @@ class LocalCiRunner:
             if not self._capture_repository_state("release_locked_tree") or self.summary["release_locked_tree"] != self.summary["start_tree"]:
                 raise TargetCacheError("release source changed before lock acquisition")
             scope = self._release_scope()
+            if reservation is not None and (self._release_metadata.get("target_directory") != str(target)
+                    or self._release_metadata.get("workspace_root") != str(self.root)):
+                raise TargetCacheError("release metadata changed the reserved Cargo target or workspace")
             if verification_check is not None:
                 verification_check()
             cache_key = None
@@ -2271,7 +2300,15 @@ class LocalCiRunner:
             self._path_inputs = self._path_dependency_inputs()
             workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
             source = self.summary["start_tree"]
-            identity = self._directory_identity(target)
+            if reservation is not None:
+                if (not self._capture_repository_state("release_admission_tree")
+                        or self.summary["release_admission_tree"] != source):
+                    raise TargetCacheError("release source changed before fresh publication")
+                reservation._materialize_absent()
+                pinned = os.fstat(reservation._handles[-1])
+                identity = {"device": pinned.st_dev, "inode": pinned.st_ino}
+            else:
+                identity = self._directory_identity(target)
             record = None
             malformed = False
             if owner_path.exists() or owner_path.is_symlink():
@@ -2378,7 +2415,13 @@ class LocalCiRunner:
             self.summary["release_target_cache"] = report
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed before release publication: " + error)
-            self._write_release_owner(owner_path, pending)
+            if reservation is not None:
+                pending_bytes = (json.dumps(pending, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+                if len(pending_bytes) > 128 * 1024:
+                    raise TargetCacheError("fresh release owner marker exceeds the bounded publication size")
+                fresh_owner = reservation._publish_owner(owner_path.name, pending_bytes, release=True)
+            else:
+                self._write_release_owner(owner_path, pending)
             if (not reuse or invalidated or self._invalidate_dependency_profile) and populated:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
@@ -2416,21 +2459,37 @@ class LocalCiRunner:
                 raise TargetCacheError("release source changed during build")
             self._completed_workspace_inputs()
             pending["cache_inputs"] = self._cache_provenance(checked=True)
-            pending.update(state="ready", target_identity=self._directory_identity(target),
+            pending.update(state="ready", target_identity=(identity if reservation is not None
+                           else self._directory_identity(target)),
                            artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed during release: " + error)
+            if reservation is not None:
+                reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
+                reservation._require_owner_payload(owner_path.name, fresh_owner, pending_bytes)
+                reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
             self._write_release_owner(owner_path, pending)
             report["state"] = "ready"
         except BaseException as error:
-            self.summary["release_target_error"] = {"type": type(error).__name__, "message": str(error)}
+            if lock is not None:
+                self.summary["release_target_error"] = {"type": type(error).__name__, "message": str(error)}
             raise
         finally:
             try:
-                self._write_summary()
+                if lock is not None:
+                    self._write_summary()
             finally:
-                error = lock.release()
-                self.target_lock = None
+                if lock is not None:
+                    self.target_lock = None
+                if reservation is not None:
+                    self._cargo_reservation = None
+                    if prior_cache_setting is None:
+                        self.env.pop(cache_key_name, None)
+                    else:
+                        self.env[cache_key_name] = prior_cache_setting
+                    error = reservation.close()
+                else:
+                    error = lock.release() if lock is not None else None
             if error:
                 raise TargetCacheError(error)
 
