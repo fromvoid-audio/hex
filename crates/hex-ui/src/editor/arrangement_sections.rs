@@ -496,8 +496,8 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
-    /// Arrangement clip rows: the frozen structural layout until its receipt's
-    /// exact terminal (like the marker display), otherwise canonical state.
+    /// Arrangement rows display a frozen structural edit or committed copy
+    /// until its exact terminal installs the canonical state.
     pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
         let state = self.state.as_ref()?;
         self.sections
@@ -505,6 +505,7 @@ impl EditorView {
             .as_ref()
             .filter(|p| p.generation == self.project_generation)
             .and_then(|p| p.layout.clone())
+            .or_else(|| self.arrangement_duplicate_view().cloned())
             .or_else(|| Some(Arc::clone(state)))
     }
     pub(super) fn section_install_pending(&self) -> bool {

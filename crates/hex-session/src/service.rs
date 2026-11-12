@@ -385,6 +385,16 @@ pub struct SoloViewObservation {
     pub tracks: Vec<(hex_project::TrackId, bool)>,
 }
 
+/// The committed Arrangement duplication view, available before checkpoint
+/// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
+/// can acknowledge the edit, install authoring state or advance repeats.
+/// A missed observation does not keep an old project's media alive.
+pub struct DuplicateViewObservation {
+    pub project_generation: u64,
+    pub previous_revision: u64,
+    pub state: std::sync::Weak<ViewState>,
+}
+
 mod verified_device_preview;
 pub use verified_device_preview::VerifiedDeviceParameterSource;
 mod verified_gain;
@@ -1256,6 +1266,7 @@ pub struct Service {
     clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
     solo_views: Receiver<SoloViewObservation>,
+    duplicate_views: Receiver<DuplicateViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1573,6 +1584,7 @@ impl Service {
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (solo_view_tx, solo_views) = mpsc::sync_channel(1);
+        let (duplicate_view_tx, duplicate_views) = mpsc::sync_channel(1);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -1694,6 +1706,7 @@ impl Service {
                     recovery,
                     resident_seek,
                     solo_view_tx,
+                    duplicate_view_tx,
                     worker_clip_audition,
                 )
             })
@@ -1709,6 +1722,7 @@ impl Service {
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             solo_views,
+            duplicate_views,
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1731,6 +1745,11 @@ impl Service {
     /// drops the observation; the ordinary terminal remains authoritative.
     pub fn try_solo_view(&self) -> Result<SoloViewObservation, TryRecvError> {
         self.solo_views.try_recv()
+    }
+
+    /// Receive an optional display observation without consuming a terminal.
+    pub fn try_duplicate_view(&self) -> Result<DuplicateViewObservation, TryRecvError> {
+        self.duplicate_views.try_recv()
     }
 
     /// Replace the one held stretch audition target outside the canonical FIFO.
@@ -2480,6 +2499,7 @@ fn run_worker(
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
     solo_views: SyncSender<SoloViewObservation>,
+    duplicate_views: SyncSender<DuplicateViewObservation>,
     clip_audition: Arc<clip_audition::Mailbox>,
 ) {
     let mut revision = 0_u64;
@@ -2992,6 +3012,10 @@ fn run_worker(
         let solo_request = matches!(
             &request,
             Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
+        );
+        let arrangement_duplicate = matches!(
+            &request,
+            Request::DuplicateClips { .. } | Request::DuplicateAliasClips { .. }
         );
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
@@ -8903,6 +8927,17 @@ fn run_worker(
                 });
             }
         }
+        if arrangement_duplicate
+            && canonical_changed
+            && error.is_none()
+            && matches!(created, Some(Created::Clips { .. }))
+        {
+            let _ = duplicate_views.try_send(DuplicateViewObservation {
+                project_generation,
+                previous_revision: revision_before_request,
+                state: Arc::downgrade(&state),
+            });
+        }
         if let Some(untitled_path) = recovery.as_deref() {
             let journal_result = recovery_tracker.maintain(
                 recovery::RecoveryContext {
@@ -13544,6 +13579,7 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let (_solo_sender, solo_views) = mpsc::sync_channel(1);
+        let (_duplicate_sender, duplicate_views) = mpsc::sync_channel(1);
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
@@ -13557,6 +13593,7 @@ mod service_tests {
                 Arc::new(diagnostics::Hooks::default()),
             ),
             solo_views,
+            duplicate_views,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),

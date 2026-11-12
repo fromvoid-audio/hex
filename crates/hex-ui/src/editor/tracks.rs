@@ -2158,8 +2158,15 @@ impl EditorView {
                     && g.ids.binary_search(&id).is_ok()
             })
         };
+        // Section focus shows every clip in each visible row. The canonical
+        // ID cache cannot yet contain the committed duplicate's new IDs.
+        let is_duplicate_view = self
+            .arrangement_duplicate_view()
+            .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
-            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
+            if hides_group_member(clip.id())
+                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+            {
                 continue;
             }
             let Some(end) = clip.start().checked_add(clip.duration()) else {
@@ -2257,7 +2264,9 @@ impl EditorView {
             }
         }
         for clip in track.midi_clips() {
-            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
+            if hides_group_member(clip.id())
+                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+            {
                 continue;
             }
             let Some(preview) = state.midi_preview.get(clip.id()) else {
