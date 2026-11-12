@@ -417,6 +417,64 @@ mod tests {
     }
 
     #[test]
+    fn committed_time_range_view_precedes_recovery_terminal() {
+        use std::time::Duration;
+        let directory =
+            std::env::temp_dir().join(format!("hex-time-copy-display-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let before = hex_storage::load_journal(&path).unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], 0, 24_000).unwrap(),
+                track,
+                frame: 24_000,
+            }))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let observed = service.try_arrangement_edit_view().ok();
+        let terminal_early = service.try_event().is_ok();
+        let journal_before_release = hex_storage::load_journal(&path).unwrap();
+        release.send(()).unwrap();
+        let view = observed.expect("committed range-copy view must precede checkpoint terminal");
+        assert!(matches!(view.kind, ArrangementEditViewKind::TimeRangeCopy));
+        let state = view.state.upgrade().unwrap();
+        assert!(!terminal_early);
+        assert_eq!(journal_before_release, before);
+        assert_eq!(state.project.track(track).unwrap().midi_clips().len(), 2);
+        let terminal = next(&service);
+        assert!(terminal.error.is_none());
+        assert_eq!(terminal.state.revision, view.previous_revision + 1);
+        assert!(Arc::ptr_eq(&state, &terminal.state));
+        assert_eq!(hex_storage::load_journal(&path).unwrap(), *state.project);
+        service
+            .submit(Request::Edit(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], 0, 24_000).unwrap(),
+                track,
+                frame: u64::MAX,
+            }))
+            .unwrap();
+        let refused = next(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.revision, state.revision);
+        assert_eq!(*refused.state.project, *state.project);
+        assert!(matches!(
+            service.try_arrangement_edit_view(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn consecutive_time_range_copies_commit_while_first_checkpoint_is_held() {
         check_consecutive_time_range_copies(false);
     }
