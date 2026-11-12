@@ -481,6 +481,7 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             source_revision: state.revision,
             selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
+            keyboard: None,
         });
         let event = completed_event(state);
         view.move_time_selection_complete(&event);
@@ -520,6 +521,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
             source_revision: state.revision,
             selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
+            keyboard: None,
         });
         let event = completed_event(state);
         view.move_time_selection_complete(&event);

@@ -385,13 +385,14 @@ pub struct SoloViewObservation {
     pub tracks: Vec<(hex_project::TrackId, bool)>,
 }
 
-/// The committed Arrangement duplication view, available before checkpoint
+/// The committed Arrangement clip or section copy, available before checkpoint
 /// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
 /// can acknowledge the edit, install authoring state or advance repeats.
 /// A missed observation does not keep an old project's media alive.
 pub struct DuplicateViewObservation {
     pub project_generation: u64,
     pub previous_revision: u64,
+    pub created: Created,
     pub state: std::sync::Weak<ViewState>,
 }
 
@@ -3013,9 +3014,18 @@ fn run_worker(
             &request,
             Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
         );
+        let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
         let arrangement_duplicate = matches!(
             &request,
-            Request::DuplicateClips { .. } | Request::DuplicateAliasClips { .. }
+            Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::EditArrangementSection {
+                    command: Command::DuplicateArrangementSection(_)
+                        | Command::DuplicateArrangementSectionAt { .. }
+                        | Command::AppendArrangementSectionCopy { .. }
+                        | Command::ReplaceArrangementSection { copy: true, .. },
+                    ..
+                }
         );
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
@@ -8926,14 +8936,20 @@ fn run_worker(
                 });
             }
         }
-        let committed_arrangement_duplicate = arrangement_duplicate
-            && canonical_changed
-            && error.is_none()
-            && matches!(created, Some(Created::Clips { .. }));
-        if committed_arrangement_duplicate {
+        let committed_arrangement_duplicate = created.filter(|created| {
+            arrangement_duplicate
+                && canonical_changed
+                && error.is_none()
+                && matches!(
+                    created,
+                    Created::Clips { .. } | Created::ArrangementSection(_)
+                )
+        });
+        if let Some(created) = committed_arrangement_duplicate {
             let _ = duplicate_views.try_send(DuplicateViewObservation {
                 project_generation,
                 previous_revision: revision_before_request,
+                created,
                 state: Arc::downgrade(&state),
             });
         }
@@ -8952,7 +8968,9 @@ fn run_worker(
                     revision != revision_before_request,
                 )
             };
-            let journal_result = if committed_arrangement_duplicate {
+            let journal_result = if committed_arrangement_duplicate.is_some()
+                || (time_range_copy && canonical_changed && error.is_none())
+            {
                 events.measure_duplicate_recovery(maintain_recovery)
             } else {
                 maintain_recovery()

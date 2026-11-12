@@ -249,6 +249,40 @@ fn real_command_d_three_times_retains_destination_range_after_worker_and_late_ti
 fn committed_keyboard_copies_retain_range_despite_recovery_warning(cx: &mut TestAppContext) {
     keyboard_copies(cx, true);
 }
+
+#[gpui::test]
+fn repeated_time_duplicates_queue_before_first_receipt(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    let source = pointer_range(&mut visual, &editor, &tracks);
+    let (revision, mut original) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (state.revision, state.project.snapshot())
+    });
+    visual.simulate_keystrokes("d d d");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.worker_requests_pending, 1);
+        assert_eq!(view.error, None);
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision + 3);
+        let range = view.normalized_time_selection().unwrap();
+        assert_eq!(range.tracks(), source.tracks());
+        assert_eq!(range.start(), source.start() + 3 * source.duration());
+        assert_eq!(range.duration(), source.duration());
+    });
+    for _ in 0..3 {
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+    }
+    editor.read_with(&visual, |view, _| {
+        let restored = view.state.as_ref().unwrap().project.snapshot();
+        original.next_id = restored.next_id;
+        assert_eq!(restored, original);
+    });
+}
+
 fn keyboard_copies(cx: &mut TestAppContext, recovery_failure: bool) {
     for rows in [1, 2] {
         let (mut visual, editor, _environment, tracks, originals) =
@@ -261,7 +295,11 @@ fn keyboard_copies(cx: &mut TestAppContext, recovery_failure: bool) {
             let start = expected.end();
             let end = start + expected.duration();
             let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
-            visual.simulate_keystrokes("cmd-d");
+            visual.simulate_keystrokes(if recovery_failure {
+                "cmd-d cmd-d"
+            } else {
+                "cmd-d"
+            });
             editor.read_with(&visual, |view, _| {
                 assert!(view.pending_time_range_move.is_some())
             });
@@ -824,7 +862,8 @@ fn console_navigation_without_target_keeps_pending_copy_intent(cx: &mut TestAppC
 fn actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, tracks, _) = fixture(cx);
     let _ = pointer_range(&mut visual, &editor, &tracks[..1]);
-    visual.simulate_keystrokes("cmd-d");
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("cmd-d cmd-d");
     editor.read_with(&visual, |view, _| {
         assert!(
             view.pending_time_range_move.is_some(),
@@ -847,6 +886,7 @@ fn actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack(cx: &mut 
         );
         assert_eq!(view.selected_track, Some(tracks[1]));
         assert!(view.selected_clip.is_none());
+        assert_eq!(view.state.as_ref().unwrap().revision, revision + 1);
     });
 }
 
@@ -861,9 +901,18 @@ fn escape_before_submission_cancels_copy_but_after_submission_only_cancels_selec
             view.state.as_ref().unwrap().project.snapshot()
         });
         if submitted {
-            visual.simulate_keystrokes("cmd-d");
+            let presses = vec!["d"; usize::from(MAX_QUEUED_REPEATS) + 2].join(" ");
+            visual.simulate_keystrokes(&presses);
             editor.read_with(&visual, |view, _| {
-                assert!(view.pending_time_range_move.is_some())
+                let pending = view.pending_time_range_move.as_ref().unwrap();
+                assert_eq!(
+                    pending.keyboard.as_ref().unwrap().repeats,
+                    Some(MAX_QUEUED_REPEATS)
+                );
+                assert_eq!(
+                    view.error.as_deref(),
+                    Some("duplicate queue full · maximum 32 queued repeats")
+                );
             });
         } else {
             let row = lane(&mut visual, tracks[0]);
@@ -947,6 +996,7 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
             source_revision: before.revision,
             selection_intent_epoch: view.selection_intent_epoch.unwrap(),
             copy_modifier: true,
+            keyboard: None,
         });
     });
     pump(&editor, &mut visual);

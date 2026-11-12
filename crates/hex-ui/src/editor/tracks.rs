@@ -2167,6 +2167,7 @@ impl EditorView {
         // ID cache cannot yet contain the committed duplicate's new IDs.
         let is_duplicate_view = self
             .arrangement_duplicate_view()
+            .or_else(|| self.committed_section_copy_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
             if hides_group_member(clip.id())
