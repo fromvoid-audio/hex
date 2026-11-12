@@ -57,6 +57,7 @@ fn arrangement_elapsed_row_tracks_frames_above_beats_under_pan_and_zoom(cx: &mut
             cx.notify();
         });
         visual.run_until_parked();
+        surface(&mut visual, "arrangement-time-ruler", 24.0);
         let ruler = visual.debug_bounds("timeline-ruler").unwrap();
         let elapsed = visual.debug_bounds("arrangement-elapsed-row").unwrap();
         let beats = visual.debug_bounds("arrangement-beat-row").unwrap();
@@ -91,7 +92,7 @@ fn arrangement_audio_and_midi_share_timeline_surface_styling(cx: &mut TestAppCon
         for width in [1280.0, 960.0] {
             visual.simulate_resize(size(px(width), px(800.0)));
             visual.run_until_parked();
-            surface(&mut visual, "arrangement-time-ruler", 36.0);
+            surface(&mut visual, "arrangement-time-ruler", 24.0);
             surface(&mut visual, "arrangement-loop-rail-row", 18.0);
             surface(&mut visual, "midi-source-ruler", 24.0);
             surface(&mut visual, "midi-loop-ruler", 18.0);
