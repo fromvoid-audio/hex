@@ -4780,3 +4780,127 @@ fn held_group_audition_reuses_all_selected_members(cx: &mut TestAppContext) {
     drop(visual);
     fixture.finish(cx);
 }
+
+/// Opt-in headless measurement of the real pointer-to-worker-to-callback path.
+/// Callback buffers are pumped by the test, not by a physical audio device.
+#[gpui::test]
+#[ignore = "opt-in optimized held clip audition admission latency probe"]
+fn held_clip_audition_admission_latency(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    use std::time::{Duration, Instant};
+
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let mut commands = Vec::new();
+    let mut edit = |command: Command| {
+        let result = model.execute(command.clone()).unwrap();
+        commands.push(command);
+        result
+    };
+    let device = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let Created::Track(track) = edit(Command::InsertTrackWithDevice {
+        name: "instrument".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: device,
+    }) else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ONE,
+        length: BeatTime::from_quarters(2).unwrap(),
+    }) else {
+        panic!("clip")
+    };
+    edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    });
+    let mut fixture = super::worker_ui_fixture::open_with_audition_readiness(cx, commands, true);
+    let editor = fixture.editor.clone();
+    let original = editor.read_with(cx, |view, _| {
+        Arc::clone(&view.state.as_ref().unwrap().project)
+    });
+    editor.update(cx, |view, _| {
+        view.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(hex_engine::PlaybackCommand::Play)
+            .unwrap();
+    });
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    let (_, destination) = drag_source_to_target(cx, &mut visual, &editor, clip, 0, 90.0);
+    let mut samples = Vec::new();
+    let mut prior = editor.read_with(&visual, |view, _| view.expected_clip_preview.unwrap());
+    for iteration in 0..16 {
+        let x = destination.x + px(if iteration % 2 == 0 { 50.0 } else { 110.0 });
+        let started = Instant::now();
+        visual.simulate_mouse_move(
+            point(x, destination.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let target = editor.read_with(&visual, |view, _| view.expected_clip_preview.unwrap());
+        assert_eq!(target.gesture, prior.gesture);
+        assert!(
+            target.sequence > prior.sequence,
+            "each pointer position must change the target"
+        );
+        let deadline = started + Duration::from_secs(3);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let applied = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.applied_clip_preview.is_some_and(|(revision, actual)| {
+                    actual == target
+                        && view.audio_status().unwrap().applied_revision.load(Acquire) == revision
+                })
+            });
+            if applied {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "target did not reach the callback: {target:?}"
+            );
+            std::thread::yield_now();
+        }
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        if iteration >= 4 {
+            samples.push(elapsed);
+        }
+        prior = target;
+    }
+    editor.read_with(&visual, |view, _| {
+        assert!(view.active_clip_drag.is_some());
+        assert_eq!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            original.as_ref()
+        );
+    });
+    let mut ordered = samples.clone();
+    ordered.sort_by(f64::total_cmp);
+    println!(
+        "held_clip_audition_ms samples={samples:?} median={} p95_nearest_rank={} max={} warmups=4 measured=12 sample_rate=48000 block_frames=64 tracks=1 midi_clips=1 notes=1 window=1280x800 backend=headless_pumped",
+        (ordered[ordered.len() / 2 - 1] + ordered[ordered.len() / 2]) / 2.0,
+        ordered[(ordered.len() * 95).div_ceil(100) - 1],
+        ordered[ordered.len() - 1]
+    );
+    editor.update(&mut visual, |view, _| {
+        view.retire_active_clip_drag();
+    });
+    drop(visual);
+    fixture.finish(cx);
+}
