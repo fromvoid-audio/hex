@@ -559,6 +559,7 @@ struct Sink {
     events: SyncSender<EditorAudioEvent>,
     hold: Arc<AtomicBool>,
     held: Arc<Mutex<Option<EditorAudioEvent>>>,
+    consume_next_inherited_candidate: Option<Arc<AtomicBool>>,
     reject_next_fresh: Arc<AtomicBool>,
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
@@ -569,12 +570,14 @@ struct Sink {
 pub(in crate::editor) fn worker_fixture_sink(
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    consume_next_inherited_candidate: Arc<AtomicBool>,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
         events,
         hold: Arc::new(AtomicBool::new(false)),
         held: Arc::new(Mutex::new(None)),
+        consume_next_inherited_candidate: Some(consume_next_inherited_candidate),
         reject_next_fresh: Arc::new(AtomicBool::new(false)),
         cancel_next_fresh: Arc::new(AtomicBool::new(false)),
         cancellation_done: Arc::new(AtomicBool::new(false)),
@@ -798,7 +801,7 @@ impl WorkerAudioSink for Sink {
     }
     fn publish_resident(
         &mut self,
-        playback: Playback,
+        mut playback: Playback,
         _: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
         observation: Arc<PreparedPlaybackObservation>,
         metadata: ResidentPublicationMetadata,
@@ -816,6 +819,16 @@ impl WorkerAudioSink for Sink {
         }
         let cancel_fresh = matches!(policy, ResidentPublicationPolicy::InstallFreshRuntime)
             && self.cancel_next_fresh.swap(false, AcqRel);
+        if matches!(policy, ResidentPublicationPolicy::InheritRuntime)
+            && self
+                .consume_next_inherited_candidate
+                .as_ref()
+                .is_some_and(|armed| armed.swap(false, AcqRel))
+        {
+            // A used candidate refuses ordinary inheritance on the actual
+            // callback. The worker still owns its committed prepared revision.
+            playback.apply(PlaybackCommand::Stop);
+        }
         let control = self.output.publication.control().unwrap();
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
@@ -1109,6 +1122,7 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             events,
             hold: Arc::clone(&hold),
             held: Arc::clone(&held),
+            consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::clone(&reject_next_fresh),
             cancel_next_fresh: Arc::clone(&cancel_next_fresh),
             cancellation_done: Arc::clone(&cancellation_done),
@@ -1325,6 +1339,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             events,
             hold: hold.clone(),
             held: held.clone(),
+            consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::new(AtomicBool::new(false)),
             cancel_next_fresh: Arc::new(AtomicBool::new(false)),
             cancellation_done: Arc::new(AtomicBool::new(false)),

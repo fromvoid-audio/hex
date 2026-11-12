@@ -555,8 +555,13 @@ impl EditorView {
                             .and_then(|metadata| metadata.tuning_preview),
                     });
                 }
+                // A section seek repairing a refused loop leaves the current
+                // admission in place until the callback applies the seek.
                 if metadata.is_none_or(|metadata| {
-                    metadata.device_preview.is_none() && metadata.tuning_preview.is_none()
+                    metadata.device_preview.is_none()
+                        && metadata.tuning_preview.is_none()
+                        && (metadata.seek_request.is_none()
+                            || self.applied_project_revision == Some(authoring_revision))
                 }) {
                     self.audio_admission.published(
                         super::audio_admission::ProjectRevision {
@@ -1369,6 +1374,11 @@ impl EditorView {
             .prepared_seek
             .as_ref()
             .and_then(|pending| self.native_seek_applied_source(pending));
+        let applied_section_source = applied_seek_source.filter(|_| {
+            self.prepared_seek.as_ref().is_some_and(|pending| {
+                pending.kind.section().is_some() && pending.device_preview_identity.is_none()
+            })
+        });
         let current_seek_source = self
             .prepared_seek
             .as_ref()
@@ -1550,7 +1560,16 @@ impl EditorView {
             .control
             .status()
             .and_then(|status| status.rejected_revision())
-            .filter(|(revision, _)| *revision > self.observed_rejected_revision);
+            .filter(|(revision, _)| {
+                // The callback can refuse before the worker sends the view
+                // metadata. Reconcile that exact candidate when it arrives.
+                *revision > self.observed_rejected_revision
+                    || (*revision == self.observed_rejected_revision
+                        && self
+                            .playback_candidates
+                            .iter()
+                            .any(|candidate| candidate.audio_revision == *revision))
+            });
         if let Some((audio_revision, reason)) = rejected_revision {
             if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
                 && let Some(output) = audio.control.output_identity()
@@ -1739,7 +1758,19 @@ impl EditorView {
                         candidate.state.project.tuning(),
                     );
                 }
-                if candidate.project_generation == self.project_generation
+                let applied_section = candidate.seek_request_id.is_some_and(|request| {
+                    applied_section_source == Some((request, candidate.audio_revision))
+                });
+                if candidate.project_generation == self.project_generation && applied_section {
+                    self.applied_project_revision = Some(candidate.state.revision);
+                    visible_change |= self.audio_admission.applied(
+                        super::audio_admission::ProjectRevision {
+                            generation: candidate.project_generation,
+                            revision: candidate.state.revision,
+                        },
+                        candidate.audio_revision,
+                    );
+                } else if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
@@ -6028,6 +6059,53 @@ mod sampler_native_ui_protocol_tests {
                 view.audio = None;
                 return;
             }
+
+            // Deliver a callback refusal before its protected worker metadata.
+            let control = output.publication.control().unwrap();
+            let fence = control.capture_fresh_runtime_fence().unwrap();
+            let rejected = control
+                .publish_with_policy_and_context_generation(
+                    hex_engine::playback::Playback::try_from_prepared_with_device_resources(
+                        Arc::clone(&prepared),
+                        &resources,
+                    )
+                    .unwrap(),
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                    context.project_generation,
+                )
+                .unwrap();
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(rejected),
+                hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(view.observed_rejected_revision, rejected);
+            view.audio_admission.canonical_revision(
+                super::super::audio_admission::ProjectRevision {
+                    generation: context.project_generation,
+                    revision: canonical.revision,
+                },
+            );
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: rejected,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(matches!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Rejected(_)
+            ));
+            assert!(view.playback_candidates.is_empty());
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                canonical_revision
+            );
 
             // A real metadata-only comparison retains the old source context. A subsequent
             // runtime publication uses the current authored revision and must not wait forever.

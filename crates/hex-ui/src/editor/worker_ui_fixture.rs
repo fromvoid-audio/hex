@@ -6,7 +6,7 @@ use crate::editor_backend::EditorAudio;
 use gpui::{AppContext, Entity, TestAppContext};
 use hex_session::service::{Event, Request, Service};
 use std::{
-    sync::{MutexGuard, mpsc::sync_channel},
+    sync::{Arc, MutexGuard, atomic::AtomicBool, mpsc::sync_channel},
     time::{Duration, Instant},
 };
 
@@ -14,6 +14,7 @@ pub(super) struct WorkerUiFixture {
     pub handle: gpui::AnyWindowHandle,
     pub editor: Entity<EditorView>,
     pub backend: hex_audio::worker_fixture::HeadlessBackend,
+    consume_next_inherited_candidate: Arc<AtomicBool>,
     _serial: MutexGuard<'static, ()>,
 }
 
@@ -62,11 +63,16 @@ pub(super) fn open(
         .unwrap();
     let client = output.take_client().unwrap();
     let (events, receiver) = sync_channel(64);
+    let consume_next_inherited_candidate = Arc::new(AtomicBool::new(false));
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         8_000_000,
         None,
-        super::recovery::tests::worker_fixture_sink(output, events),
+        super::recovery::tests::worker_fixture_sink(
+            output,
+            events,
+            Arc::clone(&consume_next_inherited_candidate),
+        ),
         reservation,
     )
     .unwrap();
@@ -136,6 +142,7 @@ pub(super) fn open(
         handle,
         editor,
         backend,
+        consume_next_inherited_candidate,
         _serial: serial,
     }
 }
@@ -165,10 +172,19 @@ mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, VisualTestContext};
     use hex_project::{BeatTime, Command, ElementColor, LoopRegion};
-    use std::sync::atomic::Ordering::Acquire;
+    use std::sync::atomic::Ordering::{Acquire, Release};
 
     #[gpui::test]
     fn section_button_plays_once_and_l_click_uses_the_visible_loop(cx: &mut TestAppContext) {
+        section_button_case(cx, false);
+    }
+
+    #[gpui::test]
+    fn section_button_launches_after_live_loop_handoff_refusal(cx: &mut TestAppContext) {
+        section_button_case(cx, true);
+    }
+
+    fn section_button_case(cx: &mut TestAppContext, refuse_loop_handoff: bool) {
         cx.update(super::super::bind_editor_keys);
         let start = BeatTime::from_quarters(2).unwrap();
         let end = BeatTime::from_quarters(3).unwrap();
@@ -333,6 +349,9 @@ mod tests {
             view.computer_keyboard.enabled = false;
         });
 
+        fixture
+            .consume_next_inherited_candidate
+            .store(refuse_loop_handoff, Release);
         visual.simulate_click(button, Modifiers::default());
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -342,6 +361,10 @@ mod tests {
                 let state = view.state.as_ref().unwrap();
                 state.project.loop_region()
                     == Some(LoopRegion::new(region.start(), region.end(), false).unwrap())
+                    && view.applied_project_revision() == Some(state.revision)
+                    && view.audio_admission.current().is_some_and(|admission| {
+                        admission.state == super::super::audio_admission::AdmissionState::Applied
+                    })
                     && !view.section_launch_waiting()
                     && view.prepared_seek.is_none()
                     && view.latched_seek_intent.is_none()
@@ -349,7 +372,14 @@ mod tests {
             if installed {
                 break;
             }
-            assert!(Instant::now() < deadline, "one-shot launch was not applied");
+            assert!(
+                Instant::now() < deadline,
+                "one-shot launch was not applied: {:?}",
+                fixture.editor.read_with(&visual, |view, _| (
+                    view.status.to_string(),
+                    view.error.as_ref().map(|e| e.to_string())
+                ))
+            );
             std::thread::yield_now();
         }
         for _ in 0..400 {
@@ -357,6 +387,13 @@ mod tests {
         }
         fixture.editor.read_with(&visual, |view, _| {
             let status = view.audio_status().unwrap();
+            if refuse_loop_handoff {
+                assert!(matches!(
+                    status.rejected_revision(),
+                    Some((revision, hex_engine::PlaybackHandoffRejection::SessionRuntime))
+                        if revision < status.applied_revision.load(Acquire)
+                ));
+            }
             assert_eq!(status.position.load(Acquire), region.end());
             assert!(!status.playing.load(Acquire));
         });

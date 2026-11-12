@@ -921,14 +921,21 @@ impl EditorView {
         let audible = self.audible_playback.as_ref()?;
         let status = audio.control.status()?;
         let applied = status.applied_revision.load(Acquire);
+        let replaces_refused_loop = intent.prepared_revision.is_none()
+            && intent.device_preview_identity.is_none()
+            && intent
+                .kind
+                .section()
+                .is_some_and(|section| self.section_can_replace_refused_loop(section));
         if (self.mode != super::EditorMode::Arrangement && intent.recovery_generation.is_none())
             || state.revision != intent.project_revision
             || self.project_generation != intent.project_generation
-            || self.applied_project_revision != Some(intent.project_revision)
+            || (!replaces_refused_loop
+                && (self.applied_project_revision != Some(intent.project_revision)
+                    || audible.state.revision != intent.project_revision))
             || audible.audio_revision != audio_revision
             || audible.audio_revision != applied
             || audible.project_generation != intent.project_generation
-            || audible.state.revision != intent.project_revision
             || !seek_source_matches(audible, &intent.prepared_revision)
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
