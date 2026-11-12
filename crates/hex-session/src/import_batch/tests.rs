@@ -114,10 +114,12 @@ fn existing_asset_placement_uses_batch_warp_overwrite_and_one_undo() {
         let before = s.project().track(id).unwrap().clips().to_vec();
         let (created, _) = s
             .place_existing_asset_revision_using(
-                asset,
-                id,
-                12_000,
-                warp,
+                ProjectSampleImport {
+                    asset,
+                    track: id,
+                    start: 12_000,
+                    warp,
+                },
                 None,
                 || Ok(()),
                 prepare_asset_free,
@@ -175,10 +177,12 @@ fn existing_asset_placement_refusal_preserves_project_and_history() {
     let frames = s.resident_frames();
     let mut calls = 0;
     let result = s.place_existing_asset_revision_using(
-        asset,
-        id,
-        12_000,
-        hex_project::AudioImportWarp::Beats,
+        ProjectSampleImport {
+            asset,
+            track: id,
+            start: 12_000,
+            warp: hex_project::AudioImportWarp::Beats,
+        },
         None,
         || {
             calls += 1;
@@ -217,10 +221,12 @@ fn existing_asset_placement_refuses_unavailable_resident_without_editing() {
     s.media.remove(&asset);
     let before = s.project().clone();
     let result = s.place_existing_asset_revision_using(
-        asset,
-        id,
-        256,
-        hex_project::AudioImportWarp::Off,
+        ProjectSampleImport {
+            asset,
+            track: id,
+            start: 256,
+            warp: hex_project::AudioImportWarp::Off,
+        },
         None,
         || Ok(()),
         prepare_asset_free,

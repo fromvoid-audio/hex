@@ -5477,10 +5477,12 @@ fn run_worker(
                         ))
                     } else if let Some(sink) = events.resident_audio() {
                         session.place_existing_asset_revision_using(
-                            asset,
-                            track,
-                            start,
-                            warp,
+                            crate::import_batch::ProjectSampleImport {
+                                asset,
+                                track,
+                                start,
+                                warp,
+                            },
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                             &mut admit,
                             |input, admit| {
@@ -5511,10 +5513,12 @@ fn run_worker(
                     } else {
                         admission.check_legacy_stage(&session, &[]).and_then(|()| {
                             session.place_existing_asset_revision_using(
-                                asset,
-                                track,
-                                start,
-                                warp,
+                                crate::import_batch::ProjectSampleImport {
+                                    asset,
+                                    track,
+                                    start,
+                                    warp,
+                                },
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 &mut admit,
                                 crate::import_batch::prepare_asset_free,

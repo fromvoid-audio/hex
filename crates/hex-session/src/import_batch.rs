@@ -15,6 +15,14 @@ pub struct AudioImportOptions {
     /// Captured linear gain for newly created Arrangement or Console tracks.
     pub new_track_gain: Option<f32>,
 }
+
+/// One captured existing-asset Arrangement placement.
+pub(crate) struct ProjectSampleImport {
+    pub asset: hex_project::AssetId,
+    pub track: TrackId,
+    pub start: u64,
+    pub warp: hex_project::AudioImportWarp,
+}
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
@@ -93,10 +101,7 @@ impl Session {
     /// transaction as a decoded batch. Its identity and media owners stay put.
     pub(crate) fn place_existing_asset_revision_using(
         &mut self,
-        asset: hex_project::AssetId,
-        track: TrackId,
-        start: u64,
-        warp: hex_project::AudioImportWarp,
+        import: ProjectSampleImport,
         previous: Option<&hex_engine::PreparedRevision>,
         mut admit: impl FnMut() -> Result<(), SessionError>,
         prepare: impl FnOnce(
@@ -104,6 +109,12 @@ impl Session {
             &mut dyn FnMut() -> Result<(), SessionError>,
         ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let ProjectSampleImport {
+            asset,
+            track,
+            start,
+            warp,
+        } = import;
         admit()?;
         self.project().existing_import_frames(asset)?;
         if !self.media.contains_key(&asset) {
