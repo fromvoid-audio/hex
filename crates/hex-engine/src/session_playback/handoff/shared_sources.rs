@@ -4410,59 +4410,68 @@ mod tests {
     }
     #[test]
     fn live_contributor_rapid_unmute_preserves_key_up() {
-        on_control(|| {
-            use crate::playback::PlaybackCommand;
-            let mut f = fixture();
-            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
-            input.set_key(0, Some((60, 127, 1))).unwrap();
-            let (mut old, _) = live_playback(&f, &input);
-            old.apply(PlaybackCommand::Play);
-            old.render(&mut [[0.0; 2]; 7]).unwrap();
-            f.editor
-                .execute(Command::Mute {
-                    track: f.contributor,
-                    muted: true,
-                })
-                .unwrap();
-            let (mut muted, _) = live_playback(&f, &input);
-            muted
-                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
-                .unwrap();
-            muted.render(&mut [[0.0; 2]; 20]).unwrap();
-            assert!(f.editor.undo());
-            let (mut restored, _) = live_playback(&f, &input);
-            restored
-                .try_inherit_runtime_in_control_context(&mut muted, Some(19), Some(19))
-                .unwrap();
-            let mut output = [[0.0; 2]; 40];
-            restored.render(&mut output).unwrap();
-            for (index, frame) in output.iter().enumerate() {
-                let gain = 0.25 + 0.5 * (0.5 + 0.5 * index as f32 / 40.0);
-                for channel in 0..2 {
-                    let expected = PCM[(27 + index) % 4][channel] * gain;
-                    assert!(
-                        (frame[channel] - expected).abs() < 0.000_002,
-                        "index={index} frame={frame:?} expected={expected}"
-                    );
+        for solo in [false, true] {
+            on_control(move || {
+                use crate::playback::PlaybackCommand;
+                let mut f = fixture();
+                let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+                input.set_key(0, Some((60, 127, 1))).unwrap();
+                let (mut old, _) = live_playback(&f, &input);
+                old.apply(PlaybackCommand::Play);
+                old.render(&mut [[0.0; 2]; 7]).unwrap();
+                f.editor
+                    .execute(if solo {
+                        Command::ToggleSolo {
+                            track: f.receiver,
+                            exclusive: true,
+                        }
+                    } else {
+                        Command::Mute {
+                            track: f.contributor,
+                            muted: true,
+                        }
+                    })
+                    .unwrap();
+                let (mut muted, _) = live_playback(&f, &input);
+                muted
+                    .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                    .unwrap();
+                muted.render(&mut [[0.0; 2]; 20]).unwrap();
+                assert!(f.editor.undo());
+                let (mut restored, _) = live_playback(&f, &input);
+                restored
+                    .try_inherit_runtime_in_control_context(&mut muted, Some(19), Some(19))
+                    .unwrap();
+                let mut output = [[0.0; 2]; 40];
+                restored.render(&mut output).unwrap();
+                for (index, frame) in output.iter().enumerate() {
+                    let gain = 0.25 + 0.5 * (0.5 + 0.5 * index as f32 / 40.0);
+                    for channel in 0..2 {
+                        let expected = PCM[(27 + index) % 4][channel] * gain;
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "index={index} frame={frame:?} expected={expected}"
+                        );
+                    }
                 }
-            }
-            input.set_key(0, None).unwrap();
-            restored.render(&mut [[0.0; 2]; 128]).unwrap();
-            let mut output = [[0.0; 2]; 8];
-            restored.render(&mut output).unwrap();
-            for (index, frame) in output.iter().enumerate() {
-                for channel in 0..2 {
-                    let expected = PCM[(195 + index) % 4][channel] * 0.5;
-                    assert!(
-                        (frame[channel] - expected).abs() < 0.000_002,
-                        "key-up index={index} frame={frame:?} expected={expected}"
-                    );
+                input.set_key(0, None).unwrap();
+                restored.render(&mut [[0.0; 2]; 128]).unwrap();
+                let mut output = [[0.0; 2]; 8];
+                restored.render(&mut output).unwrap();
+                for (index, frame) in output.iter().enumerate() {
+                    for channel in 0..2 {
+                        let expected = PCM[(195 + index) % 4][channel] * 0.5;
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "key-up index={index} frame={frame:?} expected={expected}"
+                        );
+                    }
                 }
-            }
-            restored.apply(PlaybackCommand::Stop);
-            restored.render(&mut [[0.0; 2]; 64]).unwrap();
-            assert!(input.is_cancelled());
-        });
+                restored.apply(PlaybackCommand::Stop);
+                restored.render(&mut [[0.0; 2]; 64]).unwrap();
+                assert!(input.is_cancelled());
+            });
+        }
     }
     #[test]
     fn live_contributor_fade_advances_during_stopped_monitoring() {
