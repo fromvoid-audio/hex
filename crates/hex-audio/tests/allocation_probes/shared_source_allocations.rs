@@ -748,7 +748,8 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
         .command(PlaybackCommand::Play)
         .map_err(|_| "command queue full")?;
     let mut output = [[0.0; 2]; 257];
-    for step in 0..8 {
+    for step in 0..10 {
+        let mut published = None;
         match step {
             1 => {
                 editor.execute(Command::Mute {
@@ -789,6 +790,11 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                     .map_err(|error| error.reason)?;
             }
             3 => {
+                // The earlier mute released the old contributor voice. Start
+                // a fresh peer after moving the receiver so that the following
+                // mute and unmute must preserve a physically sounding voice.
+                input.set_key(0, None)?;
+                input.set_key(1, Some((67, 100, 2)))?;
                 editor.execute(Command::SetNativeSourceReceiver {
                     source,
                     track: Some(b),
@@ -807,10 +813,31 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                     )
                     .map_err(|error| error.reason)?;
             }
-            4 => control
+            4 | 5 => {
+                editor.execute(Command::Mute {
+                    track: a,
+                    muted: step == 4,
+                })?;
+                let candidate = playback(
+                    editor.project(),
+                    prepared(editor.project())?,
+                    b,
+                    Arc::clone(&input),
+                )?;
+                published = Some(
+                    control
+                        .publish_with_policy_and_context_generation(
+                            candidate,
+                            PublicationPolicy::InheritRuntime,
+                            7,
+                        )
+                        .map_err(|error| error.reason)?,
+                );
+            }
+            6 => control
                 .command(PlaybackCommand::Pause)
                 .map_err(|_| "command queue full")?,
-            5 => {
+            7 => {
                 editor.execute(Command::BindTrackSource {
                     track: a,
                     source: None,
@@ -829,8 +856,8 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                     )
                     .map_err(|error| error.reason)?;
             }
-            6 => input.set_key(0, None)?,
-            7 => control.request_shutdown(),
+            8 => input.set_key(1, None)?,
+            9 => control.request_shutdown(),
             _ => {}
         }
         let mut result = None;
@@ -849,15 +876,24 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
             (0, 0, 0, 0),
             "step {step}: {stats:?}"
         );
-        // Step 5 unbinds the source under a held live key. Its history cannot
+        // Step 7 unbinds the source under a held live key. Its history cannot
         // transfer, so the live handoff restarts audio (Pulse #3784) and the
         // held voice is cut until the key is pressed again; it must still be
         // applied, not refused, and allocate nothing.
-        if [1, 2, 5].contains(&step) {
+        if [1, 2, 4, 5, 7].contains(&step) {
             assert!(
                 control.status.rejected_revision().is_none(),
                 "step {step}: {:?}",
                 control.status.rejected_revision()
+            );
+        }
+        if let Some(revision) = published {
+            assert_eq!(
+                control
+                    .status
+                    .applied_revision
+                    .load(std::sync::atomic::Ordering::Acquire),
+                revision
             );
         }
         assert!(
@@ -865,7 +901,7 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
             "step {step}: {:?}",
             control.status.render_fault_snapshot()
         );
-        if step < 4 {
+        if step < 6 {
             assert!(
                 output
                     .iter()
@@ -874,7 +910,7 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                 "step {step}"
             );
         }
-        if step == 7 {
+        if step == 9 {
             assert_eq!(output, [[0.0; 2]; 257]);
         }
         control.reclaim();
