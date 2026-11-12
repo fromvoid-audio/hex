@@ -1507,6 +1507,7 @@ impl SessionPlayback {
 
     /// Finite bounce whose caller supplies independently prepared foreign
     /// processors for every render, including preroll and latency drain.
+    /// The processors receive authored automation on the Arrangement clock.
     pub fn new_finite_arrangement_bounce_with_foreign(
         revision: Arc<PreparedRevision>,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
@@ -1596,6 +1597,8 @@ impl SessionPlayback {
         let arrangement = revision.arrangement();
         let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        let lacks_foreign_renderer =
+            linear_arrangement_export && policy != RenderConstruction::FiniteForeignBounce;
         let chain_has_foreign_automation = arrangement
             .tracks
             .iter()
@@ -1608,11 +1611,11 @@ impl SessionPlayback {
             )
             .chain(arrangement.main_device_chain.iter())
             .any(|device| device.automation.foreign().is_some());
-        if linear_arrangement_export
+        if lacks_foreign_renderer
             && (chain_has_foreign_automation || !revision.foreign_automation.is_empty())
         {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                "vst3 automation requires interactive arrangement playback",
+                "offline vst3 automation requires a private bounce renderer",
             ));
         }
         if chain_has_foreign_automation
@@ -1628,10 +1631,7 @@ impl SessionPlayback {
             ));
         }
         let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
-        if linear_arrangement_export
-            && policy != RenderConstruction::FiniteForeignBounce
-            && !foreign_arrangement.is_empty()
-        {
+        if lacks_foreign_renderer && !foreign_arrangement.is_empty() {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "vst3 instruments require interactive arrangement playback",
             ));
