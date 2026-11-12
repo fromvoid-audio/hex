@@ -9,7 +9,7 @@ pub(super) mod plugin_parameter;
 pub(super) enum Identity {
     Device(DevicePreviewIdentity),
     Tuning(TuningPreviewIdentity),
-    Stretch(ArrangementStretchAudition),
+    Clip(clip_audition::Target),
 }
 pub(crate) struct Preview {
     pub(super) project: Arc<Project>,
@@ -29,9 +29,9 @@ impl Preview {
             _ => None,
         }
     }
-    pub(super) fn stretch_target(&self) -> Option<ArrangementStretchAudition> {
+    pub(super) fn clip_target(&self) -> Option<clip_audition::Target> {
         match self.identity {
-            Identity::Stretch(target) => Some(target),
+            Identity::Clip(target) => Some(target),
             _ => None,
         }
     }
@@ -196,9 +196,9 @@ pub(super) fn restore(
     Ok(Some((Arc::new(session.project().clone()), prepared)))
 }
 
-pub(super) fn stretch(
+pub(super) fn clip_audition(
     session: &Session,
-    target: ArrangementStretchAudition,
+    target: clip_audition::Target,
     current: &mut Option<resident_audio::Snapshot>,
     preview: &mut Option<Preview>,
     sink: &mut dyn WorkerAudioSink,
@@ -210,13 +210,9 @@ pub(super) fn stretch(
         .with_preview_cancellation(cancel, || {
             prepare_preview(
                 session,
-                Command::StretchAudioClipEdge {
-                    clip: target.clip,
-                    edge: target.edge,
-                    frame: target.frame,
-                },
-                Identity::Stretch(target),
-                target.context,
+                target.command(),
+                Identity::Clip(target),
+                target.context(),
                 current,
                 preview,
                 sink,

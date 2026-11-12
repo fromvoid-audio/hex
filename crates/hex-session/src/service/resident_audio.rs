@@ -1918,7 +1918,7 @@ impl Session {
             )?;
             let project = Arc::new(candidate.clone());
             if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
-                return Err(SessionError::Invalid("stretch audition cancelled"));
+                return Err(SessionError::Invalid("clip audition cancelled"));
             }
             let metadata = ResidentPublicationMetadata {
                 context,
