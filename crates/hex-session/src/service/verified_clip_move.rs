@@ -17,8 +17,41 @@ impl VerifiedClipMoveSource {
         canonical: Arc<CanonicalAudioSourceSnapshot>,
         target: ArrangementMoveAudition,
     ) -> Result<Self, SessionError> {
+        let project = canonical.project_metadata().clone();
+        Self::project(canonical, target, project, false)
+    }
+
+    // The worker supplies its actual project and sealed current view, not a
+    // project supplied with the gesture.
+    pub(super) fn capture_current(
+        canonical: Arc<CanonicalAudioSourceSnapshot>,
+        target: ArrangementMoveAudition,
+        project: &Project,
+        state: &ViewState,
+    ) -> Result<Self, SessionError> {
+        if state.project.as_ref() != project
+            || state
+                .canonical_audio_source
+                .as_ref()
+                .is_none_or(|source| !Arc::ptr_eq(source, &canonical))
+            || target.context.editor_revision != state.revision
+            || state.audio_authoring_revision(target.context) != Some(state.revision)
+        {
+            return Err(SessionError::Invalid(
+                "clip audition authoring source changed",
+            ));
+        }
+        Self::project(canonical, target, project.clone(), true)
+    }
+
+    fn project(
+        canonical: Arc<CanonicalAudioSourceSnapshot>,
+        target: ArrangementMoveAudition,
+        project: Project,
+        current_authoring: bool,
+    ) -> Result<Self, SessionError> {
         if canonical.audio_mode() != DocumentAudioMode::VerifiedStreaming
-            || target.context != canonical.context()
+            || (!current_authoring && target.context != canonical.context())
             || target.gesture == 0
             || target.sequence == 0
             || !target.valid()
@@ -28,7 +61,7 @@ impl VerifiedClipMoveSource {
             ));
         }
         let identity = target.identity();
-        let mut editor = hex_project::Editor::new(canonical.project_metadata().clone(), 1)?;
+        let mut editor = hex_project::Editor::new(project, 1)?;
         editor.execute(clip_audition::Target::Move(target).command())?;
         let source = Self {
             canonical,

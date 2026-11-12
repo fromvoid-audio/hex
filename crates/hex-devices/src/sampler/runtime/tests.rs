@@ -807,6 +807,41 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
 }
 
 #[test]
+fn occurrence_attenuation_multiplies_clip_gain_without_affecting_peer() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(views[0], Mode::Classic { loop_region: None }, 2);
+    let mut runtime = pair(&prepared);
+    let gain = NativeInstrumentOccurrenceGain::new(1, 0.5, 1.0, 8, 1)
+        .unwrap()
+        .with_attenuation(1.0, 0.0, 8, 2)
+        .unwrap();
+    let mut output = [[0.0; 2]; 6];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 1, 60), on(0, 2, 60)],
+            &mut output,
+            None,
+            &[gain],
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    for (index, frame) in output.iter().enumerate() {
+        let clip = 0.5 + 0.5 * (1 + index) as f64 / 8.0;
+        let attenuation = 1.0 - (2 + index) as f64 / 8.0;
+        let expected = (1.0 + clip * attenuation) as f32;
+        assert!(
+            (frame[0] - expected).abs() < 1e-6,
+            "frame {index}: {frame:?}"
+        );
+        assert_eq!(frame[0], frame[1]);
+    }
+}
+
+#[test]
 fn occurrence_gain_follows_retired_slot_reuse_and_unlisted_voices() {
     let pcm = [1.0; 2];
     let views = [view(&pcm)];

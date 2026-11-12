@@ -1131,12 +1131,22 @@ fn ordinary_file_seek_case(sampler: bool, section: bool) {
         }));
         (initial, _) = h.applied(initial);
     }
-    let imported = h.run(Request::ImportToNewTrack {
+    let mut imported = h.run(Request::ImportToNewTrack {
         path: path.clone(),
         before_track: None,
         start: 0,
     });
-    let (before_seek, _) = h.applied(initial);
+    (initial, _) = h.applied(initial);
+    if section {
+        imported = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 129,
+            end: 513,
+            enabled: true,
+        }));
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        (initial, _) = h.applied(initial);
+    }
+    let before_seek = initial;
     assert!(
         imported
             .state
