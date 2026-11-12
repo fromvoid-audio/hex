@@ -553,7 +553,19 @@ mod tests {
         assert!(!a.matches_release(&Request::MoveExistingClips {
             project_generation,
             revision: revision + 1,
-            command
+            command: command.clone(),
+        }));
+        assert!(!a.matches_release(&Request::MoveExistingClips {
+            project_generation: project_generation + 1,
+            revision,
+            command,
+        }));
+        let mut different_group = moved;
+        different_group.clips = vec![different_group.anchor].into();
+        assert!(!a.matches_release(&Request::MoveExistingClips {
+            project_generation,
+            revision,
+            command: Target::Move(different_group).command(),
         }));
         mailbox.clear(Some(Kind::Move), false);
         assert!(matches!(mailbox.lock().intent, Intent::Idle));
