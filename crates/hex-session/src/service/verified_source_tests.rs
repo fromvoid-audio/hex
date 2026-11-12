@@ -463,6 +463,60 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     );
     assert!(!files.0.join("must-not-render.wav").exists());
 }
+
+#[test]
+fn project_sample_request_refuses_verified_streaming_without_history_change() {
+    let files = Files::new();
+    let path = files.wav("verified-project-sample.wav", 48_000, 64, 1000);
+    let service = Service::new(48_000, 16, 0).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(path));
+    let snapshot = imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .expect("verified source snapshot");
+    assert_eq!(snapshot.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    assert!(imported.playback.is_none());
+    let track = imported.state.project.tracks()[0].id();
+    let asset = imported.state.project.assets().next().unwrap().id();
+    assert!(matches!(
+        snapshot.sources().get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    let request = Request::InsertProjectSample {
+        project_generation: snapshot.context().project_generation,
+        revision: imported.state.revision,
+        asset,
+        track,
+        start: 64,
+        warp: hex_project::AudioImportWarp::Off,
+        audition_timing: None,
+    };
+    service.submit(request).unwrap();
+    let refused = next(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("project sample placement requires resident audio")
+    );
+    assert_eq!(refused.state.revision, imported.state.revision);
+    assert_eq!(refused.state.project, imported.state.project);
+
+    // The refused request must not add an undo entry ahead of the import.
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.tracks().is_empty());
+    assert!(undone.state.project.assets().next().is_none());
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, imported.state.project);
+}
+
 #[test]
 fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_adoption() {
     let files = Files::new();

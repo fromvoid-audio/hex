@@ -561,16 +561,3 @@ fn tag_dots_are_compact_equal_and_shared_by_arrangement_and_console(cx: &mut Tes
         assert_eq!(v.state.as_ref().unwrap().project, before)
     });
 }
-
-#[test]
-fn normalized_tags_use_only_the_eight_musical_element_colors() {
-    assert_eq!(
-        tag_element_color(&TrackTag::new(" RHYTHM ").unwrap()),
-        tag_element_color(&TrackTag::new("rhythm").unwrap())
-    );
-    let colors: BTreeSet<_> = (0..100)
-        .map(|n| tag_element_color(&TrackTag::new(&format!("tag {n}")).unwrap()).key())
-        .collect();
-    assert_eq!(colors.len(), 8);
-    assert!(!colors.contains("blue") && !colors.contains("gray"));
-}

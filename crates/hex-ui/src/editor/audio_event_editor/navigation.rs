@@ -297,6 +297,18 @@ impl EditorView {
             }
         }
     }
+
+    pub(in crate::editor) fn fit_selected_audio_clip(&mut self) {
+        self.sync_audio_navigation();
+        if self.audio_event_editor.source_view {
+            if self.event_context_current() && self.audio_navigation_idle() {
+                self.fit_audio_source(false);
+            }
+        } else {
+            self.audio_fit_all();
+        }
+    }
+
     pub(super) fn source_fit(&mut self, back: bool) -> bool {
         if !self.event_context_current() || !self.audio_navigation_idle() {
             return false;
@@ -307,31 +319,35 @@ impl EditorView {
             };
             self.audio_event_editor.source_viewport = prior;
         } else {
-            let Some(clip) = self
-                .state
-                .as_ref()
-                .and_then(|s| s.project.clip(self.detail_clip_id()?))
-            else {
-                return false;
-            };
-            let Some(end) = clip.source_offset().checked_add(clip.source_length()) else {
-                return false;
-            };
-            let Some(next) = super::super::zoom_fit::interval(
-                clip.source_offset(),
-                end,
-                self.source_extent(),
-                1,
-            ) else {
-                return false;
-            };
-            let next = SignedFrameViewport::from(next);
-            if next == self.audio_source_viewport() {
-                return false;
-            }
-            self.audio_event_editor.source_fit_back = Some(self.audio_event_editor.source_viewport);
-            self.audio_event_editor.source_viewport = Some(next);
+            return self.fit_audio_source(true);
         }
+        true
+    }
+
+    fn fit_audio_source(&mut self, remember: bool) -> bool {
+        let Some(clip) = self
+            .state
+            .as_ref()
+            .and_then(|s| s.project.clip(self.detail_clip_id()?))
+        else {
+            return false;
+        };
+        let Some(end) = clip.source_offset().checked_add(clip.source_length()) else {
+            return false;
+        };
+        let Some(next) =
+            super::super::zoom_fit::interval(clip.source_offset(), end, self.source_extent(), 1)
+        else {
+            return false;
+        };
+        let next = SignedFrameViewport::from(next);
+        if next == self.audio_source_viewport() {
+            return false;
+        }
+        if remember {
+            self.audio_event_editor.source_fit_back = Some(self.audio_event_editor.source_viewport);
+        }
+        self.audio_event_editor.source_viewport = Some(next);
         true
     }
     pub(in crate::editor) fn audio_navigation_wheel(

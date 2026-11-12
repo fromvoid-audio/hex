@@ -17,7 +17,7 @@ impl Project {
     ) -> Result<Option<BounceTarget>, Invalid> {
         let (clips, range) = match command {
             Command::GroupClips(ids) => (ids.clone(), None),
-            Command::GroupTimeRange(range) => {
+            Command::GroupTimeRange(range) | Command::GroupTimeRangeOrCreate(range) => {
                 range.validate(self)?;
                 let ids = self
                     .tracks()

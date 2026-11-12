@@ -1101,8 +1101,8 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
         view.selected_track = Some(tracks[7]);
         view.track_selection.replace(&tracks[6..8]);
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: tracks[6],
-            end_track: tracks[7],
+            anchor_track: Some(tracks[6]),
+            end_track: Some(tracks[7]),
             anchor_frame: 48_000,
             end_frame: 96_000,
         });

@@ -121,6 +121,63 @@ pub(super) fn classify_publication(
 }
 
 impl NativeAudioSink {
+    /// Match the exact callback terminal before committing a native edit that
+    /// requires confirmation. A timed-out graph cannot later install.
+    pub(super) fn confirm_resident_edit_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+        operation: &str,
+    ) -> Result<(), String> {
+        use hex_session::service::ResidentPublicationAcceptance;
+        use std::time::{Duration, Instant};
+
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .filter(|control| control.output_identity() == Some(output_identity))
+                .ok_or_else(|| format!("{operation} lost its audio output"))?;
+            let status = &control.status;
+            if status.recording_source().is_some_and(|source| {
+                source.output_identity == output_identity
+                    && source.audio_revision == audio_revision
+                    && source.context == context
+            }) {
+                return Ok(());
+            }
+            if let Some((revision, reason)) = status.rejected_revision()
+                && revision == audio_revision
+            {
+                return Err(format!(
+                    "{operation} playback refused · {}",
+                    reason.message()
+                ));
+            }
+            if status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+                || Instant::now() >= deadline
+            {
+                // A queued candidate must not install after the editor refuses
+                // its revision. Retire this output before reporting loss.
+                self.relinquish_output();
+                return Err(format!(
+                    "{operation} lost audio confirmation · restart audio"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     pub(super) fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
         let Some((output, applied, rejected)) = self.remember_applied_loop() else {
             return ResidentPublicationReadiness::NoOutput;
@@ -545,7 +602,7 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected)
-                | ResidentPublicationPolicy::SectionWhenReady {
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                     fence: expected, ..
                 } => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -561,8 +618,10 @@ impl NativeAudioSink {
                         });
                     };
                     match policy {
-                        ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                            hex_audio::prepared::PublicationPolicy::InstallSectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                            quantization, ..
+                        } => {
+                            hex_audio::prepared::PublicationPolicy::InstallQuantizedSeekWhenReady {
                                 fence: actual,
                                 quantization,
                             }
@@ -710,7 +769,7 @@ impl NativeAudioSink {
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
-                | ResidentPublicationPolicy::SectionWhenReady { .. }
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {
             return Err(ResidentPublicationRefusal {
                 playback,

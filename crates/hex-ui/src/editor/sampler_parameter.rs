@@ -403,9 +403,13 @@ impl EditorView {
             revision,
             track,
             path,
-            replacement,
+            slot,
         } = target;
-        let Some((device, expected_state)) = replacement else {
+        let hex_session::service::SamplerLoadSlot::Existing {
+            device,
+            expected_state,
+        } = slot
+        else {
             self.error = Some("sampler replacement target is unavailable".into());
             return;
         };

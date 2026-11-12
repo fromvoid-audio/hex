@@ -608,6 +608,7 @@ impl SessionPlayback {
                 .flatten()
                 .any(|tail| tail.output_active && tail.return_id().is_some());
         let ordinary_monitor = !self.playing && !main_tails_only;
+        let audition_before = self.browser_audition.voices;
         let track_count = self.routes.len();
         self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
         self.live_gain_scratch = self.live_gain;
@@ -624,6 +625,7 @@ impl SessionPlayback {
             self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
         };
         if result.is_err() {
+            self.browser_audition.voices = audition_before;
             self.fail_midi_capture_render();
             for chain in self
                 .device_chains
@@ -661,6 +663,7 @@ impl SessionPlayback {
             if let Some(compensation) = self.compensation.as_mut()
                 && compensation.delays.commit_transaction().is_err()
             {
+                self.browser_audition.voices = audition_before;
                 self.fail_midi_capture_render();
                 if let Some(keyboard) = &mut self.computer_keyboard {
                     keyboard.rollback();
@@ -820,6 +823,11 @@ impl SessionPlayback {
                 (arrangement_frame, arrangement_loop_pass) =
                     normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
             }
+            self.browser_audition.voices.settle(
+                performance_frame,
+                arrangement_frame,
+                arrangement_loop_pass,
+            );
             if let Some((offset, start)) = timing_run
                 && start.checked_add((output_offset - offset) as u64) != Some(arrangement_frame)
             {
@@ -1397,9 +1405,14 @@ impl SessionPlayback {
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
             let metered_instrument = self.device_metering && track.instrument_id.is_some();
+            let audition = self
+                .browser_audition
+                .voices
+                .for_track(self.route_scratch[index].id);
             let live_target = self.computer_keyboard.as_ref().is_some_and(|keyboard| {
                 !keyboard.is_source_input() && keyboard.track() == self.route_scratch[index].id
-            }) || self.source_input_receiver() == Some(index);
+            }) || self.source_input_receiver() == Some(index)
+                || !audition.is_empty();
             let live_target = live_target
                 || self
                     .current_sampler_keyboards
@@ -1493,7 +1506,7 @@ impl SessionPlayback {
                         arrangement_frame,
                         render_output,
                         pages.as_deref_mut(),
-                        SourceStage::Audio,
+                        SourceStage::audio(audition),
                     )?;
                     if stateful_effects {
                         crate::native_parameter_input::process_range_with_external(
@@ -3036,7 +3049,20 @@ struct RouteSourceContext<'a, T> {
 enum SourceStage {
     Whole,
     Audio,
+    Audition(browser_audition::Voices),
     Instrument,
+}
+impl SourceStage {
+    fn audio(audition: browser_audition::Voices) -> Self {
+        if audition.is_empty() {
+            Self::Audio
+        } else {
+            Self::Audition(audition)
+        }
+    }
+    fn is_audio(self) -> bool {
+        matches!(self, Self::Audio | Self::Audition(_))
+    }
 }
 
 fn render_resident_session_audio(
@@ -3095,6 +3121,13 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
         pages.as_deref_mut(),
         stage,
     )?;
+    if let SourceStage::Audition(audition) = stage
+        && !matches!(route.owner, RouteOwner::Arrangement)
+        && let Some(track) = revision.arrangement().tracks().get(index)
+        && track.audio_content_enabled()
+    {
+        audition.add(track, performance_frame, output);
+    }
     let Some(release) = route.audio_release else {
         return Ok(());
     };
@@ -3106,7 +3139,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
         .tracks()
         .get(index)
         .ok_or(SessionPlaybackError::UnknownTrack)?;
-    if matches!(stage, SourceStage::Audio) && !track.audio_content_enabled() {
+    if stage.is_audio() && !track.audio_content_enabled() {
         return Ok(());
     }
     let source_mix = if raw {
@@ -3180,7 +3213,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
         .tracks()
         .get(index)
         .ok_or(SessionPlaybackError::UnknownTrack)?;
-    if matches!(stage, SourceStage::Audio) && !track.audio_content_enabled() {
+    if stage.is_audio() && !track.audio_content_enabled() {
         return Ok(());
     }
     let source_mix = if raw {
@@ -3190,6 +3223,18 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
     };
     match route.owner {
         RouteOwner::Arrangement => {
+            if let SourceStage::Audition(audition) = stage {
+                return audition
+                    .arrangement(
+                        track,
+                        arrangement_frame,
+                        performance_frame,
+                        output,
+                        pages,
+                        loop_fade,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
             if let Some(fade) =
                 loop_fade.filter(|fade| fade.intersects(arrangement_frame, output.len()))
             {
@@ -3289,7 +3334,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                         )
                     }
                 }
-                SourceStage::Audio => {
+                SourceStage::Audio | SourceStage::Audition(_) => {
                     if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_audio_additive_with_pages(
                             arrangement_frame,
@@ -3313,7 +3358,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
         }
         RouteOwner::Silence => {}
         RouteOwner::Session { clip, origin } => {
-            if matches!(stage, SourceStage::Audio) {
+            if stage.is_audio() {
                 return Ok(());
             }
             let prepared = midi

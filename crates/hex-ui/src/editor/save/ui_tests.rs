@@ -250,8 +250,8 @@ fn older_format_explicit_overwrite_warns_once_and_save_as_keeps_original(cx: &mu
     save(&editor, &mut visual);
     visual.simulate_prompt_answer("save as…");
     wait_for_picker(&editor, &mut visual);
-    let copy = files.0.join("My Original-v2.hex");
-    visual.simulate_new_path_selection(|_| Some(copy.clone()));
+    let copy = files.0.join("My Original-v2/My Original-v2.hex");
+    visual.simulate_new_path_selection(|_| Some(files.0.join("My Original-v2.hex")));
     pump(&editor, &mut visual, |view| {
         settled(view) && !view.document_format_upgrade_required
     });

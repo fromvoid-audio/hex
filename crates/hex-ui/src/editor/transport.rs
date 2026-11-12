@@ -47,6 +47,18 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
+        let loop_hint = "toggle loop · cmd+l · l/w set selection or toggle matching loop";
+        let loop_enabled = self
+            .pending_loop_region()
+            .or_else(|| self.state().and_then(|state| state.project.loop_region()))
+            .is_some_and(|region| region.enabled());
+        let mut loop_style = theme::action_style();
+        loop_style.text = theme::color(if loop_enabled {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        });
+        loop_style.hover_text = Some(loop_style.text);
         let automation_active =
             self.automation_view.enabled && self.mode == EditorMode::Arrangement;
         let automation_hint = "automation view · a · all arrangement tracks · track gain";
@@ -98,7 +110,7 @@ impl EditorView {
                     } else {
                         "play or pause · space"
                     },
-                    TogglePlay,
+                    |_| TogglePlay,
                     cx,
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
@@ -111,8 +123,15 @@ impl EditorView {
                 ),
             )
             .child(
-                self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+                self.vector_icon(
+                    TransportIcon::Stop,
+                    "stop · escape",
+                    |event| Stop {
+                        return_to_beginning: event.click_count() >= 2,
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
                 self.control_icon(
@@ -193,51 +212,42 @@ impl EditorView {
                 }))),
             )
             .child(
-                self.control_icon(
+                self.control_icon_description(
                     "↻",
-                    "toggle loop · cmd+l · l/w set selection or toggle matching loop",
+                    loop_hint,
+                    loop_hint.into(),
+                    loop_style,
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
                 .debug_selector(|| "transport-loop-toggle".into())
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(
-                    if self
-                        .state()
-                        .and_then(|state| state.project.loop_region())
-                        .is_some_and(|region| region.enabled())
-                    {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    },
-                )),
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(self.vector_icon(
                 TransportIcon::Split,
                 "split selection edges or edit cursor · e",
-                SplitClip,
+                |_| SplitClip,
                 cx,
             ))
             .child(
-                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", Undo, cx)
+                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", |_| Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),
             )
             .child(
-                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", Redo, cx)
+                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", |_| Redo, cx)
                     .opacity(if can_redo { 1.0 } else { 0.45 }),
             )
-            .child(self.vector_icon(TransportIcon::AddTrack, "add track", AddTrack, cx))
+            .child(self.vector_icon(TransportIcon::AddTrack, "add track", |_| AddTrack, cx))
             .child(self.vector_icon(
                 TransportIcon::AddMidiClip,
                 "add four-beat midi clip · cmd+shift+m",
-                AddMidiClip,
+                |_| AddMidiClip,
                 cx,
             ))
             .child(self.vector_icon(
                 TransportIcon::RemoveTrack,
                 "remove selected track",
-                RemoveTrack,
+                |_| RemoveTrack,
                 cx,
             ))
             .child(
@@ -500,11 +510,11 @@ impl EditorView {
         })
     }
 
-    fn vector_icon(
+    fn vector_icon<A: gpui::Action>(
         &self,
         icon: TransportIcon,
         description: &'static str,
-        action: impl gpui::Action,
+        action: impl Fn(&gpui::ClickEvent) -> A + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let (path, selector) = icon.asset();
@@ -534,8 +544,8 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |_, _, window, cx| {
-                window.dispatch_action(action.boxed_clone(), cx);
+            .on_click(cx.listener(move |_, event, window, cx| {
+                window.dispatch_action(Box::new(action(event)), cx);
                 cx.notify();
             }))
     }
@@ -616,7 +626,8 @@ impl EditorView {
         .tooltip(|_, cx| {
             cx.new(|_| MiniTooltip {
                 kind: crate::tooltips::Kind::control("global launch quantization"),
-                description: "global launch quantization · sections and console clips".into(),
+                description: "global launch quantization · locators, sections and console clips"
+                    .into(),
             })
             .into()
         })

@@ -33,7 +33,7 @@ use gpui::{
     rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
-use hex_session::service::{Event, Request};
+use hex_session::service::{ArrangementEditViewObservation, Event, Request};
 use hex_widgets::{
     RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
@@ -179,8 +179,8 @@ struct Pending {
     revision: u64,
     command: Command,
     display: Display,
-    // Clip rows for structural edits, built once at submission and retired
-    // with the receipt in the same receive as the canonical installation.
+    // Projected clip rows at submission, superseded by an exact copy view
+    // when available. Retired with the receipt and canonical installation.
     layout: Option<Arc<ViewState>>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
@@ -496,8 +496,8 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
-    /// Arrangement clip rows: the frozen structural layout until its receipt's
-    /// exact terminal (like the marker display), otherwise canonical state.
+    /// Arrangement rows display a frozen structural edit or committed copy or paste
+    /// until its exact terminal installs the canonical state.
     pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
         let state = self.state.as_ref()?;
         self.sections
@@ -505,8 +505,74 @@ impl EditorView {
             .as_ref()
             .filter(|p| p.generation == self.project_generation)
             .and_then(|p| p.layout.clone())
+            .or_else(|| self.arrangement_duplicate_view().cloned())
+            .or_else(|| self.arrangement_paste_view().cloned())
             .or_else(|| Some(Arc::clone(state)))
     }
+
+    /// Replace the projected rows and marker geometry with the exact committed
+    /// copy. The ordinary receipt continues to own input, selection and history.
+    pub(super) fn observe_section_copy_view(
+        &mut self,
+        observation: ArrangementEditViewObservation,
+        copy: SectionId,
+    ) -> bool {
+        let Some(current) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(pending) = self.sections.pending.as_mut() else {
+            return false;
+        };
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || pending.receipt.is_queued()
+            || pending.generation != self.project_generation
+            || observation.project_generation != pending.generation
+            || observation.previous_revision != pending.revision
+            || current.revision != pending.revision
+            || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
+                || copied_section_source(&pending.command).is_some())
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade().filter(|state| {
+            pending.revision.checked_add(1) == Some(state.revision)
+                && current.project.arrangement_section(copy).is_none()
+                && state.project.arrangement_section(copy).is_some()
+        }) else {
+            return false;
+        };
+        pending.display.markers = state
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|section| {
+                let mut marker = Marker::from(section);
+                // New markers keep their preview presentation and remain
+                // noninteractive until the terminal installs their IDs.
+                if section.id().value() >= current.project.next_identity() {
+                    marker.id = None;
+                }
+                marker
+            })
+            .collect();
+        pending.display.tempo = state.project.tempo_map().clone();
+        pending.layout = Some(state);
+        true
+    }
+
+    pub(super) fn committed_section_copy_view(&self) -> Option<&Arc<ViewState>> {
+        let pending = self.sections.pending.as_ref()?;
+        pending.layout.as_ref().filter(|layout| {
+            pending.generation == self.project_generation
+                && pending.revision.checked_add(1) == Some(layout.revision)
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == pending.revision)
+        })
+    }
+
     pub(super) fn section_install_pending(&self) -> bool {
         self.sections.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -903,11 +969,12 @@ impl EditorView {
             revision: state.revision,
         });
         if id.is_none() && !double {
-            let empty = state.project.tracks().is_empty();
-            self.select_section_metadata(None);
-            // Keep Main's existing all-track range gesture. A stationary point
-            // uses this lane cursor; a completed range keeps the clip contract.
-            return empty;
+            if !extend || !self.time_selection_project_scope {
+                self.select_section_metadata(None);
+            }
+            // The Main range receiver also owns empty projects. A stationary
+            // point still uses this lane cursor for section shortcuts.
+            return false;
         }
         let viewport = self.visible_viewport(state.timeline_frames);
         let Some(layout) = self.section_layout() else {
@@ -1785,6 +1852,40 @@ impl EditorView {
         self.merge_selected_sections();
         true
     }
+    /// `g` on a Main gap creates a marker without cutting the tracks below it.
+    /// Occupied ranges keep the existing project-scope grouping route.
+    pub(super) fn create_section_in_selected_gap(&mut self) -> bool {
+        let (Some(selection), Some(state)) = (self.time_selection, self.state.as_ref()) else {
+            return false;
+        };
+        let start = selection.anchor_frame.min(selection.end_frame);
+        let end = selection.anchor_frame.max(selection.end_frame);
+        let tempo = state.project.tempo_map();
+        let (Ok(start), Ok(end)) = (tempo.frame_to_beat(start), tempo.frame_to_beat(end)) else {
+            self.error = Some("section range is outside the timeline".into());
+            return true;
+        };
+        if start >= end {
+            self.error = Some("select a longer time range to create a section".into());
+            return true;
+        }
+        if state
+            .project
+            .arrangement_sections()
+            .iter()
+            .any(|section| section.start() < end && section.end() > start)
+        {
+            return false;
+        }
+        let (name, color) = section_appearance::new_marker(&state.project);
+        self.section_metadata(Command::AddArrangementSection {
+            name,
+            color,
+            start,
+            end,
+        });
+        true
+    }
     /// Merge the current section selection, or explain why it cannot merge.
     pub(super) fn merge_selected_sections(&mut self) {
         if self.sections.selection.len() < 2 {
@@ -1826,6 +1927,26 @@ impl EditorView {
             drop_feedback: None,
         };
         match &command {
+            Command::AddArrangementSection {
+                name,
+                color,
+                start,
+                end,
+            } => {
+                let index = display
+                    .markers
+                    .partition_point(|marker| marker.start < *start);
+                display.markers.insert(
+                    index,
+                    Marker {
+                        id: None,
+                        name: name.clone(),
+                        color: *color,
+                        start: *start,
+                        end: *end,
+                    },
+                );
+            }
             Command::RenameArrangementSection { section, name } => {
                 if let Some(m) = display.markers.iter_mut().find(|m| m.id == Some(*section)) {
                     m.name = name.clone();
@@ -2550,6 +2671,9 @@ fn same_command(a: &Command, b: &Command) -> bool {
     }
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
+pub(super) mod tests;
+
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) mod tests {
     use super::*;
@@ -2654,6 +2778,119 @@ pub(super) mod tests {
             })
             .unwrap();
         (handle, editor, [ids[0], ids[1]])
+    }
+
+    #[gpui::test]
+    fn g_on_a_main_gap_leaves_underlying_clips_untouched(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::pump;
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("main-track-lane").unwrap();
+        let (start, end, before) = editor.read_with(&visual, |view, _| {
+            (
+                position(view, 5).x,
+                position(view, 7).x,
+                view.state.as_ref().unwrap().project.clone(),
+            )
+        });
+        let start = point(start, lane.center().y);
+        let end = point(end, start.y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("g");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(
+                project.tracks()[0].midi_clips(),
+                before.tracks()[0].midi_clips()
+            );
+            let [intro, section, chorus] = project.arrangement_sections() else {
+                panic!("three sections");
+            };
+            assert_eq!(
+                (intro, chorus),
+                (
+                    &before.arrangement_sections()[0],
+                    &before.arrangement_sections()[1]
+                )
+            );
+            assert_eq!(
+                (section.start(), section.end()),
+                (
+                    BeatTime::from_quarters(5).unwrap(),
+                    BeatTime::from_quarters(7).unwrap()
+                )
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn dragging_main_gap_then_g_creates_a_section_even_without_tracks(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::pump;
+        cx.update(super::super::bind_editor_keys);
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        let state = next(&service).state;
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline section ui test".into()))
+                });
+                editor.update(cx, |view, cx| {
+                    view.state = Some(state);
+                    view.focus.focus(window);
+                    view.snap_grid = SnapGrid::Quarter;
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("main-track-lane").unwrap();
+        let start = point(lane.origin.x + lane.size.width * 0.1, lane.center().y);
+        let end = point(lane.origin.x + lane.size.width * 0.4, start.y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        let (start, end) = editor.read_with(&visual, |view, _| {
+            assert!(view.time_selection_project_scope);
+            assert!(view.normalized_time_selection().is_none());
+            let selection = view.time_selection.unwrap();
+            assert!(selection.anchor_frame < selection.end_frame);
+            let map = view.state.as_ref().unwrap().project.tempo_map();
+            (
+                map.frame_to_beat(selection.anchor_frame).unwrap(),
+                map.frame_to_beat(selection.end_frame).unwrap(),
+            )
+        });
+        visual.simulate_keystrokes("g");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(project.tracks().is_empty());
+            let [section] = project.arrangement_sections() else {
+                panic!("created section");
+            };
+            assert_eq!((section.start(), section.end()), (start, end));
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .is_empty()
+            );
+        });
     }
     pub(in crate::editor) fn position(
         view: &EditorView,
@@ -3449,64 +3686,6 @@ pub(super) mod tests {
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         visual.simulate_keystrokes("escape");
     }
-    #[test]
-    fn section_insertion_uses_edges_and_does_not_move_a_clicked_source() {
-        let mut e = hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
-        let mut ids = Vec::new();
-        for (start, end) in [(0, 4), (8, 12)] {
-            let Created::ArrangementSection(id) = e
-                .execute(Command::AddArrangementSection {
-                    name: format!("section {}", ids.len() + 1),
-                    color: ElementColor::Cyan,
-                    start: BeatTime::from_quarters(start).unwrap(),
-                    end: BeatTime::from_quarters(end).unwrap(),
-                })
-                .unwrap()
-            else {
-                panic!("section")
-            };
-            ids.push(id);
-        }
-        let p = e.project();
-        assert_eq!(
-            section_reorder::insertion_target(
-                p,
-                ids[0],
-                BeatTime::from_quarters(2).unwrap(),
-                false
-            ),
-            None
-        );
-        assert_eq!(
-            section_reorder::insertion_target(
-                p,
-                ids[0],
-                BeatTime::from_quarters(9).unwrap(),
-                false
-            ),
-            Some((ids[1], false))
-        );
-        assert_eq!(
-            section_reorder::insertion_target(
-                p,
-                ids[0],
-                BeatTime::from_quarters(13).unwrap(),
-                false
-            ),
-            Some((ids[1], true))
-        );
-        assert_eq!(
-            section_reorder::insertion_target(p, ids[0], BeatTime::from_quarters(1).unwrap(), true),
-            Some((ids[0], false))
-        );
-        assert_eq!(
-            section_reorder::insertion_target(p, ids[0], BeatTime::from_quarters(3).unwrap(), true),
-            Some((ids[0], true))
-        );
-        let (name, color) = section_appearance::new_marker(p);
-        assert_eq!(name, "section 3");
-        assert!(ElementColor::TRACK_CHOICES.contains(&color));
-    }
     #[gpui::test]
     fn first_section_can_be_inserted_after_last(cx: &mut TestAppContext) {
         let (handle, editor, _) = fixture(cx);
@@ -3761,8 +3940,8 @@ pub(super) mod tests {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             // A retained range from another context must not win over Main sections.
             v.time_selection = Some(super::super::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 1,
                 end_frame: 2,
             });
@@ -4126,6 +4305,20 @@ pub(super) mod tests {
                 Err(error) => panic!("{error}"),
             }
         };
+        let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
+        editor.update(cx, |view, _| {
+            view.service
+                .submit(Request::Edit(Command::SetLoopRegion {
+                    start: region.start(),
+                    end: region.end(),
+                    enabled: true,
+                }))
+                .unwrap();
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            view.pending_playback = None;
+        });
         let source = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         let prepared = Arc::new(
             hex_engine::PreparedRevision::prepare(
@@ -4181,15 +4374,13 @@ pub(super) mod tests {
         visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
         editor.update(cx, |view, _| {
+            view.tick_section_launch();
             let pending = view
                 .prepared_seek
                 .as_ref()
                 .expect("stationary section click prepares a seek even without stateful devices");
             let section = pending.kind.section().unwrap();
-            assert_eq!(
-                section.region,
-                hex_project::LoopRegion::new(0, 96_000, true).unwrap()
-            );
+            assert_eq!(section.region, region);
             assert_eq!(
                 section.quantization,
                 hex_engine::LaunchQuantization::QuarterTriplet
@@ -4198,7 +4389,7 @@ pub(super) mod tests {
             assert_eq!(
                 view.state.as_ref().unwrap().project,
                 source,
-                "launch has no canonical edit or history"
+                "an already-matching loop needs no new history edit"
             );
             let cancellation = Arc::clone(&pending.worker_cancel);
             view.toggle_section_autoplay();
@@ -4254,7 +4445,7 @@ pub(super) mod tests {
             .expect("explicit section launch")
             .center();
         let selected = editor.read_with(cx, |view, _| view.sections.selected);
-        for key in [None, Some("enter"), Some("space")] {
+        for key in [None, Some("enter")] {
             editor.update(cx, |view, _| {
                 view.invalidate_prepared_seek();
             });
@@ -4267,7 +4458,8 @@ pub(super) mod tests {
                 visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
                 visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             }
-            editor.read_with(cx, |view, _| {
+            editor.update(cx, |view, _| {
+                view.tick_section_launch();
                 let launch = view
                     .latched_seek_intent
                     .as_ref()
@@ -4305,6 +4497,7 @@ pub(super) mod tests {
         visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
+            assert!(!view.section_launch_waiting());
             assert!(view.latched_seek_intent.is_none());
             assert!(
                 view.prepared_seek
@@ -5742,8 +5935,8 @@ pub(super) mod tests {
             editor.update(cx, |view, cx| {
                 let first = view.state.as_ref().unwrap().project.tracks()[0].id();
                 view.time_selection = Some(super::super::time_selection::TimeSelection {
-                    anchor_track: first,
-                    end_track: first,
+                    anchor_track: Some(first),
+                    end_track: Some(first),
                     anchor_frame: 111,
                     end_frame: 222,
                 });
@@ -5963,6 +6156,96 @@ pub(super) mod tests {
         }
         visual.run_until_parked();
     }
+    #[gpui::test]
+    fn section_copy_paints_committed_rows_before_the_terminal(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let source = editor.read_with(cx, |view, _| position(view, 2));
+        visual.simulate_click(source, Modifiers::default());
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-d");
+
+        let terminal = editor.read_with(cx, |view, _| next(&view.service));
+        let observed = editor.read_with(cx, |view, _| {
+            view.service.try_arrangement_edit_view().unwrap()
+        });
+        let Some(Created::ArrangementSection(copy)) = terminal.created else {
+            panic!("section copy");
+        };
+        assert!(matches!(
+            observed.kind,
+            hex_session::service::ArrangementEditViewKind::Duplicate(Created::ArrangementSection(id))
+                if id == copy
+        ));
+        let committed = observed.state.upgrade().unwrap();
+        let marker = committed.project.arrangement_section(copy).unwrap();
+        let midi = committed.project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.start() == marker.start())
+            .unwrap()
+            .id();
+        let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "the old focus cache has no copy"
+        );
+
+        editor.update(cx, |view, cx| {
+            assert!(view.arrangement_focus.projection.enabled);
+            assert_eq!(view.sections.selected, Some(ids[0]));
+            for (generation, revision) in [
+                (observed.project_generation + 1, observed.previous_revision),
+                (observed.project_generation, observed.previous_revision + 1),
+            ] {
+                assert!(
+                    !view.observe_duplicate_view(ArrangementEditViewObservation {
+                        project_generation: generation,
+                        first_previous_revision: revision,
+                        previous_revision: revision,
+                        kind: observed.kind,
+                        state: Arc::downgrade(&committed),
+                    })
+                );
+            }
+            assert!(view.observe_duplicate_view(observed));
+            assert!(view.section_install_pending());
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_section(copy)
+                    .is_none()
+            );
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before_ack = visual
+            .debug_bounds(selector)
+            .expect("committed copy is visible");
+        let marker_bounds = visual.debug_bounds("arrangement-section-1").unwrap();
+        editor.update(cx, |view, cx| {
+            view.receive(terminal);
+            assert!(view.committed_section_copy_view().is_none());
+            assert!(!view.section_install_pending());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before_ack));
+        assert_eq!(
+            visual.debug_bounds("arrangement-section-1"),
+            Some(marker_bounds)
+        );
+    }
+
     #[gpui::test]
     fn section_keys_during_a_pending_edit_queue_one_follow_up_or_refuse_visibly(
         cx: &mut TestAppContext,

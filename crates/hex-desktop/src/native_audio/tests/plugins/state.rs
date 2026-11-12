@@ -3,6 +3,7 @@
 //! fresh-default instance or prevent recovery of the saved project bytes.
 use super::*;
 use hex_session::service::NativeDeviceState;
+use std::sync::atomic::Ordering::Release;
 mod edits;
 mod save;
 
@@ -394,18 +395,54 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
     }
     // Restart audio inside the same document, as the editor does after a
     // degraded worker. The replacement must run the saved sound again.
-    let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-    let restarted = h.run(Request::RestartAudio {
-        project_generation: metadata.context.project_generation,
-        request_id: 1,
-    });
-    assert!(restarted.error.is_none(), "{:?}", restarted.error);
-    assert_eq!(restarted.state.revision, restored.state.revision);
-    assert_eq!(restarted.state.project, restored.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old);
-    let requested = h.run(Request::RestorePlayback { generation: 1 });
-    assert_eq!(requested.restore_complete, Some(1));
+    let restart = |h: &mut ResidentHarness, request_id| {
+        let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        let restarted = h.run(Request::RestartAudio {
+            project_generation: metadata.context.project_generation,
+            request_id,
+        });
+        assert_eq!(restarted.state.revision, restored.state.revision);
+        assert_eq!(restarted.state.project, restored.state.project);
+        h.release_relinquished_output();
+        h.wait_fresh_output(old);
+    };
+    if !controller {
+        h.refuse.store(true, Release);
+        restart(&mut h, 1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refused = loop {
+            h.pump();
+            h.render_worker_step();
+            if let Ok(event) = h.service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "missing fresh restore terminal");
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("fixture final admission refusal")
+        );
+        assert_eq!(refused.state.revision, restored.state.revision);
+        assert_eq!(refused.state.project, restored.state.project);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !h
+            .publication_refusals
+            .iter()
+            .any(|reason| reason == "fixture final admission refusal")
+        {
+            h.pump();
+            assert!(
+                Instant::now() < deadline,
+                "the fresh restore refusal must reach the audio client"
+            );
+            std::thread::yield_now();
+        }
+        h.refuse.store(false, Release);
+    }
+    restart(&mut h, 2);
+    let requested = h.run(Request::RestorePlayback { generation: 2 });
+    assert_eq!(requested.restore_complete, Some(2));
     let (recovered_revision, recovered) = h.applied(0);
     assert_eq!(recovered.context, metadata.context);
     assert_eq!(

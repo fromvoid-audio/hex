@@ -63,6 +63,11 @@ impl SessionPlayback {
             let work_start = self.render_work.track(index);
             let output = &mut scratch[..frames];
             output.fill([0.0; 2]);
+            if !self.browser_audition.voices.for_track(route.id).is_empty() {
+                // The ordinary per-frame route consumes the live clip clock.
+                self.render_work.finish(work_start);
+                continue;
+            }
             if batch_analytic && self.revision.source_routing().is_shared(index) {
                 let track = self
                     .revision
@@ -651,7 +656,9 @@ impl SessionPlayback {
                                 arrangement_frame,
                                 &mut audio,
                                 pages.as_deref_mut(),
-                                SourceStage::Audio,
+                                SourceStage::audio(
+                                    self.browser_audition.voices.for_track(route.id),
+                                ),
                             )?;
                         }
                         // An ordinary arrangement audio track without a MIDI

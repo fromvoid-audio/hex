@@ -17,6 +17,12 @@ mod admission;
 pub(super) use admission::State;
 
 impl EditorView {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_auto_warp_imports_for_test(&mut self, enabled: bool) {
+        self.audio_import_settings.loading = false;
+        self.audio_import_settings.preferences.auto_warp_beats = enabled;
+    }
+
     pub(super) fn capture_audio_import_policy(&self, request: Request) -> Result<Request, String> {
         let mut request = self.audio_import_settings.capture(
             request,

@@ -467,7 +467,7 @@ pub(super) fn scroll_event_core(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

@@ -1,3 +1,5 @@
+#[path = "../../src/editor/elapsed_time.rs"]
+mod elapsed_time;
 // Runtime consumers use more methods than this unit-only target.
 #[allow(dead_code)]
 #[path = "../../src/editor/musical_time.rs"]

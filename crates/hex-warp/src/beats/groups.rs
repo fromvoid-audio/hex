@@ -120,11 +120,7 @@ pub(super) fn render(
         request.output_frames,
         ring,
         work,
-        MAX_POINTS * std::mem::size_of::<u64>()
-            + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
-            + plan::scratch(request)
-            + bank_bytes(work.resampler)
-            + synthesis::SEARCH_BYTES,
+        plan_bytes(request) + bank_bytes(work.resampler) + synthesis::SEARCH_BYTES,
     )?;
     let mut bounds = SourceBounds::new(physical);
     let guard = f64::from(request.input.sample_rate) / 125.0;

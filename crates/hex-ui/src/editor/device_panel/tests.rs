@@ -5964,37 +5964,6 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
     let _ = handle;
 }
 
-#[test]
-fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
-    let viewport = gpui::Bounds::new(
-        gpui::point(px(200.0), px(300.0)),
-        gpui::size(px(400.0), px(100.0)),
-    );
-    let clipped_card = gpui::Bounds::new(
-        gpui::point(px(100.0), px(300.0)),
-        gpui::size(px(286.0), px(100.0)),
-    );
-    let inside_both = gpui::point(px(250.0), px(330.0));
-    let offscreen_card_area = gpui::point(px(150.0), px(330.0));
-    let outside_rail = gpui::point(px(250.0), px(420.0));
-
-    assert!(super::pointer_within_visible_device_drop_bounds(
-        &inside_both,
-        &clipped_card,
-        Some(&viewport),
-    ));
-    assert!(!super::pointer_within_visible_device_drop_bounds(
-        &offscreen_card_area,
-        &clipped_card,
-        Some(&viewport),
-    ));
-    assert!(!super::pointer_within_visible_device_drop_bounds(
-        &outside_rail,
-        &clipped_card,
-        Some(&viewport),
-    ));
-}
-
 #[gpui::test]
 fn sine_and_effect_place_their_shared_header_to_the_left_of_the_body(cx: &mut TestAppContext) {
     #[cfg(target_os = "macos")]
@@ -6293,14 +6262,17 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
     assert!(visual.debug_bounds("device-modulator-scroll").is_none());
     click_modulator_control(&mut visual, toggle(), false);
     let empty_slot = empty.project.track(track).unwrap().instrument().unwrap();
-    let empty_sampler = Some((empty_slot.id(), empty_slot.state().clone()));
+    let slot = hex_session::service::SamplerLoadSlot::Existing {
+        device: empty_slot.id(),
+        expected_state: empty_slot.state().clone(),
+    };
     editor.update(cx, |view, _| {
         assert!(view.enqueue(Request::LoadFirstSampler {
             request_id: 1,
             project_generation: view.project_generation,
             revision: empty.revision,
             track,
-            empty_sampler,
+            slot,
             path: file.0.clone(),
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }));

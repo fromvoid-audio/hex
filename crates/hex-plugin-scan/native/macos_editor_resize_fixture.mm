@@ -47,6 +47,35 @@ static void check_floating_panel() {
     [panel release];
 }
 
+static void check_editor_placement() {
+    const auto screen=[[NSScreen mainScreen] visibleFrame];
+    auto* original=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    auto* replacement=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,480,320)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    assert(original && replacement && NSWidth(screen)>480);
+    EditorPanelVisibility visibility;
+    original->test_visible=YES;
+    for(const auto dx:{32.0,86.0}) {
+        // Deliberately move the old window again before a repeated handoff.
+        [original setFrameTopLeftPoint:NSMakePoint(NSMinX(screen)+dx,NSMaxY(screen)-40)];
+        const auto position=editor_window_position(original);
+        assert(position);
+        visibility.sync(original,false);
+        visibility.sync(original,true);
+        assert(NSEqualPoints(NSMakePoint(position->x,position->y),
+            NSMakePoint(NSMinX([original frame]),NSMaxY([original frame]))));
+        restore_editor_window_position(replacement,*position);
+        assert(NSMinX([replacement frame])==position->x);
+        assert(NSMaxY([replacement frame])==position->y);
+        assert(![replacement isVisible]);
+    }
+    restore_editor_window_position(replacement,EditorPosition{900000,900000});
+    assert(NSIntersectsRect([replacement frame],screen));
+    [replacement release];
+    [original release];
+}
+
 class ResizeView final : public IPlugView {
     NSWindow* window;
 public:
@@ -89,6 +118,7 @@ int main() {
     @autoreleasepool {
         [NSApplication sharedApplication];
         check_floating_panel();
+        check_editor_placement();
         ResizeView fixed(nullptr);
         assert(!(EditorFrame::window_style(fixed)&NSWindowStyleMaskResizable));
         fixed.resizable=true;
@@ -113,6 +143,7 @@ int main() {
         assert(view.calls==2);
         assert(NSEqualSizes([[window contentView] bounds].size,NSMakeSize(480,320)));
         const auto accepted=[window frame];
+        assert(NSMinX(accepted)==NSMinX(original) && NSMaxY(accepted)==NSMaxY(original));
         assert(host.resizeView(&view,&requested)==kResultOk);
         ViewRect invalid(0,0,4097,320);
         assert(host.resizeView(&view,&invalid)==kInvalidArgument);

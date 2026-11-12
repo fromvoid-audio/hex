@@ -9,3 +9,6 @@ mod editor;
 #[allow(dead_code)] // This target exercises the source-local theme contracts.
 #[path = "../src/theme.rs"]
 mod theme;
+
+#[path = "editor_logic_unit/log_viewer.rs"]
+mod log_viewer;

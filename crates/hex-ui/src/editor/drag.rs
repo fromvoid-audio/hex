@@ -77,6 +77,17 @@ impl ClipDrag {
         self.copy_modifier.get() && self.snap_modifier.get()
     }
 
+    /// The grabbed clip supplies the cursor for both single and group drags.
+    pub(super) fn cursor_position(&self) -> Option<(Option<TrackId>, u64)> {
+        match self.destination.get()? {
+            ClipDropDestination::ExistingTrack(track) => {
+                let preview = self.preview.get().filter(|p| p.target_track == track)?;
+                Some((Some(track), preview.start_frame))
+            }
+            ClipDropDestination::NewTrack { start_frame, .. } => Some((None, start_frame)),
+        }
+    }
+
     pub(super) fn retire(&self) {
         self.preview.set(None);
         self.group.borrow_mut().capture = None;
@@ -170,6 +181,7 @@ pub(super) enum ClipDropDestination {
     NewTrack {
         before_track: Option<TrackId>,
         position: ClipPosition,
+        start_frame: u64,
     },
 }
 
@@ -256,7 +268,7 @@ pub(super) fn rectangle_part(edge: Option<TrimEdge>) -> RectanglePart {
         Some(TrimEdge::Right) => RectanglePart::Trailing,
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 fn take_pointer_down(
     pending: &mut Option<PointerDown>,
     generation: u64,
@@ -785,15 +797,17 @@ impl super::EditorView {
                 drag.insertion_line_y.set(None);
                 return (None, true);
             }
-            let position = candidate_position(&state.project, drag, None, pointer_x, timeline);
-            let Some(position) = position else {
+            let preview = candidate_position(&state.project, drag, None, pointer_x, timeline)
+                .and_then(|position| preview_for(&state.project, drag.source_track, position));
+            let Some(preview) = preview else {
                 drag.destination.set(None);
                 drag.insertion_line_y.set(None);
                 return (None, false);
             };
             drag.destination.set(Some(ClipDropDestination::NewTrack {
                 before_track,
-                position,
+                position: preview.position,
+                start_frame: preview.start_frame,
             }));
             drag.insertion_line_y.set(Some(line_y));
             return (None, true);
@@ -938,6 +952,7 @@ impl super::EditorView {
         let Some(ClipDropDestination::NewTrack {
             before_track,
             position,
+            ..
         }) = destination
         else {
             self.clear_clip_drag(drag.project_generation, drag.clip);
@@ -984,10 +999,14 @@ impl super::EditorView {
                 self.clear_clip_drag(drag.project_generation, drag.clip);
                 return;
             };
-            self.pending_clip_move = self
-                .active_clip_drag
-                .take()
-                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                )
+            });
             let before_pending = self.worker_requests_pending;
             if self.enqueue(Request::MoveExistingClips {
                 project_generation: drag.project_generation,
@@ -1018,10 +1037,14 @@ impl super::EditorView {
                 self.clear_clip_drag(drag.project_generation, drag.clip);
                 return;
             };
-            self.pending_clip_move = self
-                .active_clip_drag
-                .take()
-                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                )
+            });
             if !self.enqueue(Request::Edit(command)) {
                 self.retire_pending_clip_move();
                 self.clear_clip_drag(drag.project_generation, drag.clip);
@@ -1189,11 +1212,7 @@ impl super::EditorView {
         })
     }
 
-    pub(super) fn painted_track_insertion_target(
-        &self,
-        pointer_x: f32,
-        pointer_y: f32,
-    ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
+    fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
         let body = self
             .arrangement_bounds
             .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
@@ -1203,9 +1222,34 @@ impl super::EditorView {
             top: body.top,
             height: body.height,
         };
-        if !lane_contains_pointer(pointer_x, pointer_y, timeline) {
-            return None;
-        }
+        lane_contains_pointer(x, y, timeline).then_some(timeline)
+    }
+
+    // Use the last painted full row, including attached automation lanes.
+    // A virtualized or stale last row cannot claim the trailing hit region.
+    fn painted_arrangement_tail_boundary(&self, pointer_y: f32) -> Option<f32> {
+        let state = self.state.as_ref()?;
+        let Some(index) = self.arrangement_track_indices().last() else {
+            return Some(pointer_y);
+        };
+        let last = state.project.tracks().get(*index)?;
+        let row = self.painted_track_drop_lane(last.id())?;
+        let bottom = row.top + row.height;
+        (pointer_y >= bottom).then_some(bottom)
+    }
+
+    pub(super) fn painted_arrangement_tail(&self, x: f32, y: f32) -> Option<LaneBounds> {
+        let timeline = self.painted_arrangement_timeline_at(x, y)?;
+        self.painted_arrangement_tail_boundary(y)?;
+        Some(timeline)
+    }
+
+    pub(super) fn painted_track_insertion_target(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
+        let timeline = self.painted_arrangement_timeline_at(pointer_x, pointer_y)?;
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
         if tracks.is_empty() {
@@ -1217,7 +1261,7 @@ impl super::EditorView {
             let first_lane = self.painted_track_drop_lane(first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
             // without adding empty layout space above the tracks.
-            if first_lane.top >= body.top && pointer_y <= first_lane.top + 3.0 {
+            if first_lane.top >= timeline.top && pointer_y <= first_lane.top + 3.0 {
                 return Some((Some(first.id()), timeline, first_lane.top));
             }
         }
@@ -1238,16 +1282,8 @@ impl super::EditorView {
             }
         }
 
-        let last = state.project.tracks().get(*tracks.last()?)?;
-        if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
-            return None;
-        }
-        let last_lane = self.painted_track_drop_lane(last.id())?;
-        let bottom = last_lane.top + last_lane.height;
-        if pointer_y >= bottom && pointer_y < body.top + body.height {
-            return Some((None, timeline, bottom));
-        }
-        None
+        self.painted_arrangement_tail_boundary(pointer_y)
+            .map(|bottom| (None, timeline, bottom))
     }
 
     pub(super) fn browser_audio_drop_position(
@@ -1462,7 +1498,9 @@ impl super::EditorView {
         };
         if self.enqueue_sample_drop(request, drag, destination) {
             self.stop_browser_preview_for_drop();
-            self.status = "importing sample to arrangement".into();
+            if self.recovery.deferred_edit.is_none() {
+                self.status = "importing sample to arrangement".into();
+            }
         }
         self.clear_browser_audio_drag(drag);
         cx.notify();
@@ -1565,6 +1603,8 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        drag.destination
+            .set(Some(ClipDropDestination::ExistingTrack(target_track)));
         if std::mem::take(&mut self.drag_bounce_held) {
             self.drop_clip_bounce(drag, target_track, preview);
             cx.notify();
@@ -1603,6 +1643,7 @@ impl super::EditorView {
                 drag,
                 command.clone(),
                 std::sync::Arc::clone(&state.project),
+                self.selection_intent_epoch,
             )
         });
         let before_pending = self.worker_requests_pending;
@@ -1688,7 +1729,7 @@ impl BrowserAudioDrag {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{
         ClipDrag, ClipPosition, DropState, LaneBounds, PointerDown, SnapGrid, candidate_position,

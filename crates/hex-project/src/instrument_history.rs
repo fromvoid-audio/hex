@@ -62,6 +62,7 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning,
             routing,
             audio_feeds,
@@ -86,6 +87,7 @@ impl Project {
             || offline_assets != &target.offline_assets
             || native_sources.len() != target.native_sources.len()
             || arrangement_sections != &target.arrangement_sections
+            || arrangement_locators != &target.arrangement_locators
             || tuning != &target.tuning
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds

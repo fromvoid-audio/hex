@@ -19,6 +19,7 @@ pub(super) fn display_only(row: &PluginParameterRow) -> PluginParameterRow {
         editable: false,
         automation_class: None,
         metadata_revision: 0,
+        editor_sequence: 0,
         ..row.clone()
     }
 }
@@ -130,6 +131,7 @@ mod tests {
             automation_class: None,
             page_first: 0,
             metadata_revision: 0,
+            editor_sequence: 0,
         };
         let stale = display_only(&PluginParameterRow {
             value: "live".into(),
@@ -137,6 +139,7 @@ mod tests {
             editable: true,
             automation_class: Some([1; 16]),
             metadata_revision: 7,
+            editor_sequence: 0,
             ..cached.clone()
         });
         assert!(stale.value.is_empty());
@@ -162,6 +165,7 @@ mod tests {
                 automation_class: None,
                 page_first: 0,
                 metadata_revision: 0,
+                editor_sequence: 0,
             })
             .collect::<Vec<_>>();
         let found = matching_rows(&rows, "filter");
@@ -189,6 +193,7 @@ mod tests {
                 automation_class: None,
                 page_first: ((index / 4) * 4) as u16,
                 metadata_revision: 0,
+                editor_sequence: 0,
             })
             .collect::<Vec<_>>();
         let mut second_page = rows[4..].to_vec();
@@ -288,6 +293,7 @@ mod tests {
             automation_class: None,
             page_first: 4,
             metadata_revision: 0,
+            editor_sequence: 0,
         };
         let live = PluginParameterRow {
             value: "0.75".into(),
@@ -295,6 +301,7 @@ mod tests {
             editable: true,
             automation_class: Some([6; 16]),
             metadata_revision: 3,
+            editor_sequence: 0,
             ..cached.clone()
         };
         assert_eq!(

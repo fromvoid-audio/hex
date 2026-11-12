@@ -695,7 +695,7 @@ fn boolean(value: ParameterValue) -> Option<bool> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

@@ -206,8 +206,8 @@ impl NativeEffectCallbacks {
         self.quantum
     }
     /// Offline only. Wait outside rendering for the exact committed prefixes
-    /// so a later callback sees their replies. A failed source is fatal to
-    /// the file render even though interactive carriers can contain it.
+    /// so a later callback sees their replies. A failed source or concealed
+    /// reply is fatal to the file render.
     pub fn wait_offline_on_control(
         &self,
         workers: &[NativeWorker],
@@ -225,6 +225,9 @@ impl NativeEffectCallbacks {
             for (entry, worker) in self.entries.iter().zip(workers) {
                 if !entry.callback.matches_worker(worker) || !entry.transport_is_live() {
                     return Err(Error::Protocol("offline vst3 worker failed"));
+                }
+                if entry.callback.concealed_output {
+                    return Err(Error::Protocol("offline vst3 output is incomplete"));
                 }
                 ready &= worker.published_blocks_on_control()
                     >= entry.callback.transport.dispatched_blocks_on_control();

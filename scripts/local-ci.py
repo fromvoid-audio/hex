@@ -218,6 +218,15 @@ UI_UNIT_STEPS = tuple(
 )
 UI_UNIT_STEP_IDS = frozenset(step.step_id for step in UI_UNIT_STEPS)
 
+UI_FEATURE_TARGET_STEPS = (
+    Step("ui-midi-pressure-boundary-tests",
+         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
+          "--test", "midi_pressure_boundary", "--locked"), requires_tests=True),
+    Step("ui-feature-doctests",
+         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--doc", "--locked")),
+)
+UI_FEATURE_TARGET_STEP_IDS = frozenset(step.step_id for step in UI_FEATURE_TARGET_STEPS)
+
 # Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
     *QUICK_STEPS,
@@ -229,7 +238,8 @@ FULL_STEPS = (
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
-    Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
+    Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--lib", "--features", "ui-test-support", "--locked")),
+    *UI_FEATURE_TARGET_STEPS,
     *UI_UNIT_STEPS,
     Step("sandbox-unit-tests", ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-unit-tier", "--locked", "theme::"), requires_tests=True),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
@@ -363,6 +373,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     # Owners test; every affected consumer still compiles and lints below.
     tested = boundary.get("test_packages", [])
     module_filters = boundary.get("module_filters", {})
+    standalone_ui = boundary.get("ui_standalone_unit_targets", {})
     by_name = {p["name"]: p for p in inventory}
     doc_examples = set(boundary.get("doc_example_owners", []))
 
@@ -396,8 +407,34 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for package in tested:
             if package in module_filters and package not in single:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
+        if standalone_ui:
+            if tested != ["hex-ui"] or single.get("hex-ui") != "ui-test-support" or module_filters:
+                raise ValueError("standalone UI unit targets require an exclusively test-only hex-ui boundary")
+            for target, filters in sorted(standalone_ui.items()):
+                feature = ci_plan.UI_UNIT_FEATURES.get(target)
+                feature_args = ("--features", feature) if feature else ()
+                steps.append(Step(f"ui-unit-{target}",
+                                  ("cargo", "test", "-p", "hex-ui", *feature_args,
+                                   "--test", target, "--locked", *(("--", *filters) if filters else ())),
+                                  requires_tests=True))
+        elif "hex-ui" in single and "hex-ui" not in module_filters:
+            steps.append(Step("ui-default-standalone-tests",
+                              ("cargo", "test", "-p", "hex-ui",
+                               *(arg for target in ci_plan.UI_DEFAULT_STANDALONE_TESTS for arg in ("--test", target)),
+                               "--locked"), requires_tests=True))
+        if "hex-ui" in single and not standalone_ui:
+            unit_prefixes = {prefix for modules in ci_plan.UI_DEFAULT_LIB_UNIT_MODULES.values()
+                             for prefix in modules}
+            if "hex-ui" in module_filters:
+                unit_prefixes = {max(prefix, name, key=len)
+                                 for prefix in unit_prefixes for name in module_filters["hex-ui"]
+                                 if prefix.startswith(name) or name.startswith(prefix)}
+            if unit_prefixes:
+                steps.append(Step("ui-default-lib-unit-tests",
+                                  ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--",
+                                   *sorted(unit_prefixes)), requires_tests=True))
         if single:
-            for package in (p for p in tested if p in single):
+            for package in (p for p in tested if p in single and not (standalone_ui and p == "hex-ui")):
                 # Module-scoped doctests run only when the changed files carry doc examples.
                 if package in module_filters and package not in doc_examples:
                     continue
@@ -444,9 +481,11 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         selected = [p for p in owners if p in scope]
         if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
-        # Scoped UI changes select mapped unit targets below; a whole-package
-        # run retains this explicit feature-gated target from FULL_STEPS.
-        if step.step_id in UI_UNIT_STEP_IDS and "hex-ui" in module_filters:
+        if standalone_ui and selected == ["hex-ui"] and runs_rust_tests(step.argv):
+            continue
+        # Scoped UI changes select mapped unit and standalone targets below.
+        # Whole-package runs retain the explicit feature targets and doctests.
+        if step.step_id in UI_UNIT_STEP_IDS | UI_FEATURE_TARGET_STEP_IDS and "hex-ui" in module_filters:
             continue
         # Example targets are separate crates: a src module filter cannot name
         # their tests. A module-scoped owner's own module tests cover the change.
@@ -504,8 +543,10 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                      if "hex-ui" in tested and any(module.startswith(name) or name.startswith(module)
                                                     for name in module_filters.get("hex-ui", []))}
     for target in sorted(extra_targets):
+        feature = ci_plan.UI_EXTRA_TEST_FEATURES.get(target)
+        feature_args = ("--features", feature) if feature else ()
         steps.append(Step(f"ui-consumer-{target}",
-                          ("cargo", "test", "-p", "hex-ui", "--test", target, "--locked"),
+                          ("cargo", "test", "-p", "hex-ui", *feature_args, "--test", target, "--locked"),
                           requires_tests=True))
     if lint_features:
         lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
@@ -569,6 +610,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
+                 *UI_FEATURE_TARGET_STEPS,
                  *UI_UNIT_STEPS,
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
                  Step("ui-default-clippy", ("cargo", "clippy", "-p", "hex-ui", "-p", "hex-widgets", "-p", "hex-desktop", "--all-targets", "--locked", "--", "-D", "warnings")),
@@ -999,6 +1041,49 @@ class FreshTargetReservation:
         except OSError as error:
             raise TargetCacheError(f"cannot revalidate fresh target or lock identity: {error}") from error
 
+    def _materialize_absent(self) -> None:
+        """Pin a private sibling and publish it at the reserved absent path."""
+        self._verify(self._target)
+        if not self._absent:
+            return
+        parent = self._handles[-1]
+        target = Path(self._target).name
+        staging = f".hex-cargo-target-{uuid.uuid4().hex}.tmp"
+        descriptor = None
+        try:
+            os.mkdir(staging, mode=0o700, dir_fd=parent)
+            descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=parent)
+            pinned = os.fstat(descriptor)
+            self._verify(self._target)
+            entry = os.stat(staging, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(entry.st_mode)
+                    or (entry.st_dev, entry.st_ino) != (pinned.st_dev, pinned.st_ino)
+                    or not self._empty(descriptor)):
+                raise TargetCacheError("fresh target staging directory changed")
+            ci_target_storage.rename_new_directory(parent, staging, target)
+            # Closing the reservation now closes this exact published inode.
+            self._handles.append(descriptor)
+            self._absent = False
+            os.fsync(parent)
+            self._verify(self._target)
+        except OSError as error:
+            raise TargetCacheError(f"cannot publish absent fresh target: {error}") from error
+        finally:
+            if descriptor is not None and descriptor not in self._handles:
+                try:
+                    entry = os.stat(staging, dir_fd=parent, follow_symlinks=False)
+                    pinned = os.fstat(descriptor)
+                    if (stat.S_ISDIR(entry.st_mode)
+                            and (entry.st_dev, entry.st_ino) == (pinned.st_dev, pinned.st_ino)):
+                        os.rmdir(staging, dir_fd=parent)
+                except OSError:
+                    # Retain an ambiguous staging entry. The final path is
+                    # never removed, even if publication returned an error.
+                    pass
+                finally:
+                    os.close(descriptor)
+
     def _publish_dev_owner(self, owner_name: str, payload: bytes) -> None:
         """Publish a verified owner while retaining the same cooperative lock."""
         directory = self._state_fd
@@ -1046,10 +1131,7 @@ class FreshTargetReservation:
                 if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
                         or stream.read(len(payload) + 1) != payload):
                     raise TargetCacheError("published dev owner marker identity or bytes changed")
-            self._require_state_entry(directory, owner_name, owner)
-            self._require_state_entry(directory, self._release_marker_name(owner_name), None)
-            self._require_state_entry(directory, pending_name, pending)
-            self._verify_lock_identity()
+            self._verify(self._target, pending=pending, dev_owner=owner)
             # Commit point. The verified owner is already durable. If removal
             # or its sync is interrupted, a crash may restore the sentinel or
             # leave a usable verified owner. The current caller still fails.
@@ -1105,6 +1187,24 @@ class LocalCiRunner:
     def _execution_policy_error(self) -> str | None:
         return cli_policy_error(self.root) if self._cli_policy_bound else delivery_source_error(self.root)
 
+    def _step_sequence_error(self) -> str | None:
+        """Reject incomplete qualifying execution before any target is prepared.
+
+        This binds execution to the submitted plan, not the plan to source;
+        independent plan authentication is a separate requirement.
+        """
+        if self.mode not in {"full", "merge", "release"} or self.plan is not None and self.plan.get("qualifies_merge") is False:
+            return None
+        if self.plan is not None and self.plan.get("qualifies_merge") is not True:
+            return "plan must explicitly declare its qualification status"
+        try:
+            expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
+        except (KeyError, TypeError, ValueError) as error:
+            return f"cannot select qualifying steps: {error}"
+        if self.steps != expected:
+            return "qualifying steps differ from the complete declared configuration"
+        return None
+
     def __init__(
         self,
         root: Path = ROOT,
@@ -1146,8 +1246,8 @@ class LocalCiRunner:
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
-        self.steps = steps or (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
-                               else planned_steps({"scope": "full"}))
+        self.steps = steps if steps is not None else (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
+                                                      else planned_steps({"scope": "full"}))
         self.output_dir = self.root / "artifacts" / "local-ci" / self.run_id
         self.summary_path = self.output_dir / "summary.json"
         self.started_monotonic = time.monotonic()
@@ -1582,8 +1682,6 @@ class LocalCiRunner:
                 raise TargetCacheError("fresh dev ownership requires reserved Cargo and Git identity")
             selected = self.cargo_identity["target_directory"]
             reservation._verify(selected)
-            if reservation._absent:
-                raise TargetCacheError("fresh dev publication requires an existing empty target")
             if (reservation._root != self.root or self.env.get("CARGO_TARGET_DIR") != selected
                     or self.cargo_identity["workspace_root"] != str(self.root)
                     or self.git_identity["workspace_root"] != str(self.root)):
@@ -1595,6 +1693,8 @@ class LocalCiRunner:
             self._check_target_filesystem(target)
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed before fresh dev publication: " + error)
+            if reservation._absent:
+                reservation._materialize_absent()
             record = self._target_owner_record(self.git_identity)
             pinned = os.fstat(reservation._handles[-1])
             if record["target_identity"] != {"device": pinned.st_dev, "inode": pinned.st_ino}:
@@ -2713,6 +2813,9 @@ class LocalCiRunner:
             elif (error := self._execution_policy_error()) is not None:
                 key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
                 self.summary.update(status="failed", exit_code=2, **{key: error})
+            elif (error := self._step_sequence_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_sequence_error=error)
             elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -2826,7 +2929,7 @@ class LocalCiRunner:
                 if self.mode == "merge" and not failed:
                     self.summary["test_budget"] = merge_test_budget(
                         self.summary["steps"], self.over_budget_reason)
-                partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
+                partial = self.mode not in {"full", "merge", "release"} or self.plan is not None and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
                 self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0

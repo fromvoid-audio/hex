@@ -37,9 +37,20 @@ def install_delivery_source_fixture(root: Path) -> None:
     """Install independent copies of the actual delivery input sources."""
     scripts = root / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+    for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
                  "ci_checkpoint.py", "ci_target_storage.py"):
         (scripts / name).write_bytes((SCRIPT.parent / name).read_bytes())
+
+
+def load_delivery_source_fixture(name):
+    path = SCRIPT.with_name("hex-test-build.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    source = path.read_bytes()
+    module._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+    return module
 
 
 FAKE_TOOL = """#!/bin/sh
@@ -365,6 +376,61 @@ class FreshTargetReservationTests(unittest.TestCase):
 
 
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_qualifying_step_sequence_refuses_drift_before_execution_or_target_access(self):
+        self.step_sequence_patch.stop()
+        expected = local_ci.planned_steps({"scope": "full"})
+        first = expected[0]
+        cases = {
+            "empty": (),
+            "missing": expected[1:],
+            "added": (*expected, first),
+            "reordered": (expected[1], expected[0], *expected[2:]),
+            "argv": (local_ci.Step(first.step_id, (*first.argv, "--changed"),
+                                   first.uses_cargo_target, first.requires_tests), *expected[1:]),
+            "flags": (local_ci.Step(first.step_id, first.argv, not first.uses_cargo_target,
+                                    first.requires_tests), *expected[1:]),
+            "id": (local_ci.Step("changed", first.argv, first.uses_cargo_target,
+                                 first.requires_tests), *expected[1:]),
+            "test-flag": (local_ci.Step(first.step_id, first.argv, first.uses_cargo_target,
+                                         not first.requires_tests), *expected[1:]),
+        }
+        for label, steps in cases.items():
+            with self.subTest(label=label):
+                runner = local_ci.LocalCiRunner(self.repo, mode="full", run_id="sequence-" + label,
+                    env=self.env, steps=steps, min_free_bytes=0, target_state_dir=self.target_state_dir)
+                with patch.object(runner, "_resolve_cargo_identity") as identity, \
+                        patch.object(runner, "_run_step") as execute:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("step_sequence_error", runner.summary)
+                identity.assert_not_called()
+                execute.assert_not_called()
+
+    def test_scoped_step_binding_and_nonqualifying_custom_execution(self):
+        self.step_sequence_patch.stop()
+        plan = {"scope": "metadata", "base": "base", "source": "source", "qualifies_merge": True}
+        expected = local_ci.planned_steps(plan)
+        matching = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=expected)
+        self.assertIsNone(matching._step_sequence_error())
+        altered = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=())
+        self.assertIsNotNone(altered._step_sequence_error())
+        with patch.object(altered, "_resolve_cargo_identity") as identity, \
+                patch.object(altered, "_run_step") as execute:
+            self.assertEqual(altered.run(), 2)
+        identity.assert_not_called()
+        execute.assert_not_called()
+        full = local_ci.LocalCiRunner(self.repo, mode="full", env=self.env)
+        self.assertIsNone(full._step_sequence_error())
+        for mode in ("quick", "component", "custom"):
+            with self.subTest(mode=mode):
+                partial = local_ci.LocalCiRunner(self.repo, mode=mode, run_id="custom-" + mode, env=self.env,
+                    steps=(local_ci.Step("first", ("first",)),), min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(partial.run(), 0)
+                self.assertEqual(partial.summary["status"], "partial")
+        scoped_partial = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env,
+            plan={"scope": "metadata", "qualifies_merge": False}, steps=())
+        self.assertIsNone(scoped_partial._step_sequence_error())
+
     def test_module_shard_empty_configs_require_aggregate_passes(self):
         (self.bin / "python3").write_text(
             '#!/bin/sh\ncase "$*" in\n'
@@ -411,6 +477,11 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertGreaterEqual(summary["duration_seconds"], summary["time_to_first_result_seconds"])
 
     def setUp(self) -> None:
+        # Pipeline and checkpoint fixtures exercise other boundaries with short,
+        # synthetic steps. Sequence admission has dedicated unmocked tests above.
+        self.step_sequence_patch = patch.object(local_ci.LocalCiRunner, "_step_sequence_error", return_value=None)
+        self.step_sequence_patch.start()
+        self.addCleanup(self.step_sequence_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
         # Tests for unsafe lexical aliases construct those paths explicitly.
@@ -1452,10 +1523,7 @@ fi
 
         # Exercise the delivery consumer against this small complete fake plan;
         # no native build or signing is invoked.
-        spec = importlib.util.spec_from_file_location("checkpoint_delivery", SCRIPT.with_name("hex-test-build.py"))
-        delivery = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = delivery
-        spec.loader.exec_module(delivery)
+        delivery = load_delivery_source_fixture("checkpoint_delivery")
         with patch.object(delivery.ci, "FULL_STEPS", case.steps):
             self.assertEqual(delivery.validate_ci(resumed.summary_path, resumed, report["commit"]), report)
             forged = json.loads(resumed.summary_path.read_text())
@@ -2194,9 +2262,10 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
         self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
 
-    def _reserved_dev_runner(self, name, *, real_cargo=False):
+    def _reserved_dev_runner(self, name, *, real_cargo=False, absent=False):
         target = self.repo / name
-        target.mkdir()
+        if not absent:
+            target.mkdir()
         env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
         if real_cargo:
             # Use real offline Cargo metadata and provenance, with the same
@@ -2252,6 +2321,103 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             contender.acquire()
         self.assertIs(lock.file, locked_file)
         self.assertEqual(runner._load_target_owner(owner, target), record)
+
+    def test_fresh_dev_absent_target_materializes_and_transfers_same_lock(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-real", real_cargo=True, absent=True)
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        locked_file = lock.file
+        self.assertFalse(target.exists(), "offline Cargo metadata must leave the explicit target absent")
+        with reservation:
+            runner._claim_fresh_dev_owner(reservation)
+            self.addCleanup(lock.release)
+
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertIs(runner.target_lock, lock)
+        self.assertIs(lock.file, locked_file)
+        self.assertTrue(runner.target_owner_claimed)
+        record = runner._load_target_owner(owner, target)
+        self.assertEqual(record["workspace_owner"], {key: runner.git_identity[key]
+                                                    for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertFalse(record["cache_inputs"]["workspace"]["checked"])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
+
+    def test_fresh_dev_absent_target_refuses_competing_directory_at_publication(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-competitor", absent=True)
+        owner = runner.target_owner_path
+        publish = local_ci.ci_target_storage.rename_new_directory
+        competing_identity = None
+
+        def compete(parent_fd, stage_name, target_name):
+            nonlocal competing_identity
+            os.mkdir(target_name, dir_fd=parent_fd)
+            competing_identity = runner._directory_identity(target)
+            publish(parent_fd, stage_name, target_name)
+
+        with patch.object(local_ci.ci_target_storage, "rename_new_directory", side_effect=compete), \
+                self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+
+        self.assertIsNotNone(competing_identity)
+        self.assertEqual(runner._directory_identity(target), competing_identity)
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(owner.exists())
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
+
+    def test_fresh_dev_absent_target_replacement_after_publication_is_preserved(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-replaced", absent=True)
+        owner = runner.target_owner_path
+        publish = local_ci.ci_target_storage.rename_new_directory
+        original = target.with_name(target.name + ".published")
+        replacement_identity = None
+
+        def publish_then_replace(parent_fd, stage_name, target_name):
+            nonlocal replacement_identity
+            publish(parent_fd, stage_name, target_name)
+            target.rename(original)
+            target.mkdir()
+            replacement_identity = runner._directory_identity(target)
+
+        with patch.object(local_ci.ci_target_storage, "rename_new_directory",
+                          side_effect=publish_then_replace), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "identity or ancestry changed"):
+            runner._claim_fresh_dev_owner(reservation)
+
+        self.assertTrue(original.is_dir())
+        self.assertIsNotNone(replacement_identity)
+        self.assertEqual(runner._directory_identity(target), replacement_identity)
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(owner.exists())
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+
+    def test_fresh_dev_absent_target_unsupported_publication_leaves_no_target(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-unsupported", absent=True)
+        owner = runner.target_owner_path
+
+        with patch.object(local_ci.ci_target_storage, "rename_new_directory",
+                          side_effect=OSError(errno.ENOTSUP, "no-replace rename unavailable")), \
+                self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+
+        self.assertFalse(target.exists())
+        self.assertFalse(owner.exists())
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
 
     def _assert_pending_consumers_refuse(self, name, target):
         env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))

@@ -211,6 +211,12 @@ void error(int channel,const wire::Config* config,uint32_t reason) {
     if(config) for(auto id:config->binding) wire::number(out,id,8);
     wire::number(out,reason,4);wire::send(channel,"HXVIER01",out);
 }
+bool send_retirement(int channel,const wire::Config& config,uint64_t blocks,uint64_t frames,
+    uint32_t failure,bool closed,bool unloaded) {
+    wire::Bytes terminal;config.stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);
+    wire::number(terminal,failure,4);wire::number(terminal,closed?1:0,1);wire::number(terminal,unloaded?1:0,1);
+    return wire::send(channel,"HXVITR01",terminal);
+}
 wire::Bytes state_payload(const wire::Config& config,const hex_instance::CapturedState& state) {
     wire::Bytes out{'H','X','V','S',1,static_cast<uint8_t>((state.component?1:0)|(state.controller?2:0)),0,0};
     out.insert(out.end(),config.cid.begin(),config.cid.end());
@@ -388,6 +394,7 @@ int main(int argc,char** argv) {
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
+            std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
             std::thread worker([&] {
                 bool started=false;
@@ -451,6 +458,18 @@ int main(int argc,char** argv) {
                     const auto staged_editor_sequence=[&](ParamID id)->uint64 {
                         const auto index=last_editor_edit(id);
                         return index<applying_edit_count?applying_edits[index].sequence:0;
+                    };
+                    // An output-only observation can echo a preceding quantum.
+                    // Keep the sequence of the last input for each parameter
+                    // until a later input replaces it. Inventory refreshes
+                    // preserve the sorted ID set, including across epochs.
+                    std::array<uint64,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
+                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input) -> std::optional<uint64> {
+                        const auto* info=processing_parameters.find(id);
+                        if(!info) return std::nullopt;
+                        auto& sequence=feedback_sequences[info-processing_parameters.parameters.data()];
+                        if(input) sequence=*input;
+                        return sequence;
                     };
                     const auto conflicts_with_prior_cohort=[&](const hex_instance::EditEvent& event) {
                         const auto index=last_editor_edit(event.id);
@@ -549,6 +568,20 @@ int main(int argc,char** argv) {
                         }
                         return !remaining_group;
                     };
+                    const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback) {
+                        // All offsets are zero. Processor output wins over its
+                        // corresponding input without losing that input's origin.
+                        for(const auto* changes : {&parameter_input,&parameter_output}) {
+                            for(size_t n=0;n<changes->size();++n) {
+                                hex_instance::ParameterPoint point{};
+                                if(!changes->point(n,point)) return false;
+                                const auto sequence=feedback_sequence(point.id,changes==&parameter_input?
+                                    std::optional<uint64>{staged_editor_sequence(point.id)}:std::nullopt);
+                                if(!sequence || !feedback.put(point.id,point.normalized,*sequence)) return false;
+                            }
+                        }
+                        return true;
+                    };
                     const auto flush_idle_editor=[&] {
                         // Leave a full receipt batch for its reader to consume.
                         // The next poll can apply another fixed-size batch.
@@ -566,15 +599,7 @@ int main(int argc,char** argv) {
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             if(!input_returned || !output_returned) {error(channel,&*config,Processing);std::_Exit(Processing);}
                             if(result!=hex_instance::FlushResult::Applied) return false;
-                            // All offsets are zero. Mirror the processor's
-                            // returned value over the input value for each ID.
-                            for(const auto* changes : {&parameter_input,&parameter_output}) {
-                                for(size_t n=0;n<changes->size();++n) {
-                                    hex_instance::ParameterPoint point{};
-                                    if(!changes->point(n,point) || !processing_parameters.find(point.id)) return false;
-                                    if(!parameter_feedback.put(point.id,point.normalized,staged_editor_sequence(point.id))) return false;
-                                }
-                            }
+                            if(!mirror_flushed_parameters(parameter_feedback)) return false;
                             instance.publish_parameter_feedback(parameter_feedback);
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
@@ -602,15 +627,7 @@ int main(int argc,char** argv) {
                         if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) return Processing;
                         flushed_values={};
-                        for(size_t n=0;n<parameter_input.size();++n) {
-                            hex_instance::ParameterPoint point{};
-                            valid=parameter_input.point(n,point) && flushed_values.put(point.id,point.normalized,staged_editor_sequence(point.id)) && valid;
-                        }
-                        for(size_t n=0;n<parameter_output.size();++n) {
-                            hex_instance::ParameterPoint point{};
-                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) || !flushed_values.put(point.id,point.normalized,staged_editor_sequence(point.id))) valid=false;
-                        }
-                        if(!valid) return ProtocolFailure;
+                        if(!mirror_flushed_parameters(flushed_values)) return ProtocolFailure;
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         {
                             std::unique_lock<std::mutex> lock(startup_mutex);
@@ -641,7 +658,13 @@ int main(int argc,char** argv) {
                         wire::number(body,page_operation,8);
                         if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
-                            wire::number(body,static_cast<uint8_t>(editor_state),1);
+                            if(detached_editor_position) {
+                                wire::number(body,3,1);
+                                uint64_t x=0,y=0;
+                                std::memcpy(&x,&detached_editor_position->x,8);
+                                std::memcpy(&y,&detached_editor_position->y,8);
+                                wire::number(body,x,8);wire::number(body,y,8);
+                            } else wire::number(body,static_cast<uint8_t>(editor_state),1);
                         } else if(complete) {
                             wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
                             wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
@@ -675,11 +698,12 @@ int main(int argc,char** argv) {
                                     text(info.title);text(info.shortTitle);text(info.units);
                                     wire::number(body,(value.formatted?1:0)|(value.default_formatted?2:0),1);
                                     text(value.display);text(value.default_display);
+                                    wire::number(body,value.editor_sequence,8);
                                 }
                                 for(const auto byte:parameter_page.descriptor_signature) wire::number(body,byte,1);
                             }
                         } else wire::number(body,0,1);
-                        if(!wire::send(channel,"HXVIMD02",body)) return false;
+                        if(!wire::send(channel,"HXVIMD03",body)) return false;
                         if(complete) page_stage.store(PageIdle,std::memory_order_release);
                         return true;
                     };
@@ -714,8 +738,9 @@ int main(int argc,char** argv) {
                         if(!processed || !parameters_returned || !notes_returned) return false;
                         for(size_t index=0;index<parameter_output.size();++index) {
                             hex_instance::ParameterPoint point{};
-                            if(!parameter_output.point(index,point) || !processing_parameters.find(point.id) ||
-                                !parameter_feedback.put(point.id,point.normalized)) return false;
+                            if(!parameter_output.point(index,point)) return false;
+                            const auto sequence=feedback_sequence(point.id,std::nullopt);
+                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) return false;
                         }
                         return true;
                     };
@@ -939,7 +964,6 @@ int main(int argc,char** argv) {
                         // copied exchange and its reply remain one quantum.
                         packet.reply_parameter_count=0;
                         size_t next_note=0,next_parameter=0;
-                        std::array<bool,hex_instance::HOST_EDIT_COUNT> editor_value_replaced{};
                         for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
                             const size_t first=slice?packet.timing_changes[slice-1].offset:0;
                             const size_t end=slice<packet.timing_change_count?packet.timing_changes[slice].offset:packet.frames;
@@ -1005,16 +1029,12 @@ int main(int argc,char** argv) {
                                     (outgoing==parameter_output.size() || input_point.offset<=output_point.offset);
                                 const auto point=use_input?input_point:output_point;
                                 if(use_input) ++incoming;else ++outgoing;
-                                const auto edit=last_editor_edit(point.id);
-                                uint64 editor_sequence=0;
-                                if(edit<applying_edit_count) {
-                                    // Editor input is staged at quantum offset zero. A later
-                                    // authored point takes ownership, including across slices.
-                                    if(use_input && (first || point.offset)) editor_value_replaced[edit]=true;
-                                    if(!editor_value_replaced[edit]) editor_sequence=applying_edits[edit].sequence;
-                                }
-                                if(!processing_parameters.find(point.id) ||
-                                    !parameter_feedback.put(point.id,point.normalized,editor_sequence)) valid=false;
+                                // Native edits enter at quantum offset zero.
+                                // A later authored input replaces the sequence.
+                                std::optional<uint64> input_sequence;
+                                if(use_input) input_sequence=first || point.offset?0:staged_editor_sequence(point.id);
+                                const auto sequence=feedback_sequence(point.id,input_sequence);
+                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;
@@ -1121,6 +1141,10 @@ int main(int argc,char** argv) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
                                     const auto kind=page_query.kind;
+                                    detached_editor_position=kind==hex_instance::DETACH_EDITOR?editor.position():std::nullopt;
+                                    const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
+                                        std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
+                                        std::nullopt;
                                     if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
@@ -1128,7 +1152,8 @@ int main(int argc,char** argv) {
                                         editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(was_open || kind==hex_instance::CLOSE_EDITOR)
                                         editor_state=hex_instance::EditorState::Closed;
-                                    else if(const auto result=editor.open(instance.create_editor_on_control(),kind!=hex_instance::REOPEN_EDITOR))
+                                    else if(const auto result=editor.open(instance.create_editor_on_control(),
+                                        kind!=hex_instance::REOPEN_EDITOR,placement))
                                         editor_state=*result;
                                     else page_failure=Teardown;
                                 }
@@ -1331,6 +1356,16 @@ int main(int argc,char** argv) {
             }
             error(channel,config?&*config:nullptr,failure);
         }
+        // A private offline instance has no reusable SDK state or editor.
+        // After an exact normal stop, successful SDK processing stop and
+        // worker join, exit with the complete PCM prefix. Keep the module and
+        // objects mapped through process exit, including the autorelease pool.
+        // Processing, stop, and controller failures still take the refusal path.
+        if(offline && normal_stop && !failure && config) {
+            const bool sent=send_retirement(channel,*config,blocks,frames,0,true,false);
+            ::close(channel);
+            std::_Exit(sent?0:ProtocolFailure);
+        }
         try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
     }
     @autoreleasepool {
@@ -1341,12 +1376,7 @@ int main(int argc,char** argv) {
         const bool process_only=closing==CloseResult::RetainedHost && normal_stop && !failure;
         const bool closed=closing==CloseResult::Closed || process_only;
         if(!closed || (!unloaded && !process_only)) failure=Teardown;
-        bool terminal_sent=false;
-        if(config) {
-            wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);
-            wire::number(terminal,failure,4);wire::number(terminal,closed?1:0,1);wire::number(terminal,unloaded?1:0,1);
-            terminal_sent=wire::send(channel,"HXVITR01",terminal);
-        }
+        const bool terminal_sent=config && send_retirement(channel,*config,blocks,frames,failure,closed,unloaded);
         ::close(channel);
         if(process_only) std::_Exit(terminal_sent?0:ProtocolFailure);
         return failure==0 && normal_stop && closed && unloaded?0:static_cast<int>(failure?failure:ProtocolFailure);

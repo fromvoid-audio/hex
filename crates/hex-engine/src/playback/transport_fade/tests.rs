@@ -320,11 +320,80 @@ fn seek_while_playing_fades_out_jumps_and_ramps_in_for_every_block_size() {
 }
 
 #[test]
+fn session_seek_while_playing_declicks_across_blocks() {
+    assert_seek_action(PlaybackAction::Session(
+        crate::SessionPlaybackCommand::Seek(5000),
+    ));
+}
+
+#[test]
+fn play_from_while_playing_declicks_across_blocks() {
+    assert_seek_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(5000)));
+}
+
+fn assert_seek_action(action: PlaybackAction) {
+    let mut reference = None;
+    for block in [1, 7, 64, 100, 512] {
+        let mut playback = session_playback();
+        let mut output = Vec::new();
+        declicked(&mut playback, PlaybackCommand::Play);
+        render(&mut playback, block, 1000, &mut output);
+        playback.try_apply_declicked_action(action).unwrap();
+        assert_eq!(playback.pending_transport_fade(), Some(action));
+        render(&mut playback, block, 1000, &mut output);
+        assert!(playback.playing());
+        assert_eq!(playback.position(), 5000 + 1000 - F as u64);
+        assert_eq!(
+            playback.take_transport_fade_completion(),
+            Some(TransportFadeCompletion {
+                action,
+                audible_end_frame: 1000 + F as u64,
+                applied: true,
+            })
+        );
+        let step = largest_step(&output[1..]);
+        assert!(step <= 1.0 / F as f32 + 1e-6, "{action:?}: step {step}");
+        assert_eq!(output[1000 + F - 1], [0.0; 2]);
+        assert_eq!(output[1000 + F][0], 1.0 / F as f32);
+        match &reference {
+            None => reference = Some(output),
+            Some(reference) => assert_eq!(&output, reference, "{action:?}, block {block}"),
+        }
+    }
+}
+
+#[test]
 fn a_paused_seek_stays_immediate() {
     let mut playback = session_playback();
     declicked(&mut playback, PlaybackCommand::Seek(700));
     assert_eq!(playback.pending_transport_fade(), None);
     assert_eq!(playback.position(), 700);
+}
+
+#[test]
+fn session_seek_and_play_from_stopped_are_immediate_and_invalid_play_from_refuses() {
+    let mut playback = session_playback();
+    let seek = PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(700));
+    playback.try_apply_declicked_action(seek).unwrap();
+    assert_eq!(playback.position(), 700);
+    assert_eq!(playback.pending_transport_fade(), None);
+    let play = PlaybackAction::Transport(PlaybackCommand::PlayFrom(900));
+    playback.try_apply_declicked_action(play).unwrap();
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 900);
+    assert_eq!(playback.pending_transport_fade(), None);
+    let invalid = PlaybackAction::Transport(PlaybackCommand::PlayFrom(u64::MAX));
+    assert!(playback.try_apply_declicked_action(invalid).is_err());
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 900);
+    assert_eq!(playback.pending_transport_fade(), None);
+    let mut linear = linear_playback();
+    declicked(&mut linear, PlaybackCommand::Play);
+    assert_eq!(
+        linear.try_apply_declicked_action(seek),
+        Err(PlaybackActionError::SessionNotPrepared)
+    );
+    assert_eq!(linear.pending_transport_fade(), None);
 }
 
 #[test]

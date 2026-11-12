@@ -186,7 +186,7 @@ pub(in crate::editor::device_panel) fn displayed(
     Some((&model.primary, &input.state, input.rate))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

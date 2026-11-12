@@ -12,6 +12,23 @@ pub enum TrackDeviceSlot {
     Effect,
 }
 
+/// Placement of an instrument loaded with a newly imported source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentLoadPlacement {
+    First,
+    Append,
+    Replace(DeviceId),
+}
+
+impl InstrumentLoadPlacement {
+    pub fn replacement(self) -> Option<DeviceId> {
+        match self {
+            Self::Replace(device) => Some(device),
+            Self::First | Self::Append => None,
+        }
+    }
+}
+
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -239,6 +256,18 @@ pub enum Command {
     },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
+    AddArrangementLocator {
+        frame: u64,
+    },
+    MoveArrangementLocator {
+        locator: crate::LocatorId,
+        frame: u64,
+    },
+    RenameArrangementLocator {
+        locator: crate::LocatorId,
+        name: Option<String>,
+    },
+    RemoveArrangementLocator(crate::LocatorId),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
     EditAudioEvents {
         clip: ClipId,
@@ -377,6 +406,13 @@ pub enum Command {
     },
     RemoveInstrument {
         track: TrackId,
+    },
+    /// Replace the exact instrument on its receiving track with a fresh device identity.
+    /// The source binding and effects survive, and the track's instrument comes first.
+    ReplaceTrackInstrument {
+        track: TrackId,
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
     },
     RemoveDevice(DeviceId),
     MoveDevice {
@@ -772,11 +808,13 @@ pub enum Command {
         sample_rate: u32,
         frames: u64,
     },
-    /// One prepared import creates source metadata and fills an empty instrument
-    /// slot. The neutral state template has no asset references; the new source
+    /// One prepared import creates source metadata and loads the track instrument.
+    /// An exact replacement uses the native instrument placement rule.
+    /// The unbound state template has no asset references; the new source
     /// ID is bound inside this candidate, never predicted by a UI caller.
-    ImportDeviceAssetIntoEmptyInstrument {
+    ImportDeviceAssetIntoNewInstrument {
         track: TrackId,
+        placement: InstrumentLoadPlacement,
         path: PathBuf,
         sample_rate: u32,
         frames: u64,
@@ -822,6 +860,8 @@ pub enum Command {
     /// Empty tracks are skipped; returns the last populated track's resulting clip.
     /// All fragments and groups form one atomic edit; mixed media on a row refuses.
     GroupTimeRange(crate::TimeRange),
+    /// Group populated lanes, or place blank MIDI clips if the entire range is empty.
+    GroupTimeRangeOrCreate(crate::TimeRange),
     /// Extract a selected root-local audio span into one clip, retaining outer fragments.
     GroupAudioEventRange {
         clip: ClipId,
@@ -1329,6 +1369,7 @@ pub struct MidiNoteInsert {
 pub enum Created {
     NativeSource(crate::SourceId),
     ArrangementSection(crate::SectionId),
+    ArrangementLocator(crate::LocatorId),
     Track(TrackId),
     /// Inclusive track-only ID range born in one atomic paste.
     Tracks {
@@ -2053,6 +2094,12 @@ impl Project {
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
             }
+            command @ (Command::AddArrangementLocator { .. }
+            | Command::MoveArrangementLocator { .. }
+            | Command::RenameArrangementLocator { .. }
+            | Command::RemoveArrangementLocator(_)) => {
+                crate::arrangement_locators::apply(self, command)
+            }
             Command::SetTuning(tuning) => {
                 self.tuning = tuning;
                 Ok(Created::None)
@@ -2223,6 +2270,7 @@ impl Project {
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
+            | Command::ReplaceTrackInstrument { .. }
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
@@ -2338,7 +2386,12 @@ impl Project {
             }
             Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
             Command::GroupClips(clips) => crate::clip_consolidate::apply(self, clips),
-            Command::GroupTimeRange(range) => crate::clip_consolidate::time_range(self, &range),
+            Command::GroupTimeRange(range) => {
+                crate::clip_consolidate::time_range(self, &range, false)
+            }
+            Command::GroupTimeRangeOrCreate(range) => {
+                crate::clip_consolidate::time_range(self, &range, true)
+            }
             Command::GroupAudioEventRange { clip, start, end } => {
                 crate::clip_consolidate::event_range(self, clip, start, end)
             }
@@ -2899,8 +2952,9 @@ impl Project {
                 self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
             }
-            Command::ImportDeviceAssetIntoEmptyInstrument {
+            Command::ImportDeviceAssetIntoNewInstrument {
                 track,
+                placement,
                 path,
                 sample_rate,
                 frames,
@@ -2910,9 +2964,14 @@ impl Project {
                 let target = self
                     .track(track)
                     .ok_or(Invalid("instrument track no longer exists"))?;
-                if target.instrument().is_some() || !state.asset_references().is_empty() {
+                let replacing = placement.replacement();
+                if target.is_group()
+                    || target.instrument().map(crate::Device::id) != replacing
+                    || (replacing.is_some() && !target.receives_source_audio())
+                    || !state.asset_references().is_empty()
+                {
                     return Err(Invalid(
-                        "device source import requires an empty instrument slot and unbound state",
+                        "device source import target changed or is ineligible",
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
@@ -2928,7 +2987,26 @@ impl Project {
                     .map_err(|_| Invalid("invalid device source binding"))?;
                 // Editor applies this composite command to one private candidate;
                 // preparation/refusal commits neither the asset nor instrument.
-                self.apply(Command::InsertInstrument { track, state })?;
+                if replacing.is_some() {
+                    self.apply(Command::LoadInstrument {
+                        track,
+                        replacing,
+                        state,
+                        device_name: "sampler".into(),
+                    })?;
+                } else {
+                    let created = self.apply(Command::InsertInstrument { track, state })?;
+                    if placement == InstrumentLoadPlacement::Append {
+                        let Created::Device(device) = created else {
+                            return Err(Invalid("imported instrument identity is unavailable"));
+                        };
+                        self.apply(Command::MoveTrackDevice {
+                            device,
+                            track,
+                            before: None,
+                        })?;
+                    }
+                }
                 Ok(Created::Asset(asset))
             }
             Command::ImportDeviceAssetReplacingInstrument {
