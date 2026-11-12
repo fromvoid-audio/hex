@@ -97,16 +97,25 @@ pub fn load(directory: &Path, slot: usize) -> Result<Preset, String> {
 /// Replace an explicitly chosen slot only after validating both the new value
 /// and any existing preset. Corrupt files remain available for recovery.
 pub fn save(directory: &Path, slot: usize, name: &str, scale: Scale) -> Result<(), String> {
+    save_with_publish(directory, slot, name, scale, publish)
+}
+fn save_with_publish(
+    directory: &Path,
+    slot: usize,
+    name: &str,
+    scale: Scale,
+    publish_slot: impl FnOnce(&Path, &[u8], bool) -> Result<(), String>,
+) -> Result<(), String> {
     let path = slot_path(directory, slot)?;
     let text = preset::encode(name, scale).map_err(|e| e.to_string())?;
-    if path
+    let exists = path
         .try_exists()
-        .map_err(|e| format!("cannot inspect tuning slot · {e}"))?
-    {
+        .map_err(|e| format!("cannot inspect tuning slot · {e}"))?;
+    if exists {
         read_file(&path)?;
     }
     fs::create_dir_all(directory).map_err(|e| format!("cannot create tuning library · {e}"))?;
-    publish(&path, text.as_bytes(), true)
+    publish_slot(&path, text.as_bytes(), exists)
 }
 pub fn rename(directory: &Path, slot: usize, name: &str) -> Result<(), String> {
     let old = load(directory, slot)?;
@@ -151,6 +160,13 @@ fn publish_with_link(
 ) -> Result<(), String> {
     let parent = destination
         .parent()
+        .map(|parent| {
+            if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            }
+        })
         .ok_or("tuning preset path has no parent")?;
     if let Ok(metadata) = fs::symlink_metadata(destination) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -239,6 +255,41 @@ mod tests {
         ));
         fs::create_dir(&p).unwrap();
         Directory(p)
+    }
+    #[test]
+    fn save_preserves_a_slot_created_during_preparation() {
+        let d = directory();
+        let competing = b"another writer's tuning data";
+        let result = save_with_publish(&d.0, 1, "new", Scale::default(), |path, bytes, replace| {
+            fs::write(path, competing).unwrap();
+            publish(path, bytes, replace)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(d.0.join("slot-1.freqs")).unwrap(), competing);
+    }
+    #[test]
+    fn export_to_bare_relative_filename() {
+        const CHILD: &str = "HEX_TUNING_RELATIVE_EXPORT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let path = Path::new("export.freqs");
+            export_file(path, "relative", Scale::equal(19)).unwrap();
+            let original = fs::read(path).unwrap();
+            assert_eq!(read_file(path).unwrap().scale, Scale::equal(19));
+            assert!(export_file(path, "replacement", Scale::equal(12)).is_err());
+            assert_eq!(fs::read(path).unwrap(), original);
+            return;
+        }
+        let d = directory();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tuning_library::tests::export_to_bare_relative_filename",
+            ])
+            .env(CHILD, "1")
+            .current_dir(&d.0)
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
     #[cfg(unix)]
     #[test]
