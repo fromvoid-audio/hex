@@ -401,6 +401,52 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
 }
 
 #[test]
+fn prewarm_includes_the_outgoing_session_audio_release() {
+    let mut actual = Playback::from_prepared(action_revision(true));
+    actual
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(95_992)))
+        .unwrap();
+    let clip = actual.prepared_revision().unwrap().session().audio_clips()[0].id;
+    actual
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    actual
+        .render_with_pages(&mut [[0.0; 2]; 1], &mut pages())
+        .unwrap();
+    let action = PlaybackAction::Session(SessionPlaybackCommand::BackToArrangement {
+        quantization: LaunchQuantization::FourQuarter,
+    });
+    let prepared = actual.prepare_stream_action(action).unwrap();
+    let due = prepared.scheduled_due_frame().unwrap();
+    actual.commit_stream_action(prepared).unwrap();
+    let mut early = Vec::new();
+    actual
+        .visit_pending_stream_chunk(due, 8, &mut |row| {
+            early.push(row);
+            Ok(())
+        })
+        .unwrap();
+    let distance = usize::try_from(due - actual.performance_frame()).unwrap();
+    actual
+        .render_with_pages(&mut vec![[0.0; 2]; distance], &mut pages())
+        .unwrap();
+    let mut at_due = Vec::new();
+    actual
+        .visit_next_stream_chunk(8, None, &mut |row| {
+            at_due.push(row);
+            Ok(())
+        })
+        .unwrap();
+    assert!(at_due.iter().any(|extent| extent.page_index == 1));
+    assert_eq!(early, at_due, "prewarm must cover the actual due demand");
+}
+
+#[test]
 fn prepared_action_cannot_follow_a_new_runtime_reusing_the_same_box_and_revision() {
     let revision = action_revision(false);
     let mut runtime = Box::new(SessionPlayback::new(Arc::clone(&revision)).unwrap());
