@@ -193,6 +193,7 @@ impl EditorView {
         if !self.set_selected_clip(track, clip, window, cx) {
             return;
         }
+        self.clear_automation_range();
         // A deliberate whole-clip header click supersedes an unrelated time
         // rectangle and a cursor placed inside the clip; body gestures retain
         // their separate range-copy contract.
