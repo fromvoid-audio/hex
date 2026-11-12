@@ -11,6 +11,7 @@ import ast
 import hashlib
 import json
 import os
+import py_compile
 from pathlib import Path
 import shutil
 import sys
@@ -27,7 +28,18 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError("could not load local-ci.py")
 local_ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = local_ci
-SPEC.loader.exec_module(local_ci)
+_runner_source = SCRIPT.read_bytes()
+local_ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(_runner_source).hexdigest()
+exec(compile(_runner_source, str(SCRIPT), "exec", dont_inherit=True), local_ci.__dict__)
+
+
+def install_delivery_source_fixture(root: Path) -> None:
+    """Install independent copies of the actual delivery input sources."""
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                 "ci_checkpoint.py", "ci_target_storage.py"):
+        (scripts / name).write_bytes((SCRIPT.parent / name).read_bytes())
 
 
 FAKE_TOOL = """#!/bin/sh
@@ -60,7 +72,373 @@ echo "completed $tool $*"
 """
 
 
+def bounded_checkpoint_case(function):
+    """Keep subprocess-heavy checkpoint fixtures within the shard budget."""
+    function.__hex_shard_bounded__ = True
+    return function
+
+
+class FreshTargetReservationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        install_delivery_source_fixture(self.root)
+        self.state = self.root / "locks"
+        self.target = self.root / "cargo-target"
+
+    def reserve(self, target=None):
+        return local_ci.FreshTargetReservation.acquire(
+            self.root, str(self.target if target is None else target), {"run_id": "fixture"}, state_dir=self.state)
+
+    def test_empty_and_absent_hold_exact_lock_until_close(self):
+        for absent in (True, False):
+            with self.subTest(absent=absent):
+                if not absent:
+                    self.target.mkdir()
+                with self.reserve() as reservation:
+                    reservation.revalidate(str(self.target))
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                        self.reserve()
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "differs"):
+                        reservation.revalidate(str(self.root / "other"))
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(self.target))
+                if not absent:
+                    self.target.rmdir()
+
+    def test_relative_alias_symlink_and_missing_parent_refuse(self):
+        self.target.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(self.target, target_is_directory=True)
+        parent_alias = self.root / "parent-alias"
+        parent_alias.symlink_to(self.root, target_is_directory=True)
+        for value in ("relative", "//tmp/alias", str(self.target) + "\0bad", str(alias), str(parent_alias / "cargo-target"),
+                      str(self.root / "missing" / "target"), str(self.target) + "/."):
+            with self.subTest(value=value), self.assertRaises(local_ci.TargetCacheError):
+                self.reserve(value)
+        self.assertFalse(any(self.target.iterdir()))
+
+    def test_metadata_entries_and_target_presence_changes_refuse(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            (self.target / ".rustc_info.json").write_text("metadata")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                reservation.revalidate(str(self.target))
+            (self.target / ".rustc_info.json").unlink()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+        with self.reserve() as replacement:
+            replacement.revalidate(str(self.target))
+        self.target.rmdir()
+        with self.reserve() as reservation:
+            self.target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "presence"):
+                reservation.revalidate(str(self.target))
+            self.target.rmdir()
+
+    def test_replacement_of_target_or_ancestor_refuses(self):
+        parent = self.root / "parent"
+        parent.mkdir()
+        target = parent / "target"
+        target.mkdir()
+        with self.reserve(target) as reservation:
+            target.rename(parent / "old-target")
+            target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+        target.rmdir()
+        (parent / "old-target").rename(target)
+        with self.reserve(target) as reservation:
+            parent.rename(self.root / "old-parent")
+            parent.mkdir()
+            (parent / "target").mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+
+    def test_source_change_revokes_reservation(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            helper = self.root / "scripts/ci_plan.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# changed\n")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "source mismatch"):
+                reservation.revalidate(str(self.target))
+            self.assertIsNone(reservation._lock.file)
+            self.assertEqual(reservation._handles, [])
+
+    def test_failure_closes_descriptors_and_preserves_target_and_owner(self):
+        self.target.mkdir()
+        sentinel = self.target / "keep"
+        sentinel.write_bytes(b"preserve")
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        owner.parent.mkdir(parents=True)
+        opened = []
+        original = os.open
+        def record(*args, **kwargs):
+            descriptor = original(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+        with patch.object(local_ci.os, "open", side_effect=record):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                self.reserve()
+        self.assertTrue(opened)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        self.assertEqual(sentinel.read_bytes(), b"preserve")
+        self.assertFalse(owner.exists())
+        sentinel.unlink()
+        owner.write_bytes(b"existing owner")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+            self.reserve()
+        self.assertEqual(owner.read_bytes(), b"existing owner")
+        owner.unlink()
+        with self.reserve() as reservation:
+            self.assertTrue(reservation._handles)
+            reservation._lock.release()  # Unusual external unlock invalidates authority.
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+
+    def test_owner_markers_revoke_fresh_authority(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        for marker in (owner, release):
+            with self.subTest(marker=marker.name):
+                with self.reserve() as reservation:
+                    marker.write_bytes(b"other owner")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                        reservation.revalidate(str(self.target))
+                self.assertEqual(marker.read_bytes(), b"other owner")
+                marker.unlink()
+
+    def test_existing_release_marker_and_dangling_marker_refuse(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        self.state.mkdir(parents=True)
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                if dangling:
+                    release.symlink_to(self.root / "missing")
+                else:
+                    release.write_bytes(b"existing")
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                    self.reserve()
+                self.assertTrue(os.path.lexists(release))
+                release.unlink()
+                with self.reserve():
+                    pass
+
+    def test_replaced_lock_or_state_directory_revokes_authority(self):
+        self.target.mkdir()
+        for replace_state in (False, True):
+            with self.subTest(replace_state=replace_state):
+                with self.reserve() as reservation:
+                    lock_path = reservation._lock.path
+                    if replace_state:
+                        self.state.rename(self.root / "old-locks")
+                        self.state.mkdir()
+                    else:
+                        lock_path.unlink()
+                    lock_path.write_text("replacement")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "lock identity"):
+                        reservation.revalidate(str(self.target))
+                    self.assertIsNone(reservation._lock.file)
+                    self.assertEqual(lock_path.read_text(), "replacement")
+                if replace_state:
+                    lock_path.unlink()
+                    self.state.rmdir()
+                    (self.root / "old-locks").rename(self.state)
+
+    def test_reserved_metadata_matches_target_and_preserves_live_lock(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertTrue(runner._resolve_cargo_identity(reservation))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+            self.assertIsNone(runner.target_lock)  # Identity resolution grants no custody.
+
+    def test_reserved_metadata_mismatch_or_mutation_refuses(self):
+        self.target.mkdir()
+        for scenario in ("configured", "selected", "created"):
+            with self.subTest(scenario=scenario):
+                env_target = self.root / "other" if scenario == "configured" else self.target
+                runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(env_target)},
+                                                target_state_dir=self.state)
+                metadata = {"target_directory": str(self.root / "other" if scenario == "selected" else self.target),
+                            "workspace_root": str(self.root), "workspace_members": ["fixture"],
+                            "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+                def run(*args, **kwargs):
+                    if scenario == "created":
+                        (self.target / "entry").write_text("preserve")
+                    return subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+                with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", side_effect=run) as cargo:
+                    self.assertFalse(runner._resolve_cargo_identity(reservation))
+                    self.assertIsNone(runner.cargo_identity)
+                    self.assertIsNone(reservation._lock.file)
+                    if scenario == "configured":
+                        cargo.assert_not_called()
+                if scenario == "created":
+                    self.assertEqual((self.target / "entry").read_text(), "preserve")
+                    (self.target / "entry").unlink()
+
+    def test_reserved_real_cargo_metadata_on_empty_target(self):
+        (self.root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+        (self.root / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+        (self.root / "src").mkdir()
+        (self.root / "src/lib.rs").write_text("")
+        self.target.mkdir()
+        env = dict(os.environ, CARGO_TARGET_DIR=str(self.target), CARGO_NET_OFFLINE="true")
+        runner = local_ci.LocalCiRunner(self.root, env=env, target_state_dir=self.state)
+        with self.reserve() as reservation:
+            self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+
+    def test_reserved_metadata_refuses_other_lock_namespace_before_cargo(self):
+        self.target.mkdir()
+        other_state = self.root / "other-locks"
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=other_state)
+        _, owner = local_ci.target_state_paths(self.target, other_state)
+        owner.parent.mkdir(parents=True)
+        owner.write_text("existing owner")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run") as cargo:
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+            cargo.assert_not_called()
+            self.assertIsNone(reservation._lock.file)
+        self.assertEqual(owner.read_text(), "existing owner")
+
+    def test_failed_or_interrupted_resolution_revokes_prior_identity(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        success = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        for interruption in (False, True):
+            with self.subTest(interruption=interruption), self.reserve() as reservation:
+                with patch.object(local_ci.subprocess, "run", return_value=success):
+                    self.assertTrue(runner._resolve_cargo_identity(reservation))
+                failure = KeyboardInterrupt() if interruption else subprocess.CompletedProcess([], 1, "", "failure")
+                with patch.object(local_ci.subprocess, "run", side_effect=failure if interruption else None,
+                                  return_value=None if interruption else failure):
+                    if interruption:
+                        with self.assertRaises(KeyboardInterrupt):
+                            runner._resolve_cargo_identity(reservation)
+                    else:
+                        self.assertFalse(runner._resolve_cargo_identity(reservation))
+                self.assertIsNone(runner.cargo_identity)
+                self.assertIsNone(runner.target_owner_path)
+                self.assertIsNone(runner._lexical_cargo_target)
+                self.assertNotIn("cargo_identity", runner.summary)
+                self.assertIsNone(reservation._lock.file)
+            with self.reserve():
+                pass
+
+    def test_metadata_refusal_reports_cleanup_failure_without_masking_cause(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        reservation = self.reserve()
+        release = reservation._lock.release
+        def failed_release():
+            release()
+            return "simulated release failure"
+        metadata = {"target_directory": str(self.root / "other"), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"], "packages": []}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with patch.object(reservation._lock, "release", side_effect=failed_release), \
+                patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+        self.assertIn("differs", runner.summary["cargo_metadata_error"])
+        self.assertEqual(runner.summary["reservation_close_error"], "simulated release failure")
+        self.assertIsNone(reservation._lock.file)
+
+
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_qualifying_step_sequence_refuses_drift_before_execution_or_target_access(self):
+        self.step_sequence_patch.stop()
+        expected = local_ci.planned_steps({"scope": "full"})
+        first = expected[0]
+        cases = {
+            "empty": (),
+            "missing": expected[1:],
+            "added": (*expected, first),
+            "reordered": (expected[1], expected[0], *expected[2:]),
+            "argv": (local_ci.Step(first.step_id, (*first.argv, "--changed"),
+                                   first.uses_cargo_target, first.requires_tests), *expected[1:]),
+            "flags": (local_ci.Step(first.step_id, first.argv, not first.uses_cargo_target,
+                                    first.requires_tests), *expected[1:]),
+            "id": (local_ci.Step("changed", first.argv, first.uses_cargo_target,
+                                 first.requires_tests), *expected[1:]),
+            "test-flag": (local_ci.Step(first.step_id, first.argv, first.uses_cargo_target,
+                                         not first.requires_tests), *expected[1:]),
+        }
+        for label, steps in cases.items():
+            with self.subTest(label=label):
+                runner = local_ci.LocalCiRunner(self.repo, mode="full", run_id="sequence-" + label,
+                    env=self.env, steps=steps, min_free_bytes=0, target_state_dir=self.target_state_dir)
+                with patch.object(runner, "_resolve_cargo_identity") as identity, \
+                        patch.object(runner, "_run_step") as execute:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("step_sequence_error", runner.summary)
+                identity.assert_not_called()
+                execute.assert_not_called()
+
+    def test_scoped_step_binding_and_nonqualifying_custom_execution(self):
+        self.step_sequence_patch.stop()
+        plan = {"scope": "metadata", "base": "base", "source": "source", "qualifies_merge": True}
+        expected = local_ci.planned_steps(plan)
+        matching = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=expected)
+        self.assertIsNone(matching._step_sequence_error())
+        altered = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=())
+        self.assertIsNotNone(altered._step_sequence_error())
+        with patch.object(altered, "_resolve_cargo_identity") as identity, \
+                patch.object(altered, "_run_step") as execute:
+            self.assertEqual(altered.run(), 2)
+        identity.assert_not_called()
+        execute.assert_not_called()
+        full = local_ci.LocalCiRunner(self.repo, mode="full", env=self.env)
+        self.assertIsNone(full._step_sequence_error())
+        for mode in ("quick", "component", "custom"):
+            with self.subTest(mode=mode):
+                partial = local_ci.LocalCiRunner(self.repo, mode=mode, run_id="custom-" + mode, env=self.env,
+                    steps=(local_ci.Step("first", ("first",)),), min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(partial.run(), 0)
+                self.assertEqual(partial.summary["status"], "partial")
+        scoped_partial = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env,
+            plan={"scope": "metadata", "qualifies_merge": False}, steps=())
+        self.assertIsNone(scoped_partial._step_sequence_error())
+
+    def test_module_shard_empty_configs_require_aggregate_passes(self):
+        (self.bin / "python3").write_text(
+            '#!/bin/sh\ncase "$*" in\n'
+            '  *"--filter covered::"*) echo "test result: ok. 1 passed; 0 failed; 0 ignored;" ;;\n'
+            '  *) echo "no tests matched the selection" ;;\n'
+            'esac\n')
+        for covered in (False, True):
+            with self.subTest(covered=covered):
+                steps = tuple(local_ci.Step(
+                    f"config-{index}", ("python3", "scripts/test_shards.py", "--shards", "2",
+                    "--allow-empty", "--filter", name, "--", "cargo", "test"))
+                    for index, name in enumerate(("absent::", "covered::" if covered else "absent::")))
+                runner = local_ci.LocalCiRunner(
+                    self.repo, mode="merge", run_id=f"module-coverage-{covered}",
+                    env=self.env, steps=steps, min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(runner.run(), 0 if covered else 1)
+                self.assertEqual("module_scope_error" in runner.summary, not covered)
+
     def test_log_timing_estimates_label_unknown_and_overlapping_durations(self):
         text = ("    Finished `test` profile target(s) in 1m 2.50s\n"
                 "test result: ok. 2 passed; finished in 3.25s\n"
@@ -88,12 +466,18 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertGreaterEqual(summary["duration_seconds"], summary["time_to_first_result_seconds"])
 
     def setUp(self) -> None:
+        # Pipeline and checkpoint fixtures exercise other boundaries with short,
+        # synthetic steps. Sequence admission has dedicated unmocked tests above.
+        self.step_sequence_patch = patch.object(local_ci.LocalCiRunner, "_step_sequence_error", return_value=None)
+        self.step_sequence_patch.start()
+        self.addCleanup(self.step_sequence_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
         # Tests for unsafe lexical aliases construct those paths explicitly.
         self.base = Path(self.temp.name).resolve()
         self.repo = self.base / "repo"
         self.repo.mkdir()
+        install_delivery_source_fixture(self.repo)
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.call_log = self.base / "calls.log"
@@ -125,6 +509,161 @@ class LocalCiRunnerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_programmatic_source_admission_and_missing_witness_refuse(self):
+        for missing_witness in (False, True):
+            with self.subTest(missing_witness=missing_witness):
+                source = self.repo / "scripts/build_inputs.py"
+                original = source.read_bytes()
+                if not missing_witness:
+                    source.write_bytes(original + b"\n# changed\n")
+                with patch.dict(local_ci.__dict__, {"_DELIVERY_RUNNER_SOURCE_SHA256": None} if missing_witness else {}):
+                    runner = self.runner(f"source-refusal-{missing_witness}")
+                    self.assertEqual(runner.run(), 2)
+                    self.assertIn("runner_policy_error", runner.summary)
+                    self.assertTrue(all(row["status"] == "not_run" for row in runner.summary["steps"]))
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "source mismatch"):
+                        with self.runner(f"release-refusal-{missing_witness}").guarded_release():
+                            self.fail("unattested release entered")
+                source.write_bytes(original)
+        self.assertEqual(self.runner("source-match").run(), 0)
+
+    def test_programmatic_planner_changed_before_snapshot_refuses_without_target_mutation(self):
+        planner = self.repo / "scripts/ci_plan.py"
+        planner.write_bytes(planner.read_bytes() + b"\n# changed after import\n")
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        sentinel = target / "preserve"
+        sentinel.write_bytes(b"previous artifact")
+        runner = self.runner("planner-before-snapshot")
+        with patch.object(runner, "_capture_repository_state", wraps=runner._capture_repository_state) as capture, \
+                patch.object(runner, "_resolve_cargo_identity", wraps=runner._resolve_cargo_identity) as identity:
+            self.assertEqual(runner.run(), 2)
+        capture.assert_not_called()
+        identity.assert_not_called()
+        self.assertIn("ci_plan.py", runner.summary["runner_policy_error"])
+        self.assertEqual(sentinel.read_bytes(), b"previous artifact")
+        self.assertIsNone(runner.target_lock)
+
+    def test_programmatic_policy_mutation_after_lock_refuses_owner(self):
+        source = self.repo / "scripts/ci_plan.py"
+        original = source.read_bytes()
+        acquire = local_ci.CargoTargetLock.acquire
+        def changed(lock):
+            acquire(lock)
+            source.write_bytes(original + b"\n# changed under lock\n")
+        for release in (False, True):
+            with self.subTest(release=release), patch.object(local_ci.CargoTargetLock, "acquire", changed):
+                runner = self.runner(f"under-lock-{release}")
+                if release:
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "source changed before release lock"):
+                        with runner.guarded_release():
+                            self.fail("release entered")
+                else:
+                    self.assertEqual(runner.run(), 2)
+                    self.assertIn("source changed before target lock", runner.summary["target_cache_error"])
+                self.assertIsNone(runner.target_lock)
+                source.write_bytes(original)
+
+    def test_programmatic_mutation_before_cleanup_preserves_owner_and_unlocks(self):
+        first = self.runner("cleanup-source-first")
+        self.assertEqual(first.run(), 0)
+        owner = first.target_owner_path
+        before = owner.read_bytes()
+        worktree = self.base / "cleanup-source-other"
+        worktree.mkdir()
+        install_delivery_source_fixture(worktree)
+        helper = worktree / "scripts/ci_plan.py"
+        env = {**self.env, "FAKE_TOPLEVEL": str(worktree),
+               "FAKE_COMMON_DIR": str((self.repo / ".git").resolve()),
+               "FAKE_WORKSPACE_ROOT": str(worktree)}
+        runner = self.runner("cleanup-source-second", root=worktree, env=env)
+        clean_argv = runner._workspace_clean_argv
+        def mutate_before_cleanup(*args):
+            argv = clean_argv(*args)
+            helper.write_bytes(helper.read_bytes() + b"\n# mutated after lock\n")
+            return argv
+        with patch.object(runner, "_workspace_clean_argv", side_effect=mutate_before_cleanup) as select, \
+                patch.object(runner, "_run_target_cleanup") as cleanup:
+            self.assertEqual(runner.run(), 2)
+            select.assert_called()
+            cleanup.assert_not_called()
+        self.assertIn("source changed before target cleanup", runner.summary["target_cache_error"])
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertIsNone(runner.target_lock)
+
+    def test_programmatic_policy_mutation_prevents_final_publication(self):
+        source = self.repo / "scripts/ci_plan.py"
+        original = source.read_bytes()
+        runner = self.runner("final-source")
+        run_step = runner._run_step
+        def changed(*args):
+            result = run_step(*args)
+            source.write_bytes(original + b"\n# changed during checks\n")
+            return result
+        with patch.object(runner, "_run_step", side_effect=changed):
+            self.assertEqual(runner.run(), 2)
+        self.assertNotEqual(runner.summary["status"], "passed")
+        self.assertIn("target_owner_update_error", runner.summary)
+        source.write_bytes(original)
+        release = self.runner("final-release-source")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "source changed during release"):
+            with release.guarded_release() as report:
+                target = Path(release.cargo_identity["target_directory"])
+                target.mkdir(exist_ok=True)
+                artifact = target / "release-fixture"
+                artifact.write_bytes(b"optimized fixture")
+                argv = ["cargo", "build", "--release"]
+                report.update(build_argv=argv, build_exit_code=0,
+                              artifact=release.identify_release_artifact(artifact, argv))
+                source.write_bytes(original + b"\n# changed during release\n")
+        self.assertEqual(json.loads(Path(report["owner_path"]).read_text())["state"], "pending")
+        source.write_bytes(original)
+
+    def test_programmatic_mutation_before_release_cleanup_preserves_target(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        retained = target / "retained"
+        retained.write_bytes(b"existing artifact")
+        source = self.repo / "scripts/ci_plan.py"
+        runner = self.runner("release-cleanup-source")
+        write_owner = runner._write_release_owner
+
+        def mutate_after_pending(*args):
+            write_owner(*args)
+            source.write_bytes(source.read_bytes() + b"\n# changed before cleanup\n")
+
+        with patch.object(runner, "_write_release_owner", side_effect=mutate_after_pending):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "before release cleanup"):
+                with runner.guarded_release(adopt=True):
+                    self.fail("release entered after source mutation")
+        self.assertEqual(retained.read_bytes(), b"existing artifact")
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+        self.assertIsNone(runner.target_lock)
+        owner = Path(runner.summary["release_target_cache"]["owner_path"])
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+
+    def test_programmatic_mutation_during_release_cleanup_refuses_build(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        (target / "existing").write_bytes(b"artifact")
+        source = self.repo / "scripts/ci_plan.py"
+        runner = self.runner("release-during-cleanup")
+        original_run = subprocess.run
+
+        def mutate_during_cleanup(argv, **kwargs):
+            result = original_run(argv, **kwargs)
+            if argv[:2] == ["cargo", "clean"]:
+                source.write_bytes(source.read_bytes() + b"\n# changed during cleanup\n")
+            return result
+
+        with patch.object(local_ci.subprocess, "run", side_effect=mutate_during_cleanup):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "during release preparation"):
+                with runner.guarded_release(adopt=True):
+                    self.fail("release entered after source mutation")
+        self.assertIsNone(runner.target_lock)
+        owner = Path(runner.summary["release_target_cache"]["owner_path"])
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
 
     def release_attempt(self, run_id, *, adopt=False):
         runner = self.runner(run_id)
@@ -388,6 +927,354 @@ class LocalCiRunnerTests(unittest.TestCase):
             target_state_dir=self.target_state_dir,
         )
 
+    def _install_cli_policy_fixture(self):
+        scripts = self.repo / "scripts"
+        scripts.mkdir(exist_ok=True)
+        (scripts / "ci_plan.py").write_bytes(local_ci._PLAN_SOURCE_BYTES)
+        (scripts / "python_test_plan.py").write_bytes(local_ci.ci_plan._PYTHON_SOURCE_BYTES)
+        for name, content in (("build_inputs.py", local_ci._INPUT_SOURCE_BYTES),
+                              ("ci_checkpoint.py", local_ci._CHECKPOINT_SOURCE_BYTES),
+                              ("ci_target_storage.py", local_ci._STORAGE_SOURCE_BYTES)):
+            (scripts / name).write_bytes(content)
+
+    def test_helper_source_load_ignores_timestamp_valid_stale_bytecode(self):
+        scripts = self.base / "loader" / "scripts"
+        scripts.mkdir(parents=True)
+        source_scripts = SCRIPT.parent
+        for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
+            shutil.copyfile(source_scripts / name, scripts / name)
+        for name in ("build_inputs.py", "ci_checkpoint.py", "ci_target_storage.py"):
+            path = scripts / name
+            path.write_bytes(path.read_bytes() + b"\nHELPER_SOURCE_PROBE = 1\n")
+            py_compile.compile(str(path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = path.stat()
+            path.write_bytes(path.read_bytes().replace(b"HELPER_SOURCE_PROBE = 1",
+                                                       b"HELPER_SOURCE_PROBE = 2"))
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            control_spec = importlib.util.spec_from_file_location("stale_helper_control", path)
+            control = importlib.util.module_from_spec(control_spec)
+            control_spec.loader.exec_module(control)
+            self.assertEqual(control.HELPER_SOURCE_PROBE, 1)
+        spec = importlib.util.spec_from_file_location("helper_loader_fixture", scripts / "local-ci.py")
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {spec.name: loaded}):
+            spec.loader.exec_module(loaded)
+        for helper in (loaded.build_inputs, loaded.ci_checkpoint, loaded.ci_target_storage):
+            with self.subTest(helper=helper.__name__):
+                self.assertEqual(helper.HELPER_SOURCE_PROBE, 2)
+        self.assertIsNone(loaded.cli_policy_error(scripts.parent))
+
+    def test_policy_loaders_refuse_symlinks_and_fifos_before_execution(self):
+        cases = [(name, kind, "local-ci.py") for name, kind in (
+            ("ci_plan.py", "symlink"), ("python_test_plan.py", "symlink"),
+            ("build_inputs.py", "symlink"), ("ci_checkpoint.py", "symlink"),
+            ("ci_target_storage.py", "symlink"), ("ci_plan.py", "fifo"),
+            ("python_test_plan.py", "fifo"), ("build_inputs.py", "fifo"),
+            ("ci_plan.py", "directory"), ("python_test_plan.py", "directory"),
+            ("build_inputs.py", "directory"), ("ci_checkpoint.py", "directory"),
+            ("ci_target_storage.py", "directory"))]
+        cases.extend(("python_test_plan.py", kind, "ci_plan.py") for kind in ("symlink", "fifo"))
+        for name, kind, entry in cases:
+            with self.subTest(name=name, kind=kind, entry=entry), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                scripts = root / "scripts"
+                scripts.mkdir()
+                for source in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                               "ci_checkpoint.py", "ci_target_storage.py"):
+                    shutil.copyfile(SCRIPT.parent / source, scripts / source)
+                helper = scripts / name
+                helper.unlink()
+                marker = root / "executed"
+                if kind == "symlink":
+                    payload = root / "payload.py"
+                    payload.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+                    helper.symlink_to(payload)
+                elif kind == "fifo":
+                    os.mkfifo(helper)
+                else:
+                    helper.mkdir()
+                result = subprocess.run([sys.executable, str(scripts / entry), "--help"],
+                                        capture_output=True, timeout=2)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists())
+
+    def test_policy_source_descriptors_close_when_wrapping_fails(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                local_ci._read_policy_source(policy)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cli_policy_descriptors_close_when_wrapping_fails(self):
+        self._install_cli_policy_fixture()
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            self.assertIn("fixture wrap failure", local_ci.cli_policy_error(self.repo))
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cli_policy_closes_previous_file_before_later_wrap_failure(self):
+        self._install_cli_policy_fixture()
+        original_fdopen = os.fdopen
+        original_close = os.close
+        calls = []
+        closed = []
+
+        def fail_second(fd, *args, **kwargs):
+            calls.append(fd)
+            if len(calls) == 2:
+                raise OSError("later fixture wrap failure")
+            return original_fdopen(fd, *args, **kwargs)
+
+        def track_close(fd):
+            closed.append(fd)
+            return original_close(fd)
+
+        with patch.object(os, "fdopen", side_effect=fail_second), \
+                patch.object(os, "close", side_effect=track_close):
+            self.assertIn("later fixture wrap failure", local_ci.cli_policy_error(self.repo))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(closed[:2], calls)
+        self.assertEqual(len(closed), 3)  # Both files and the scripts directory.
+        with self.assertRaises(OSError):
+            os.fstat(calls[-1])
+
+    def test_helper_mutation_under_lock_preserves_owner_and_releases_lock(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("helper-owner-first")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        owner = first.target_owner_path
+        original_owner = owner.read_bytes()
+        helper = self.repo / "scripts" / "ci_checkpoint.py"
+        before = helper.read_bytes()
+        second = self.runner("helper-owner-second")
+        second._cli_policy_bound = True
+        acquire = local_ci.CargoTargetLock.acquire
+        def mutate_after_lock(lock):
+            acquire(lock)
+            helper.write_bytes(before + b"\n# changed\n")
+        with patch.object(local_ci.CargoTargetLock, "acquire", mutate_after_lock):
+            self.assertNotEqual(second.run(), 0)
+        self.assertEqual(owner.read_bytes(), original_owner)
+        self.assertIsNone(second.target_lock)
+        self.assertIn("planner source", second.summary["target_cache_error"])
+
+    def test_helper_mutation_during_cargo_leaves_owner_unchecked(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("helper-cargo-first")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        helper = self.repo / "scripts" / "ci_target_storage.py"
+        original = helper.read_bytes()
+        runner = self.runner("helper-cargo-mutated")
+        runner._cli_policy_bound = True
+        original_step = runner._run_step
+        def mutate_after_step(step, index):
+            result = original_step(step, index)
+            helper.write_bytes(original + b"\n# changed during cargo\n")
+            return result
+        with patch.object(runner, "_run_step", side_effect=mutate_after_step):
+            self.assertNotEqual(runner.run(), 0)
+        self.assertFalse(json.loads(runner.target_owner_path.read_text())["cache_inputs"]["workspace"]["checked"])
+        self.assertIsNone(runner.target_lock)
+        self.assertNotEqual(runner.summary["status"], "passed")
+
+    def test_cli_helper_policy_is_checked_against_selected_root(self):
+        self._install_cli_policy_fixture()
+        other = self.base / "other-source"
+        shutil.copytree(self.repo / "scripts", other / "scripts")
+        self.assertIsNone(local_ci.cli_policy_error(other))
+        path = other / "scripts" / "build_inputs.py"
+        path.write_bytes(path.read_bytes() + b"\n# different root\n")
+        self.assertIsNotNone(local_ci.cli_policy_error(other))
+        self.assertIsNone(local_ci.cli_policy_error(self.repo))
+        runner = self.runner("helper-other", root=other)
+        runner._cli_policy_bound = True
+        self.assertNotEqual(runner.run(), 0)
+        self.assertIn("cli_policy_error", runner.summary)
+
+    def test_cli_policy_refuses_change_before_plan_resolution(self):
+        self._install_cli_policy_fixture()
+        for name in ("ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
+            with self.subTest(name=name):
+                policy = self.repo / "scripts" / name
+                original = policy.read_bytes()
+
+                def metadata(*_args, **_kwargs):
+                    policy.write_bytes(original + b"\n# changed while resolving\n")
+                    return SimpleNamespace(stdout="{}")
+
+                with patch.object(local_ci, "ROOT", self.repo), \
+                        patch.object(local_ci, "command_output", side_effect=metadata), \
+                        patch.object(local_ci.ci_plan, "resolve", side_effect=AssertionError("stale planner was used")) as resolve:
+                    with self.assertRaises(SystemExit):
+                        local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
+                    resolve.assert_not_called()
+                policy.write_bytes(original)
+
+    def test_cli_policy_matching_source_reaches_plan_resolution(self):
+        self._install_cli_policy_fixture()
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.object(local_ci, "command_output", return_value=SimpleNamespace(stdout="{}")), \
+                patch.object(local_ci.ci_plan, "resolve", side_effect=ValueError("resolution reached")) as resolve:
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
+            resolve.assert_called_once()
+
+    def test_cli_policy_refuses_change_during_plan_resolution(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "python_test_plan.py"
+
+        def resolve(*_args, **_kwargs):
+            policy.write_bytes(policy.read_bytes() + b"\n# changed while planning\n")
+            return {}
+
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.object(local_ci, "command_output", return_value=SimpleNamespace(stdout="{}")), \
+                patch.object(local_ci.ci_plan, "resolve", side_effect=resolve), \
+                patch.object(local_ci, "LocalCiRunner") as runner:
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
+            runner.assert_not_called()
+
+    def test_cli_policy_rechecks_after_non_cargo_steps(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "python_test_plan.py"
+        runner = self.runner("cli-policy-final", env={**self.env, "MUTATE_FILE": str(policy)},
+                             steps=(local_ci.Step("first", ("first",)),))
+        runner._cli_policy_bound = True
+        self.assertNotEqual(runner.run(), 0)
+        self.assertIn("cli_policy_error", runner.summary)
+        self.assertNotEqual(runner.summary["status"], "passed")
+
+    def test_cli_policy_missing_mutated_and_symlink_refuse(self):
+        self._install_cli_policy_fixture()
+        self.assertIsNone(local_ci.cli_policy_error(self.repo))
+        scripts = self.repo / "scripts"
+        for name in ("ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
+            path = scripts / name
+            original = path.read_bytes()
+            path.write_bytes(original + b"\n# mutation\n")
+            self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+            path.unlink()
+            self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+            target = scripts / (name + ".target")
+            target.write_bytes(original)
+            path.symlink_to(target.name)
+            self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+            path.unlink()
+            target.unlink()
+            path.write_bytes(original)
+        moved = self.repo / "real-scripts"
+        scripts.rename(moved)
+        scripts.symlink_to(moved.name, target_is_directory=True)
+        self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+
+    def test_cli_policy_rechecks_before_snapshot_and_under_lock(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original = policy.read_bytes()
+        before = self.runner("cli-policy-before")
+        before._cli_policy_bound = True
+        policy.write_bytes(original + b"\n# changed after import\n")
+        self.assertNotEqual(before.run(), 0)
+        self.assertIn("cli_policy_error", before.summary)
+        self.assertNotIn("cargo build", self.call_log.read_text() if self.call_log.exists() else "")
+
+        policy.write_bytes(original)
+        locked = self.runner("cli-policy-lock")
+        locked._cli_policy_bound = True
+        acquire = local_ci.CargoTargetLock.acquire
+        def mutate_after_lock(lock):
+            acquire(lock)
+            policy.write_bytes(original + b"\n# changed before locked validation\n")
+        with patch.object(local_ci.CargoTargetLock, "acquire", mutate_after_lock):
+            self.assertNotEqual(locked.run(), 0)
+        self.assertIn("CLI planner source changed before target lock", locked.summary["target_cache_error"])
+        self.assertFalse(locked.target_owner_path.exists())
+        self.assertNotIn("cargo build", self.call_log.read_text())
+
+    def test_cli_policy_matching_run_passes_and_lock_refusal_preserves_owner(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("cli-policy-matching")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        owner = first.target_owner_path
+        original_owner = owner.read_bytes()
+        policy = self.repo / "scripts" / "python_test_plan.py"
+        second = self.runner("cli-policy-owner")
+        second._cli_policy_bound = True
+        acquire = local_ci.CargoTargetLock.acquire
+
+        def mutate_after_lock(lock):
+            acquire(lock)
+            policy.write_bytes(policy.read_bytes() + b"\n# changed after lock\n")
+
+        with patch.object(local_ci.CargoTargetLock, "acquire", mutate_after_lock):
+            self.assertNotEqual(second.run(), 0)
+        self.assertEqual(owner.read_bytes(), original_owner)
+        self.assertIn("CLI planner source changed before target lock", second.summary["target_cache_error"])
+
+    def test_cli_policy_atomic_replacement_during_cargo_keeps_owner_unchecked(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("cli-policy-first")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original = policy.read_bytes()
+        timestamp = policy.stat()
+        runner = self.runner("cli-policy-replaced")
+        runner._cli_policy_bound = True
+        run_step = runner._run_step
+
+        def replace_after_step(step, index):
+            result = run_step(step, index)
+            replacement = policy.with_name("replacement.py")
+            replacement.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+            os.utime(replacement, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+            os.replace(replacement, policy)
+            return result
+
+        with patch.object(runner, "_run_step", side_effect=replace_after_step):
+            self.assertNotEqual(runner.run(), 0)
+        self.assertNotEqual(runner.summary["status"], "passed")
+        owner = json.loads(runner.target_owner_path.read_text())
+        self.assertFalse(owner["cache_inputs"]["workspace"]["checked"])
+        policy.write_bytes(original)
+        os.utime(policy, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+        recovery = self.runner("cli-policy-recovery")
+        recovery._cli_policy_bound = True
+        self.assertEqual(recovery.run(), 0)
+        self.assertEqual(recovery.summary["target_cache"]["action"], "source-or-compiler-handoff")
+
     def test_native_acceptance_fresh_full_and_scoped_reports_observe_actual_runner_environment(self):
         for mode, selected in (("full", None), ("merge", {"scope": "tooling", "qualifies_merge": False})):
             for key in (None, "HEX_VST3_SDK_DIR", "HEX_VST3_FUTURE_FIXTURE", "HEX_TEST_SIGNING_IDENTITY"):
@@ -516,6 +1403,7 @@ class LocalCiRunnerTests(unittest.TestCase):
         """Real runner/owner/log behavior, with only tools and disk capacity faked."""
         root = self.repo / name
         root.mkdir()
+        install_delivery_source_fixture(root)
         (root / "source.rs").write_text("original source\n")
         target = root / "cargo-target"
         target.mkdir()
@@ -656,100 +1544,182 @@ fi
         self.assertEqual(case.path.read_bytes(), original_bytes)
         local_ci.ci_checkpoint.validate_inheritance(case.root, resumed.summary)
 
-    def test_checkpoint_continuation_refuses_changed_inputs_before_any_stage_or_cleanup(self):
-        cases = ("source", "plan", "plan-order", "argv", "test-configuration", "toolchain", "environment", "dependency", "floor",
-                 "report", "report-metadata", "log", "missing-owner", "changed-owner", "foreign-owner", "recreated-target")
-        for change in cases:
-            with self.subTest(change=change):
-                case = self.checkpoint_fixture("checkpoint-drift-" + change)
-                kwargs = {}
-                rustc_bytes = (self.bin / "rustc").read_bytes()
-                if change == "source":
-                    (case.root / "source.rs").write_text("changed executable source\n")
-                elif change == "plan":
-                    kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
-                elif change == "plan-order":
-                    kwargs["steps"] = tuple(reversed(case.steps))
-                elif change in {"argv", "test-configuration"}:
-                    kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
-                        (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
-                        requires_tests=change != "test-configuration"))
-                elif change == "toolchain":
-                    (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
-                elif change == "environment":
-                    kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
-                elif change == "dependency":
-                    (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
-                elif change == "floor":
-                    kwargs["min_free_bytes"] = 1
-                elif change == "report":
-                    report = json.loads(case.path.read_text())
-                    report["steps"][0]["status"] = "failed"
-                    case.path.write_text(json.dumps(report))
-                elif change == "report-metadata":
-                    report = json.loads(case.path.read_text())
-                    report["duration_seconds"] += 1
-                    case.path.write_text(json.dumps(report))
-                elif change == "log":
-                    (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
-                elif change == "missing-owner":
-                    case.owner.unlink()
-                elif change in {"changed-owner", "foreign-owner"}:
-                    owner = json.loads(case.owner.read_text())
-                    if change == "foreign-owner":
-                        owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
-                    else:
-                        owner["recorded_at"] = "changed receipt"
-                    case.owner.write_text(json.dumps(owner))
-                elif change == "recreated-target":
-                    case.target.rename(case.target.with_name("retained-original-target"))
-                    case.target.mkdir()
-                    (case.target / "preserve").write_bytes(b"foreign new target")
-                calls_before = self.call_log.read_text()
-                try:
-                    result, resumed = self.checkpoint_continue(case, **kwargs)
-                finally:
-                    (self.bin / "rustc").write_bytes(rustc_bytes)
-                self.assertNotEqual(result, 0)
-                self.assertIn("resume_error", resumed.summary)
-                calls = self.call_log.read_text()[len(calls_before):]
-                self.assertNotIn("cargo test checkpoint-", calls)
-                self.assertNotIn("cargo clean", calls)
-                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
-                if change == "recreated-target":
-                    self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
+    def assert_checkpoint_drift_refused(self, change):
+        case = self.checkpoint_fixture("checkpoint-drift-" + change)
+        kwargs = {}
+        rustc_bytes = (self.bin / "rustc").read_bytes()
+        if change == "source":
+            (case.root / "source.rs").write_text("changed executable source\n")
+        elif change == "plan":
+            kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
+        elif change == "plan-order":
+            kwargs["steps"] = tuple(reversed(case.steps))
+        elif change in {"argv", "test-configuration"}:
+            kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
+                (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
+                requires_tests=change != "test-configuration"))
+        elif change == "toolchain":
+            (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
+        elif change == "environment":
+            kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
+        elif change == "dependency":
+            (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
+        elif change == "floor":
+            kwargs["min_free_bytes"] = 1
+        elif change == "report":
+            report = json.loads(case.path.read_text())
+            report["steps"][0]["status"] = "failed"
+            case.path.write_text(json.dumps(report))
+        elif change == "report-metadata":
+            report = json.loads(case.path.read_text())
+            report["duration_seconds"] += 1
+            case.path.write_text(json.dumps(report))
+        elif change == "log":
+            (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
+        elif change == "missing-owner":
+            case.owner.unlink()
+        elif change in {"changed-owner", "foreign-owner"}:
+            owner = json.loads(case.owner.read_text())
+            if change == "foreign-owner":
+                owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
+            else:
+                owner["recorded_at"] = "changed receipt"
+            case.owner.write_text(json.dumps(owner))
+        elif change == "recreated-target":
+            case.target.rename(case.target.with_name("retained-original-target"))
+            case.target.mkdir()
+            (case.target / "preserve").write_bytes(b"foreign new target")
+        calls_before = self.call_log.read_text()
+        try:
+            result, resumed = self.checkpoint_continue(case, **kwargs)
+        finally:
+            (self.bin / "rustc").write_bytes(rustc_bytes)
+        self.assertNotEqual(result, 0)
+        self.assertIn("resume_error", resumed.summary)
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
+        self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+        if change == "recreated-target":
+            self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
 
-    def test_checkpoint_malformed_resume_records_refuse_without_traceback_or_owner_changes(self):
-        for malformed in ("tree-list", "tree-null", "target-list", "counts-null", "checkpoint-scalar", "report-scalar"):
-            with self.subTest(malformed=malformed):
-                case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
-                report = json.loads(case.path.read_text())
-                if malformed in {"tree-list", "tree-null"}:
-                    report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
-                elif malformed == "target-list":
-                    report["checkpoint"]["target"] = []
-                elif malformed == "counts-null":
-                    report["steps"][0]["test_results"] = None
-                elif malformed == "checkpoint-scalar":
-                    report["checkpoint"] = 42
-                else:
-                    report = 42
-                case.path.write_text(json.dumps(report))
-                malformed_bytes = case.path.read_bytes()
-                owner_bytes = case.owner.read_bytes()
-                calls_before = self.call_log.read_text()
-                console = io.StringIO()
-                with redirect_stdout(console), redirect_stderr(console):
-                    result, resumed = self.checkpoint_continue(case)
-                self.assertNotEqual(result, 0)
-                self.assertTrue(resumed.summary["resume_error"])
-                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
-                self.assertNotIn("Traceback", console.getvalue())
-                calls = self.call_log.read_text()[len(calls_before):]
-                self.assertNotIn("cargo test checkpoint-", calls)
-                self.assertNotIn("cargo clean", calls)
-                self.assertEqual(case.owner.read_bytes(), owner_bytes)
-                self.assertEqual(case.path.read_bytes(), malformed_bytes)
+    @bounded_checkpoint_case
+    def test_checkpoint_source_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("source")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_plan_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("plan")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_plan_order_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("plan-order")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_argv_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("argv")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_test_configuration_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("test-configuration")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_toolchain_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("toolchain")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_environment_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("environment")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_dependency_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("dependency")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_floor_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("floor")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_report_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("report")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_report_metadata_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("report-metadata")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_log_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("log")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_missing_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("missing-owner")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_changed_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("changed-owner")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_foreign_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("foreign-owner")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_recreated_target_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("recreated-target")
+
+    def assert_malformed_resume_refused(self, malformed):
+        case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
+        report = json.loads(case.path.read_text())
+        if malformed in {"tree-list", "tree-null"}:
+            report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
+        elif malformed == "target-list":
+            report["checkpoint"]["target"] = []
+        elif malformed == "counts-null":
+            report["steps"][0]["test_results"] = None
+        elif malformed == "checkpoint-scalar":
+            report["checkpoint"] = 42
+        else:
+            report = 42
+        case.path.write_text(json.dumps(report))
+        malformed_bytes = case.path.read_bytes()
+        owner_bytes = case.owner.read_bytes()
+        calls_before = self.call_log.read_text()
+        console = io.StringIO()
+        with redirect_stdout(console), redirect_stderr(console):
+            result, resumed = self.checkpoint_continue(case)
+        self.assertNotEqual(result, 0)
+        self.assertTrue(resumed.summary["resume_error"])
+        self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+        self.assertNotIn("Traceback", console.getvalue())
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
+        self.assertEqual(case.owner.read_bytes(), owner_bytes)
+        self.assertEqual(case.path.read_bytes(), malformed_bytes)
+
+    @bounded_checkpoint_case
+    def test_checkpoint_tree_list_resume_is_refused(self):
+        self.assert_malformed_resume_refused("tree-list")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_tree_null_resume_is_refused(self):
+        self.assert_malformed_resume_refused("tree-null")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_target_list_resume_is_refused(self):
+        self.assert_malformed_resume_refused("target-list")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_counts_null_resume_is_refused(self):
+        self.assert_malformed_resume_refused("counts-null")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_scalar_resume_is_refused(self):
+        self.assert_malformed_resume_refused("checkpoint-scalar")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_report_scalar_resume_is_refused(self):
+        self.assert_malformed_resume_refused("report-scalar")
 
     def test_checkpoint_continuation_rejects_failed_interrupted_zero_match_and_nonresource_runs(self):
         for stop in ("failed", "interrupted", "zero", None):
@@ -937,6 +1907,7 @@ fi
             run_id="failure",
             env={**self.env, "FAIL_MATCH": "bad"},
             steps=(local_ci.Step("bad", ("bad",)), local_ci.Step("later", ("second",))),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 1)
         summary = self.summary("failure")
@@ -1054,6 +2025,7 @@ fi
             run_id="missing",
             env=self.env,
             steps=(local_ci.Step("missing", ("not-installed",)),),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 1)
         summary = self.summary("missing")
@@ -1202,6 +2174,7 @@ fi
             run_id="stale",
             env={**self.env, "MUTATE_FILE": str(source), "FAKE_FILE_LIST": "source.rs"},
             steps=(local_ci.Step("mutate", ("first",)),),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 3)
         summary = self.summary("stale")
@@ -1215,6 +2188,7 @@ fi
             run_id="interrupted",
             env={**self.env, "INTERRUPT_ON": "1"},
             steps=(local_ci.Step("interrupt", ("first",)), local_ci.Step("later", ("second",))),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 130)
         summary = self.summary("interrupted")
@@ -1261,6 +2235,270 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dependency patches passed", result.stdout)
 
+    def test_dev_owner_record_matches_writer_and_reader(self) -> None:
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        runner = self.runner("owner-record")
+        runner.cargo_identity = {"target_directory": str(target)}
+        runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        workspace = {"workspace_root": str(self.repo), "git_common_dir": str(self.repo / ".git")}
+        marker = self.base / "owner.json"
+        with patch.object(local_ci, "utc_now", return_value="2026-01-01T00:00:00Z"), \
+                patch.object(runner, "_cache_provenance", return_value={"witness": "fixture"}) as provenance:
+            record = runner._target_owner_record(workspace, checked=True)
+            runner._write_target_owner(marker, workspace, checked=True)
+        self.assertEqual(runner._load_target_owner(marker, target), record)
+        self.assertEqual(record["workspace_owner"], workspace)
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
+        self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
+
+    def _reserved_dev_runner(self, name, *, real_cargo=False):
+        target = self.repo / name
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        if real_cargo:
+            # Use real offline Cargo metadata and provenance, with the same
+            # deterministic Git witness as the other runner fixtures.
+            git_bin = self.base / "git-only"
+            git_bin.mkdir()
+            (git_bin / "git").symlink_to(self.bin / "git")
+            env = dict(os.environ, **env)
+            env.update(PATH=str(git_bin) + os.pathsep + os.environ["PATH"],
+                       CARGO_NET_OFFLINE="true", CARGO_CACHE_RUSTC_INFO="0",
+                       FAKE_FILE_LIST="Cargo.toml")
+            (self.repo / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+            (self.repo / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+            (self.repo / "src").mkdir()
+            (self.repo / "src/lib.rs").write_text("")
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"), runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+        if real_cargo:
+            runner._dependency_inputs = runner._dependency_context()
+            runner._workspace_inputs = local_ci.build_inputs.workspace_snapshot(
+                runner.root, runner.env, runner._release_metadata)
+        else:
+            runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        return runner, reservation, target
+
+    def test_fresh_dev_publication_transfers_same_lock_and_real_owner_schema(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-owner-real", real_cargo=True)
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        locked_file = lock.file
+        with reservation:
+            runner._claim_fresh_dev_owner(reservation)
+            self.addCleanup(lock.release)
+        self.assertIs(runner.target_lock, lock)
+        self.assertIs(lock.file, locked_file)
+        self.assertTrue(runner.target_owner_claimed)
+        record = runner._load_target_owner(owner, target)
+        self.assertEqual(record["workspace_owner"], {key: runner.git_identity[key]
+                                                    for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertFalse(record["cache_inputs"]["workspace"]["checked"])
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        with self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "contender"})
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+            contender.acquire()
+        self.assertIs(lock.file, locked_file)
+        self.assertEqual(runner._load_target_owner(owner, target), record)
+
+    def _assert_pending_consumers_refuse(self, name, target):
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        calls = self.call_log.read_text()
+        for adopt in (False, True):
+            consumer = self.runner(f"{name}-dev-{adopt}", env=env, adopt_target=adopt)
+            self.assertEqual(consumer.run(), 1)
+            self.assertIn("admission is incomplete", consumer.summary["target_cache_error"])
+            self.assertIsNone(consumer.target_lock)
+            release = self.runner(f"{name}-release-{adopt}", env=env)
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                with release.guarded_release(adopt=adopt):
+                    self.fail("release accepted a pending target")
+            self.assertIsNone(release.target_lock)
+        new_calls = self.call_log.read_text()[len(calls):]
+        self.assertNotIn("cargo clean", new_calls)
+        self.assertNotIn("cargo build", new_calls)
+
+    def test_fresh_dev_publication_keeps_durable_refusal_after_precommit_failure(self):
+        for event in ("same-profile", "opposite-profile", "target-contents", "target-replaced",
+                      "lock", "state", "owner-bytes", "owner-inode", "temporary",
+                      "link-error", "link-interrupt", "pending-file-sync", "pending-directory-sync",
+                      "owner-file-sync", "owner-directory-sync"):
+            with self.subTest(event=event):
+                runner, reservation, target = self._reserved_dev_runner("fresh-" + event)
+                owner = runner.target_owner_path
+                opposite = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+                lock_path = reservation._lock.path
+                pending = local_ci.target_admission_pending_path(lock_path)
+                observed_pending = pending
+                link, fsync = os.link, os.fsync
+                expected = {}
+                synced = []
+
+                def change(source, destination, **kwargs):
+                    nonlocal observed_pending
+                    identity = pending.stat()
+                    self.assertIn((identity.st_dev, identity.st_ino), synced)
+                    self.assertIn("directory", synced)
+                    if event == "same-profile":
+                        owner.write_bytes(b"other dev owner")
+                        expected[owner] = owner.read_bytes()
+                    link(source, destination, **kwargs)
+                    expected[owner] = owner.read_bytes()
+                    if event == "opposite-profile":
+                        opposite.write_bytes(b"release owner")
+                        expected[opposite] = opposite.read_bytes()
+                    elif event in {"target-contents", "target-replaced"}:
+                        if event == "target-replaced":
+                            target.rename(target.with_suffix(".old"))
+                            target.mkdir()
+                        (target / "keep").write_bytes(b"unowned target")
+                        expected[target / "keep"] = b"unowned target"
+                    elif event == "lock":
+                        lock_path.rename(lock_path.with_suffix(".old"))
+                        lock_path.write_bytes(b"replacement lock")
+                        expected[lock_path] = lock_path.read_bytes()
+                    elif event == "state":
+                        old_state = self.target_state_dir.with_suffix(".old")
+                        self.target_state_dir.rename(old_state)
+                        self.target_state_dir.mkdir()
+                        expected[old_state / owner.name] = expected.pop(owner)
+                        observed_pending = old_state / pending.name
+                    elif event == "owner-bytes":
+                        owner.write_bytes(b"changed in place")
+                        expected[owner] = owner.read_bytes()
+                    elif event == "owner-inode":
+                        owner.rename(owner.with_suffix(".old"))
+                        owner.write_bytes(expected[owner])
+                        expected[owner.with_suffix(".old")] = expected[owner]
+                    elif event == "temporary":
+                        temporary = owner.parent / source
+                        temporary.unlink()
+                        temporary.write_bytes(b"replacement temporary")
+                        expected[temporary] = temporary.read_bytes()
+                    elif event == "link-error":
+                        raise OSError(errno.EIO, "ambiguous link")
+                    elif event == "link-interrupt":
+                        raise KeyboardInterrupt()
+
+                def sync(descriptor):
+                    if descriptor == reservation._state_fd:
+                        key = "directory"
+                        stage = "owner-directory-sync" if owner.exists() else "pending-directory-sync"
+                    else:
+                        info = os.fstat(descriptor)
+                        key = (info.st_dev, info.st_ino)
+                        identity = pending.stat()
+                        stage = ("pending-file-sync" if key == (identity.st_dev, identity.st_ino)
+                                 else "owner-file-sync")
+                    if event == stage:
+                        raise OSError(errno.EIO, "failed " + stage)
+                    fsync(descriptor)
+                    synced.append(key)
+
+                error = KeyboardInterrupt if event == "link-interrupt" else local_ci.TargetCacheError
+                with patch.object(local_ci.os, "link", side_effect=change), \
+                        patch.object(local_ci.os, "fsync", side_effect=sync), self.assertRaises(error):
+                    runner._claim_fresh_dev_owner(reservation)
+                self.assertIsNone(runner.target_lock)
+                self.assertFalse(runner.target_owner_claimed)
+                self.assertIsNone(reservation._lock.file)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(target))
+                self.assertEqual(observed_pending.read_bytes(), b"")
+                self.assertEqual(owner.exists(), owner in expected)
+                for path, preserved in expected.items():
+                    self.assertEqual(path.read_bytes(), preserved)
+                self.assertEqual(set(self.target_state_dir.glob(f".{owner.name}.*.tmp")),
+                                 {path for path in expected if path.suffix == ".tmp"})
+                if event in {"opposite-profile", "target-contents", "link-interrupt"}:
+                    self._assert_pending_consumers_refuse(event, target)
+                    self.assertEqual(observed_pending.read_bytes(), b"")
+                    for path, preserved in expected.items():
+                        self.assertEqual(path.read_bytes(), preserved)
+
+    def test_fresh_dev_link_interrupt_survives_temp_cleanup_failure(self):
+        runner, reservation, _ = self._reserved_dev_runner("fresh-link-double-failure")
+        pending = local_ci.target_admission_pending_path(reservation._lock.path)
+        replacement = []
+        def interrupt(source, destination, **kwargs):
+            temporary = self.target_state_dir / source
+            temporary.unlink()
+            temporary.write_bytes(b"replacement temporary")
+            replacement.append(temporary)
+            raise KeyboardInterrupt()
+        with patch.object(local_ci.os, "link", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsInstance(caught.exception.__cause__, local_ci.TargetCacheError)
+        self.assertEqual(replacement[0].read_bytes(), b"replacement temporary")
+        self.assertTrue(pending.exists())
+        self.assertIsNone(reservation._lock.file)
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_dev_handoff_interruption_closes_remaining_pins_and_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-close-interrupt")
+        descriptors = set(reservation._handles + [reservation._state_fd])
+        attempted = []
+        original_finish, original_close = reservation._finish, os.close
+        def interrupted_finish(*, transfer_lock):
+            if not transfer_lock:
+                return original_finish(transfer_lock=False)
+            def close_then_interrupt(descriptor):
+                original_close(descriptor)
+                attempted.append(descriptor)
+                if len(attempted) == 1:
+                    raise KeyboardInterrupt()
+            with patch.object(local_ci.os, "close", side_effect=close_then_interrupt):
+                return original_finish(transfer_lock=True)
+        with patch.object(reservation, "_finish", side_effect=interrupted_finish):
+            with self.assertRaises(KeyboardInterrupt):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertEqual(set(attempted), descriptors)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNotNone(runner._load_target_owner(runner.target_owner_path, target))
+        self.assertFalse(local_ci.target_admission_pending_path(reservation._lock.path).exists())
+
+    def test_fresh_dev_publication_sync_failure_after_commit_does_not_transfer_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-final-sync")
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        fsync = os.fsync
+
+        def sync(descriptor):
+            if descriptor == reservation._state_fd and not pending.exists():
+                raise OSError(errno.EIO, "failed final directory sync")
+            fsync(descriptor)
+
+        with patch.object(local_ci.os, "fsync", side_effect=sync):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "failed final directory sync"):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsNone(runner.target_lock)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(lock.file)
+        self.assertFalse(pending.exists())
+        self.assertEqual(runner._load_target_owner(owner, target)["target_identity"],
+                         runner._directory_identity(target))
+        # The verified owner was durable before commit. If the deletion is
+        # lost on crash, the restored sentinel would instead refuse admission.
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "later"})
+        contender.acquire()
+        self.assertIsNone(contender.release())
+
     def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
         _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)
@@ -1271,7 +2509,15 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             '  [ -f "$EXPECTED_OWNER" ] || exit 12\n'
             '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
             '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
-            'fi\necho "completed $tool $*"',
+            'fi\n'
+            'if [ "$1" = scripts/test_shards.py ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
+        ))
+        cargo = self.bin / "cargo"
+        cargo.write_text(FAKE_TOOL.replace(
+            'echo "completed $tool $*"',
+            'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
         ))
         runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
                              steps=local_ci.FULL_STEPS)
@@ -1335,6 +2581,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(self.runner("handoff-a").run(), 0)
         worktree_b = self.base / "repo-worktree-b"
         worktree_b.mkdir()
+        install_delivery_source_fixture(worktree_b)
         env_b = {
             **self.env,
             "FAKE_TOPLEVEL": str(worktree_b),
@@ -1371,6 +2618,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
 
         worktree_b = self.base / "repo-worktree-b"
         worktree_b.mkdir()
+        install_delivery_source_fixture(worktree_b)
         env_b = {
             **self.env,
             "FAKE_TOPLEVEL": str(worktree_b),
@@ -1392,6 +2640,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         calls_before_handoff = self.call_log.read_text()
         worktree_b = self.base / "repo-worktree-b"
         worktree_b.mkdir()
+        install_delivery_source_fixture(worktree_b)
         env_b = {
             **self.env,
             "FAIL_MATCH": "clean",
@@ -1473,6 +2722,143 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertIn("target-handoff-clean.log", output)
         self.assertIn("workspace dev-artifact cleanup failed", output)
 
+    def test_pending_admission_refuses_dev_release_and_adoption_without_mutation(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        target.mkdir()
+        (target / "keep").write_bytes(b"original target")
+        self.assertEqual(self.runner("pending-seed", adopt_target=True).run(), 0)
+        self.release_attempt("pending-release-seed", adopt=True)
+        lock_path, owner = local_ci.target_state_paths(target, self.target_state_dir)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        pending = local_ci.target_admission_pending_path(lock_path)
+        before_owner, before_release = owner.read_bytes(), release.read_bytes()
+        before_lock = lock_path.read_bytes()
+        for kind in ("regular", "dangling"):
+            with self.subTest(kind=kind):
+                if kind == "regular":
+                    pending.write_bytes(b"incomplete claim")
+                else:
+                    pending.symlink_to(self.base / "missing")
+                for adopt in (False, True):
+                    calls_before = self.call_log.read_text()
+                    runner = self.runner(f"pending-{kind}-{adopt}", adopt_target=adopt)
+                    self.assertEqual(runner.run(), 1)
+                    self.assertIn("admission is incomplete", runner.summary["target_cache_error"])
+                    self.assertIsNone(runner.target_lock)
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                        self.release_attempt(f"pending-release-{kind}-{adopt}", adopt=adopt)
+                    calls = self.call_log.read_text()[len(calls_before):]
+                    self.assertNotIn("cargo clean", calls)
+                    self.assertNotIn("cargo build", calls)
+                    self.assertEqual((target / "keep").read_bytes(), b"original target")
+                    self.assertEqual(owner.read_bytes(), before_owner)
+                    self.assertEqual(release.read_bytes(), before_release)
+                    self.assertEqual(lock_path.read_bytes(), before_lock)
+                    self.assertTrue(os.path.lexists(pending))
+                pending.unlink()
+        # Refusals release the actual flock without altering its metadata.
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "after-pending"})
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_admission_inspection_failure_releases_lock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "inspection-error"})
+        original = os.stat
+        pending_name = local_ci.target_admission_pending_path(lock_path).name
+        def deny(path, *args, **kwargs):
+            if path == pending_name:
+                raise PermissionError("pending inspection denied")
+            return original(path, *args, **kwargs)
+        with patch.object(local_ci.os, "stat", side_effect=deny):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "pending inspection denied"):
+                lock.acquire()
+        self.assertIsNone(lock.file)
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_guard_refuses_replaced_lock_or_state_directory(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                replaced = False
+                def replace(path_arg, *args, **kwargs):
+                    nonlocal replaced
+                    if not replaced and ((kind == "lock" and path_arg == path.name)
+                                         or (kind == "directory" and path_arg == state)):
+                        replaced = True
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "original-state")
+                            state.mkdir()
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertTrue(replaced)
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+                if kind == "lock":
+                    self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_pending_guard_interruption_releases_flock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        pending = local_ci.target_admission_pending_path(lock_path).name
+        original = os.stat
+        def interrupt(path, *args, **kwargs):
+            if path == pending:
+                raise KeyboardInterrupt()
+            return original(path, *args, **kwargs)
+        for stage in ("flock", "pending"):
+            with self.subTest(stage=stage):
+                lock = local_ci.CargoTargetLock(lock_path, {"run_id": stage})
+                operation = (patch.object(local_ci.fcntl, "flock", side_effect=KeyboardInterrupt())
+                             if stage == "flock" else patch.object(local_ci.os, "stat", side_effect=interrupt))
+                with operation, self.assertRaises(KeyboardInterrupt):
+                    lock.acquire()
+                self.assertIsNone(lock.file)
+                lock.acquire()
+                self.assertIsNone(lock.release())
+
+    def test_pending_guard_rechecks_lock_after_pending_lookup(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"late-state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                pending = local_ci.target_admission_pending_path(path).name
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                def replace_during_pending(path_arg, *args, **kwargs):
+                    if path_arg == pending:
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "late-original-state")
+                            state.mkdir()
+                        raise FileNotFoundError("pending absent")
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace_during_pending):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "late-original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+
     def test_target_lock_contention_refuses_before_cargo_build(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
         lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
@@ -1548,6 +2934,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     def test_real_cargo_worktree_handoff_cleans_only_workspace_dev_artifacts(self) -> None:
         """Exercise the API-mismatch handoff against Cargo in an isolated temporary target."""
         root = self.base / "real-workspace"
+        install_delivery_source_fixture(root)
         api = root / "crates/fixture-api"
         app = root / "crates/fixture-app"
         helper = self.base / "shared-external-helper"
@@ -1725,6 +3112,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     def test_real_duplicate_path_package_names_refuse_without_cleaning_artifacts(self):
         root = self.base / "collision-workspace"
         (root / "src").mkdir(parents=True)
+        install_delivery_source_fixture(root)
         dependencies = []
         for alias, version in (("first", "0.1.0"), ("second", "0.2.0")):
             dependency = self.base / alias

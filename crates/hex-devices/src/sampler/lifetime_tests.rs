@@ -71,13 +71,15 @@ fn loop_release_and_trigger_slice_ends_survive_partitioning_and_short_notes() {
         for note in [60, 61, 62] {
             let voice = sampler.prepare_voice(note, 127).unwrap().unwrap();
             let end = voice.end_age_frames(1).unwrap();
+            let slice_frames = [7, 24, 33][usize::from(note - 60)];
+            let released = 1 + voice.release_frames();
             let expected = match mode {
-                Mode::Classic { .. }
-                | Mode::Slice {
+                Mode::Classic { .. } => released,
+                Mode::Slice {
                     gate: GateMode::Gate,
                     ..
-                } => 5,
-                _ => [7, 24, 33][usize::from(note - 60)],
+                } => released.min(slice_frames),
+                _ => slice_frames,
             };
             assert_eq!(end, expected);
             let mut whole = [[0.0; 2]; 128];
@@ -124,8 +126,10 @@ fn exhausted_sources_bound_huge_gates_but_loop_release_overflow_refuses() {
         .prepare_voice(60, 127)
         .unwrap()
         .unwrap();
-    assert_eq!(voice.end_age_frames(u64::MAX - 4).unwrap(), u64::MAX);
-    assert!(voice.end_age_frames(u64::MAX - 3).is_err());
+    let release = voice.release_frames();
+    assert!(release >= 4);
+    assert_eq!(voice.end_age_frames(u64::MAX - release).unwrap(), u64::MAX);
+    assert!(voice.end_age_frames(u64::MAX - release + 1).is_err());
     assert!(voice.end_age_frames(u64::MAX).is_err());
     settings.envelope.release_seconds = 0.0;
     let voice = PreparedSampler::new(sample, 48_000, settings)
@@ -133,6 +137,8 @@ fn exhausted_sources_bound_huge_gates_but_loop_release_overflow_refuses() {
         .prepare_voice(60, 127)
         .unwrap()
         .unwrap();
-    assert_eq!(voice.end_age_frames(0).unwrap(), 0);
-    assert_eq!(voice.end_age_frames(u64::MAX).unwrap(), u64::MAX);
+    // The shortest prepared release still bounds a looping gate exactly.
+    let release = voice.release_frames();
+    assert_eq!(voice.end_age_frames(0).unwrap(), release);
+    assert_eq!(voice.end_age_frames(u64::MAX - release).unwrap(), u64::MAX);
 }

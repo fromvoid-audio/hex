@@ -81,6 +81,7 @@ impl ComputerKeyboardInput {
             self.cancel();
             return;
         };
+        self.cancel_live_note_audition_on_control();
         for (key, word) in self.notes.iter().enumerate() {
             let before = word.swap(0, SeqCst);
             if let Some(queue) = &self.ordered_keys {
@@ -123,6 +124,7 @@ impl ComputerKeyboardInput {
             .ok_or(Invalid("computer keyboard input is not output bound"))?;
         let epoch = activation.clock.reserve_on_control()?;
         let after = self.begin_write()?;
+        self.cancel_live_note_audition_on_control();
         for word in &self.notes {
             word.store(0, SeqCst);
         }
@@ -134,7 +136,19 @@ impl ComputerKeyboardInput {
         }
         Ok(())
     }
-    pub(super) fn note_snapshot(&self) -> NoteSnapshot {
+    pub(crate) fn live_monitor_input(&self) -> Option<&super::LiveNoteInput> {
+        if self.is_cancelled()
+            || self.output_activation.as_ref().is_some_and(|activation| {
+                let epoch = self.live_output_epoch.load(Acquire);
+                epoch != activation.epoch.load(Acquire) || !activation.clock.permits(epoch)
+            })
+        {
+            return None;
+        }
+        self.live_notes()
+    }
+
+    pub(crate) fn note_snapshot(&self) -> NoteSnapshot {
         for _ in 0..2 {
             let before = self.sequence.load(SeqCst);
             if before & 1 != 0 || self.is_cancelled() {
@@ -144,11 +158,8 @@ impl ComputerKeyboardInput {
                 .output_activation
                 .as_ref()
                 .map_or(0, |a| a.epoch.load(SeqCst));
-            let words = if self.note_audition_finished() {
-                [0; COMPUTER_KEY_COUNT]
-            } else {
-                std::array::from_fn(|index| self.notes[index].load(SeqCst))
-            };
+            let mut words = std::array::from_fn(|index| self.notes[index].load(SeqCst));
+            let audition = self.audition_snapshot(&mut words, before);
             if before == self.sequence.load(SeqCst)
                 && !self.is_cancelled()
                 && self
@@ -156,7 +167,7 @@ impl ComputerKeyboardInput {
                     .as_ref()
                     .is_none_or(|a| a.clock.permits(epoch))
             {
-                return NoteSnapshot::Active(epoch, words);
+                return NoteSnapshot::Active(epoch, words, audition);
             }
         }
         let epoch = self

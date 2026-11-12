@@ -27,6 +27,74 @@ fn all_ids(view: &EditorView) -> Vec<ClipId> {
 }
 
 #[gpui::test]
+fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut TestAppContext) {
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    press(&editor, &mut visual);
+    let deadline = crate::test_wait::hang_deadline();
+    let observation = loop {
+        if let Ok(view) = editor.read_with(&visual, |v, _| v.service.try_duplicate_view()) {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "committed duplicate observation");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let observed = observation.state.upgrade().unwrap();
+    let copied = observed.project.tracks()[0]
+        .clips()
+        .iter()
+        .map(|clip| clip.id())
+        .find(|id| !originals.contains(id))
+        .unwrap();
+    let selector = Box::leak(format!("clip-name-{}", copied.value()).into_boxed_str());
+    assert!(visual.debug_bounds(selector).is_none());
+    editor.update(&mut visual, |v, cx| {
+        assert!(!v.observe_duplicate_view(DuplicateViewObservation {
+            project_generation: observation.project_generation + 1,
+            previous_revision: observation.previous_revision,
+            state: Arc::downgrade(&observed),
+        }));
+        assert!(v.arrangement_duplicate_view().is_none());
+        assert!(v.observe_duplicate_view(observation));
+        assert!(v.duplicate_intent.is_pending());
+        assert_eq!(v.selected_clip, Some(originals[0]));
+        assert!(v.state.as_ref().unwrap().project.clip(copied).is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let before_ack = visual
+        .debug_bounds(selector)
+        .expect("copy paints with held terminal");
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(selector), Some(before_ack));
+
+    let terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "duplicate terminal");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    editor.update(&mut visual, |v, cx| {
+        assert!(Arc::ptr_eq(&terminal.state, &observed));
+        v.receive(terminal);
+        assert_eq!(v.selected_clip, Some(copied));
+        assert!(!v.duplicate_intent.is_pending());
+        assert!(v.arrangement_duplicate_view().is_none());
+        assert!(!v.observe_duplicate_view(DuplicateViewObservation {
+            project_generation: v.project_generation,
+            previous_revision: observed.revision - 1,
+            state: Arc::downgrade(&observed),
+        }));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(selector), Some(before_ack));
+}
+
+#[gpui::test]
 fn shift_selected_audio_group_d_copies_all_members_and_repeats_after_ack(cx: &mut TestAppContext) {
     let (_files, handle, editor, originals) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -331,17 +399,33 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
             assert!(!v.request_window_close(window, cx));
-            assert!(v.close_prompt_open);
+            assert!(v.automation_close_preflight.frozen());
             assert_eq!(v.duplicate_intent.queued.len(), 1);
             v.duplicate_selected();
             assert_eq!(
                 v.duplicate_intent.queued.len(),
                 1,
-                "modal sheet rejects new presses"
+                "close preflight rejects new presses"
             );
         })
     });
-    pump(&editor, &mut visual);
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        editor.update(&mut visual, |v, cx| {
+            if v.tick(cx) {
+                cx.notify();
+            }
+        });
+        visual.run_until_parked();
+        if editor.read_with(&visual, |v, _| v.close_prompt_open) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "close preflight must reach the prompt"
+        );
+        std::thread::yield_now();
+    }
     editor.read_with(&visual, |v, _| {
         assert!(v.close_prompt_open);
         assert!(!v.duplicate_intent.is_pending());
@@ -607,7 +691,7 @@ fn alias_and_independent_intentions_keep_order_through_delayed_terminals(cx: &mu
     let header = visual.debug_bounds(header).unwrap();
     assert!(icon.origin.x >= header.origin.x && icon.right() <= header.right());
     assert!(icon.origin.y >= header.origin.y && icon.bottom() <= header.bottom());
-    visual.simulate_keystrokes("i");
+    visual.simulate_keystrokes("shift-i");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
@@ -710,7 +794,15 @@ fn console_alias_duplicate_selects_committed_cell_and_repeats_in_order(cx: &mut 
             id
         });
         let marker = Box::leak(format!("clip-alias-{}", selected.value()).into_boxed_str());
-        assert!(visual.debug_bounds(marker).is_some());
+        let badge = visual.debug_bounds(marker).unwrap();
+        let surface = Box::leak(format!("console-clip-{}", selected.value()).into_boxed_str());
+        let surface = visual.debug_bounds(surface).unwrap();
+        assert!(badge.left() >= surface.left());
+        assert!(
+            badge.right() <= surface.right() - gpui::px(5.0),
+            "alias leaves the cut clear"
+        );
+        assert!(badge.top() >= surface.top() && badge.bottom() <= surface.bottom());
         visual.simulate_keystrokes("d");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {

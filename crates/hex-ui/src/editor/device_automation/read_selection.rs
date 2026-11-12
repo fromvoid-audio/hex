@@ -63,8 +63,14 @@ impl EditorView {
                 DeviceAutomationControlEdit::ReadSelection {
                     device,
                     target: kind,
+                    vst3_class,
                     selection,
-                } if device == target.device && kind == target.kind => return Some(selection),
+                } if device == target.device
+                    && kind == target.kind
+                    && vst3_class == target.vst3_class =>
+                {
+                    return Some(selection);
+                }
                 DeviceAutomationControlEdit::Reenable => {
                     return Some(AutomationReadSelection::Authored);
                 }
@@ -103,6 +109,30 @@ impl EditorView {
         target: Option<Target>,
         cx: &mut Context<Self>,
     ) {
+        self.select_device_automation_read(target, AutomationReadSelection::Authored, cx);
+    }
+
+    pub(super) fn device_automation_read_action(
+        &self,
+        target: Target,
+    ) -> Option<(&'static str, Action)> {
+        match self.device_automation_read_selection(target)? {
+            AutomationReadSelection::Base => {
+                Some(("re-enable automation", Action::Reenable(target)))
+            }
+            AutomationReadSelection::Authored if target.vst3_class.is_some() => {
+                Some(("override automation", Action::Override(target)))
+            }
+            AutomationReadSelection::Authored => None,
+        }
+    }
+
+    pub(super) fn select_device_automation_read(
+        &mut self,
+        target: Option<Target>,
+        selection: AutomationReadSelection,
+        cx: &mut Context<Self>,
+    ) {
         if self.edit_pending()
             || self.automation_view.devices.pending.is_some()
             || self.automation_view.devices.read_pending.is_some()
@@ -111,17 +141,22 @@ impl EditorView {
             return;
         }
         let edit = if let Some(target) = target {
-            if self.device_automation_read_selection(target) != Some(AutomationReadSelection::Base)
+            if self
+                .device_automation_read_selection(target)
+                .is_none_or(|current| current == selection)
             {
                 return;
             }
             DeviceAutomationControlEdit::ReadSelection {
                 device: target.device,
                 target: target.kind,
-                selection: AutomationReadSelection::Authored,
+                vst3_class: target.vst3_class,
+                selection,
             }
         } else {
-            if !self.has_overridden_device_automation() {
+            if selection != AutomationReadSelection::Authored
+                || !self.has_overridden_device_automation()
+            {
                 return;
             }
             DeviceAutomationControlEdit::Reenable

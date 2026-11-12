@@ -1,14 +1,15 @@
 //! Original standalone phase-modulation kernel, a prerequisite for Operator.
 //!
 //! The built-in definition admits this bounded acyclic kernel to native MIDI
-//! playback. The legacy FM4 device remains memoryless; Operator's separate
-//! standalone feedback voice adds bounded sequential self-feedback without
-//! changing native admission. State and note preparation validate on control;
-//! sampling uses fixed arrays and borrowed tables.
+//! playback through fixed mutable voices with transactional history. Its inline
+//! acyclic note kernel remains an immutable sampler and comparison oracle.
+//! Operator's separate standalone feedback voice adds bounded sequential
+//! self-feedback. State and note preparation validate on control; sampling uses
+//! fixed arrays and borrowed tables.
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 mod operator;
-pub(crate) use operator::OperatorFeedbackRetargetFrame;
+pub(crate) use operator::{FINE_LIMIT_HZ, OperatorFeedbackRetargetFrame};
 pub use operator::{
     OperatorFeedbackParameters, OperatorTuning, PreparedOperatorConfiguration,
     PreparedOperatorFeedbackRetarget, PreparedOperatorFeedbackVoice, PreparedOperatorFm4,

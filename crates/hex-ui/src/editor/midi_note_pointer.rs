@@ -35,13 +35,14 @@ fn cursor(kind: HitKind, copy: bool) -> CursorStyle {
     }
 }
 impl EditorView {
+    // The pressed note came from the captured source. Canonical note edits
+    // install a new revision, so later pointer events need only check identity.
     fn note_pointer_single_context(&self, c: GroupContext) -> GestureContext {
         GestureContext {
             generation: c.generation,
             revision: c.revision,
             selected_clip: c.clip,
             selected_note: self.midi_selection.primary(),
-            clip_contains_note: true,
             pending: c.pending,
             beat_start: c.beat_start,
             beat_span: c.beat_span,
@@ -57,7 +58,7 @@ impl EditorView {
             revision: self.state.as_ref()?.revision,
             clip,
             selection_epoch: self.midi_selection.epoch(),
-            beat_start: self.piano_beat_start.raw(),
+            beat_start: self.piano_beat_start,
             beat_span: self.piano_beat_span.raw(),
             pitch_low: self.piano_pitch_low,
             pitch_rows: self.piano_pitch_rows,
@@ -94,7 +95,6 @@ impl EditorView {
                         revision: f.revision,
                         selected_clip: Some(f.clip),
                         selected_note: Some(key.note),
-                        clip_contains_note: true,
                         pending: false,
                         beat_start: f.view_start,
                         beat_span: f.view_span,
@@ -205,9 +205,10 @@ impl EditorView {
             changed |= g.update(point, modifiers.platform);
             return changed;
         }
-        let current = self.midi_note_gesture.as_ref().is_some_and(|g| {
-            self.midi_note_gesture_current(g, self.note_pointer_single_context(context))
-        });
+        let current = self
+            .midi_note_gesture
+            .as_ref()
+            .is_some_and(|g| midi_drag::is_current(g, self.note_pointer_single_context(context)));
         if !current {
             return self.midi_note_gesture.take().is_some() | changed;
         }
@@ -246,11 +247,29 @@ impl EditorView {
                     }
                 } else {
                     match g.updates() {
-                        Ok(notes) => self.submit_midi_drag_preview(
-                            clip,
-                            crate::editor::midi_pending_drag::Frozen::Group(g),
-                            Command::UpdateMidiNotes { clip, notes },
-                        ),
+                        Ok(notes) => {
+                            let command = if g.source_prefix() > 0 {
+                                Command::UpdateMidiNotesWithSourcePrefix {
+                                    clip,
+                                    prefix: BeatTime::from_raw(g.source_prefix()),
+                                    notes,
+                                }
+                            } else if notes.iter().any(|note| {
+                                note.start
+                                    .raw()
+                                    .checked_add(note.duration.raw())
+                                    .is_none_or(|end| end > g.source_length())
+                            }) {
+                                Command::UpdateMidiNotesWithSourceExtent { clip, notes }
+                            } else {
+                                Command::UpdateMidiNotes { clip, notes }
+                            };
+                            self.submit_midi_drag_preview(
+                                clip,
+                                crate::editor::midi_pending_drag::Frozen::Group(g),
+                                command,
+                            );
+                        }
                         Err(error) => self.error = Some(error.into()),
                     }
                 }
@@ -260,16 +279,44 @@ impl EditorView {
         let Some(mut g) = self.midi_note_gesture.take() else {
             return;
         };
-        if !self.midi_note_gesture_current(&g, self.note_pointer_single_context(context))
+        if !midi_drag::is_current(&g, self.note_pointer_single_context(context))
             || !midi_drag::release_is_inside(&g, point[0], point[1])
         {
             return;
         }
         midi_drag::update_with_modifier(&mut g, point[0], point[1], modifiers.platform);
         if !midi_drag::is_noop(&g) {
-            self.submit_midi_drag_preview(
-                clip,
-                crate::editor::midi_pending_drag::Frozen::Single(g),
+            let command = if g.source_prefix > 0 {
+                Command::UpdateMidiNotesWithSourcePrefix {
+                    clip,
+                    prefix: BeatTime::from_raw(g.source_prefix),
+                    notes: vec![hex_project::MidiNoteUpdate {
+                        note: g.note,
+                        start: BeatTime::from_raw(g.preview.start),
+                        duration: BeatTime::from_raw(g.preview.duration),
+                        pitch: g.preview.pitch,
+                        channel: g.channel,
+                        velocity: g.velocity,
+                    }],
+                }
+            } else if g
+                .preview
+                .start
+                .checked_add(g.preview.duration)
+                .is_none_or(|end| end > g.clip_length)
+            {
+                Command::UpdateMidiNotesWithSourceExtent {
+                    clip,
+                    notes: vec![hex_project::MidiNoteUpdate {
+                        note: g.note,
+                        start: BeatTime::from_raw(g.preview.start),
+                        duration: BeatTime::from_raw(g.preview.duration),
+                        pitch: g.preview.pitch,
+                        channel: g.channel,
+                        velocity: g.velocity,
+                    }],
+                }
+            } else {
                 Command::UpdateMidiNote {
                     note: g.note,
                     start: BeatTime::from_raw(g.preview.start),
@@ -277,7 +324,12 @@ impl EditorView {
                     pitch: g.preview.pitch,
                     channel: g.channel,
                     velocity: g.velocity,
-                },
+                }
+            };
+            self.submit_midi_drag_preview(
+                clip,
+                crate::editor::midi_pending_drag::Frozen::Single(g),
+                command,
             );
         }
     }

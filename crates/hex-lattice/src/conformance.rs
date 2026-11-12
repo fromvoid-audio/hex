@@ -178,6 +178,7 @@ fn chain(
         definition,
         "runtime admission",
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Arc::new(DeviceMeter::default()),
             owner: ProcessorChainOwner::Track(1),
@@ -258,8 +259,26 @@ pub fn check_effect(
         return Err(fail(definition, "reset reproducibility"));
     }
     let mut bypass = chain(definition, state, sample_rate, true)?;
+    // Ordinary bypass has zero effective latency; opted-in fixed-latency
+    // bypass retains its declared dry delay. Check every sample exactly,
+    // including zero startup history, rather than skipping aligned providers.
+    let latency = contract(
+        definition,
+        "bypass latency query",
+        bypass.algorithmic_latency_frames_for_entry(0),
+    )?
+    .ok_or_else(|| fail(definition, "unknown bypass latency"))?;
+    let latency = usize::try_from(latency).map_err(|_| fail(definition, "bypass latency range"))?;
+    let delayed_dry: Vec<_> = (0..input.len())
+        .map(|i| {
+            i.checked_sub(latency)
+                .and_then(|source| input.get(source))
+                .copied()
+                .unwrap_or_default()
+        })
+        .collect();
     if !same(
-        &input,
+        &delayed_dry,
         &render(definition, &mut bypass, &input, &[513])?,
         0.0,
     ) {
@@ -450,3 +469,8 @@ mod tests;
 /// Registered original fixture for owned-effect host proofs, never a browser device.
 pub mod owned_delay;
 pub mod resource_pcm;
+/// Original pass-through fixture for bounded live-transition admission.
+pub mod transition_fixture;
+
+/// Small original aux-key runtime for host contract and allocation probes.
+pub mod auxiliary;

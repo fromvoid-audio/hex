@@ -30,7 +30,23 @@ if __name__ != "hex_update_runtime":
         raise RuntimeError("local CI module unavailable")
     ci = importlib.util.module_from_spec(SPEC)
     sys.modules[SPEC.name] = ci
-    SPEC.loader.exec_module(ci)
+    # Bind execution to a regular source file, without following a symlink or
+    # blocking on a substituted FIFO, and do not trust timestamp-valid pyc.
+    directory = os.open(ROOT / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open("local-ci.py", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError("local CI source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                source = stream.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+    ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+    exec(compile(source, SPEC.origin, "exec", dont_inherit=True), ci.__dict__)
 
     CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
     if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
@@ -152,6 +168,25 @@ def validate_discovery_input(path: Path, candidate: str, *, packaged=False, prov
             or data.get("package_layout") != ("hex-app-discovery-v1" if packaged else None)):
         raise DeliveryError("discovery helper must be minimal and built from the exact clean candidate")
     return data
+
+
+def prepare_discovery_input(args, output_dir: Path) -> Path | None:
+    """Resolve or build the exact native input before staging the app."""
+    receipt = args.vst3_discovery_receipt
+    if args.without_vst3_discovery:
+        return None
+    if receipt is None:
+        sdk = args.vst3_sdk or os.environ.get("HEX_VST3_SDK")
+        if not sdk:
+            raise DeliveryError(
+                "set HEX_VST3_SDK or --vst3-sdk to the pinned clean VST3 SDK checkout, "
+                "supply --vst3-discovery-receipt, or explicitly use --without-vst3-discovery"
+            )
+        receipt = discovery_builder().build(
+            Path(sdk), output_dir / "vst3-discovery", discovery_only=True
+        )
+    validate_discovery_input(receipt, args.candidate)
+    return receipt
 
 
 def sign_discovery(path: Path, identifier: str, signing: dict) -> None:
@@ -898,7 +933,21 @@ def apply_after_approved_parent_exit(parent_pid: int, approval_fd: int, ready_fd
     return _apply_verified_pending(target, selected_receipt_sha256)
 
 
+def _require_delivery_sources(runner) -> None:
+    """Check both policy consumers without looking up mutable module names."""
+    error = ci.delivery_source_error(runner.root)
+    if error is not None:
+        raise DeliveryError("delivery CI source mismatch: " + error)
+    verify = getattr(type(runner), "delivery_source_error", None)
+    if not callable(verify):
+        raise DeliveryError("runner source witness is unavailable")
+    error = verify(runner)
+    if error is not None:
+        raise DeliveryError("runner CI source mismatch: " + error)
+
+
 def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
+    _require_delivery_sources(runner)
     evidence = json.loads(report.read_text())
     if not isinstance(evidence, dict):
         raise DeliveryError("CI certificate must be an object")
@@ -930,10 +979,12 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
                 or not plan.get("qualifies_merge") or plan.get("source") != candidate):
             raise DeliveryError("invalid scoped verification plan")
         metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], runner.root))
+        _require_delivery_sources(runner)
         resolved = ci.ci_plan.resolve(runner.root, profile=plan["profile"], base=plan["base"], source=candidate,
                                       metadata=metadata, allow_same_tree_merge=True)
         if plan.get("reuse"):
             resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]))
+        _require_delivery_sources(runner)
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
         expected_steps = [(step.step_id, list(step.argv)) for step in ci.planned_steps(plan)]
@@ -980,11 +1031,13 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
                 raise DeliveryError("CI toolchain/configuration inputs differ from the guarded delivery")
         except (OSError, ValueError, RuntimeError, ci.TargetCacheError) as error:
             raise DeliveryError(f"cannot revalidate CI toolchain/configuration inputs: {error}") from error
+    _require_delivery_sources(runner)
     return evidence
 
 
 def validate_source(runner, candidate: str, expected: dict | None = None) -> dict:
     """Freeze clean exact source for build-only launch; this is not CI evidence."""
+    _require_delivery_sources(runner)
     if not runner._capture_repository_state("start_tree"):
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]
@@ -992,6 +1045,7 @@ def validate_source(runner, candidate: str, expected: dict | None = None) -> dic
             or current["dirty"] or current["commit"] != candidate
             or (expected is not None and current != expected)):
         raise DeliveryError("build-only source is dirty, changed or differs from the exact candidate")
+    _require_delivery_sources(runner)
     return dict(current)
 
 
@@ -1094,9 +1148,7 @@ def build(args) -> dict:
         instance_receipt = getattr(args, "vst3_instance_receipt", None)
         if instance_receipt is not None:
             validate_instance_input(instance_receipt, args.candidate)
-        discovery_receipt = getattr(args, "vst3_discovery_receipt", None)
-        if discovery_receipt is not None:
-            validate_discovery_input(discovery_receipt, args.candidate)
+        discovery_receipt = prepare_discovery_input(args, runner.output_dir)
         with optimized_artifact(runner, **({"discovery": True} if discovery_receipt else {}), adopt=getattr(args, "adopt_release_target", False),
                                 expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
                                 verification_check=revalidate,
@@ -1196,8 +1248,13 @@ def main() -> int:
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
     parser.add_argument("--vst3-instance-receipt", type=Path,
                         help="include exact-source minimal native instance helper")
-    parser.add_argument("--vst3-discovery-receipt", type=Path,
-                        help="include exact-source minimal native discovery helper and optimized scanner")
+    discovery = parser.add_mutually_exclusive_group()
+    discovery.add_argument("--vst3-discovery-receipt", type=Path,
+                           help="use a prebuilt exact-source discovery helper instead of building with HEX_VST3_SDK")
+    discovery.add_argument("--vst3-sdk", type=Path,
+                           help="use this pinned clean SDK checkout to build the default discovery helper")
+    discovery.add_argument("--without-vst3-discovery", action="store_true",
+                           help="explicitly build a development app without VST3 discovery")
     parser.add_argument("--expected-release-owner-sha256",
                         help="require this exact previously inspected owner under the release mutation lock")
     parser.add_argument("--expected-recreated-target-device", type=int,

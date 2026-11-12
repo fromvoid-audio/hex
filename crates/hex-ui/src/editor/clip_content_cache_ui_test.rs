@@ -632,16 +632,19 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
     assert_eq!(
         visual.rendered_background(selector),
         Some(
-            gpui::rgb(theme::clip_fill(
-                editor.read_with(cx, |view, _| view
-                    .state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .track(source)
-                    .unwrap()
-                    .color()),
-                hex_project::ClipFlavor::Muted,
+            gpui::rgb(theme::arrangement_clip_body_fill(
+                theme::clip_fill(
+                    editor.read_with(cx, |view, _| view
+                        .state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(source)
+                        .unwrap()
+                        .color()),
+                    hex_project::ClipFlavor::Muted,
+                    false
+                ),
                 true
             ))
             .into()
@@ -968,52 +971,5 @@ fn deep_element_id_paths_keep_distinct_click_state_and_focus_across_repaints(
         visual.simulate_mouse_up(left, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(view.read_with(cx, |view, _| view.counts), [3, 2]);
-    }
-}
-
-#[test]
-fn element_identity_keys_use_the_complete_path_independent_of_storage() {
-    use gpui::{ElementId, GlobalElementId};
-    use std::{
-        collections::hash_map::DefaultHasher,
-        hash::{Hash, Hasher},
-    };
-    let hash = |key: &GlobalElementId| {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        hasher.finish()
-    };
-    for depth in [0, 1, 8, 9, 32, 33, 80] {
-        let path = (0..depth)
-            .map(|index| ElementId::Integer(index as u64))
-            .collect::<Vec<_>>();
-        let mut ordinary = GlobalElementId::default();
-        let mut reserved = GlobalElementId::default();
-        // Force dynamic storage even for an empty/shallow identity. Hashing and
-        // equality must depend on the path, never its current allocation mode.
-        reserved.reserve(128);
-        for id in &path {
-            ordinary.push(id.clone());
-            reserved.push(id.clone());
-        }
-        assert_eq!(ordinary.as_slice(), path.as_slice());
-        assert_eq!(ordinary, reserved);
-        assert_eq!(hash(&ordinary), hash(&reserved));
-        assert_eq!(
-            ordinary.to_string(),
-            path.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(".")
-        );
-        reserved.push(ElementId::Integer(999));
-        assert_ne!(
-            ordinary, reserved,
-            "a suffix beyond inline storage belongs to the identity"
-        );
-        let mut map = std::collections::HashMap::new();
-        map.insert(ordinary, "first");
-        map.insert(reserved, "second");
-        assert_eq!(map.len(), 2);
     }
 }

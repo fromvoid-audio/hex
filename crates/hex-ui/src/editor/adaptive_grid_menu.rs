@@ -18,6 +18,8 @@ impl EditorView {
         }
         let generation = self.project_generation;
         let current = self.snap_grid.density();
+        let decibels = self.waveform_geometry_cache.amplitude_scale()
+            == super::super::waveform::WaveformAmplitudeScale::Decibel;
         if let Some(menu) = &mut self.context_menu {
             menu.items
                 .retain(|item| !matches!(item.action, EditorContextAction::AdaptiveGrid { .. }));
@@ -31,6 +33,18 @@ impl EditorView {
                         density,
                     },
                 }));
+            menu.items.retain(|item| {
+                !matches!(item.action, EditorContextAction::WaveformDecibels { .. })
+            });
+            menu.items.push(MenuItem {
+                label: "waveform db scale",
+                swatch: None,
+                checked: decibels,
+                action: EditorContextAction::WaveformDecibels {
+                    generation,
+                    enabled: !decibels,
+                },
+            });
         }
     }
 }

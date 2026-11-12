@@ -5,6 +5,7 @@ use crate::{
     AudioRootStorageLedger, AudioStorageError,
     audio_storage::{Location, Owner},
 };
+mod modulation;
 impl SessionPlayback {
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
@@ -19,11 +20,15 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            live_gain: _,
+            live_gain_scratch: _,
             native_parameter_state,
             compensation,
             device_metering: _,
+            render_work: _, // inline scalar timing scratch, charged by size_of::<Self>()
             revision,
             transient_loop: _,
+            browser_audition: _,
             midi_admission,
             periodic_tempo: _,
             anchor: _,
@@ -31,8 +36,12 @@ impl SessionPlayback {
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
+            stream_miss_fades: _,
             routes,
             route_scratch,
+            track_faders: _,
+            track_fader_scratch: _,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,
@@ -41,6 +50,7 @@ impl SessionPlayback {
             meter_cells,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets,
             mutable_events,
             current_route_cut_scratch,
@@ -74,8 +84,12 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
+            live_restart: _,
         } = self;
-        if midi_admission.is_some()
+        // The closed owner has no source effect lease or backing quote yet.
+        if !source_effects.is_empty()
+            || !foreign_arrangement.is_empty()
+            || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
             || *linear_arrangement_export
@@ -224,10 +238,18 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
+        if let Some(program) = entry.automation().foreign() {
+            let expected = prepared
+                .automation
+                .foreign()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            crate::foreign_automation::storage::runtime(program, expected, l)?;
+        }
         let (ids, lanes, points) = entry.automation().storage_vectors();
         l.vec(ids)?;
         l.vec(lanes)?;
         l.vec(points)?;
+        l.vec(entry.automation().touch_storage())?;
         let foreign = match &prepared.definition {
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,
@@ -239,6 +261,7 @@ fn chain_storage<'a>(
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        modulation::visit(&entry, prepared, chain, index, l)?;
         if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
         {
             for (runtime, object_tag, ring_tag) in [

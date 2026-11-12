@@ -174,7 +174,9 @@ fn header_effect_drop_appends_to_unselected_track_once_and_keeps_history(cx: &mu
 }
 
 #[gpui::test]
-fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut TestAppContext) {
+fn header_instrument_drop_inserts_or_replaces_and_preserves_effects_and_history(
+    cx: &mut TestAppContext,
+) {
     cx.update(crate::editor::bind_editor_keys);
     for mode in [EditorMode::Arrangement, EditorMode::Session] {
         let mut accepted_feedback = None;
@@ -189,7 +191,6 @@ fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut T
             let Created::Track(empty) = event.created.unwrap() else {
                 panic!("track")
             };
-            let mut state = event.state;
             let target = if chain == 1 { selected } else { empty };
             if chain == 2 {
                 service
@@ -202,9 +203,19 @@ fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut T
                         before: None,
                     })
                     .unwrap();
-                state = receive_service_event(&service).state;
+                receive_service_event(&service);
             }
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track: target,
+                    start: hex_project::BeatTime::ONE,
+                    length: hex_project::BeatTime::from_quarters(4).unwrap(),
+                }))
+                .unwrap();
+            let state = receive_service_event(&service).state;
             let original = state.project.clone();
+            let original_track = original.track(target).unwrap();
+            let old_instrument = original_track.instrument().map(|device| device.id());
             let (handle, editor) = header_window(cx, service, state, selected, mode);
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.simulate_resize(size(px(1600.), px(700.)));
@@ -215,78 +226,54 @@ fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut T
                 mode,
                 "browser-device-instrument-hex.instrument.fm4",
             );
-            if chain == 0 {
-                accepted_feedback = Some(feedback);
-                editor.read_with(cx, |view, _| {
-                    assert!(view.last_enqueued_native_device_drop.is_some())
-                });
-                pump_until(&editor, cx, idle);
-                let changed =
-                    editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-                editor.read_with(cx, |view, _| {
-                    let project = &view.state.as_ref().unwrap().project;
-                    let track = project.track(target).unwrap();
-                    assert_eq!(
-                        track
-                            .instrument()
-                            .unwrap()
-                            .state()
-                            .type_id()
-                            .as_str()
-                            .unwrap(),
-                        "hex.instrument.fm4"
-                    );
-                    assert!(track.devices().is_empty());
-                    assert_eq!(project.track(selected), original.track(selected));
-                    assert_eq!(view.selected_track, Some(selected));
-                    assert!(view.error.is_none(), "{:?}", view.error);
-                    assert!(view.last_enqueued_arrangement_device_drop.is_none());
-                });
-                let mut expected = Editor::new((*original).clone(), 8).unwrap();
-                expected
-                    .execute(Command::InsertInstrument {
-                        track: target,
-                        state: hex_engine::default_native_device_state_for_class(
-                            NativeDeviceClass::Instrument,
-                            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.fm4"),
-                        )
-                        .unwrap(),
-                    })
-                    .unwrap();
-                assert_eq!(changed.as_ref(), expected.project());
-                assert!(expected.undo());
-                editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
-                pump_until(&editor, cx, idle);
-                editor.read_with(cx, |view, _| {
-                    assert_eq!(
-                        view.state.as_ref().unwrap().project.as_ref(),
-                        expected.project()
-                    )
-                });
-                editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
-                pump_until(&editor, cx, idle);
-                editor.read_with(cx, |view, _| {
-                    assert_eq!(view.state.as_ref().unwrap().project, changed)
-                });
-            } else {
-                assert_ne!(
-                    Some(&feedback),
-                    accepted_feedback.as_ref(),
-                    "refused header must not paint as an accepted target"
+            if let Some(accepted) = accepted_feedback.as_ref() {
+                assert_eq!(
+                    &feedback, accepted,
+                    "each valid target has accepted feedback"
                 );
-                editor.read_with(cx, |view, _| {
-                    assert!(view.last_enqueued_native_device_drop.is_none());
-                    assert_eq!(view.state.as_ref().unwrap().project, original);
-                    assert!(view.error.as_ref().unwrap().contains(if chain == 1 {
-                        "occupied"
-                    } else {
-                        "empty device chain"
-                    }));
-                    assert!(idle(view));
-                });
+            } else {
+                accepted_feedback = Some(feedback);
             }
             editor.read_with(cx, |view, _| {
-                assert!(view.active_native_device_drag.is_none())
+                assert!(view.last_enqueued_native_device_drop.is_some())
+            });
+            pump_until(&editor, cx, idle);
+            let changed = editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                let track = project.track(target).unwrap();
+                let instrument = track.instrument().unwrap();
+                assert_eq!(
+                    instrument.state().type_id().as_str().unwrap(),
+                    "hex.instrument.fm4"
+                );
+                if let Some(old_id) = old_instrument {
+                    assert_eq!(instrument.id(), old_id);
+                }
+                assert_eq!(track.devices(), original_track.devices());
+                assert_eq!(track.midi_clips(), original_track.midi_clips());
+                assert!(matches!(
+                    track.ordered_device_chain().next(),
+                    Some(hex_project::TrackDeviceRef::Instrument(_))
+                ));
+                if target != selected {
+                    assert_eq!(project.track(selected), original.track(selected));
+                }
+                assert_eq!(view.selected_track, Some(selected));
+                assert!(view.error.is_none(), "{:?}", view.error);
+                assert!(view.active_native_device_drag.is_none());
+                project.clone()
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(project.track(target), original.track(target));
+                assert_eq!(project.track(selected), original.track(selected));
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, changed)
             });
         }
     }
@@ -607,5 +594,80 @@ fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
             .unwrap()
             .devices()
             .is_empty()
+    });
+}
+
+#[gpui::test]
+fn browser_device_double_click_appends_once_and_preserves_history(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = header_window(cx, service, state, track, EditorMode::Arrangement);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.), px(700.)));
+    visual.run_until_parked();
+    let at = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .unwrap()
+        .center();
+    for count in [1, 2] {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at,
+            button: MouseButton::Left,
+            click_count: count,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    }
+    pump_until(&editor, cx, idle);
+    let changed = editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track).unwrap().devices().len(), 2);
+        assert_eq!(
+            project.track(track).unwrap().devices()[0],
+            original.track(track).unwrap().devices()[0]
+        );
+        project.clone()
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, idle);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track), original.track(track));
+        assert_eq!(project.tracks().len(), original.tracks().len());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, idle);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, changed)
+    });
+}
+
+#[gpui::test]
+fn browser_device_double_click_without_selected_track_is_refused(cx: &mut TestAppContext) {
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = header_window(cx, service, state, track, EditorMode::Arrangement);
+    editor.update(cx, |view, _| view.selected_track = None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.), px(700.)));
+    visual.run_until_parked();
+    let at = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .unwrap()
+        .center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: at,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+        modifiers: Modifiers::default(),
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_some());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.worker_requests_pending, 0);
     });
 }

@@ -7,18 +7,75 @@ use hex_widgets::{
     WaveformEnvelopeMode, WaveformStroke,
 };
 #[cfg(test)]
-use std::hint::black_box;
+use std::{cell::Cell, hint::black_box};
 use std::{collections::VecDeque, sync::Arc};
 
 use super::waveform::{
-    aggregate_peaks, aggregate_ranges, fraction_u64, peak_vertical_bounds,
-    timeline_source_ranges_at,
+    WaveformAmplitudeScale, aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail,
+    fraction_u64, peak_vertical_bounds, timeline_source_ranges_at,
 };
+
+#[cfg(test)]
+thread_local! {
+    static REFERENCE_STEREO: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) struct ReferenceStereo(bool);
+
+#[cfg(test)]
+pub(super) fn use_reference_stereo(reference: bool) -> ReferenceStereo {
+    ReferenceStereo(REFERENCE_STEREO.with(|state| state.replace(reference)))
+}
+
+#[cfg(test)]
+fn reference_stereo() -> bool {
+    REFERENCE_STEREO.with(Cell::get)
+}
+
+#[cfg(test)]
+impl Drop for ReferenceStereo {
+    fn drop(&mut self) {
+        REFERENCE_STEREO.with(|state| state.set(self.0));
+    }
+}
 
 // A fitted dense viewport has 350 small audio clips while using only a few
 // thousand columns. Retain that working set without lifting the geometry budget.
 const MAX_CACHED_WAVEFORM_ENTRIES: usize = 512;
 const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
+
+/// A view's scale and its shared, bounded geometry store.
+#[derive(Default)]
+pub(super) struct WaveformViewCache {
+    geometry: std::rc::Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    amplitude_scale: std::cell::Cell<WaveformAmplitudeScale>,
+}
+
+impl WaveformViewCache {
+    pub(super) fn new(geometry: std::rc::Rc<std::cell::RefCell<WaveformGeometryCache>>) -> Self {
+        Self {
+            geometry,
+            amplitude_scale: std::cell::Cell::new(WaveformAmplitudeScale::default()),
+        }
+    }
+
+    pub(super) fn amplitude_scale(&self) -> WaveformAmplitudeScale {
+        self.amplitude_scale.get()
+    }
+
+    pub(super) fn set_amplitude_scale(&self, scale: WaveformAmplitudeScale) {
+        self.amplitude_scale.set(scale);
+    }
+}
+
+impl std::ops::Deref for WaveformViewCache {
+    type Target = std::cell::RefCell<WaveformGeometryCache>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.geometry
+    }
+}
 
 /// UI-owned LRU of ready-to-paint waveform geometry. Entries retain their source
 /// Arc, so pointer identity cannot be reused while an entry is resident.
@@ -39,7 +96,10 @@ struct WaveformGeometryEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WaveformGeometryKey {
+    #[cfg(test)]
+    reference_stereo: bool,
     mapping: WaveformMappingKey,
+    amplitude_scale: WaveformAmplitudeScale,
     visible_start: u64,
     visible_end: u64,
     origin_x: u32,
@@ -52,6 +112,7 @@ struct WaveformGeometryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
@@ -74,6 +135,7 @@ enum WaveformMappingKey {
         looping: bool,
         timeline_origin: u64,
         gain: i32,
+        fade: Option<hex_project::ClipFade>,
     },
     Source {
         timeline_origin: u64,
@@ -109,10 +171,12 @@ pub(super) struct RenderedWaveformSample {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WaveformPaintSample {
+    pub(super) colors: hex_widgets::WaveformColors,
     pub(super) bounds: Bounds<Pixels>,
     pub(super) mask: Bounds<Pixels>,
     pub(super) ordinates: [(f32, f32); 2],
     pub(super) envelope_points: usize,
+    pub(super) outline_fingerprint: [u64; 2],
 }
 
 impl WaveformGeometryCache {
@@ -184,6 +248,7 @@ impl WaveformGeometryCache {
         bounds: Bounds<Pixels>,
         mask: Bounds<Pixels>,
         geometry: &WaveformGeometry,
+        colors: hex_widgets::WaveformColors,
     ) {
         let _navigation_timer = super::navigation_metrics::Timer::start(
             super::navigation_metrics::Stage::PaintObservation,
@@ -191,23 +256,30 @@ impl WaveformGeometryCache {
         if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
             self.painted.pop_front();
         }
+        let observations: [(f32, f32, u64); 2] = std::array::from_fn(|channel| {
+            geometry.channels[channel].outline.iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY, 0xcbf29ce484222325_u64),
+                |(lo, hi, hash), point| {
+                    let y = f32::from(point.y);
+                    (
+                        lo.min(y),
+                        hi.max(y),
+                        (hash ^ u64::from(y.to_bits())).wrapping_mul(0x100000001b3),
+                    )
+                },
+            )
+        });
         self.painted.push_back(WaveformPaintSample {
+            colors,
             bounds,
             mask,
-            ordinates: std::array::from_fn(|channel| {
-                geometry.channels[channel]
-                    .outline
-                    .iter()
-                    .map(|p| f32::from(p.y))
-                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
-                        (lo.min(y), hi.max(y))
-                    })
-            }),
+            ordinates: observations.map(|(lo, hi, _)| (lo, hi)),
             envelope_points: geometry
                 .channels
                 .iter()
                 .map(|channel| channel.outline.len())
                 .sum(),
+            outline_fingerprint: observations.map(|(_, _, fingerprint)| fingerprint),
         });
     }
 
@@ -251,7 +323,7 @@ impl WaveformGeometryCache {
             .collect()
     }
 
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(test)]
     pub(super) fn entry_count(&self) -> usize {
         self.entries.len()
     }
@@ -259,6 +331,7 @@ impl WaveformGeometryCache {
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
+    MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
@@ -274,124 +347,21 @@ pub(super) enum WaveformMapping {
     Clip {
         clip: Clip,
         timeline_origin: u64,
+        /// Arrangement fade to display, including a held or pending preview.
+        /// Source-editing waveforms may omit this independent clip envelope.
+        fade: Option<hex_project::ClipFade>,
     },
     Source {
         timeline_origin: u64,
     },
 }
 
-/// A sampling lattice shared by all clips in a timeline viewport. Clip edges
-/// select columns from it; they never change its density or horizontal origin.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct WaveformGrid {
-    pub(super) start: u64,
-    pub(super) end: u64,
-    pub(super) left: f32,
-    pub(super) width: f32,
-    pub(super) columns: usize,
-    /// Coarse bins hold their extrema across the whole interval, so masking a
-    /// tiny clip cannot hide a peak whose bin center falls outside the clip.
-    pub(super) binned: bool,
-}
-
-impl WaveformGrid {
-    /// Static arranger detail, measured in seconds per physical pixel. Coarse
-    /// views aggregate extrema over wider bins; detailed editors keep their
-    /// supplied grids. This never reads capture, playback, idle time or frame
-    /// timing, so releasing a gesture cannot change waveform quality.
-    pub(super) fn arrangement(
-        viewport: super::viewport::Viewport,
-        left: f32,
-        width: f32,
-        scale: f32,
-        sample_rate: u32,
-    ) -> Option<Self> {
-        let end = viewport.end()?;
-        if viewport.length == 0
-            || sample_rate == 0
-            || !left.is_finite()
-            || !width.is_finite()
-            || width <= 0.0
-            || !(left + width).is_finite()
-            || !scale.is_finite()
-            || scale <= 0.0
-        {
-            return None;
-        }
-        let seconds_per_pixel =
-            viewport.length as f64 / f64::from(sample_rate) / (f64::from(width) * f64::from(scale));
-        let spacing = if seconds_per_pixel >= 0.05 {
-            8
-        } else if seconds_per_pixel >= 0.005 {
-            4
-        } else if seconds_per_pixel >= 0.001 {
-            2
-        } else {
-            1
-        };
-        let columns = super::waveform::waveform_column_count(width, scale).div_ceil(spacing);
-        // Two envelope points per coarse bin, including three padding bins,
-        // must fit the existing shared painter's point budget.
-        let columns = if spacing > 1 {
-            columns.min(MAX_WAVEFORM_ENVELOPE_POINTS / 2 - 3)
-        } else {
-            columns
-        };
-        let mut grid = Self {
-            start: viewport.start,
-            end,
-            left,
-            width,
-            columns,
-            binned: spacing > 1,
-        };
-        if spacing == 1 {
-            return Some(grid);
-        }
-        // An integer frame step anchors bins to the timeline, rather than the
-        // moving viewport. Pad with neighboring bins for edge interpolation.
-        // At the u64 boundary, keep the same coarse density and full coverage;
-        // a span that cannot be padded uses the valid unpadded grid above.
-        let step = viewport.length.div_ceil(columns as u64);
-        let padded_columns = columns.checked_add(3)?;
-        if let Some(span) = step.checked_mul(padded_columns as u64) {
-            let aligned = (viewport.start / step).checked_mul(step)?;
-            let start = aligned.saturating_sub(step).min(u64::MAX - span);
-            let padded_end = start.checked_add(span)?;
-            if start <= viewport.start && padded_end >= end {
-                let padded_left = f64::from(left)
-                    - (viewport.start - start) as f64 / viewport.length as f64 * f64::from(width);
-                let padded_width = span as f64 / viewport.length as f64 * f64::from(width);
-                let (padded_left, padded_width) = (padded_left as f32, padded_width as f32);
-                if padded_left.is_finite() && padded_width.is_finite() && padded_width > 0.0 {
-                    grid = Self {
-                        start,
-                        end: padded_end,
-                        left: padded_left,
-                        width: padded_width,
-                        columns: padded_columns,
-                        binned: true,
-                    };
-                }
-            }
-        }
-        Some(grid)
-    }
-
-    fn key(self) -> [u64; 6] {
-        [
-            self.start,
-            self.end,
-            u64::from(self.left.to_bits()),
-            u64::from(self.width.to_bits()),
-            self.columns as u64,
-            self.binned as u64,
-        ]
-    }
-}
+mod grid;
+pub(super) use grid::WaveformGrid;
 
 pub(super) struct WaveformGeometryRequest<'a> {
     pub(super) mapping: &'a WaveformMapping,
+    pub(super) amplitude_scale: WaveformAmplitudeScale,
     pub(super) visible_start: u64,
     pub(super) visible_end: u64,
     pub(super) bounds: Bounds<Pixels>,
@@ -415,6 +385,7 @@ pub(super) fn cached_waveform_geometry(
         request.bounds,
         request.scale,
     );
+    key.amplitude_scale = request.amplitude_scale;
     key.grid = request.grid.map(WaveformGrid::key);
     if let Some(geometry) = cache
         .try_borrow_mut()
@@ -423,15 +394,7 @@ pub(super) fn cached_waveform_geometry(
     {
         return Some(geometry);
     }
-    let geometry = Arc::new(prepare_waveform_geometry(
-        waveform,
-        request.mapping,
-        request.visible_start,
-        request.visible_end,
-        request.bounds,
-        request.columns,
-        request.grid,
-    )?);
+    let geometry = Arc::new(prepare_waveform_geometry_with_scale(waveform, request)?);
     if let Ok(mut cache) = cache.try_borrow_mut() {
         cache.insert(
             key,
@@ -451,6 +414,9 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::MusicalEvent(projection) => {
+            WaveformMappingKey::MusicalEvent(projection.clone())
+        }
         WaveformMapping::Stretch(projection) => WaveformMappingKey::Stretch(Arc::clone(projection)),
         WaveformMapping::Loop(projection) => WaveformMappingKey::Loop(Arc::clone(projection)),
         WaveformMapping::Prepared {
@@ -474,6 +440,7 @@ fn waveform_geometry_key(
         WaveformMapping::Clip {
             clip,
             timeline_origin,
+            fade,
         } => WaveformMappingKey::Clip {
             id: clip.id().value(),
             gain: clip.gain().millidb(),
@@ -484,13 +451,17 @@ fn waveform_geometry_key(
             source_phase: clip.source_phase(),
             looping: clip.looping(),
             timeline_origin: *timeline_origin,
+            fade: *fade,
         },
         WaveformMapping::Source { timeline_origin } => WaveformMappingKey::Source {
             timeline_origin: *timeline_origin,
         },
     };
     WaveformGeometryKey {
+        #[cfg(test)]
+        reference_stereo: reference_stereo(),
         mapping,
+        amplitude_scale: WaveformAmplitudeScale::default(),
         visible_start,
         visible_end,
         origin_x: f32::from(bounds.origin.x).to_bits(),
@@ -502,6 +473,7 @@ fn waveform_geometry_key(
     }
 }
 
+#[cfg(test)]
 pub(super) fn prepare_waveform_geometry(
     waveform: &CachedWaveform,
     mapping: &WaveformMapping,
@@ -511,6 +483,35 @@ pub(super) fn prepare_waveform_geometry(
     columns: usize,
     grid: Option<WaveformGrid>,
 ) -> Option<WaveformGeometry> {
+    prepare_waveform_geometry_with_scale(
+        waveform,
+        &WaveformGeometryRequest {
+            mapping,
+            amplitude_scale: WaveformAmplitudeScale::default(),
+            visible_start,
+            visible_end,
+            bounds,
+            scale: 1.0,
+            columns,
+            grid,
+        },
+    )
+}
+
+pub(super) fn prepare_waveform_geometry_with_scale(
+    waveform: &CachedWaveform,
+    request: &WaveformGeometryRequest<'_>,
+) -> Option<WaveformGeometry> {
+    let WaveformGeometryRequest {
+        mapping,
+        visible_start,
+        visible_end,
+        bounds,
+        columns,
+        grid,
+        amplitude_scale,
+        ..
+    } = *request;
     #[cfg(all(test, feature = "ui-test-support"))]
     let _navigation_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformBuild);
@@ -552,6 +553,7 @@ pub(super) fn prepare_waveform_geometry(
         return None;
     }
     let gain = match mapping {
+        WaveformMapping::MusicalEvent(projection) => projection.gain().linear(),
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Loop(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
@@ -560,10 +562,25 @@ pub(super) fn prepare_waveform_geometry(
         }
         WaveformMapping::Source { .. } => 1.0,
     };
+    let clip_fade = match mapping {
+        WaveformMapping::Clip {
+            clip,
+            fade: Some(fade),
+            ..
+        } if !fade.is_neutral() => Some((
+            clip.start(),
+            clip.start().saturating_add(clip.duration()),
+            *fade,
+        )),
+        _ => None,
+    };
     #[cfg(all(test, feature = "ui-test-support"))]
     let sampling_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformSampling);
     let mut stereo_peaks = Vec::with_capacity(columns);
+    // A fixed total bound keeps close-zoom refinement proportional to the
+    // viewport, including columns that straddle a loop boundary.
+    let detail_budget = (4_194_304 / grid.columns).min(4_096);
     for column in first..last {
         let start = grid
             .start
@@ -573,10 +590,16 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
-            WaveformMapping::Loop(projection) => projection.peaks(waveform, start..end),
-            WaveformMapping::Stretch(projection) => {
-                let ranges = projection.ranges(start..end, waveform.source_frames);
+            WaveformMapping::MusicalEvent(projection) => {
+                let ranges = projection.ranges(start..end, waveform.source_frames());
                 aggregate_ranges(waveform, ranges.as_slice())
+            }
+            WaveformMapping::Loop(projection) => {
+                projection.peaks_with_detail(waveform, start..end, detail_budget)
+            }
+            WaveformMapping::Stretch(projection) => {
+                let ranges = projection.ranges(start..end, waveform.source_frames());
+                aggregate_ranges_with_detail(waveform, ranges.as_slice(), detail_budget)
             }
             WaveformMapping::Prepared {
                 timeline_origin,
@@ -588,22 +611,33 @@ pub(super) fn prepare_waveform_geometry(
                 // translation before clamping; subtracting origin first erases
                 // valid edge bins and changes their shape during a left trim.
                 let translation = i128::from(*root_offset) - i128::from(*timeline_origin);
-                let available = waveform.source_frames as i128;
+                let available = waveform.source_frames() as i128;
                 let start = (i128::from(start) + translation).clamp(0, available) as usize;
                 let end = (i128::from(end) + translation).clamp(0, available) as usize;
-                aggregate_peaks(waveform, start, end)
+                if waveform.is_repeated() {
+                    waveform
+                        .bounded_exact_peaks_for_frames(start, end, detail_budget)
+                        .or_else(|| aggregate_peaks(waveform, start, end))
+                } else {
+                    aggregate_ranges_with_detail(
+                        waveform,
+                        std::slice::from_ref(&(start..end)),
+                        detail_budget,
+                    )
+                }
             }
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,
+                ..
             } => {
                 let ranges = timeline_source_ranges_at(
                     clip,
                     *timeline_origin,
                     start..end,
-                    waveform.source_frames,
+                    waveform.source_frames(),
                 );
-                aggregate_ranges(waveform, ranges.as_slice())
+                aggregate_ranges_with_detail(waveform, ranges.as_slice(), detail_budget)
             }
             WaveformMapping::Source { timeline_origin }
             | WaveformMapping::GainedSource {
@@ -630,6 +664,22 @@ pub(super) fn prepare_waveform_geometry(
                 }),
         };
         let mut peaks = peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]);
+        let fade_gain = match clip_fade {
+            Some((clip_start, clip_end, fade)) => {
+                // A cached peak represents an interval; use its timeline
+                // midpoint within the clip to sample the envelope without PCM.
+                let first = start.max(clip_start);
+                let last = end.min(clip_end);
+                if first < last {
+                    let midpoint = first + (last - first - 1) / 2;
+                    fade.gain_at(midpoint - clip_start)
+                } else {
+                    0.0
+                }
+            }
+            _ => 1.0,
+        };
+        let gain = gain * fade_gain;
         if gain != 1.0 {
             for peak in &mut peaks {
                 peak.min *= gain;
@@ -657,7 +707,8 @@ pub(super) fn prepare_waveform_geometry(
         let mut maxima = Vec::with_capacity(point_count);
         let mut minima = Vec::with_capacity(point_count);
         for (column, peaks) in stereo_peaks.iter().enumerate() {
-            let (top, bottom) = peak_vertical_bounds(peaks[channel], center, amplitude);
+            let (top, bottom) =
+                peak_vertical_bounds(peaks[channel], center, amplitude, amplitude_scale);
             if grid.binned {
                 for edge in [first + column, first + column + 1] {
                     let x = grid.left + edge as f32 * grid.width / grid.columns as f32;
@@ -754,6 +805,91 @@ mod tests {
         Bounds::new(point(px(12.0), px(34.0)), size(px(1200.0), px(180.0)))
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
+    fn plain_clip_fade_shapes_peaks_and_changes_cache_identity() {
+        use hex_project::{Command, Created, Editor, Project};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "fade".into(),
+                path: "fade.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("imported clip")
+        };
+        let neutral = editor.project().clip(clip).unwrap().clone();
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 40,
+                fade_out: 40,
+            })
+            .unwrap();
+        let faded = editor.project().clip(clip).unwrap().clone();
+        let peak = CachedPeak {
+            min: -1.0,
+            max: 1.0,
+        };
+        let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
+        let mapping = |clip: &Clip| WaveformMapping::Clip {
+            clip: clip.clone(),
+            timeline_origin: 0,
+            fade: Some(clip.retained_fade()),
+        };
+        let held = WaveformMapping::Clip {
+            clip: neutral.clone(),
+            timeline_origin: 0,
+            fade: Some(faded.retained_fade()),
+        };
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let get = |mapping: &WaveformMapping| {
+            cached_waveform_geometry(
+                &cache,
+                &waveform,
+                &WaveformGeometryRequest {
+                    amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                        false,
+                    ),
+                    mapping,
+                    visible_start: 0,
+                    visible_end: 100,
+                    bounds,
+                    scale: 1.0,
+                    columns: 100,
+                    grid: None,
+                },
+            )
+            .unwrap()
+        };
+        let neutral = get(&mapping(&neutral));
+        let faded = get(&mapping(&faded));
+        assert!(
+            !Arc::ptr_eq(&neutral, &faded),
+            "fade edits invalidate cached geometry"
+        );
+        assert!(
+            Arc::ptr_eq(&faded, &get(&held)),
+            "held and canonical fades share the same geometry"
+        );
+        let neutral_top = &neutral.channels[0].outline[..100];
+        let faded_top = &faded.channels[0].outline[..100];
+        assert!(faded_top[0].y > neutral_top[0].y);
+        assert_eq!(faded_top[50].y, neutral_top[50].y);
+        assert!(faded_top[99].y > neutral_top[99].y);
+        let neutral_bottom = &neutral.channels[0].outline[100..];
+        let faded_bottom = &faded.channels[0].outline[100..];
+        assert!(faded_bottom[0].y < neutral_bottom[0].y);
+        assert_eq!(faded_bottom[50].y, neutral_bottom[50].y);
+        assert!(faded_bottom[99].y < neutral_bottom[99].y);
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn key(origin: u64, bounds: Bounds<Pixels>) -> WaveformGeometryKey {
         waveform_geometry_key(
             &WaveformMapping::Source {
@@ -766,6 +902,26 @@ mod tests {
         )
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
+    fn comparison_cache_identity_is_scoped_and_restored() {
+        assert!(!reference_stereo());
+        let current = key(0, bounds());
+        {
+            let _reference = use_reference_stereo(true);
+            assert!(reference_stereo());
+            assert_ne!(current, key(0, bounds()));
+            {
+                let _nested = use_reference_stereo(false);
+                assert_eq!(current, key(0, bounds()));
+            }
+            assert!(reference_stereo());
+        }
+        assert!(!reference_stereo());
+        assert_eq!(current, key(0, bounds()));
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn geometry(
         source: &CachedWaveform,
         origin: u64,
@@ -787,6 +943,168 @@ mod tests {
         )
     }
 
+    #[test]
+    #[ignore = "manual release profile of repeated waveform geometry"]
+    fn profile_repeated_prepared_waveform() {
+        use std::time::Instant;
+        let mut samples = vec![[0.0, 0.0]; 16_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize_repeated(
+            &audio,
+            hex_media::waveform::Repeat {
+                offset: 0,
+                period: 16_000,
+                phase: 0,
+            },
+            1_600_000,
+            1_024,
+        )
+        .unwrap();
+        let mapping = WaveformMapping::Prepared {
+            timeline_origin: 0,
+            root_offset: 0,
+            gain: hex_project::ClipGain::UNITY,
+        };
+        let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(100.0)));
+        let mut times = Vec::with_capacity(100);
+        for pass in 0..110 {
+            let start = Instant::now();
+            std::hint::black_box(
+                prepare_waveform_geometry(&waveform, &mapping, 0, 80_000, extent, 1000, None)
+                    .unwrap(),
+            );
+            let elapsed = start.elapsed().as_nanos();
+            if pass >= 10 {
+                times.push(elapsed);
+            }
+        }
+        times.sort_unstable();
+        eprintln!(
+            "repeated waveform 1000 columns/5 cycles: p50={}ns p95={}ns",
+            times[50], times[95]
+        );
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
+    fn repeated_prepared_waveform_keeps_transients_in_their_visible_columns() {
+        let mut samples = vec![[0.0, 0.0]; 16_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let repeated = hex_media::waveform::summarize_repeated(
+            &audio,
+            hex_media::waveform::Repeat {
+                offset: 0,
+                period: 16_000,
+                phase: 0,
+            },
+            1_600_000,
+            1_024,
+        )
+        .unwrap();
+        let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
+        for (start, frames_per_column) in [
+            (0_u64, 65_u64),
+            (0, 160),
+            (16_000 * 50, 160),
+            (16_000 * 50, 1_000),
+        ] {
+            let geometry = prepare_waveform_geometry(
+                &repeated,
+                &WaveformMapping::Prepared {
+                    timeline_origin: 0,
+                    root_offset: 0,
+                    gain: hex_project::ClipGain::UNITY,
+                },
+                start,
+                start + 100 * frames_per_column,
+                extent,
+                100,
+                None,
+            )
+            .unwrap();
+            let peaks: Vec<_> = geometry.channels[0].outline[..100]
+                .iter()
+                .enumerate()
+                .filter(|(_, point)| point.y < px(25.0))
+                .map(|(i, _)| i)
+                .collect();
+            let expected: Vec<_> = (0..100)
+                .filter(|column| {
+                    let a = start + *column * frames_per_column;
+                    let b = a + frames_per_column;
+                    (a..b).any(|frame| frame % 16_000 == 2_010)
+                })
+                .map(|column| column as usize)
+                .collect();
+            assert_eq!(
+                peaks, expected,
+                "start {start}, frames per column {frames_per_column}"
+            );
+        }
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
+    fn arrangement_clip_keeps_a_transient_in_its_visible_column() {
+        use hex_project::{Command, Created, Editor, Project};
+
+        let mut samples = vec![[0.0, 0.0]; 1_024_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 1_024).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "track".into(),
+                path: "audio.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_024_000,
+            })
+            .unwrap()
+        else {
+            panic!("imported audio")
+        };
+        let Created::Clip(id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: 6_500,
+                source_offset: 0,
+                source_length: 1_024_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("placed clip")
+        };
+        let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
+        let geometry = prepare_waveform_geometry(
+            &waveform,
+            &WaveformMapping::Clip {
+                clip: editor.project().clip(id).unwrap().clone(),
+                timeline_origin: 0,
+                fade: None,
+            },
+            0,
+            6_500,
+            extent,
+            100,
+            None,
+        )
+        .unwrap();
+        let peaks: Vec<_> = geometry.channels[0].outline[..100]
+            .iter()
+            .enumerate()
+            .filter(|(_, point)| point.y < px(25.0))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(peaks, vec![2_010 / 65]);
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn event_detail_keeps_a_transient_in_its_visible_column() {
         // A long prepared root can have 1,000 source frames per cached bin.
@@ -858,84 +1176,7 @@ mod tests {
         assert_eq!(peaks, vec![6_010 / 2_050]);
     }
 
-    #[test]
-    fn arranger_detail_preserves_close_zoom_and_anchors_coarse_bins() {
-        use crate::editor::viewport::Viewport;
-        for sample_rate in [8_000_u32, 44_100, 48_000, 192_000] {
-            let close = Viewport {
-                start: 123,
-                length: u64::from(sample_rate) / 4,
-            };
-            let grid = WaveformGrid::arrangement(close, 12.0, 1000.0, 2.0, sample_rate).unwrap();
-            assert_eq!((grid.start, grid.end), (close.start, close.end().unwrap()));
-            assert_eq!((grid.left, grid.width, grid.columns), (12.0, 1000.0, 2000));
-            let length = u64::from(sample_rate) * 120;
-            let mut step = None;
-            for start in [0, 17_123, length / 2] {
-                let view = Viewport { start, length };
-                let grid = WaveformGrid::arrangement(view, 12.0, 1000.0, 2.0, sample_rate).unwrap();
-                assert!(grid.start <= start && grid.end >= view.end().unwrap());
-                // The dense overview needs at most one column per eight
-                // physical pixels, while retaining neighbor bins at the edges.
-                assert!(grid.columns as f32 / (grid.width * 2.0) <= 0.126);
-                let current_step = (grid.end - grid.start) / grid.columns as u64;
-                assert_eq!(grid.start % current_step, 0);
-                assert_eq!(grid.end - grid.start, current_step * grid.columns as u64);
-                if let Some(previous) = step {
-                    assert_eq!(previous, current_step, "pan changed the sampling density");
-                }
-                step = Some(current_step);
-            }
-        }
-    }
-
-    #[test]
-    fn arranger_grid_refuses_invalid_numbers_and_covers_u64_edges() {
-        use crate::editor::viewport::Viewport;
-        let view = Viewport {
-            start: 0,
-            length: 1_000_000,
-        };
-        for (left, width, scale, rate) in [
-            (0.0, 0.0, 2.0, 44_100),
-            (0.0, f32::NAN, 2.0, 44_100),
-            (f32::INFINITY, 1000.0, 2.0, 44_100),
-            (f32::MAX, f32::MAX, 2.0, 44_100),
-            (0.0, 1000.0, -1.0, 44_100),
-            (0.0, 1000.0, 2.0, 0),
-        ] {
-            assert!(WaveformGrid::arrangement(view, left, width, scale, rate).is_none());
-        }
-        for view in [
-            Viewport {
-                start: u64::MAX - 1_000_000,
-                length: 1_000_000,
-            },
-            Viewport {
-                start: 0,
-                length: u64::MAX,
-            },
-        ] {
-            let grid = WaveformGrid::arrangement(view, 12.0, 1000.0, 2.0, 44_100).unwrap();
-            assert!(grid.start <= view.start && grid.end >= view.end().unwrap());
-            assert!((1..=MAX_WAVEFORM_COLUMNS).contains(&grid.columns));
-            assert!(grid.left.is_finite() && grid.width.is_finite() && grid.width > 0.0);
-        }
-        assert!(
-            WaveformGrid::arrangement(
-                Viewport {
-                    start: u64::MAX,
-                    length: 1
-                },
-                0.0,
-                1000.0,
-                2.0,
-                44_100
-            )
-            .is_none()
-        );
-    }
-
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn coarse_arranger_bins_keep_narrow_stereo_peaks_silence_and_dc() {
         use crate::editor::viewport::Viewport;
@@ -1035,6 +1276,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn coarse_peak_remains_visible_inside_a_clip_narrower_than_a_bin() {
         use crate::editor::viewport::Viewport;
@@ -1087,6 +1329,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn coarse_waveforms_translate_without_resampling_during_pan() {
         use crate::editor::viewport::Viewport;
@@ -1164,6 +1407,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn resize_preserves_interior_stereo_outline_at_fractional_edges_and_column_cap() {
         let source = waveform();
@@ -1251,6 +1495,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn prepared_crop_sampling_is_invariant_across_grid_bins_before_clip_origin() {
         let source = waveform();
@@ -1292,12 +1537,28 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ui-test-support")]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn canonical_trim_and_lower_fade_resize_keep_loop_and_one_shot_outline_still() {
-        use hex_project::{Command, Created, Editor, TrimEdge};
+        use hex_project::{Command, Created, Editor, Project, TrimEdge};
         let source = waveform();
-        let (project, track, _, imported) = super::super::clip_drag_ui_test::audio_project();
+        let mut fixture = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported {
+            track,
+            clip: imported,
+            ..
+        } = fixture
+            .execute(Command::ImportAudioTrack {
+                name: "audio source".into(),
+                path: "missing.wav".into(),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("import result")
+        };
+        let project = fixture.project().clone();
         let asset = project.clip(imported).unwrap().asset();
         let mut editor = Editor::new(project, 8).unwrap();
         for looping in [false, true] {
@@ -1339,6 +1600,7 @@ mod tests {
                     &WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: start,
+                        fade: Some(clip.retained_fade()),
                     },
                     start,
                     end,
@@ -1379,6 +1641,43 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
+    fn geometry_cache_separates_vertical_amplitude_scales() {
+        let peak = CachedPeak {
+            min: -0.1,
+            max: 0.1,
+        };
+        let source = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+        let extent = bounds();
+        let mapping = WaveformMapping::Source { timeline_origin: 0 };
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let get = |decibels| {
+            cached_waveform_geometry(
+                &cache,
+                &source,
+                &WaveformGeometryRequest {
+                    mapping: &mapping,
+                    amplitude_scale: WaveformAmplitudeScale::from_decibels(decibels),
+                    visible_start: 0,
+                    visible_end: 100,
+                    bounds: extent,
+                    scale: 1.0,
+                    columns: 100,
+                    grid: None,
+                },
+            )
+            .unwrap()
+        };
+        let linear = get(false);
+        let decibel = get(true);
+        assert!(!Arc::ptr_eq(&linear, &decibel));
+        assert!(Arc::ptr_eq(&linear, &get(false)));
+        assert!(Arc::ptr_eq(&decibel, &get(true)));
+        assert!(decibel.channels[0].outline[0].y < linear.channels[0].outline[0].y);
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn geometry_cache_reuses_only_matching_source_mapping_and_bounds() {
         let source = waveform();
@@ -1421,6 +1720,7 @@ mod tests {
         assert!(cache.get(cache_key, &different_source).is_none());
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn clip_detail_gain_changes_cached_geometry_and_unity_reuses_it() {
         let source = waveform();
@@ -1445,6 +1745,9 @@ mod tests {
                 &cache,
                 &source,
                 &WaveformGeometryRequest {
+                    amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                        false,
+                    ),
                     mapping,
                     visible_start: 0,
                     visible_end: 96_000,
@@ -1464,6 +1767,7 @@ mod tests {
         assert_eq!(cache.borrow().entries.len(), 3);
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn geometry_cache_holds_twelve_visible_clips_and_clip_detail() {
         let source = waveform();
@@ -1486,6 +1790,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn dense_visible_working_set_survives_repeated_selection_paints() {
         let source = waveform();
@@ -1506,6 +1811,9 @@ mod tests {
                 size(px(9.3), px(44.0)),
             );
             let request = WaveformGeometryRequest {
+                amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                    false,
+                ),
                 mapping: &mapping,
                 visible_start: origin,
                 visible_end: origin + 96_000,
@@ -1525,6 +1833,9 @@ mod tests {
                 timeline_origin: origin,
             };
             let request = WaveformGeometryRequest {
+                amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(
+                    false,
+                ),
                 mapping: &mapping,
                 visible_start: origin,
                 visible_end: origin + 96_000,
@@ -1543,6 +1854,7 @@ mod tests {
         assert_eq!(cache.borrow().columns, 350 * 19);
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn geometry_cache_evicts_by_entry_and_column_limits() {
         let source = waveform();
@@ -1575,6 +1887,7 @@ mod tests {
         assert!(column_bounded.get(key(0, extent), &source).is_none());
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     const MAX_WAVEFORM_COLUMNS_FOR_TEST: usize = MAX_CACHED_WAVEFORM_COLUMNS / 16;
 
     #[test]
@@ -1584,10 +1897,11 @@ mod tests {
         let extent = bounds();
         let mapping = WaveformMapping::Source { timeline_origin: 0 };
         let visible_start = 0;
-        let visible_end = source.source_frames as u64;
+        let visible_end = source.source_frames() as u64;
         let columns = waveform_column_count(f32::from(extent.size.width), 2.0);
         let cache = RefCell::new(WaveformGeometryCache::default());
         let request = WaveformGeometryRequest {
+            amplitude_scale: crate::editor::waveform::WaveformAmplitudeScale::from_decibels(false),
             mapping: &mapping,
             visible_start,
             visible_end,
@@ -1598,14 +1912,18 @@ mod tests {
         };
         let rounds = 20;
 
-        let sampled = aggregate_peaks(&source, 0, source.source_frames)
+        let sampled = aggregate_peaks(&source, 0, source.source_frames())
             .expect("fixture extrema survive cache preparation");
         assert!(sampled.iter().any(|peak| peak.min < -0.9 && peak.max > 0.7));
-        let digest = source.bins.iter().step_by(127).fold(0_u64, |digest, pair| {
-            digest.rotate_left(7)
-                ^ u64::from(pair[0].min.to_bits())
-                ^ u64::from(pair[0].max.to_bits()).rotate_left(17)
-        });
+        let digest = source
+            .bins()
+            .iter()
+            .step_by(127)
+            .fold(0_u64, |digest, pair| {
+                digest.rotate_left(7)
+                    ^ u64::from(pair[0].min.to_bits())
+                    ^ u64::from(pair[0].max.to_bits()).rotate_left(17)
+            });
 
         for _ in 0..2 {
             black_box(prepare_waveform_geometry(

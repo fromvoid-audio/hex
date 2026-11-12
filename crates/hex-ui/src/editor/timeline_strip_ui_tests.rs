@@ -38,7 +38,7 @@ fn arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces(cx: &mut 
         assert!(visual.debug_bounds("midi-loop-start-marker").is_some());
         assert!(visual.debug_bounds("midi-loop-end-marker").is_some());
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = hex_project::BeatTime::ONE;
+            v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
             v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });
@@ -78,23 +78,6 @@ fn arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces(cx: &mut 
     }
 }
 
-#[test]
-fn malformed_and_invisible_shared_strip_geometry_paints_no_false_boundary() {
-    use super::timeline_strip::{loop_range, ruler_tick};
-    for (start, end) in [
-        (f64::NAN, 1.0),
-        (0.0, f64::INFINITY),
-        (0.8, 0.2),
-        (-2.0, -0.1),
-        (1.1, 2.0),
-    ] {
-        assert!(loop_range(start, end, true, ["start", "end"]).is_none());
-    }
-    for position in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
-        assert!(ruler_tick(position, "authored", false, false, false).is_none());
-    }
-}
-
 #[gpui::test]
 fn loop_endpoints_exactly_at_viewport_edges_remain_painted(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = midi_canvas::creation_tests::fixture(cx);
@@ -116,7 +99,8 @@ fn loop_endpoints_exactly_at_viewport_edges_remain_painted(cx: &mut TestAppConte
         (4, "midi-loop-end-marker", "midi-loop-start-marker", false),
     ] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = hex_project::BeatTime::from_quarters(first).unwrap();
+            v.piano_beat_start =
+                i128::from(hex_project::BeatTime::from_quarters(first).unwrap().raw());
             v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });

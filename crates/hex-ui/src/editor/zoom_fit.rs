@@ -12,7 +12,7 @@ pub(super) enum Target {
 }
 #[derive(Clone, Copy)]
 struct PianoView {
-    start: BeatTime,
+    start: i128,
     span: BeatTime,
     low: u8,
     rows: u8,
@@ -24,11 +24,7 @@ fn bounded_piano_view(prior: PianoView, length: u64) -> PianoView {
         .raw()
         .clamp(minimum, super::midi_scene::zoom_limit(length));
     PianoView {
-        start: BeatTime::from_raw(super::midi_scene::clamp_start(
-            prior.start.raw(),
-            length,
-            span,
-        )),
+        start: super::midi_scene::clamp_start(prior.start, span),
         span: BeatTime::from_raw(span),
         ..prior
     }
@@ -44,6 +40,15 @@ pub(super) struct State {
     midi: Option<((u64, ClipId), PianoView)>,
 }
 impl State {
+    pub(super) fn shift_midi_origin(&mut self, generation: u64, clip: ClipId, delta: i128) {
+        if let Some((owner, view)) = self.midi.as_mut()
+            && *owner == (generation, clip)
+        {
+            view.start =
+                super::midi_scene::clamp_start(view.start.saturating_add(delta), view.span.raw());
+        }
+    }
+
     pub(super) fn clear_clip(&mut self) {
         self.midi = None;
     }
@@ -86,8 +91,8 @@ impl EditorView {
         ) else {
             return false;
         };
-        if (self.piano_beat_start.raw(), self.piano_beat_span.raw())
-            == (viewport.start, viewport.length)
+        if (self.piano_beat_start, self.piano_beat_span.raw())
+            == (i128::from(viewport.start), viewport.length)
         {
             return false;
         }
@@ -96,7 +101,7 @@ impl EditorView {
         }
         self.cancel_midi_note_gesture();
         self.piano_zoom_wheel_accum = 0.0;
-        self.piano_beat_start = BeatTime::from_raw(viewport.start);
+        self.piano_beat_start = i128::from(viewport.start);
         self.piano_beat_span = BeatTime::from_raw(viewport.length);
         true
     }
@@ -366,7 +371,7 @@ impl EditorView {
         super::waveform::button(
             if back { "↶" } else { "⤢" },
             if back {
-                "zoom back · x"
+                "zoom back · v"
             } else if target == Target::Arrange {
                 "fit time and selected tracks · z"
             } else {
@@ -399,3 +404,35 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "zoom_fit_ui_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{Viewport, interval};
+
+    #[test]
+    fn fit_interval_normalizes_bounds_and_handles_empty_minimum_and_overflow_limits() {
+        assert_eq!(
+            interval(9, 3, 12, 1),
+            Some(Viewport {
+                start: 3,
+                length: 6
+            })
+        );
+        assert_eq!(
+            interval(0, 1, 16, 4),
+            Some(Viewport {
+                start: 0,
+                length: 4
+            })
+        );
+        assert_eq!(interval(9, 9, 12, 1), None);
+        assert_eq!(interval(0, 1, 0, 1), None);
+        assert_eq!(
+            interval(u64::MAX - 1, u64::MAX, u64::MAX, 8),
+            Some(Viewport {
+                start: u64::MAX - 8,
+                length: 8
+            })
+        );
+    }
+}
