@@ -194,6 +194,8 @@ pub(super) fn view(
         view.audio_event_editor.source_view = false;
     }
     let source_view = view.audio_event_editor.source_view;
+    let decibels = view.clip_waveform_geometry_cache.amplitude_scale()
+        == super::waveform::WaveformAmplitudeScale::Decibel;
     let control = if grouped_audio {
         div()
             .id("audio-source-tab")
@@ -242,6 +244,27 @@ pub(super) fn view(
                     })),
             )
             .child(control)
+            .child(
+                super::waveform::button(
+                    if decibels { "db" } else { "linear" },
+                    if decibels {
+                        "waveform scale · switch to linear"
+                    } else {
+                        "waveform scale · switch to db"
+                    },
+                    ("audio-waveform-scale", 0),
+                )
+                .w(px(56.0))
+                .debug_selector(|| "audio-waveform-scale".into())
+                .on_click(cx.listener(|view, _, _, cx| {
+                    let decibels = view.clip_waveform_geometry_cache.amplitude_scale()
+                        != super::waveform::WaveformAmplitudeScale::Decibel;
+                    view.clip_waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(decibels),
+                    );
+                    cx.notify();
+                })),
+            )
             .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
