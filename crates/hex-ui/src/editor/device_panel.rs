@@ -1379,7 +1379,8 @@ fn render_track(
         let card = source_summary_card(summary);
         header = header.child(card);
     } else if !track.is_group() && track.source_id().is_none() {
-        header = header.child(source_picker::button(view, window, cx, track_id));
+        let card = source_picker::button(view, window, cx, track_id);
+        header = header.child(card);
     }
     header = header.child(track_name_view);
     if let Some(label) = retained_source_path_label(track) {
