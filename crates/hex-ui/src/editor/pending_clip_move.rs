@@ -343,6 +343,9 @@ impl EditorView {
             return None;
         }
         let pending = self.pending_clip_move.take()?;
+        self.service.retire_arrangement_move_audition();
+        self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
         let cursor = (disposition == Disposition::Terminal)
             .then(|| committed_drop_cursor(&pending.drag, pending.cursor_epoch, event))
             .flatten();
@@ -354,6 +357,9 @@ impl EditorView {
         let Some(pending) = self.pending_clip_move.take() else {
             return false;
         };
+        self.service.retire_arrangement_move_audition();
+        self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
         pending.drag.retire();
         true
     }

@@ -558,6 +558,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
 struct Sink {
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    audition_ready: bool,
     hold: Arc<AtomicBool>,
     held: Arc<Mutex<Option<EditorAudioEvent>>>,
     consume_next_inherited_candidate: Option<Arc<AtomicBool>>,
@@ -571,11 +572,13 @@ struct Sink {
 pub(in crate::editor) fn worker_fixture_sink(
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    audition_ready: bool,
     consume_next_inherited_candidate: Arc<AtomicBool>,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
         events,
+        audition_ready,
         hold: Arc::new(AtomicBool::new(false)),
         held: Arc::new(Mutex::new(None)),
         consume_next_inherited_candidate: Some(consume_next_inherited_candidate),
@@ -777,6 +780,25 @@ fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::Te
     output.publication.close();
 }
 impl WorkerAudioSink for Sink {
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        use hex_session::service::ResidentPublicationReadiness;
+        if !self.audition_ready {
+            return ResidentPublicationReadiness::NoOutput;
+        }
+        let Some(control) = self.output.publication.control() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        let Some(output_identity) = control.output_identity() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        ResidentPublicationReadiness::Idle {
+            output_identity,
+            applied_revision: control.status.applied_revision.load(Acquire),
+            publication_in_flight: control.status.publication_in_flight(),
+        }
+    }
     fn resident_publication_enabled(&self) -> bool {
         true
     }
@@ -1121,6 +1143,7 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
         Box::new(Sink {
             output,
             events,
+            audition_ready: false,
             hold: Arc::clone(&hold),
             held: Arc::clone(&held),
             consume_next_inherited_candidate: None,
@@ -1338,6 +1361,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         Box::new(Sink {
             output,
             events,
+            audition_ready: false,
             hold: hold.clone(),
             held: held.clone(),
             consume_next_inherited_candidate: None,

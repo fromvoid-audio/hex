@@ -444,8 +444,8 @@ impl EditorView {
     }
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
-        self.expected_clip_preview = None;
-        self.applied_clip_preview = None;
+        self.cancel_held_clip_move_audition();
+        self.clip_preview_may_apply = false;
         self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
         self.prepared_seek = None;
@@ -1163,6 +1163,7 @@ impl EditorView {
             visible_change |= self.retire_audio_preserving_gain_take();
         }
         visible_change |= self.poll_update(cx);
+        self.sync_held_clip_move_audition();
         self.sync_held_stretch_audition();
         self.sync_held_play_start_audition();
         visible_change |= self.poll_browser_sample_playback();
@@ -1727,7 +1728,7 @@ impl EditorView {
         // Submission metadata can lag or be coalesced independently of the
         // callback. During a held move, an unknown newer applied revision must
         // not leave the previously audible canonical graph reported as current.
-        if self.expected_clip_preview.is_some()
+        if self.clip_preview_may_apply
             && applied != 0
             && (self
                 .audible_playback
@@ -2458,6 +2459,7 @@ impl EditorView {
         if event.project_replaced {
             self.expected_clip_preview = None;
             self.applied_clip_preview = None;
+            self.clip_preview_may_apply = false;
             self.pending_requests
                 .retain(|request| self.locators.queued_add_frame(request).is_none());
         }
@@ -6165,6 +6167,7 @@ mod sampler_native_ui_protocol_tests {
             view.audio_admission
                 .applied(canonical_project, canonical_revision);
             view.expected_clip_preview = Some(clip_identity);
+            view.clip_preview_may_apply = true;
             metadata.clip_preview = Some(clip_identity);
             let clip_revision = publish(&mut output);
             view.retain_publication_observation(
