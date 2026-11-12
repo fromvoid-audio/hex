@@ -1699,6 +1699,22 @@ mod tests {
                     "operator arrangement identity changed for {track:?}"
                 );
             }
+            let clip = editor.project().track(contributor).unwrap().midi_clips()[0].id();
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 90,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+            let changed = prepare(editor.project());
+            assert!(
+                !old.bounded_mutable_arrangement_sources_match(&changed, contributor, 16),
+                "changed source must not acquire continuity proof"
+            );
         });
     }
 

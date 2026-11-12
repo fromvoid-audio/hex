@@ -1868,11 +1868,19 @@ fn prepare_mutable_track_revisions(
             "mutable revision descriptors do not match compiled tracks",
         ));
     }
-    // Keep bounded source/topology evidence for providers that authorize a
-    // future analytic import as well as for existing mutable owners.
+    // Keep bounded source/topology evidence for every contributor to a mutable
+    // source as well as for providers that authorize a future analytic import.
+    // Only the receiver owns the mutable runtime; contributor identity still
+    // matters when a live handoff proves that its notes did not change.
     let needs_descriptor = |track: &crate::Track| {
         complete_source_evidence
             || track.has_mutable_instrument()
+            || track
+                .source_receiver_index()
+                .and_then(|index| arrangement.tracks().get(index))
+                .is_some_and(|receiver| {
+                    receiver.source_id() == track.source_id() && receiver.has_mutable_instrument()
+                })
             || track
                 .instrument_id
                 .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
