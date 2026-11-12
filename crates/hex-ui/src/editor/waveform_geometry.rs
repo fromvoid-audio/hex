@@ -8,7 +8,10 @@ use hex_widgets::{
 };
 #[cfg(test)]
 use std::{cell::Cell, hint::black_box};
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 use super::waveform::{
     WaveformAmplitudeScale, aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail,
@@ -83,6 +86,7 @@ impl std::ops::Deref for WaveformViewCache {
 pub(super) struct WaveformGeometryCache {
     entries: VecDeque<WaveformGeometryEntry>,
     columns: usize,
+    coarse_entry_counts: HashMap<CoarseEntryKey, usize>,
     #[cfg(all(test, feature = "ui-test-support"))]
     painted: VecDeque<WaveformPaintSample>,
 }
@@ -122,6 +126,13 @@ enum WaveformPlacementKey {
         pixel_pitch: u32,
         detail_budget: usize,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct CoarseEntryKey {
+    clip_id: u64,
+    frames_per_bin: u64,
+    pixel_pitch: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +210,13 @@ impl WaveformGeometryCache {
         key: &WaveformGeometryKey,
         source: &Arc<CachedWaveform>,
     ) -> Option<Arc<WaveformGeometry>> {
+        // The index can reject absent signatures only; resident hits still
+        // require exact source and complete geometry-key equality below.
+        if coarse_entry_key(key)
+            .is_some_and(|coarse_key| !self.coarse_entry_counts.contains_key(&coarse_key))
+        {
+            return None;
+        }
         let index = self
             .entries
             .iter()
@@ -239,8 +257,13 @@ impl WaveformGeometryCache {
                 break;
             };
             self.columns = self.columns.saturating_sub(removed.columns);
+            self.remove_coarse_entry(coarse_entry_key(&removed.key));
         }
         self.columns = self.columns.saturating_add(columns);
+        let coarse_entry_key = coarse_entry_key(&key);
+        if let Some(coarse_key) = coarse_entry_key {
+            *self.coarse_entry_counts.entry(coarse_key).or_default() += 1;
+        }
         self.entries.push_back(WaveformGeometryEntry {
             key,
             source,
@@ -252,6 +275,7 @@ impl WaveformGeometryCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.columns = 0;
+        self.coarse_entry_counts.clear();
         #[cfg(all(test, feature = "ui-test-support"))]
         self.painted.clear();
     }
@@ -342,6 +366,38 @@ impl WaveformGeometryCache {
     pub(super) fn entry_count(&self) -> usize {
         self.entries.len()
     }
+
+    fn remove_coarse_entry(&mut self, key: Option<CoarseEntryKey>) {
+        let Some(key) = key else {
+            return;
+        };
+        match self.coarse_entry_counts.get_mut(&key) {
+            Some(count) if *count > 1 => *count -= 1,
+            Some(_) => {
+                self.coarse_entry_counts.remove(&key);
+            }
+            None => debug_assert!(false, "coarse geometry index count missing"),
+        }
+    }
+}
+
+fn coarse_entry_key(key: &WaveformGeometryKey) -> Option<CoarseEntryKey> {
+    let WaveformMappingKey::Clip { id, .. } = &key.mapping else {
+        return None;
+    };
+    let WaveformPlacementKey::Coarse {
+        frames_per_bin,
+        pixel_pitch,
+        ..
+    } = &key.placement
+    else {
+        return None;
+    };
+    Some(CoarseEntryKey {
+        clip_id: *id,
+        frames_per_bin: *frames_per_bin,
+        pixel_pitch: *pixel_pitch,
+    })
 }
 
 #[derive(Clone)]
@@ -1029,6 +1085,35 @@ mod tests {
             bounds,
             2.0,
         )
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    fn coarse_key(clip_id: u64, first_frame: u64) -> WaveformGeometryKey {
+        WaveformGeometryKey {
+            reference_stereo: reference_stereo(),
+            mapping: WaveformMappingKey::Clip {
+                id: clip_id,
+                start: first_frame,
+                duration: 256,
+                source_offset: 0,
+                source_length: 256,
+                source_phase: 0,
+                looping: false,
+                timeline_origin: 0,
+                gain: 0,
+                fade: None,
+            },
+            amplitude_scale: WaveformAmplitudeScale::default(),
+            height: 180.0_f32.to_bits(),
+            scale: 1.0_f32.to_bits(),
+            placement: WaveformPlacementKey::Coarse {
+                first_frame,
+                frames_per_bin: 128,
+                bins: 2,
+                pixel_pitch: 2.0_f32.to_bits(),
+                detail_budget: 4_096,
+            },
+        }
     }
 
     #[cfg(all(test, not(feature = "ui-test-support")))]
@@ -1967,6 +2052,55 @@ mod tests {
         assert!(cache.get(&key(1, extent), &source).is_none());
         let different_source = waveform();
         assert!(cache.get(&cache_key, &different_source).is_none());
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
+    fn coarse_absence_counts_survive_shared_signature_eviction_and_clear() {
+        let source = waveform();
+        let geometry = geometry(&source, 0, bounds());
+        let first = coarse_key(1, 0);
+        let second = coarse_key(1, 256);
+        let index_key = coarse_entry_key(&first).unwrap();
+        let mut cache = WaveformGeometryCache::default();
+        for key in [first.clone(), second.clone()] {
+            cache.insert(key, Arc::clone(&source), Arc::clone(&geometry), 1);
+        }
+        assert_eq!(cache.coarse_entry_counts.get(&index_key), Some(&2));
+
+        for clip_id in 2..MAX_CACHED_WAVEFORM_ENTRIES as u64 {
+            cache.insert(
+                coarse_key(clip_id, clip_id * 256),
+                Arc::clone(&source),
+                Arc::clone(&geometry),
+                1,
+            );
+        }
+        cache.insert(
+            coarse_key(10_000, 0),
+            Arc::clone(&source),
+            Arc::clone(&geometry),
+            1,
+        );
+        assert_eq!(cache.coarse_entry_counts.get(&index_key), Some(&1));
+        assert!(cache.get(&second, &source).is_some());
+        assert_eq!(cache.coarse_entry_counts.get(&index_key), Some(&1));
+
+        for clip_id in 20_000..20_000 + MAX_CACHED_WAVEFORM_ENTRIES as u64 {
+            cache.insert(
+                coarse_key(clip_id, clip_id * 256),
+                Arc::clone(&source),
+                Arc::clone(&geometry),
+                1,
+            );
+        }
+        assert!(!cache.coarse_entry_counts.contains_key(&index_key));
+        assert!(cache.get(&second, &source).is_none());
+
+        cache.clear();
+        assert!(cache.coarse_entry_counts.is_empty());
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.columns, 0);
     }
 
     #[cfg(all(test, not(feature = "ui-test-support")))]
