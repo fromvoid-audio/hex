@@ -516,6 +516,7 @@ impl NativeAudioSink {
                     == Some(metadata.context.project_generation)
                     && metadata.device_preview.is_none()
                     && metadata.tuning_preview.is_none()
+                    && metadata.clip_preview.is_none()
                     && metadata.seek_request.is_none()
                     && !metadata.stopped_restore
                     && metadata.computer_keyboard_request.is_none()

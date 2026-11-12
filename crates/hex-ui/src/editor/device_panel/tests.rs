@@ -6104,6 +6104,7 @@ fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: None,
             audio_revision: 1,

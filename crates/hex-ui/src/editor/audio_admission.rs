@@ -238,6 +238,24 @@ impl AudioAdmissionStatus {
         }
     }
 
+    /// A transient graph is now audible. Preserve any newer canonical
+    /// publication already pending, but do not claim the old canonical graph
+    /// remains installed or audible.
+    pub(super) fn preview_applied(&mut self, audio_revision: u64) -> bool {
+        let mut changed = self.last_audible.take().is_some();
+        if let Some(current) = self.current.as_mut()
+            && current.state == AdmissionState::Applied
+            && current
+                .audio_revision
+                .is_some_and(|revision| revision <= audio_revision)
+        {
+            current.audio_revision = None;
+            current.state = AdmissionState::Pending;
+            changed = true;
+        }
+        changed
+    }
+
     pub(super) fn label(&self) -> String {
         let Some(current) = self.current else {
             return "audio revision unavailable".to_owned();

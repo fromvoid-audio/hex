@@ -362,6 +362,8 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentPublicationMetadata {
     pub context: hex_engine::AudioSourceContext,
+    /// Identity of a clip-move preview, not proof of callback application.
+    pub clip_preview: Option<ClipMovePreviewIdentity>,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
     pub seek_request: Option<u64>,
