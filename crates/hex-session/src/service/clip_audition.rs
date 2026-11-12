@@ -709,11 +709,10 @@ impl VerifiedLane {
                 self.active = Some((Arc::clone(source), identity));
             }
         }
-        self.next_attempt =
-            Some(started + attempt_interval(Kind::Move, !accepted, cancel.load(Ordering::Acquire)));
-        if deliverable && !accepted {
-            // A host may not have accepted its canonical source yet. Retry at
-            // the bounded refusal cadence while the exact target remains held.
+        let cancelled = cancel.load(Ordering::Acquire);
+        self.next_attempt = Some(started + attempt_interval(Kind::Move, !accepted, cancelled));
+        if !accepted && (deliverable || cancelled) {
+            // Retry a refused or cancelled attempt if its target is still held.
             self.attempted = None;
             return true;
         }
