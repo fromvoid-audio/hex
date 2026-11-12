@@ -498,8 +498,16 @@ mod tests {
             },
         );
         let path = substituted.unwrap();
-        if !fail_before_publish && result.is_ok() {
+        if fail_before_publish {
+            assert!(result.is_err(), "prepublication error must be reported");
+            assert!(
+                !destination.exists(),
+                "error must not publish a destination"
+            );
+        } else if destination.exists() {
             assert_eq!(fs::read(&destination).unwrap(), b"intended preset");
+        } else {
+            assert!(result.is_err(), "success must publish the destination");
         }
         assert_eq!(fs::read(&path).unwrap(), b"foreign work");
         assert_eq!(fs::read(&original).unwrap(), b"intended preset");
