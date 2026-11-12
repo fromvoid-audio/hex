@@ -1204,20 +1204,18 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_received_program(binding)
     }
-    /// Retryable observation on the exact original live worker. `Ok(None)`
-    /// means no coherent pickup is available yet; only `Some(received)` whose
-    /// `program` is None proves an observed empty frontier. Busy observations
-    /// are distinct from a stale, revoked or closing source. No admission or
-    /// callback/graph custody is granted by this query.
-    pub fn try_native_source_received_program_on_control(
+    /// Retryable observation on the exact original worker. An empty frontier
+    /// requires either an unprogrammed pickup or an observed zero pickup
+    /// prefix on the live pair. Unknown grants no graph or pruning authority.
+    pub fn try_native_source_program_frontier_on_control(
         &self,
         binding: Binding,
-    ) -> Result<Option<crate::plugin_worker::ReceivedProgram>, &'static str> {
+    ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native automation output is closing");
         }
         self.candidate_root
-            .try_native_source_received_program(binding)
+            .try_native_source_program_frontier(binding)
     }
     /// Observe the last accepted quantum of the exact live loaned endpoint.
     /// None means no coherent callback observation; busy, stale, retired and
