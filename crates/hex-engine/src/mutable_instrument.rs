@@ -871,6 +871,37 @@ impl MutableInstrumentTrackRuntime {
         true
     }
 
+    /// Retain held live IDs through the same source-age contributor ramp.
+    pub(crate) fn retarget_live_contributor(
+        &mut self,
+        track: TrackId,
+        muted: bool,
+        sample_rate: u32,
+    ) -> bool {
+        if !self.pair.supports_occurrence_gain() || sample_rate == 0 {
+            return false;
+        }
+        let Some(live) = &mut self.live else {
+            return false;
+        };
+        let frames = u64::from(sample_rate.div_ceil(200).max(1));
+        for voice in live.primary.iter_mut().flatten() {
+            if voice.input.track != track || voice.quiet_age.is_some() || voice.release_requested {
+                continue;
+            }
+            let current = voice
+                .contributor_fade
+                .map_or(1.0, |fade| fade.value(live.age));
+            voice.contributor_fade = Some(ContributorFade {
+                start_age: live.age,
+                frames,
+                start_bits: current.to_bits(),
+                muted,
+            });
+        }
+        true
+    }
+
     /// Cut still-gated occurrences at a publication boundary when the
     /// candidate has no enabled instrument. The runtime receives the matching
     /// frame-zero NoteOff in its next segment; feedback and release state stay
@@ -971,6 +1002,12 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
         {
             return self.process_volume_scope(
                 Some(track),
@@ -1020,6 +1057,12 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
         {
             return self.process_volume_scope(
                 None,
@@ -1119,9 +1162,9 @@ impl MutableInstrumentTrackRuntime {
             &self.pair,
             &mut self.scratch,
             self.live
-                .as_ref()
-                .map(|live| &live.scratch[..])
-                .unwrap_or(&[]),
+                .as_mut()
+                .map(|live| &mut live.scratch[..])
+                .unwrap_or(&mut []),
             events,
             performance_start,
             source_age,

@@ -4845,6 +4845,7 @@ impl SessionPlayback {
                 runtime.request_live_input_release(input);
             }
             let mut retained = [None; MAX_TRACKS];
+            let mut retained_live = [None; MAX_TRACKS];
             for (index, change) in mute_changes.iter().enumerate() {
                 if let Some((track, muted)) = change
                     && runtime.retarget_authored_contributor(
@@ -4856,11 +4857,23 @@ impl SessionPlayback {
                 {
                     retained[index] = Some(*track);
                 }
+                if let Some((track, muted)) = change
+                    && release_live_input.is_none()
+                    && runtime.retarget_live_contributor(
+                        *track,
+                        *muted,
+                        revision.arrangement().sample_rate(),
+                    )
+                    && *muted
+                {
+                    retained_live[index] = Some(*track);
+                }
             }
             shared_sources::release_disconnected_contributors(
                 runtime,
                 &disconnected,
                 &retained,
+                &retained_live,
                 previous.performance_frame,
             );
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
