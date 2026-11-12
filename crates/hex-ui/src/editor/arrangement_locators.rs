@@ -571,12 +571,7 @@ impl EditorView {
             return;
         }
         if !drag.moved && !drag.click_disqualified {
-            let command = hex_engine::PlaybackCommand::PlayFrom(drag.frame);
-            #[cfg(test)]
-            {
-                self.last_transport_command = Some(command);
-            }
-            self.queue_audio_command(command);
+            self.launch_locator(drag.frame);
         } else if drag.preview != drag.frame && self.locator_edit_available() {
             self.locators.pending = Some(Pending {
                 receipt: Receipt::new(drag.source.generation),
@@ -590,6 +585,24 @@ impl EditorView {
                 self.locators.refuse();
             }
         }
+    }
+
+    fn launch_locator(&mut self, frame: u64) {
+        let quantization = self.session_quantization;
+        if quantization != hex_engine::LaunchQuantization::Immediate
+            && self
+                .audio_status()
+                .is_some_and(|status| status.playing.load(Acquire))
+        {
+            self.request_quantized_locator_launch(frame, quantization);
+            return;
+        }
+        let command = hex_engine::PlaybackCommand::PlayFrom(frame);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(command);
+        }
+        self.queue_audio_command(command);
     }
 
     pub(super) fn locator_lines(
@@ -990,6 +1003,111 @@ mod tests {
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("arrangement-locator-strip").is_none());
+    }
+
+    #[gpui::test]
+    fn locator_click_uses_the_captured_grid_only_while_playing(cx: &mut TestAppContext) {
+        use crate::editor::arrangement_seek::{SeekKind, SeekStage};
+        use hex_engine::{LaunchQuantization, PlaybackCommand};
+
+        let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
+        let mut fixture = super::super::worker_ui_fixture::open(
+            cx,
+            vec![
+                Command::SetLoopRegion {
+                    start: region.start(),
+                    end: region.end(),
+                    enabled: true,
+                },
+                Command::AddArrangementLocator { frame: 23_960 },
+                Command::AddArrangementLocator { frame: 48_000 },
+            ],
+        );
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        let [first, second] = fixture.editor.update(&mut visual, |view, cx| {
+            view.session_quantization = LaunchQuantization::Quarter;
+            let locators = view.state.as_ref().unwrap().project.arrangement_locators();
+            cx.notify();
+            [locators[0].id(), locators[1].id()]
+        });
+        visual.run_until_parked();
+        let click_locator = |visual: &mut VisualTestContext, id| {
+            let marker = bounds(visual, "locator-play", id).center();
+            visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
+        };
+
+        click_locator(&mut visual, first);
+        fixture.backend.render(&mut [[0.0; 2]; 16]).unwrap();
+        fixture.editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            assert_eq!(
+                view.last_transport_command,
+                Some(PlaybackCommand::PlayFrom(23_960))
+            );
+            assert!(view.prepared_seek.is_none());
+            assert!(view.audio_status().unwrap().playing.load(Acquire));
+            assert_eq!(view.audio_status().unwrap().position.load(Acquire), 23_976);
+        });
+
+        click_locator(&mut visual, second);
+        fixture.editor.update(&mut visual, |view, _| {
+            let seek = view.prepared_seek.as_ref().expect("queued locator seek");
+            assert!(matches!(
+                seek.kind,
+                SeekKind::Locator(LaunchQuantization::Quarter)
+            ));
+            assert_eq!(seek.destination_frame, 48_000);
+            view.session_quantization = LaunchQuantization::Immediate;
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let published = loop {
+            let revision = fixture.editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                assert!(view.error.is_none(), "{:?}", view.error);
+                match view.prepared_seek.as_ref().map(|seek| seek.stage) {
+                    Some(SeekStage::Published { audio_revision }) => Some(audio_revision),
+                    _ => None,
+                }
+            });
+            if let Some(revision) = revision {
+                break revision;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "locator graph publication"
+            );
+            std::thread::yield_now();
+        };
+        fixture.backend.render(&mut [[0.0; 2]; 7]).unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert_ne!(status.applied_revision.load(Acquire), published);
+            assert_eq!(status.position.load(Acquire), 23_983);
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 18]).unwrap();
+        fixture.editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            let status = view.audio_status().unwrap();
+            assert_eq!(status.applied_revision.load(Acquire), published);
+            assert_eq!(status.position.load(Acquire), 48_001);
+            assert_eq!(
+                view.state.as_ref().unwrap().project.loop_region(),
+                Some(region)
+            );
+            assert!(view.prepared_seek.is_none());
+        });
+
+        click_locator(&mut visual, first);
+        fixture.editor.read_with(&visual, |view, _| {
+            assert!(view.prepared_seek.is_none(), "none uses ordinary playback");
+            assert_eq!(
+                view.last_transport_command,
+                Some(PlaybackCommand::PlayFrom(23_960))
+            );
+        });
+        drop(visual);
+        fixture.finish(cx);
     }
 
     #[gpui::test]
