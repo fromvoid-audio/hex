@@ -176,7 +176,7 @@ fn toggles_display_the_requested_state_while_the_real_response_is_held(cx: &mut 
                     ..Modifiers::default()
                 },
             ),
-            _ => crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l"),
+            _ => visual.simulate_keystrokes("l"),
         }
         let response = hold_real_response(&editor, &mut visual);
         assert!(response.request_complete && response.error.is_none());

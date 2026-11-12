@@ -3824,7 +3824,7 @@ pub(super) mod tests {
         visual.run_until_parked();
         let from = editor.read_with(cx, |v, _| position(v, 2));
         visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3840,7 +3840,7 @@ pub(super) mod tests {
                 "button loss cancels before any late release"
             )
         });
-        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -3893,7 +3893,7 @@ pub(super) mod tests {
             v.last_enqueued_edit = None;
             v.computer_keyboard.enabled = true;
         });
-        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.update(cx, |v, _| {
             assert!(
                 v.last_enqueued_edit.is_none(),
@@ -3910,7 +3910,7 @@ pub(super) mod tests {
         visual.run_until_parked();
         let chorus = editor.read_with(cx, |v, _| position(v, 10));
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3947,7 +3947,7 @@ pub(super) mod tests {
                 end_frame: 2,
             });
         });
-        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,

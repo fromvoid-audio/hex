@@ -45,7 +45,13 @@ impl EditorView {
         if self.section_loop_key != SectionLoopKey::Up {
             return true;
         }
-        if event.is_held || self.mode != super::EditorMode::Arrangement {
+        if event.is_held
+            || self.mode != super::EditorMode::Arrangement
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.project.arrangement_sections().is_empty())
+        {
             return false;
         }
         let context = window.context_stack();
@@ -257,12 +263,8 @@ pub(in crate::editor) fn test_section_loop_key(visual: &mut gpui::VisualTestCont
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
-pub(in crate::editor) fn test_tap_loop_shortcut(visual: &mut gpui::VisualTestContext, key: &str) {
-    if key == "l" {
-        test_section_loop_key(visual, true);
-        test_section_loop_key(visual, false);
-        visual.run_until_parked();
-    } else {
-        visual.simulate_keystrokes(key);
-    }
+pub(in crate::editor) fn test_tap_loop_key(visual: &mut gpui::VisualTestContext) {
+    test_section_loop_key(visual, true);
+    test_section_loop_key(visual, false);
+    visual.run_until_parked();
 }
