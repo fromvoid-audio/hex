@@ -1404,47 +1404,52 @@ fn incompatible_edits_wait_for_the_original_note_off() {
 }
 
 #[test]
-fn loop_and_pause_release_notes_with_the_identity_of_the_current_pass() {
-    let (mut editor, identity) = fixture();
-    editor
-        .execute(Command::SetLoopRegion {
-            start: 0,
-            end: 4,
-            enabled: true,
-        })
-        .unwrap();
-    let revision = prepare(&editor, identity, true).unwrap();
-    let mut playback = SessionPlayback::new(revision).unwrap();
-    let mut endpoint = NoteEndpoint::default();
-    playback.apply(SessionPlaybackCommand::Play).unwrap();
-    endpoint.render(&mut playback, &mut [[0.0; 2]; 9]).unwrap();
-    let [
-        (0, first),
-        (4, first_off),
-        (4, second),
-        (8, second_off),
-        (8, third),
-    ] = endpoint.notes.as_slice()
-    else {
-        panic!("each wrap releases and retriggers the note");
-    };
-    assert!(first.on && second.on && third.on && !first_off.on && !second_off.on);
-    assert_eq!(first_off.note_id, first.note_id);
-    assert_eq!(second_off.note_id, second.note_id);
-    assert_ne!(first.note_id, second.note_id);
-    assert_ne!(second.note_id, third.note_id);
-    let third = *third;
-    playback.apply(SessionPlaybackCommand::Pause).unwrap();
-    endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
-    assert_eq!(
-        endpoint.notes,
-        [(
-            0,
-            hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
-                ..third
+fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
+    for partition in [1, 7, 64, 128, 256, 512] {
+        for stop in [false, true] {
+            let (mut editor, identity) = fixture();
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 11,
+                    enabled: true,
+                })
+                .unwrap();
+            let revision = prepare(&editor, identity, true).unwrap();
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            let mut endpoint = NoteEndpoint::default();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut frames = [[0.0; 2]; 1025];
+            let mut events = Vec::new();
+            let mut origin = 0;
+            for chunk in frames.chunks_mut(partition) {
+                endpoint.render(&mut playback, chunk).unwrap();
+                events.extend(endpoint.notes.iter().map(|(offset, note)| (origin + offset, *note)));
+                origin += chunk.len();
             }
-        )]
-    );
+            let (frame, first) = events.first().copied().expect("initial onset");
+            assert_eq!(frame, 0);
+            assert!(first.on && first.pitch == 60 && first.channel == 2 && first.velocity == 101);
+            let wraps = (frames.len() - 1) / 11;
+            assert_eq!(events.len(), 1 + 2 * wraps, "partition={partition} stop={stop}");
+            let mut current = first;
+            let mut ids = std::collections::HashSet::from([first.note_id]);
+            for wrap in 1..=wraps {
+                let (off_frame, off) = events[2 * wrap - 1];
+                let (on_frame, on) = events[2 * wrap];
+                assert_eq!((off_frame, on_frame), (11 * wrap, 11 * wrap));
+                assert!(!off.on && off.note_id == current.note_id && off.pitch == 60 && off.channel == 2);
+                assert!(on.on && on.pitch == 60 && on.channel == 2 && on.velocity == 101);
+                assert!(ids.insert(on.note_id), "reused note ID at wrap {wrap}");
+                current = on;
+            }
+            playback.apply(if stop { SessionPlaybackCommand::Stop } else { SessionPlaybackCommand::Pause }).unwrap();
+            endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
+            assert_eq!(
+                endpoint.notes,
+                [(0, hex_lattice::ForeignNote { on: false, velocity: 0, ..current })],
+                "partition={partition} stop={stop}"
+            );
+        }
+    }
 }
