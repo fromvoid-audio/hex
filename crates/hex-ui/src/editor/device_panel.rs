@@ -75,6 +75,7 @@ pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_prev
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
+mod source_summary;
 pub(super) mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
@@ -127,6 +128,7 @@ pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
+    source_summary: source_summary::SourceSummaryCache,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     modulation_target_drag: modulators::TargetDragState,
@@ -1363,8 +1365,16 @@ fn render_track(
         .gap(px(5.0))
         .px(px(5.0))
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(track_name_view);
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)));
+    if let Some(summary) = view
+        .device_panel
+        .source_summary
+        .get(&state.project, track_id)
+    {
+        let card = source_summary_card(summary);
+        header = header.child(card);
+    }
+    header = header.child(track_name_view);
     if let Some(label) = retained_source_path_label(track) {
         let element = retained_source_path_badge(label);
         header = header.child(element);
@@ -1375,6 +1385,57 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+fn source_summary_card(summary: &source_summary::SourceSummary) -> Stateful<Div> {
+    let count = summary.contributors;
+    let count_label = if count == 1 {
+        "midi track"
+    } else {
+        "midi tracks"
+    };
+    let tooltip: gpui::SharedString = source_summary_tooltip(summary).into();
+    let background = theme::color(theme::PaletteRole::Surface);
+    let label = format!(
+        "source · {} · {} · {count} {count_label}",
+        hex_session::service::text::verbatim(&summary.name),
+        summary.role,
+    );
+    div()
+        .id("device-source-summary")
+        .debug_selector(|| "device-source-summary".into())
+        .max_w(px(300.0))
+        .min_w_0()
+        .flex_shrink()
+        .truncate()
+        .text_xs()
+        .text_color(rgb(theme::readable_text(
+            background,
+            theme::color(theme::PaletteRole::Text),
+        )))
+        .tooltip(move |_, cx| {
+            let description = tooltip.clone();
+            cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description,
+            })
+            .into()
+        })
+        .child(theme::text(label))
+}
+
+fn source_summary_tooltip(summary: &source_summary::SourceSummary) -> String {
+    let receiver = summary
+        .receiver
+        .as_deref()
+        .map(hex_session::service::text::verbatim)
+        .unwrap_or_else(|| "none".into());
+    format!(
+        "source · {}\nrole · {}\nreceiver · {receiver}\nmidi tracks · {}",
+        hex_session::service::text::verbatim(&summary.name),
+        summary.role,
+        summary.contributors,
+    )
 }
 
 // The panel appends at the tail or replaces the existing instrument in place.
@@ -3549,6 +3610,20 @@ mod header_style_unit_tests {
             }
         };
         0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    #[test]
+    fn source_tooltip_preserves_full_authored_names() {
+        let summary = source_summary::SourceSummary {
+            name: "A Very Long Bright Bass Name".into(),
+            receiver: Some("MIDI Receiver A".into()),
+            contributors: 2,
+            role: "midi contributor",
+        };
+        assert_eq!(
+            theme::text(source_summary_tooltip(&summary)).as_ref(),
+            "source · A Very Long Bright Bass Name\nrole · midi contributor\nreceiver · MIDI Receiver A\nmidi tracks · 2"
+        );
     }
 
     #[test]
