@@ -10,7 +10,7 @@
 //! staged across contiguous graph segments until the complete physical callback
 //! passes final host conversion; only then may it reach a worker.
 //! Malformed output or saturation revokes the entire one-shot exchange.
-//! Native PCM workers may conceal up to four consecutive missing replies and
+//! Native PCM workers may conceal up to six consecutive missing replies and
 //! discard their late output. The audio host uses aligned dry input for effects
 //! and silence for instruments. No stale-buffer replay, waiting, waking,
 //! allocation or DSP rollback occurs; persistent misses still revoke the epoch.
@@ -51,8 +51,8 @@ pub const MAX_EVENTS: usize = 64;
 /// the smaller generic event bound.
 pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 160;
 pub const QUEUE_CAPACITY: usize = 8;
-// Two pipeline quanta and four concealed quanta fit in the bounded input ring.
-const MAX_CONCEALED_OUTPUT_GAPS: u8 = 4;
+// Two pipeline quanta and six concealed quanta fit in the bounded input ring.
+const MAX_CONCEALED_OUTPUT_GAPS: u8 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -883,7 +883,7 @@ pub fn channel_from_completed_prefix(
 }
 
 /// The native instance wire carries PCM and parameter observations, with no
-/// output MIDI. Up to four consecutive deadline misses conceal their quanta
+/// output MIDI. Up to six consecutive deadline misses conceal their quanta
 /// while preserving ordered input and the fixed 2Q alignment of later replies.
 /// A late reply never acknowledges audio, editor gestures or manual parameters.
 pub fn native_pcm_channel_from_completed_prefix(
@@ -1549,7 +1549,7 @@ fn stage_reply(
     if state.next_output_reply > expected {
         return Err(Fault::Protocol);
     }
-    // At most four stale replies and the current reply can be consumed in one
+    // At most six stale replies and the current reply can be consumed in one
     // callback. Validate every sequence before discarding its PCM and facts.
     for _ in 0..=MAX_CONCEALED_OUTPUT_GAPS {
         match replies.pop() {

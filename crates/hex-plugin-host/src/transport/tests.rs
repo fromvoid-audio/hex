@@ -265,16 +265,16 @@ fn native_instrument_recovers_after_several_late_replies_without_replaying_them(
         native_pcm_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
     let mut output = [[0.0; 2]; 8];
     let counts = allocation_counter::measure(|| {
-        // The worker remains occupied for four deadlines. Every input stays
+        // The worker remains occupied for six deadlines. Every input stays
         // ordered; only missing output is concealed.
-        for value in 1..=6 {
+        for value in 1..=8 {
             callback
                 .stage(&[[value as f32; 2]; 8], &[], &mut output)
                 .unwrap();
             callback.finish(true).unwrap();
             assert_eq!(output, [[0.0; 2]; 8]);
         }
-        for sequence in 37..43 {
+        for sequence in 37..45 {
             let reply = worker.receive().unwrap().unwrap();
             assert_eq!(reply.sequence, sequence);
             assert_eq!(reply.pcm[0], [(sequence - 36) as f32; 2]);
@@ -292,7 +292,7 @@ fn native_instrument_recovers_after_several_late_replies_without_replaying_them(
         }
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
         callback.finish(true).unwrap();
-        assert_eq!(output, [[5.0; 2]; 8]);
+        assert_eq!(output, [[7.0; 2]; 8]);
         assert_eq!(callback.take_accepted_manual_parameter(), None);
         assert!(!control.is_revoked());
     });
@@ -398,7 +398,7 @@ fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
     let (control, mut callback, mut worker) =
         native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let mut output = [[0.0; 2]; 8];
-    for _ in 0..6 {
+    for _ in 0..8 {
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
         callback.finish(true).unwrap();
     }
@@ -410,7 +410,7 @@ fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
         Some(Fault::MissingOutput)
     );
     assert!(control.is_revoked());
-    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 4);
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 6);
 }
 
 #[test]
