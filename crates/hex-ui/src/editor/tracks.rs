@@ -2374,34 +2374,37 @@ impl EditorView {
             if narrow {
                 bars.push(left..left + width, fill, selected_clip);
             }
-            let border = !narrow && hex_widgets::rectangle_border_width(pixel_width) > 0.0;
+            let surface_width = if narrow { 0.0 } else { pixel_width };
+            let border = hex_widgets::rectangle_border_width(surface_width) > 0.0;
             let notch = super::clip_boundary::Notch::new(border && visible_end == end);
-            let mut midi = hex_widgets::rectangle_surface(
-                left as f32,
-                width as f32,
-                if narrow { 0.0 } else { pixel_width },
-            )
-            .id(("midi-clip", clip.id().value()))
-            .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
-            .cursor(gpui::CursorStyle::Arrow)
-            .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
-            .left_0()
-            .w_full()
-            .border_l(px(if border { stroke } else { 0.0 }))
-            .border_r(px(0.0))
-            .bg(rgb(fill))
-            .border_color(rgb(if selected_clip {
-                theme::color(theme::PaletteRole::Primary)
-            } else {
-                theme::color(theme::PaletteRole::ClipOutline)
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_clip_context_menu(event.position, track_id, midi_clip_id, window, cx);
-                }),
-            );
+            let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, surface_width)
+                .id(("midi-clip", clip.id().value()))
+                .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
+                .cursor(gpui::CursorStyle::Arrow)
+                .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
+                .left_0()
+                .w_full()
+                .border_l(px(if border { stroke } else { 0.0 }))
+                .border_r(px(0.0))
+                .bg(rgb(fill))
+                .border_color(rgb(if selected_clip {
+                    theme::color(theme::PaletteRole::Primary)
+                } else {
+                    theme::color(theme::PaletteRole::ClipOutline)
+                }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.open_clip_context_menu(
+                            event.position,
+                            track_id,
+                            midi_clip_id,
+                            window,
+                            cx,
+                        );
+                    }),
+                );
             if border || narrow {
                 midi = midi
                     .bg(gpui::transparent_black())
@@ -2952,32 +2955,29 @@ impl EditorView {
         if narrow {
             bars.push(left..left + width, fill, selected);
         }
-        let border = !narrow && hex_widgets::rectangle_border_width(clip_pixel_width) > 0.0;
+        let surface_width = if narrow { 0.0 } else { clip_pixel_width };
+        let border = hex_widgets::rectangle_border_width(surface_width) > 0.0;
         let notch = super::clip_boundary::Notch::new(border && visible_end == clip_end);
-        let mut content = hex_widgets::rectangle_surface(
-            left as f32,
-            width as f32,
-            if narrow { 0.0 } else { clip_pixel_width },
-        )
-        .cursor(gpui::CursorStyle::Arrow)
-        .opacity(if active_trim_preview { 0.0 } else { 1.0 })
-        .left_0()
-        .w_full()
-        .border_l(px(if border { stroke } else { 0.0 }))
-        .border_r(px(0.0))
-        .bg(rgb(fill))
-        .hover(move |style| {
-            style.border_color(if border {
-                gpui::transparent_black()
-            } else {
-                rgb(theme::color(if selected {
-                    theme::PaletteRole::Primary
+        let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, surface_width)
+            .cursor(gpui::CursorStyle::Arrow)
+            .opacity(if active_trim_preview { 0.0 } else { 1.0 })
+            .left_0()
+            .w_full()
+            .border_l(px(if border { stroke } else { 0.0 }))
+            .border_r(px(0.0))
+            .bg(rgb(fill))
+            .hover(move |style| {
+                style.border_color(if border {
+                    gpui::transparent_black()
                 } else {
-                    theme::PaletteRole::Text
-                }))
-                .into()
-            })
-        });
+                    rgb(theme::color(if selected {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Text
+                    }))
+                    .into()
+                })
+            });
         content = content.border_color(rgb(if selected {
             theme::color(theme::PaletteRole::Primary)
         } else {
