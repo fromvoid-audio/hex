@@ -165,7 +165,7 @@ impl Hosting {
 }
 
 impl CanonicalBasesCapture {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn awaiting_processing_approval(&self) -> bool {
         matches!(self.phase, Phase::Verify)
     }
