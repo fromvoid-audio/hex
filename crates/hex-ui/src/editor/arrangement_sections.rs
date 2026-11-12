@@ -33,7 +33,7 @@ use gpui::{
     rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
-use hex_session::service::{DuplicateViewObservation, Event, Request};
+use hex_session::service::{ArrangementEditViewObservation, Event, Request};
 use hex_widgets::{
     RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
@@ -496,7 +496,7 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
-    /// Arrangement rows display a frozen structural edit or committed copy
+    /// Arrangement rows display a frozen structural edit or committed copy or paste
     /// until its exact terminal installs the canonical state.
     pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
         let state = self.state.as_ref()?;
@@ -506,6 +506,7 @@ impl EditorView {
             .filter(|p| p.generation == self.project_generation)
             .and_then(|p| p.layout.clone())
             .or_else(|| self.arrangement_duplicate_view().cloned())
+            .or_else(|| self.arrangement_paste_view().cloned())
             .or_else(|| Some(Arc::clone(state)))
     }
 
@@ -513,7 +514,7 @@ impl EditorView {
     /// copy. The ordinary receipt continues to own input, selection and history.
     pub(super) fn observe_section_copy_view(
         &mut self,
-        observation: DuplicateViewObservation,
+        observation: ArrangementEditViewObservation,
         copy: SectionId,
     ) -> bool {
         let Some(current) = self.state.as_ref() else {
@@ -6167,11 +6168,17 @@ pub(super) mod tests {
         visual.simulate_keystrokes("cmd-d");
 
         let terminal = editor.read_with(cx, |view, _| next(&view.service));
-        let observed = editor.read_with(cx, |view, _| view.service.try_duplicate_view().unwrap());
+        let observed = editor.read_with(cx, |view, _| {
+            view.service.try_arrangement_edit_view().unwrap()
+        });
         let Some(Created::ArrangementSection(copy)) = terminal.created else {
             panic!("section copy");
         };
-        assert_eq!(observed.created, Created::ArrangementSection(copy));
+        assert!(matches!(
+            observed.kind,
+            hex_session::service::ArrangementEditViewKind::Duplicate(Created::ArrangementSection(id))
+                if id == copy
+        ));
         let committed = observed.state.upgrade().unwrap();
         let marker = committed.project.arrangement_section(copy).unwrap();
         let midi = committed.project.tracks()[0]
@@ -6194,12 +6201,15 @@ pub(super) mod tests {
                 (observed.project_generation + 1, observed.previous_revision),
                 (observed.project_generation, observed.previous_revision + 1),
             ] {
-                assert!(!view.observe_duplicate_view(DuplicateViewObservation {
-                    project_generation: generation,
-                    previous_revision: revision,
-                    created: observed.created,
-                    state: Arc::downgrade(&committed),
-                }));
+                assert!(
+                    !view.observe_duplicate_view(ArrangementEditViewObservation {
+                        project_generation: generation,
+                        first_previous_revision: revision,
+                        previous_revision: revision,
+                        kind: observed.kind,
+                        state: Arc::downgrade(&committed),
+                    })
+                );
             }
             assert!(view.observe_duplicate_view(observed));
             assert!(view.section_install_pending());

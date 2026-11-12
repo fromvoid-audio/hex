@@ -842,7 +842,7 @@ impl WorkerAudioSink for Sink {
                 });
             }
             ResidentPublicationPolicy::FreshIfUnchanged(expected)
-            | ResidentPublicationPolicy::SectionWhenReady {
+            | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                 fence: expected, ..
             } => {
                 let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -858,8 +858,8 @@ impl WorkerAudioSink for Sink {
                     });
                 };
                 match policy {
-                    ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                        PublicationPolicy::InstallSectionWhenReady {
+                    ResidentPublicationPolicy::QuantizedSeekWhenReady { quantization, .. } => {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence: actual,
                             quantization,
                         }

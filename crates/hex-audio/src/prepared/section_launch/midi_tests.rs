@@ -82,7 +82,7 @@ fn queue(control: &mut Control, playback: Playback, revision: u64, policy: Publi
             source_context: None,
             policy,
             fresh_runtime_cancellation: None,
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams: None,
             native_references: None,
             playback: Box::new(playback),
@@ -249,7 +249,7 @@ fn section_jump_releases_original_note_and_stages_destination_at_physical_offset
             &mut control,
             next,
             2,
-            PublicationPolicy::InstallSectionWhenReady {
+            PublicationPolicy::InstallQuantizedSeekWhenReady {
                 fence,
                 quantization,
             },

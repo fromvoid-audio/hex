@@ -2,6 +2,7 @@
 use super::*;
 use std::mem;
 mod checkpoint;
+mod checkpoint_worker;
 pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
@@ -699,54 +700,73 @@ fn asset_requires_resident_processing(project: &Project, asset: hex_project::Ass
         .any(requires)
 }
 
-pub(super) fn checkpoint_project(
-    session: &Session,
-    base: Option<&Path>,
-    document: Option<&DocumentHandle>,
-    untitled_path: &Path,
-    journal: &mut Option<hex_storage::Journal>,
-) -> Result<Option<PathBuf>, String> {
-    let path = checkpoint_path(document, untitled_path)?;
-    let project = project_for_save(session, base)?;
-    if journal
-        .as_ref()
-        .is_none_or(|current| current.path() != path)
-    {
-        if document.is_none()
-            && let Some(parent) = path.parent()
+/// A checkpoint's exact project and destination, captured on the service worker.
+/// Publication owns the image and journal exclusively; capture is not durability.
+pub(super) struct PreparedCheckpoint {
+    path: PathBuf,
+    untitled: bool,
+    image: SaveImage,
+}
+
+impl PreparedCheckpoint {
+    pub(super) fn capture(context: &RecoveryContext<'_>) -> Result<Self, String> {
+        Ok(Self {
+            path: checkpoint_path(context.document, context.untitled)?,
+            untitled: context.document.is_none(),
+            image: SaveImage::capture(context.session, context.base)?,
+        })
+    }
+
+    pub(super) fn publish(
+        self,
+        journal: &mut Option<hex_storage::Journal>,
+    ) -> Result<Option<PathBuf>, String> {
+        let Self {
+            path,
+            untitled,
+            image,
+        } = self;
+        #[cfg(test)]
+        checkpoint::wait_at_checkpoint(&path);
+        let project = image.materialize()?;
+        if journal
+            .as_ref()
+            .is_none_or(|current| current.path() != path)
         {
-            match std::fs::symlink_metadata(parent) {
-                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                    return Err("recovery directory must be a real directory".into());
+            if untitled && let Some(parent) = path.parent() {
+                match std::fs::symlink_metadata(parent) {
+                    Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                        return Err("recovery directory must be a real directory".into());
+                    }
+                    Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                        return Err(error.to_string());
+                    }
+                    _ => {}
                 }
-                Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                    return Err(error.to_string());
-                }
-                _ => {}
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
+                .map_err(|e| e.to_string())?
+            {
+                let outcome = hex_storage::restart_journal(&token, &project);
+                *journal = outcome.journal;
+                outcome
+                    .result
+                    .map_err(|error| match outcome.preserved_path.as_ref() {
+                        Some(_) => format!(
+                            "{error}; previous recovery journal preserved beside its original slot"
+                        ),
+                        None => error.to_string(),
+                    })?;
+                return Ok(outcome.preserved_path);
+            }
+            *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
         }
-        if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
-            .map_err(|e| e.to_string())?
-        {
-            let outcome = hex_storage::restart_journal(&token, &project);
-            *journal = outcome.journal;
-            outcome
-                .result
-                .map_err(|error| match outcome.preserved_path.as_ref() {
-                    Some(_) => format!(
-                        "{error}; previous recovery journal preserved beside its original slot"
-                    ),
-                    None => error.to_string(),
-                })?;
-            return Ok(outcome.preserved_path);
+        if let Some(journal) = journal {
+            journal.checkpoint(&project).map_err(|e| e.to_string())?;
         }
-        *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
+        Ok(None)
     }
-    if let Some(journal) = journal {
-        journal.checkpoint(&project).map_err(|e| e.to_string())?;
-    }
-    Ok(None)
 }
 
 pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {
@@ -850,6 +870,61 @@ fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn prepared_checkpoint_keeps_snapshot_and_journal_custody_when_moved() {
+        let directory = scratch();
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "first".into(),
+            })
+            .unwrap();
+        let expected = project_for_save(&session, None).unwrap();
+        let mut journal = None;
+        let checkpoint = PreparedCheckpoint::capture(&RecoveryContext {
+            session: &session,
+            base: None,
+            document: None,
+            untitled: &path,
+            journal: &mut journal,
+            generation: 1,
+        })
+        .unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "later".into(),
+            })
+            .unwrap();
+        let mut journal = std::thread::spawn(move || {
+            checkpoint.publish(&mut journal).unwrap();
+            journal
+        })
+        .join()
+        .unwrap();
+        assert_eq!(hex_storage::load_journal(&path).unwrap(), expected);
+        let checkpoint = PreparedCheckpoint::capture(&RecoveryContext {
+            session: &session,
+            base: None,
+            document: None,
+            untitled: &path,
+            journal: &mut journal,
+            generation: 1,
+        })
+        .unwrap();
+        let external = b"external journal contents";
+        std::fs::write(&path, external).unwrap();
+        assert!(
+            std::thread::spawn(move || checkpoint.publish(&mut journal))
+                .join()
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), external);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn captured_save_image_moves_to_worker_and_keeps_its_original_revision() {

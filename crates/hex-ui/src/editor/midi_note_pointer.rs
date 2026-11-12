@@ -112,6 +112,7 @@ impl EditorView {
         }
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
+        self.cancel_midi_audition();
         true
     }
     pub(super) fn capture_midi_note_pointer(

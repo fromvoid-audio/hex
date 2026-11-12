@@ -602,7 +602,7 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected)
-                | ResidentPublicationPolicy::SectionWhenReady {
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                     fence: expected, ..
                 } => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -618,8 +618,10 @@ impl NativeAudioSink {
                         });
                     };
                     match policy {
-                        ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                            hex_audio::prepared::PublicationPolicy::InstallSectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                            quantization, ..
+                        } => {
+                            hex_audio::prepared::PublicationPolicy::InstallQuantizedSeekWhenReady {
                                 fence: actual,
                                 quantization,
                             }
@@ -767,7 +769,7 @@ impl NativeAudioSink {
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
-                | ResidentPublicationPolicy::SectionWhenReady { .. }
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {
             return Err(ResidentPublicationRefusal {
                 playback,

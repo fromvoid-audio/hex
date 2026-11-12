@@ -1638,6 +1638,7 @@ impl EditorView {
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        let (muted, soloed) = self.displayed_track_switches(track);
         // Empty header gutters bubble to the shared selection/focus owner.
         // Only actual control hit regions stop clicks; row-wide stops make the
         // lower header background unreachable for ordinary/modifier selection.
@@ -1652,10 +1653,8 @@ impl EditorView {
                 .children([name_area.child(track_name_view).flex_1().min_w_0()])
                 .child(self.sample_arm_button(sample_source, cx))
         } else if resident_layout {
-            let (active_background, active_text) =
-                super::track_gain::activator_colors(!track.muted());
-            let (solo_background, solo_text) =
-                super::track_gain::activator_colors(self.displayed_solo(track_id, track.soloed()));
+            let (active_background, active_text) = super::track_gain::activator_colors(!muted);
+            let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
                 .w_full()
@@ -1706,7 +1705,7 @@ impl EditorView {
                 );
             let activator = toggle_button_with_style(
                 "",
-                if track.muted() {
+                if muted {
                     "activate track"
                 } else {
                     "deactivate track"
@@ -1856,15 +1855,10 @@ impl EditorView {
                 .child(
                     toggle_button_with_style(
                         "",
-                        if track.muted() {
-                            "unmute track"
-                        } else {
-                            "mute track"
-                        },
+                        if muted { "unmute track" } else { "mute track" },
                         ("track-mute", track_id.value()),
                         {
-                            let (background, text) =
-                                super::track_gain::activator_colors(!track.muted());
+                            let (background, text) = super::track_gain::activator_colors(!muted);
                             theme::action_style().with_state_colors(background, text)
                         },
                     )
@@ -1887,9 +1881,7 @@ impl EditorView {
                         "solo track · s · cmd+click additive",
                         ("track-solo", track_id.value()),
                         {
-                            let (background, text) = super::track_gain::activator_colors(
-                                self.displayed_solo(track_id, track.soloed()),
-                            );
+                            let (background, text) = super::track_gain::activator_colors(soloed);
                             theme::action_style().with_state_colors(background, text)
                         },
                     )
@@ -2164,14 +2156,15 @@ impl EditorView {
             })
         };
         // Section focus shows every clip in each visible row. The canonical
-        // ID cache cannot yet contain the committed duplicate's new IDs.
-        let is_duplicate_view = self
+        // ID cache cannot yet contain new IDs from a committed copy or paste.
+        let is_committed_edit_view = self
             .arrangement_duplicate_view()
             .or_else(|| self.committed_section_copy_view())
+            .or_else(|| self.arrangement_paste_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
             if hides_group_member(clip.id())
-                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
@@ -2271,7 +2264,7 @@ impl EditorView {
         }
         for clip in track.midi_clips() {
             if hides_group_member(clip.id())
-                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
