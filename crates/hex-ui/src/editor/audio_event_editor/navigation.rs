@@ -1,7 +1,19 @@
 //! Independent, transient cameras in output-root and original-media frame clocks.
 //! Navigation reveals blank space without changing edit bounds or project history.
 use super::*;
-use gpui::{Context, ScrollWheelEvent, Window, px};
+use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window, px};
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct Pan {
+    owner: (ClipId, u64),
+    revision: u64,
+    source: bool,
+    bounds: Bounds<Pixels>,
+    origin: f32,
+    viewport: SignedFrameViewport,
+    minimum: i128,
+    maximum: i128,
+}
 
 impl State {
     /// Manual cameras use offsets from editor bounds. Preserve their absolute
@@ -253,8 +265,135 @@ impl EditorView {
             self.store_event_camera(viewport);
         }
     }
+    pub(in crate::editor) fn begin_audio_pan(
+        &mut self,
+        source: bool,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.audio_navigation_idle() || self.audio_event_editor.source_view != source {
+            return false;
+        }
+        let Some(bounds) = (if source {
+            self.audio_event_editor.source_bounds
+        } else {
+            self.audio_event_editor.bounds
+        }) else {
+            return false;
+        };
+        let width = f32::from(bounds.size.width);
+        let origin = f32::from(position.x);
+        if !bounds.contains(&position) || !width.is_finite() || width <= 0.0 || !origin.is_finite()
+        {
+            return false;
+        }
+        let Some((viewport, minimum, maximum, _)) = self.audio_navigation() else {
+            return false;
+        };
+        let Some(owner) = self.audio_event_editor.owner else {
+            return false;
+        };
+        let pan = Pan {
+            owner,
+            revision: self.audio_event_editor.revision,
+            source,
+            bounds,
+            origin,
+            viewport,
+            minimum,
+            maximum,
+        };
+        let entity = cx.entity().downgrade();
+        let cancelled = entity.clone();
+        if !window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Middle,
+            gpui::CursorStyle::ClosedHand,
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Middle);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = entity.update(cx, |view, cx| {
+                    if view.audio_event_editor.pan != Some(pan) {
+                        return;
+                    }
+                    if !view.clip_view_open
+                        || view.device_panel_active
+                        || !view.audio_event_focus.is_focused(window)
+                        || view.audio_event_editor.owner != Some(pan.owner)
+                        || view.audio_event_editor.revision != pan.revision
+                        || view.audio_event_editor.source_view != pan.source
+                        || !view.event_context_current()
+                    {
+                        view.audio_event_editor.pan = None;
+                    } else {
+                        let x = f32::from(position.x);
+                        if x.is_finite() {
+                            let delta = (-(f64::from(x) - f64::from(pan.origin))
+                                * pan.viewport.length as f64
+                                / f64::from(pan.bounds.size.width))
+                            .round() as i128;
+                            if let Some(next) = pan.viewport.pan(pan.minimum, pan.maximum, delta) {
+                                view.set_audio_navigation(next);
+                            }
+                        }
+                        if released.is_some() || !x.is_finite() {
+                            view.audio_event_editor.pan = None;
+                        }
+                    }
+                    cx.notify();
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.audio_event_editor.pan == Some(pan) {
+                        view.audio_event_editor.pan = None;
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        ) {
+            return false;
+        }
+        self.audio_event_focus.focus(window);
+        self.audio_event_editor.pan = Some(pan);
+        true
+    }
+
+    pub(in crate::editor) fn renew_audio_pan(
+        &self,
+        source: bool,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        owner: gpui::EntityId,
+    ) {
+        if let Some(pan) = self.audio_event_editor.pan
+            && pan.source == source
+            && pan.bounds == bounds
+            && self.audio_event_editor.owner == Some(pan.owner)
+            && self.audio_event_editor.revision == pan.revision
+            && self.clip_view_open
+            && !self.device_panel_active
+            && self.audio_event_focus.is_focused(window)
+            && self.audio_event_editor.source_view == source
+            && self.event_context_current()
+        {
+            window.renew_pointer_capture(owner, gpui::CursorStyle::ClosedHand);
+        }
+    }
+
     pub(super) fn audio_navigation_idle(&self) -> bool {
-        !self.clip_loop_held()
+        self.audio_event_editor.pan.is_none()
+            && !self.clip_loop_held()
             && !self.edit_pending()
             && self.audio_event_editor.pending.is_none()
             && self.audio_event_editor.gesture.is_none()
