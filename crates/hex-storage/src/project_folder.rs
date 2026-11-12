@@ -5,7 +5,8 @@
 use crate::{ReplaceWarning, SaveNewOutcome, StorageError, files, publication, replacement};
 use hex_project::Project;
 use std::{
-    fs::{self, File},
+    fmt,
+    fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering::Relaxed},
@@ -14,6 +15,33 @@ use std::{
 const MARKER: &str = ".hex-project";
 pub const SAMPLES: &str = "samples";
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct StageRetained {
+    path: PathBuf,
+    source: StorageError,
+}
+
+impl fmt::Display for StageRetained {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} · staging path {} was not removed by hex · inspect it before using or removing it",
+            self.source,
+            crate::text::verbatim(self.path.display())
+        )
+    }
+}
+
+impl std::error::Error for StageRetained {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn stage_retained(path: PathBuf, source: StorageError) -> StorageError {
+    StorageError::Io(io::Error::other(StageRetained { path, source }))
+}
 
 /// Return the marked parent of a project document, if it has one.
 pub fn root_for_document(path: &Path) -> io::Result<Option<&Path>> {
@@ -41,6 +69,14 @@ impl Destination {
     /// An exact existing file is the path the desktop confirmed replacing.
     /// All other names outside a marked folder reserve a new project folder.
     pub fn prepare(chosen: PathBuf, replace_existing: bool) -> Result<Self, StorageError> {
+        Self::prepare_with_hook(chosen, replace_existing, |_| {})
+    }
+
+    fn prepare_with_hook(
+        chosen: PathBuf,
+        replace_existing: bool,
+        after_reserve: impl FnOnce(&Path),
+    ) -> Result<Self, StorageError> {
         if replace_existing || root_for_document(&chosen)?.is_some() {
             return Ok(Self::File(chosen));
         }
@@ -84,20 +120,30 @@ impl Destination {
         let folder = NewFolder {
             staging: reserve_stage(parent)?,
             path,
-            published: false,
         };
         let stage = folder.root();
-        File::create(stage.join(MARKER))?.sync_all()?;
-        fs::create_dir(stage.join(SAMPLES))?;
+        after_reserve(stage);
+        let initialized = (|| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(stage.join(MARKER))?
+                .sync_all()?;
+            fs::create_dir(stage.join(SAMPLES))
+        })();
+        if let Err(error) = initialized {
+            return Err(stage_retained(folder.staging, error.into()));
+        }
         Ok(Self::Folder(folder))
     }
 }
 
 /// A private sibling staging folder, published only after all files are ready.
+/// Unpublished staging paths are retained because their contents or identity
+/// may have changed; callers must report the path on pre-publication errors.
 pub struct NewFolder {
     staging: PathBuf,
     path: PathBuf,
-    published: bool,
 }
 
 impl NewFolder {
@@ -106,47 +152,41 @@ impl NewFolder {
     }
 
     pub fn publish(
-        mut self,
+        self,
         project: &Project,
         cancelled: impl FnOnce() -> bool,
     ) -> Result<SaveNewOutcome, StorageError> {
-        let name = self
-            .path
-            .file_name()
-            .ok_or(StorageError::Invalid("project target needs a filename"))?;
-        let root = self
-            .path
-            .parent()
-            .ok_or(StorageError::Invalid("project target needs a folder"))?;
-        let stage = self.root();
-        let mut outcome = crate::save_new_with_outcome(stage.join(name), project)?;
-        // At this point the document is private. If its stage could not be
-        // synchronized, leave the chosen destination absent.
-        if let Some(warning) = outcome.warning.take() {
-            return Err(warning.source.into());
-        }
-        if cancelled() {
-            return Err(StorageError::Invalid("project save cancelled"));
-        }
-        publication::rename_exclusive(stage, root)?;
-        self.published = true;
-        outcome.path = self.path.clone();
-        outcome.warning = root
-            .parent()
-            .and_then(|parent| sync_directory(parent).err())
-            .map(|source| ReplaceWarning {
-                operation: "synchronize the parent of the project folder",
-                source,
-            });
-        Ok(outcome)
-    }
-}
-
-impl Drop for NewFolder {
-    fn drop(&mut self) {
-        if !self.published {
-            let _ = fs::remove_dir_all(&self.staging);
-        }
+        let result = (|| {
+            let name = self
+                .path
+                .file_name()
+                .ok_or(StorageError::Invalid("project target needs a filename"))?;
+            let root = self
+                .path
+                .parent()
+                .ok_or(StorageError::Invalid("project target needs a folder"))?;
+            let stage = self.root();
+            let mut outcome = crate::save_new_with_outcome(stage.join(name), project)?;
+            // At this point the document is private. If its stage could not be
+            // synchronized, leave the chosen destination absent.
+            if let Some(warning) = outcome.warning.take() {
+                return Err(warning.source.into());
+            }
+            if cancelled() {
+                return Err(StorageError::Invalid("project save cancelled"));
+            }
+            publication::rename_exclusive(stage, root)?;
+            outcome.path = self.path.clone();
+            outcome.warning = root
+                .parent()
+                .and_then(|parent| sync_directory(parent).err())
+                .map(|source| ReplaceWarning {
+                    operation: "synchronize the parent of the project folder",
+                    source,
+                });
+            Ok(outcome)
+        })();
+        result.map_err(|source| stage_retained(self.staging, source))
     }
 }
 
@@ -355,6 +395,43 @@ mod tests {
     }
 
     #[test]
+    fn replaced_staging_path_does_not_delete_other_files_on_drop() {
+        let files = Files::new();
+        let Destination::Folder(folder) =
+            Destination::prepare(files.0.join("Song.hex"), false).unwrap()
+        else {
+            panic!("expected a new folder");
+        };
+        let stage = folder.root().to_path_buf();
+        let original_stage = files.0.join("original-stage");
+        fs::rename(&stage, &original_stage).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("other-work"), b"preserve me").unwrap();
+        drop(folder);
+        assert_eq!(fs::read(stage.join("other-work")).unwrap(), b"preserve me");
+        assert!(original_stage.join(MARKER).exists());
+    }
+
+    #[test]
+    fn failed_stage_initialization_preserves_existing_marker_and_reports_path() {
+        let files = Files::new();
+        let mut stage = None;
+        let result = Destination::prepare_with_hook(files.0.join("Song.hex"), false, |path| {
+            stage = Some(path.to_path_buf());
+            fs::write(path.join(MARKER), b"other work").unwrap();
+        });
+        let error = result.err().expect("occupied marker must fail");
+        let stage = stage.expect("staging folder reserved");
+        assert_eq!(fs::read(stage.join(MARKER)).unwrap(), b"other work");
+        assert!(
+            error
+                .to_string()
+                .contains(&stage.to_string_lossy().to_string())
+        );
+        assert!(!files.0.join("Song").exists());
+    }
+
+    #[test]
     fn a_folder_race_never_replaces_the_existing_destination() {
         let files = Files::new();
         let chosen = files.0.join("Song.hex");
@@ -365,12 +442,15 @@ mod tests {
         let occupied = files.0.join("Song");
         fs::create_dir(&occupied).unwrap();
         fs::write(occupied.join("existing"), b"keep").unwrap();
+        let error = folder
+            .publish(&Project::new(48_000).unwrap(), || false)
+            .expect_err("occupied destination must fail");
         assert!(
-            folder
-                .publish(&Project::new(48_000).unwrap(), || false)
-                .is_err()
+            error
+                .to_string()
+                .contains(&stage.to_string_lossy().to_string())
         );
-        assert!(!stage.exists());
+        assert!(stage.join("Song.hex").is_file());
         assert_eq!(fs::read(occupied.join("existing")).unwrap(), b"keep");
         assert!(!occupied.join("Song.hex").exists());
 
@@ -379,12 +459,15 @@ mod tests {
             panic!("expected a new folder");
         };
         let stage = folder.root().to_path_buf();
+        let error = folder
+            .publish(&Project::new(48_000).unwrap(), || true)
+            .expect_err("cancelled save must fail");
         assert!(
-            folder
-                .publish(&Project::new(48_000).unwrap(), || true)
-                .is_err()
+            error
+                .to_string()
+                .contains(&stage.to_string_lossy().to_string())
         );
-        assert!(!stage.exists());
+        assert!(stage.join("Cancelled.hex").is_file());
         assert!(!files.0.join("Cancelled").exists());
     }
 
