@@ -637,7 +637,11 @@ fn bind_editor_keys(cx: &mut App) {
             BounceMixedRangeAndMute,
             Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT),
         ),
-        KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "l",
+            LoopSelection,
+            Some("hex_editor && !hex_text_editing && !hex_arrangement_sections"),
+        ),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new(

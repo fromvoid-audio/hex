@@ -32,6 +32,14 @@ pub(super) struct SectionLaunchAfterLoop {
 }
 
 impl EditorView {
+    pub(super) fn has_arrangement_sections(&self) -> bool {
+        self.mode == super::EditorMode::Arrangement
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.project.arrangement_sections().is_empty())
+    }
+
     /// Delay the ordinary L shortcut until release so a section click can
     /// consume the held key without first looping the current selection.
     pub(super) fn section_loop_key_down(
@@ -45,13 +53,7 @@ impl EditorView {
         if self.section_loop_key != SectionLoopKey::Up {
             return true;
         }
-        if event.is_held
-            || self.mode != super::EditorMode::Arrangement
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|state| state.project.arrangement_sections().is_empty())
-        {
+        if event.is_held || !self.has_arrangement_sections() {
             return false;
         }
         let context = window.context_stack();
