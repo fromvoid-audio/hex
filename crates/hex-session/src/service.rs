@@ -72,7 +72,7 @@ mod clip_audition;
 pub use clip_audition::{
     ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
     ArrangementPlayStartAudition, ArrangementStretchAudition, ClipMovePreviewDestination,
-    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit,
+    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit, VerifiedClipMoveUpdate,
 };
 mod publication_wait;
 mod resident_audio;
@@ -2706,6 +2706,7 @@ fn run_worker(
     let mut resident_snapshot: Option<resident_audio::Snapshot> = None;
     let mut resident_preview: Option<resident_preview::Preview> = None;
     let mut clip_audition_lane = clip_audition::Lane::default();
+    let mut verified_clip_audition_lane = clip_audition::VerifiedLane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -3025,7 +3026,27 @@ fn run_worker(
         },
         |mut audio, audition| {
             if audition {
+                let available = !resident_seek
+                    .as_ref()
+                    .is_some_and(resident_seek::Lane::pending)
+                    && device_gesture.snapshot().is_none()
+                    && tuning_gesture.snapshot().is_none()
+                    && pending_plugin_effect.is_none()
+                    && pending_sampler_parameter.is_none()
+                    && pending_stopped_restore.is_none()
+                    && !plugin_recording.editor_active()
+                    && !plugin_recording.pending();
                 let pending = audio.is_some_and(|sink| {
+                    let verified_pending = verified_clip_audition_lane.drive(
+                        &clip_audition,
+                        &state,
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        sink,
+                        available && session.audio_mode() == DocumentAudioMode::VerifiedStreaming,
+                    );
                     clip_audition_lane.drive(
                         &clip_audition,
                         &session,
@@ -3046,17 +3067,8 @@ fn run_worker(
                             resident_seek.as_ref(),
                             None,
                         ),
-                        !resident_seek
-                            .as_ref()
-                            .is_some_and(resident_seek::Lane::pending)
-                            && device_gesture.snapshot().is_none()
-                            && tuning_gesture.snapshot().is_none()
-                            && pending_plugin_effect.is_none()
-                            && pending_sampler_parameter.is_none()
-                            && pending_stopped_restore.is_none()
-                            && !plugin_recording.editor_active()
-                            && !plugin_recording.pending(),
-                    )
+                        available,
+                    ) || verified_pending
                 });
                 // Cancelling a preview can prepare a new canonical audio owner.
                 if let Some(snapshot) = resident_snapshot.as_ref()
