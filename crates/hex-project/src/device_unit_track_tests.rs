@@ -170,6 +170,46 @@ fn selected_track_move_keeps_subtrees_and_instrument_in_source_order() {
 }
 
 #[test]
+fn reorder_selection_normalizes_a_moving_child_anchor_and_keeps_serial_units() {
+    let (mut editor, track, _, instrument, ids) = fixture(4);
+    let reorder = |selected: &[DeviceId], before| Command::ReorderDevices {
+        owner: crate::DeviceChainOwner::Track(track),
+        selected: DeviceSelectionIds::new(selected).unwrap(),
+        before: Some(before),
+    };
+    let original = editor.project().clone();
+    assert!(
+        editor
+            .execute(reorder(&[instrument, ids[6]], ids[2]))
+            .is_err()
+    );
+    assert_eq!(editor.project(), &original);
+    let selected = [ids[6], ids[2], instrument, ids[0]];
+    editor.execute(reorder(&selected, ids[2])).unwrap();
+    let project = editor.project();
+    let chain = project.track(track).unwrap();
+    assert_eq!(chain.instrument_position(), Some(4));
+    assert_eq!(
+        chain
+            .devices()
+            .iter()
+            .map(crate::Device::id)
+            .collect::<Vec<_>>(),
+        [ids[0], ids[1], ids[2], ids[3], ids[6], ids[4], ids[5]]
+    );
+    for device in original.devices() {
+        assert_eq!(project.device(device.id()), Some(device));
+    }
+    let reordered = project.clone();
+    editor.execute(reorder(&selected, instrument)).unwrap();
+    assert_eq!(editor.project(), &reordered);
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &reordered);
+}
+
+#[test]
 fn selected_track_move_uses_the_exact_track_binding_for_shared_instruments() {
     let (mut editor, receiver, source, instrument, _) = fixture(4);
     let retained = editor.project().track(receiver).unwrap().source_id();

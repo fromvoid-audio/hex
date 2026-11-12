@@ -2279,6 +2279,43 @@ impl EditorView {
         })
     }
 
+    fn reorder_selected_devices_on_drop(
+        &mut self,
+        drag: &drag::NativeDeviceDrag,
+        owner: DevicePanelOwner,
+        before: Option<DeviceId>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
+            return false;
+        };
+        let Some((source, selected)) = self.device_drag_selection(drag) else {
+            return false;
+        };
+        if source != owner || selected.ids().len() < 2 {
+            return false;
+        }
+        let selected = selected.clone();
+        self.clear_native_device_drag(drag);
+        if self.enqueue_device_barrier(Request::ReorderDevices {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            owner: project_owner(owner),
+            selected: selected.clone(),
+            before,
+        }) {
+            self.device_panel.select_only(Some(device));
+            self.device_panel
+                .selected_others
+                .extend(selected.ids().iter().copied().filter(|id| *id != device));
+            self.error = None;
+            self.device_panel.message = None;
+            self.status = "moving devices".into();
+        }
+        cx.notify();
+        true
+    }
+
     fn drop_native_device_to_effect_bus(
         &mut self,
         drag: &drag::NativeDeviceDrag,
@@ -2325,14 +2362,15 @@ impl EditorView {
             cx.notify();
             return;
         }
+        let panel_owner = match owner {
+            EffectBusOwner::Main => DevicePanelOwner::Main,
+            EffectBusOwner::Return(id) => DevicePanelOwner::Return(id),
+        };
         if window.modifiers().alt
             && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
         {
-            let destination = match owner {
-                EffectBusOwner::Main => hex_project::DeviceChainOwner::Main,
-                EffectBusOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
-            };
-            let request = self.duplicate_device_drag_request(drag, destination, before);
+            let request =
+                self.duplicate_device_drag_request(drag, project_owner(panel_owner), before);
             self.clear_native_device_drag(drag);
             match request {
                 Ok(request) => {
@@ -2344,6 +2382,9 @@ impl EditorView {
                 Err(reason) => self.error = Some(reason.into()),
             }
             cx.notify();
+            return;
+        }
+        if self.reorder_selected_devices_on_drop(drag, panel_owner, before, cx) {
             return;
         }
         let request = match drag.source {
@@ -2577,8 +2618,13 @@ impl EditorView {
             cx.notify();
             return;
         }
+        if self.reorder_selected_devices_on_drop(drag, DevicePanelOwner::Track(track), before, cx) {
+            return;
+        }
         if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
-            && device_move_would_be_noop(&state.project, device, track, before)
+            && self.state.as_ref().is_some_and(|state| {
+                device_move_would_be_noop(&state.project, device, track, before)
+            })
         {
             self.status = "device order unchanged".into();
             self.clear_native_device_drag(drag);

@@ -277,6 +277,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             }
             Ok(crate::Created::None)
         }
+        Command::ReorderDevices {
+            owner,
+            selected,
+            before,
+        } => {
+            reorder_selection(project, owner, &selected, before)?;
+            Ok(crate::Created::None)
+        }
         Command::InsertNestedDevice { parent, state } => {
             unit_parent::insert(project, parent, state)
         }
@@ -747,7 +755,8 @@ fn move_track_device(
         return Ok(());
     }
     if let Some(anchor) = before {
-        let anchor_location = locate_chain_device(project, anchor, None)?;
+        let anchor_location =
+            locate_chain_device(project, anchor, source_track.map(|_| target_track))?;
         let anchor_track = match anchor_location {
             DeviceLocation::Effect { track, .. } | DeviceLocation::Instrument { track } => track,
         };
@@ -896,6 +905,115 @@ impl Project {
         }
         Ok(order)
     }
+}
+
+fn reorder_selection(
+    project: &mut Project,
+    owner: crate::DeviceChainOwner,
+    selected: &crate::DeviceSelectionIds,
+    before: Option<DeviceId>,
+) -> Result<(), Invalid> {
+    use crate::{DeviceChainOwner, TrackDeviceRef};
+
+    let (effects, instrument) = match owner {
+        DeviceChainOwner::Track(track) => {
+            let track = project
+                .track(track)
+                .ok_or(Invalid("device track no longer exists"))?;
+            let instrument = track
+                .instrument()
+                .map(|device| {
+                    track
+                        .instrument_position()
+                        .map(|gap| (device, gap))
+                        .ok_or(Invalid("instrument position is missing"))
+                })
+                .transpose()?;
+            (track.devices(), instrument)
+        }
+        DeviceChainOwner::Main => (project.main_devices(), None),
+        DeviceChainOwner::Return(id) => {
+            let track = project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .ok_or(Invalid("return no longer exists"))?;
+            (track.devices(), None)
+        }
+    };
+    let gap = instrument.map_or(effects.len(), |(_, gap)| gap);
+    let (leading, trailing) = effects
+        .split_at_checked(gap)
+        .ok_or(Invalid("instrument position is out of bounds"))?;
+    let order = leading
+        .iter()
+        .map(TrackDeviceRef::Effect)
+        .chain(instrument.map(|(device, _)| TrackDeviceRef::Instrument(device)))
+        .chain(trailing.iter().map(TrackDeviceRef::Effect));
+    let mut roots = [None; MAX_DEVICES_PER_TRACK + 1];
+    let mut selected_found = 0;
+    let mut next_effect = 0;
+    let mut subtree_end = 0;
+    let mut found_drop = false;
+    let mut anchor = None;
+    for (node, root) in order.zip(&mut roots) {
+        let (device, index) = match node {
+            TrackDeviceRef::Instrument(device) => (device, None),
+            TrackDeviceRef::Effect(device) => {
+                let index = next_effect;
+                next_effect += 1;
+                (device, Some(index))
+            }
+        };
+        let id = device.id();
+        let selected_here = selected.ids().contains(&id);
+        selected_found += usize::from(selected_here);
+        let covered = index.is_some_and(|index| index < subtree_end);
+        if selected_here && !covered {
+            if let Some(index) = index {
+                subtree_end = crate::device_inventory::serial_unit_span(effects, index)?.end;
+            }
+            *root = Some(id);
+        }
+        // Interpret the drop gap in the remaining chain. A moving root and
+        // every child it carries disappear from that gap together.
+        found_drop |= before == Some(id);
+        if found_drop && !selected_here && !covered && anchor.is_none() {
+            anchor = Some(id);
+        }
+    }
+    if selected_found != selected.ids().len() {
+        return Err(Invalid("selected device no longer belongs to the chain"));
+    }
+    if before.is_some() && !found_drop {
+        return Err(Invalid("device insertion anchor no longer exists"));
+    }
+    for device in roots.into_iter().flatten() {
+        match owner {
+            DeviceChainOwner::Track(track) => {
+                move_track_device(project, device, Some(track), track, anchor)?
+            }
+            DeviceChainOwner::Main => {
+                crate::main_devices::apply(
+                    project,
+                    Command::MoveMainDevice {
+                        device,
+                        before: anchor,
+                    },
+                )?;
+            }
+            DeviceChainOwner::Return(_) => {
+                crate::returns::apply(
+                    project,
+                    Command::MoveReturnDevice {
+                        device,
+                        before: anchor,
+                    },
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

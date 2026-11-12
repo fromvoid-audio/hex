@@ -436,6 +436,12 @@ pub enum Command {
         selected: crate::DeviceSelectionIds,
         destination: TrackId,
     },
+    /// Move the selected units together to a gap in their current chain.
+    ReorderDevices {
+        owner: crate::DeviceChainOwner,
+        selected: crate::DeviceSelectionIds,
+        before: Option<DeviceId>,
+    },
     /// Move a complete unit within one retained source, keeping its parent.
     /// The designated instrument moves with its children. None appends; invalid
     /// membership placement must stay inside the owning chain.
@@ -2282,6 +2288,7 @@ impl Project {
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
             | Command::MoveTrackDevices { .. }
+            | Command::ReorderDevices { .. }
             | Command::MoveNativeSourceDevice { .. }
             | Command::ReparentDevice { .. }
             | Command::InsertNestedDevice { .. }
