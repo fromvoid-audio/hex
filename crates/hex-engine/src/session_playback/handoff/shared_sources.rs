@@ -1621,6 +1621,84 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_session_launch_with_live_keys_respects_reserved_capacity() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::{PlaybackAction, PlaybackCommand};
+
+            let mut f = fixture();
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "capacity".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "next".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            for pitch in 40..48 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            let mut output = [[0.0; 2]; 64];
+            candidate.render(&mut output).unwrap();
+            assert!(input.rejected(), "the fixture must saturate live admission");
+            candidate
+                .try_apply_action(PlaybackAction::Session(
+                    SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: crate::LaunchQuantization::Immediate,
+                    },
+                ))
+                .unwrap();
+            candidate.render(&mut output).unwrap();
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            candidate.apply(PlaybackCommand::Stop);
+            candidate.render(&mut output).unwrap();
+            assert!(input.is_cancelled());
+        });
+    }
+
+    #[test]
     fn shared_source_refuses_session_launch_at_retained_voice_capacity_atomically() {
         on_control(|| {
             let mut f = fixture();
