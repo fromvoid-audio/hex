@@ -242,7 +242,7 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        self.recovery.fail();
+        super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -1798,7 +1798,7 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            self.recovery.fail();
+            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2374,7 +2374,7 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            self.recovery.fail();
+            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;
@@ -3428,7 +3428,12 @@ impl EditorView {
         true
     }
 
-    fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+    /// Enqueue a request with any import policy already captured.
+    pub(super) fn enqueue_request(
+        &mut self,
+        request: Request,
+        duplicate_continuation: bool,
+    ) -> bool {
         self.wake_poll();
         if matches!(&request, Request::QueryPluginParameters(_)) {
             // The panel owns retryable read intent. A full/busy service must
@@ -3800,8 +3805,8 @@ impl EditorView {
             self.pending_requests.push_back(request);
             return true;
         }
-        if self.native_effect_insert_needs_recovery(&request) {
-            return self.recover_before_native_effect_insert(request);
+        if let Some(kind) = self.recoverable_graph_edit(&request) {
+            return self.recover_before_graph_edit(kind, request);
         }
         if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()

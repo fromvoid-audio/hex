@@ -2,7 +2,14 @@
 use hex_engine::AudioSourceContext;
 use hex_session::service::Request;
 
-pub(super) struct DeferredNativeEffect {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeferredEditKind {
+    NativeEffect,
+    SampleDrop,
+}
+
+pub(super) struct DeferredGraphEdit {
+    pub(super) kind: DeferredEditKind,
     pub(super) context: AudioSourceContext,
     pub(super) request: Box<Request>,
 }
@@ -10,7 +17,7 @@ pub(super) struct DeferredNativeEffect {
 pub(super) struct RecoveryState {
     next_generation: u64,
     active: Option<Attempt>,
-    pub(super) native_effect: Option<DeferredNativeEffect>,
+    pub(super) deferred_edit: Option<DeferredGraphEdit>,
 }
 
 struct Attempt {
@@ -34,7 +41,7 @@ impl RecoveryState {
             .checked_add(1)
             .ok_or("audio recovery generation exhausted")?;
         self.next_generation = generation;
-        self.native_effect = None;
+        self.deferred_edit = None;
         self.active = Some(Attempt {
             generation,
             position,
@@ -241,6 +248,6 @@ impl RecoveryState {
 
     pub(super) fn fail(&mut self) {
         self.active = None;
-        self.native_effect = None;
+        self.deferred_edit = None;
     }
 }
