@@ -213,6 +213,7 @@ pub struct Prepared {
     parameter_page_sequence: u64,
     authored_parameter_metadata: Option<AuthoredParameterMetadata>,
     grouped_editor_callbacks: bool,
+    offline: bool,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -226,6 +227,7 @@ pub struct Pending {
     packet: Packet,
     source: Source,
     build: InstanceBuild,
+    offline: bool,
 }
 impl Pending {
     /// Preserve actual failed-construction custody for the host's already
@@ -306,6 +308,10 @@ impl Pending {
                 command.arg("--offline");
             },
         )
+        .map(|mut pending| {
+            pending.offline = true;
+            pending
+        })
     }
     fn prepare(
         build: &InstanceBuild,
@@ -489,6 +495,7 @@ impl Pending {
             packet,
             source,
             build: owned_build,
+            offline: false,
         })
     }
     pub fn facts(&self) -> Facts {
@@ -618,11 +625,17 @@ impl Pending {
             parameter_page_sequence: 0,
             authored_parameter_metadata: None,
             grouped_editor_callbacks: self.source.grouped_editor_callbacks,
+            offline: self.offline,
         })
     }
 }
 
 impl Prepared {
+    /// The original helper was started in SDK offline processing mode.
+    pub const fn is_offline_on_control(&self) -> bool {
+        self.offline
+    }
+
     /// Cancel an instance still held by control during host preparation and
     /// retain its actual lease for independent, nonblocking disposal observation.
     /// This neither returns any callback endpoint nor grants graph admission.
