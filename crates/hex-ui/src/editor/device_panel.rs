@@ -45,6 +45,7 @@ pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
 pub(super) use compressor_panel::sidechain::drop_track_key;
 mod eq8_panel;
+mod eq_automation;
 mod eq_panel;
 mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
