@@ -402,6 +402,7 @@ pub struct TrackSwitchState {
 pub enum ArrangementEditViewKind {
     Duplicate(Created),
     Paste,
+    TimeRangeCopy,
 }
 
 /// The committed Arrangement copy or paste, available before checkpoint
@@ -9264,6 +9265,8 @@ fn run_worker(
                 });
             }
             Some(ArrangementEditViewKind::Paste)
+        } else if time_range_copy && canonical_changed && error.is_none() {
+            Some(ArrangementEditViewKind::TimeRangeCopy)
         } else {
             committed_arrangement_duplicate.map(ArrangementEditViewKind::Duplicate)
         };

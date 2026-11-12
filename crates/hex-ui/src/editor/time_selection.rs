@@ -1028,6 +1028,62 @@ impl EditorView {
         true
     }
 
+    /// A committed view paints exact copied content; the pending receipt still
+    /// owns selection, history and the terminal outcome.
+    pub(super) fn observe_time_range_copy_view(
+        &mut self,
+        observation: hex_session::service::ArrangementEditViewObservation,
+    ) -> bool {
+        use hex_session::service::ArrangementEditViewKind;
+        let Some(pending) = self.pending_time_range_move.as_ref() else {
+            return false;
+        };
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || !matches!(observation.kind, ArrangementEditViewKind::TimeRangeCopy)
+            || !pending.copy_modifier
+            || pending
+                .keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.receipt.is_queued())
+            || observation.project_generation != self.project_generation
+            || observation.first_previous_revision != observation.previous_revision
+            || observation.previous_revision != pending.source_revision
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != pending.source_revision)
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if pending.source_revision.checked_add(1) != Some(state.revision) {
+            return false;
+        }
+        self.committed_time_range_copy_view = Some(state);
+        self.time_range_copy_view().is_some()
+    }
+
+    pub(super) fn time_range_copy_view(
+        &self,
+    ) -> Option<&std::sync::Arc<hex_session::service::ViewState>> {
+        let pending = self.pending_time_range_move.as_ref()?;
+        let state = self.state.as_ref()?;
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || state.revision != pending.source_revision
+        {
+            return None;
+        }
+        self.committed_time_range_copy_view
+            .as_ref()
+            .filter(|view| pending.source_revision.checked_add(1) == Some(view.revision))
+    }
+
     pub(super) fn move_time_selection_complete(&mut self, event: &Event) -> u8 {
         let Some(mut pending) = self.pending_time_range_move.take() else {
             return 0;

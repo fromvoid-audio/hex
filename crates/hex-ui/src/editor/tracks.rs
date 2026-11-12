@@ -646,7 +646,9 @@ impl EditorView {
                 })
                 .child(content),
         );
-        let move_display = self.time_range_move_display();
+        let move_display = self
+            .time_range_move_display()
+            .filter(|_| self.time_range_copy_view().is_none());
         let live_midi_trim_preview = self.midi_trim_display(track_id, None);
         if let Some((clip, preview)) = live_midi_trim_preview {
             let start_beat = preview.start();
@@ -2143,7 +2145,9 @@ impl EditorView {
         let mut fade_foreground = Vec::new();
         let mut selected_fade_foreground = Vec::new();
         let mut selected_edges = Vec::new();
-        let move_display = self.time_range_move_display();
+        let move_display = self
+            .time_range_move_display()
+            .filter(|_| self.time_range_copy_view().is_none());
         let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
         let group_owner = self
             .displayed_clip_drag()
@@ -2161,6 +2165,7 @@ impl EditorView {
             .arrangement_duplicate_view()
             .or_else(|| self.committed_section_copy_view())
             .or_else(|| self.arrangement_paste_view())
+            .or_else(|| self.time_range_copy_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
             if hides_group_member(clip.id())
