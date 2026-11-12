@@ -28,15 +28,34 @@ impl EditorView {
                 self.gain_lane.selected = None;
             }
         } else {
-            self.automation_view.gain_panel_was_open = self.gain_lane.track.is_some();
-            if self.gain_lane.track.is_none() {
-                self.gain_lane.track = self.automation_view.gain_preview.filter(|id| {
-                    self.state
-                        .as_ref()
-                        .is_some_and(|state| state.project.track(*id).is_some())
-                });
-            }
-            self.automation_view.enabled = true;
+            self.enable_automation_view();
+        }
+        self.track_scroll.remeasure();
+        cx.notify();
+        true
+    }
+
+    fn enable_automation_view(&mut self) {
+        self.automation_view.gain_panel_was_open = self.gain_lane.track.is_some();
+        if self.gain_lane.track.is_none() {
+            self.gain_lane.track = self.automation_view.gain_preview.filter(|id| {
+                self.state
+                    .as_ref()
+                    .is_some_and(|state| state.project.track(*id).is_some())
+            });
+        }
+        self.automation_view.enabled = true;
+    }
+
+    pub(super) fn reveal_arrangement_automation(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        self.automation_view
+            .devices
+            .reveal(&state.project, self.project_generation, None, false);
+        if !self.automation_view.enabled {
+            self.enable_automation_view();
         }
         self.track_scroll.remeasure();
         cx.notify();

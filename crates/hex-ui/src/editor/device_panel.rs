@@ -216,7 +216,7 @@ struct InsertionPoint {
     before: Option<DeviceId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum DevicePanelOwner {
     Main,
     Track(TrackId),
