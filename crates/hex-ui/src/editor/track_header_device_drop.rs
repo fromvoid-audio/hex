@@ -1,7 +1,8 @@
 //! Header destinations capture the painted TrackId, independent of
 //! device-panel selection. Existing worker stamps and prepare-before-commit own
 //! insertion/history. Browser effects append; browser instruments replace the
-//! existing instrument or precede effects. Option-drag copies use clipboard edits.
+//! existing instrument or precede effects. Track-chain moves append through the
+//! same command as a chain drop. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
     drag::{BrowserAudioDrag, NativeDeviceDrag, NativeDeviceDragSource},
@@ -9,7 +10,7 @@ use super::{
 use crate::theme;
 use gpui::{App, Context, Div, Stateful, prelude::*, rgb};
 use hex_engine::NativeDeviceClass;
-use hex_project::TrackId;
+use hex_project::{DeviceChainOwner, DeviceOwner, TrackId};
 use hex_session::service::{NativeDeviceDropSource, Request};
 
 impl EditorView {
@@ -39,46 +40,90 @@ impl EditorView {
         {
             return Err("device drop canceled · project or source changed");
         }
-        if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
-            let target = self.check_device_append_target(track, cx)?;
-            if self.pending_plugin_effect.is_some() {
-                return Err("wait for the pending vst3 insertion");
+        match drag.source {
+            NativeDeviceDragSource::PluginEffect(ref selection) => {
+                let target = self.check_device_append_target(track, cx)?;
+                if self.pending_plugin_effect.is_some() {
+                    return Err("wait for the pending vst3 insertion");
+                }
+                if selection.role == hex_plugin_catalog::PluginRole::Instrument
+                    && (target.is_group()
+                        || (target.instrument().is_some() && !target.receives_source_audio()))
+                {
+                    return Err("select an ordinary receiving track for the vst3 instrument");
+                }
+                Ok(None)
             }
-            if selection.role == hex_plugin_catalog::PluginRole::Instrument
-                && (target.is_group()
-                    || (target.instrument().is_some() && !target.receives_source_audio()))
-            {
-                return Err("select an ordinary receiving track for the vst3 instrument");
+            NativeDeviceDragSource::Existing {
+                device,
+                class,
+                type_id,
+            } => {
+                let target = self.check_device_append_target(track, cx)?;
+                if copy {
+                    return self
+                        .duplicate_device_drag_request(drag, DeviceChainOwner::Track(track), None)
+                        .map(Some);
+                }
+                let source = self
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.project.device_location(device))
+                    .ok_or("device drop canceled · source changed")?;
+                if matches!(source.owner, DeviceOwner::Track(owner) if owner == track)
+                    || target
+                        .instrument()
+                        .is_some_and(|instrument| instrument.id() == device)
+                {
+                    return Err("drop onto another track to move a device");
+                }
+                match (class, source.owner) {
+                    (NativeDeviceClass::Effect, DeviceOwner::Track(_))
+                        if source.device.parent().is_none() => {}
+                    (NativeDeviceClass::Effect, DeviceOwner::Track(_)) => {
+                        return Err("moving nested devices between tracks requires reparenting");
+                    }
+                    (NativeDeviceClass::Instrument, DeviceOwner::Source(_)) => {
+                        if target.is_group() || target.instrument().is_some() {
+                            return Err("destination cannot accept another instrument");
+                        }
+                    }
+                    _ => return Err("move from a track device chain"),
+                }
+                Ok(Some(Request::DropNativeDevice {
+                    project_generation: generation,
+                    revision: drag.revision,
+                    source: NativeDeviceDropSource::Existing {
+                        device,
+                        class,
+                        type_id,
+                    },
+                    track,
+                    before: None,
+                    replace: None,
+                }))
             }
-            return Ok(None);
-        }
-        let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
-            self.check_device_append_target(track, cx)?;
-            if copy {
-                return self
-                    .duplicate_device_drag_request(
-                        drag,
-                        hex_project::DeviceChainOwner::Track(track),
-                        None,
-                    )
-                    .map(Some);
+            NativeDeviceDragSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                type_id,
+            } => {
+                let target = self.check_device_append_target(track, cx)?;
+                Ok(Some(Request::DropNativeDevice {
+                    project_generation: generation,
+                    revision: drag.revision,
+                    source: NativeDeviceDropSource::Browser {
+                        class: NativeDeviceClass::Instrument,
+                        type_id,
+                    },
+                    track,
+                    before: None,
+                    replace: target.instrument().map(hex_project::Device::id),
+                }))
             }
-            return Err("hold option to copy devices onto a track");
-        };
-        if class != NativeDeviceClass::Instrument {
-            return self
+            NativeDeviceDragSource::Browser { class, type_id } => self
                 .browser_device_append_request(track, class, type_id, cx)
-                .map(Some);
+                .map(Some),
         }
-        let target = self.check_device_append_target(track, cx)?;
-        Ok(Some(Request::DropNativeDevice {
-            project_generation: generation,
-            revision: drag.revision,
-            source: NativeDeviceDropSource::Browser { class, type_id },
-            track,
-            before: None,
-            replace: target.instrument().map(hex_project::Device::id),
-        }))
     }
 
     pub(super) fn check_device_append_target(
@@ -196,21 +241,25 @@ impl EditorView {
             .on_drop(
                 cx.listener(move |view, drag: &NativeDeviceDrag, window, cx| {
                     cx.stop_propagation();
-                    let request = view.header_device_request(
-                        drag,
-                        generation,
-                        revision,
-                        track,
-                        window.modifiers().alt,
-                        cx,
-                    );
+                    let copy = window.modifiers().alt;
+                    let request =
+                        view.header_device_request(drag, generation, revision, track, copy, cx);
                     view.clear_native_device_drag(drag);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                     match request {
                         Ok(Some(request)) => {
                             if view.enqueue_device_barrier(request) {
                                 view.error = None;
-                                view.status = "adding device to track".into();
+                                view.status = match drag.source {
+                                    NativeDeviceDragSource::Existing { .. } if copy => {
+                                        "copying devices"
+                                    }
+                                    NativeDeviceDragSource::Existing { .. } => {
+                                        "moving device to track"
+                                    }
+                                    _ => "adding device to track",
+                                }
+                                .into();
                             }
                         }
                         Ok(None) => {
