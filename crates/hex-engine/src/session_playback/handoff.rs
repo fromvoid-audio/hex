@@ -4801,6 +4801,12 @@ impl SessionPlayback {
         // only proofs whose exact clip has become inactive in the candidate.
         let revision = &self.revision;
         let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
+        // Ordinary onset suppressions cannot shorten a held gate. Check for
+        // admitted cuts once instead of searching the whole list for each proof.
+        let has_gate_cutoffs = self
+            .suppressions
+            .iter()
+            .any(|entry| entry.gate_cutoff_frame().is_some());
         let release_live_input = previous
             .computer_keyboard
             .as_ref()
@@ -4855,10 +4861,14 @@ impl SessionPlayback {
                 {
                     return Some(previous.performance_frame);
                 }
+                if !has_gate_cutoffs {
+                    return None;
+                }
                 let (onset, old_gate, pitch, channel, velocity) = signature.details();
                 self.suppressions
                     .iter()
                     .filter_map(|entry| {
+                        let cutoff = entry.gate_cutoff_frame()?;
                         let candidate = entry.mutable_signature()?;
                         let (new_onset, new_gate, new_pitch, new_channel, new_velocity) =
                             candidate.details();
@@ -4866,8 +4876,7 @@ impl SessionPlayback {
                             && (new_onset, new_pitch, new_channel, new_velocity)
                                 == (onset, pitch, channel, velocity)
                             && new_gate < old_gate)
-                            .then(|| entry.gate_cutoff_frame())
-                            .flatten()
+                            .then_some(cutoff)
                     })
                     .min()
             });
