@@ -1737,7 +1737,9 @@ impl EditorView {
                 || self
                     .applied_clip_preview
                     .is_some_and(|(revision, _)| revision != applied)
-                || (self.applied_project_revision.is_some()
+                || (self.audible_playback.is_none()
+                    && self.applied_clip_preview.is_none()
+                    && self.applied_project_revision.is_some()
                     && self
                         .audio_admission
                         .current()
