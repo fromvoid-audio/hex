@@ -20,6 +20,7 @@ struct SourceRoutingData {
     contributors: [u16; MAX_TRACKS],
     ranges: [(u16, u16); MAX_TRACKS],
     shared: [bool; MAX_TRACKS],
+    arrangement_voice_envelopes: [u16; MAX_TRACKS],
     voice_envelopes: [u16; MAX_TRACKS],
     len: usize,
 }
@@ -33,6 +34,7 @@ impl Default for SourceRoutingData {
             contributors: [0; MAX_TRACKS],
             ranges: [(0, 0); MAX_TRACKS],
             shared: [false; MAX_TRACKS],
+            arrangement_voice_envelopes: [0; MAX_TRACKS],
             voice_envelopes: [0; MAX_TRACKS],
             len: 0,
         }
@@ -191,13 +193,15 @@ impl PreparedSourceRouting {
                 let id = track
                     .canonical_track_id()
                     .ok_or(Invalid("source track id is missing"))?;
-                routing
+                let (arrangement, combined) = session.contributor_voice_envelope(id, track)?;
+                let data = routing
                     .data
                     .as_mut()
-                    .ok_or(Invalid("source routing table is missing"))?
-                    .voice_envelopes[index] =
-                    u16::try_from(session.contributor_voice_envelope(id, track)?)
-                        .map_err(|_| Invalid("source voice envelope overflow"))?;
+                    .ok_or(Invalid("source routing table is missing"))?;
+                data.arrangement_voice_envelopes[index] = u16::try_from(arrangement)
+                    .map_err(|_| Invalid("source arrangement voice envelope overflow"))?;
+                data.voice_envelopes[index] = u16::try_from(combined)
+                    .map_err(|_| Invalid("source voice envelope overflow"))?;
             }
         }
         Ok(routing)
@@ -207,6 +211,14 @@ impl PreparedSourceRouting {
         self.data
             .as_ref()
             .and_then(|data| data.voice_envelopes.get(contributor))
+            .copied()
+            .map_or(0, usize::from)
+    }
+    /// Prepared Arrangement-only peak, excluding Session clips not yet launched.
+    pub(crate) fn arrangement_voice_envelope(&self, contributor: usize) -> usize {
+        self.data
+            .as_ref()
+            .and_then(|data| data.arrangement_voice_envelopes.get(contributor))
             .copied()
             .map_or(0, usize::from)
     }
