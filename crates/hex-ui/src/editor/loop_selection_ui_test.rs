@@ -178,7 +178,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
             })
         };
         let initial = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         assert_eq!(region(&visual), None, "no range to invent: {key}");
         editor.read_with(&visual, |v, _| {
@@ -186,15 +186,15 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
         });
 
         click(&mut visual, audio, false);
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         assert_eq!(region(&visual), Some((0, 48_000, true)), "{key}");
         let enabled =
             editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         // The canonical ACK has not been installed: another key cannot queue
         // a duplicate action or resolve against the old enabled state.
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.worker_requests_pending, 1, "{key}");
             assert!(v.pending_requests.is_empty());
@@ -216,7 +216,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), disabled)
         });
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         assert_eq!(region(&visual), Some((0, 48_000, true)), "{key}");
 
@@ -237,7 +237,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
                 pulse_started: Instant::now(),
             });
         });
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         assert_eq!(region(&visual), Some((0, 48_000, false)), "{key}");
         // One frame of difference enables a new range, even with a remembered
@@ -248,7 +248,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
             let range = v.normalized_time_selection().unwrap();
             assert_eq!((range.start(), range.end()), (1, 48_000));
         });
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         editor.read_with(&visual, |v, _| {
             assert!(
                 matches!(
@@ -278,7 +278,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
         });
         visual.run_until_parked();
         for enabled in [false, true] {
-            visual.simulate_keystrokes(key);
+            crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
             pump(&editor, &mut visual);
             assert_eq!(region(&visual), Some((1, 48_000, enabled)), "{key}");
             editor.read_with(&visual, |v, _| {
@@ -300,7 +300,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
             editor.read_with(&visual, |v, _| {
                 assert!(v.selected_track.is_none() && v.selected_clip.is_none());
             });
-            visual.simulate_keystrokes(key);
+            crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
             pump(&editor, &mut visual);
             assert_eq!(
                 region(&visual),
@@ -339,7 +339,7 @@ fn loop_selection_keys_set_audio_midi_and_multi_clip_bounds_preserving_contents_
                 v.selected_clip_ids(),
             )
         });
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
@@ -399,7 +399,7 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
                 pulse_started: Instant::now(),
             });
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
@@ -425,7 +425,7 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
         v.time_selection.as_mut().unwrap().end_track = Some(stale);
     });
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, before);
@@ -600,7 +600,7 @@ fn l_midi_end_uses_absolute_beat_endpoint_across_tempo_change(cx: &mut TestAppCo
     });
     pump(&editor, &mut visual);
     click(&mut visual, midi, false);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
@@ -659,7 +659,7 @@ fn selection_loop_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_u
             (v.state.as_ref().unwrap().project.snapshot(), selection)
         });
         // Plain selection-loop shortcut; Command-L has separate toggle coverage.
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
@@ -714,7 +714,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
                 pulse_started: Instant::now(),
             });
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
@@ -743,7 +743,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
         };
         v.time_selection.as_mut().unwrap().end_track = Some(stale);
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision);
@@ -759,7 +759,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
         };
         v.selected_clip = Some(stale);
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -768,7 +768,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
         v.time_selection = None;
         v.selected_clip = None;
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -784,7 +784,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
     editor.update(&mut visual, |v, _| {
         v.worker_requests_pending = 1;
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
@@ -800,7 +800,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -811,7 +811,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -824,7 +824,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
     visual.simulate_mouse_down(tempo.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(tempo.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -851,7 +851,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -869,7 +869,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
         })
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -930,7 +930,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for key in ["l", "w"] {
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(
@@ -1012,7 +1012,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
         // Controlled retained-focus dispatch through actual platform keys. This is
         // not a claim that an ordinary browser row click retains editor focus.
         for key in ["l", "w"] {
-            visual.simulate_keystrokes(key);
+            crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.worker_requests_pending, 0, "{native} / {key}");
                 assert!(v.pending_requests.is_empty());
@@ -1072,7 +1072,7 @@ fn loop_review_held_middle_pan_refuses_selection_loop_until_release(cx: &mut Tes
             )
         });
         assert!(visual.update(|window, cx| editor.read(cx).focus.is_focused(window)));
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         editor.read_with(&visual, |view, _| {
             assert_eq!(
                 view.worker_requests_pending, 0,
@@ -1108,7 +1108,7 @@ fn loop_review_held_middle_pan_refuses_selection_loop_until_release(cx: &mut Tes
         visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| assert!(view.arrangement_pan.is_none()));
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |view, _| {
             let project = &view.state.as_ref().unwrap().project;
@@ -1183,7 +1183,7 @@ fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mu
                     );
                 });
             }
-            visual.simulate_keystrokes(key);
+            crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
             editor.read_with(&visual, |view, _| {
                 assert_eq!(
                     view.worker_requests_pending, 0,
@@ -1230,7 +1230,7 @@ fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mu
                 before.project.snapshot()
             );
         });
-        visual.simulate_keystrokes(key);
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, key);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |view, _| {
             let project = &view.state.as_ref().unwrap().project;
@@ -1347,7 +1347,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.sections.selected_ids(), &[ids[1]])
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     let own = editor.update(&mut visual, |v, _| next(&v.service));
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
@@ -1369,7 +1369,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
             "section loop supplies the play start"
         );
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -1384,7 +1384,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
         assert!(v.arrangement_focus.projection.enabled);
     });
     choose_loop_section(&mut visual, 2, false);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(&*v.arrangement_focus_ranges(), &[(144_000, 168_000)]);
@@ -1394,7 +1394,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     editor.read_with(&visual, |v, _| {
         assert!(!v.arrangement_focus.projection.enabled)
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -1404,7 +1404,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     });
     choose_loop_section(&mut visual, 0, false);
     choose_loop_section(&mut visual, 2, true);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.arrangement_focus.projection.enabled);
@@ -1439,7 +1439,7 @@ fn section_loop_focus_ignores_changed_selection_and_refused_or_replaced_terminal
         let (editor, mut visual, _ids, _files) = section_loop_fixture(cx);
         choose_loop_section(&mut visual, 1, false);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         let mut own = editor.update(&mut visual, |v, _| next(&v.service));
         match case {
             "selection" => {
@@ -1635,7 +1635,7 @@ fn command_l_toggles_active_loop_preserves_bounds_and_keeps_selection_play_origi
     }
     editor.update(&mut visual, |view, _| view.computer_keyboard.enabled = true);
     let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().revision, revision)
@@ -1892,7 +1892,7 @@ fn new_selection_loop_takes_play_start_only_after_ack_and_later_cursor_wins(
         v.advance_selection_intent();
         assert_eq!(v.playback_start_frame(), 18_000);
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     let terminal = editor.update(&mut visual, |v, _| next(&v.service));
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -1920,7 +1920,7 @@ fn selection_loop_does_not_override_a_new_cursor_or_a_refused_terminal(cx: &mut 
         visual.run_until_parked();
         click(&mut visual, audio, false);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         let mut event = editor.update(&mut visual, |v, _| next(&v.service));
         editor.update(&mut visual, |v, _| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();

@@ -868,6 +868,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.section_loop_key_down(event, window) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if !view.time_selection_key_down(event, window, cx)
                     && !view.tuning_audition_down(event, window, cx)
                     && !view.clip_gain_key_down(event, cx)
@@ -877,6 +881,11 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.section_loop_key_up(event, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.drag_bounce_key_up(event) {
                     cx.notify();
                 }

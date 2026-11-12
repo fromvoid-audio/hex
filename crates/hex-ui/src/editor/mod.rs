@@ -865,6 +865,7 @@ pub(super) struct EditorView {
     sections: arrangement_sections::Sections,
     locators: arrangement_locators::Locators,
     section_autoplay: bool,
+    section_loop_key: section_launch::SectionLoopKey,
     track_name: track_name::TrackNameState,
     track_tags: track_tags::State,
     pub(in crate::editor) mode: EditorMode,
@@ -1529,6 +1530,7 @@ impl EditorView {
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 view.time_selection_key_held = false;
+                view.section_loop_key = Default::default();
                 let boundary_cancelled = device_panel::cancel_sampler_boundary(view);
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
@@ -1663,6 +1665,7 @@ impl EditorView {
             sections: arrangement_sections::Sections::default(),
             locators: arrangement_locators::Locators::new(cx),
             section_autoplay: false,
+            section_loop_key: Default::default(),
             track_name: track_name::TrackNameState::default(),
             track_tags: track_tags::State::default(),
             mode: EditorMode::Arrangement,

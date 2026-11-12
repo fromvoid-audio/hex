@@ -840,7 +840,7 @@ impl EditorView {
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     kind: crate::tooltips::Kind::Identification,
-                    description: "launch and loop section".into(),
+                    description: "play section · hold l to loop".into(),
                 })
                 .into()
             })
@@ -852,7 +852,8 @@ impl EditorView {
                     && !view.sections.held()
                 {
                     click_focus.focus(window);
-                    view.launch_arrangement_section_once(id);
+                    let looped = view.use_section_loop_key();
+                    view.launch_section(id, looped);
                     cx.notify();
                 }
             }))
@@ -863,7 +864,7 @@ impl EditorView {
                         && view.sections_available()
                         && !view.sections.held()
                     {
-                        view.launch_arrangement_section_once(id);
+                        view.launch_section(id, false);
                         cx.notify();
                     }
                 },
@@ -3823,7 +3824,7 @@ pub(super) mod tests {
         visual.run_until_parked();
         let from = editor.read_with(cx, |v, _| position(v, 2));
         visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3839,7 +3840,7 @@ pub(super) mod tests {
                 "button loss cancels before any late release"
             )
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -3892,7 +3893,7 @@ pub(super) mod tests {
             v.last_enqueued_edit = None;
             v.computer_keyboard.enabled = true;
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         editor.update(cx, |v, _| {
             assert!(
                 v.last_enqueued_edit.is_none(),
@@ -3909,7 +3910,7 @@ pub(super) mod tests {
         visual.run_until_parked();
         let chorus = editor.read_with(cx, |v, _| position(v, 10));
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3946,7 +3947,7 @@ pub(super) mod tests {
                 end_frame: 2,
             });
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -4445,52 +4446,25 @@ pub(super) mod tests {
             .expect("explicit section launch")
             .center();
         let selected = editor.read_with(cx, |view, _| view.sections.selected);
-        for key in [None, Some("enter")] {
-            editor.update(cx, |view, _| {
-                view.invalidate_prepared_seek();
-            });
-            if let Some(key) = key {
-                visual.update(|window, cx| {
-                    editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window)
-                });
-                visual.simulate_keystrokes(key);
-            } else {
-                visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
-                visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            }
-            editor.update(cx, |view, _| {
-                view.tick_section_launch();
-                let launch = view
-                    .latched_seek_intent
-                    .as_ref()
-                    .and_then(|intent| intent.kind.section())
-                    .or_else(|| {
-                        view.prepared_seek
-                            .as_ref()
-                            .filter(|pending| !pending.cancelled)
-                            .and_then(|pending| pending.kind.section())
-                    })
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "explicit {key:?} launch while autoplay is off: {:?}",
-                            view.error
-                        )
-                    });
-                assert_eq!(
-                    launch.region,
-                    hex_project::LoopRegion::new(0, 96_000, true).unwrap()
-                );
-                assert_eq!(
-                    launch.quantization,
-                    hex_engine::LaunchQuantization::QuarterTriplet
-                );
-                assert!(!view.section_autoplay);
-                assert!(!view.sections.held());
-                assert_eq!(view.sections.selected, selected);
-                assert_eq!(view.state.as_ref().unwrap().project, source);
-            });
-        }
+        visual.update(|window, cx| {
+            editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window)
+        });
+        visual.simulate_keystrokes("enter");
+        editor.read_with(cx, |view, _| {
+            let pending = view
+                .pending_loop_region()
+                .expect("enter disables the old loop");
+            assert_eq!(
+                pending,
+                hex_project::LoopRegion::new(0, 96_000, false).unwrap()
+            );
+            assert!(!view.section_autoplay);
+            assert!(!view.sections.held());
+            assert_eq!(view.sections.selected, selected);
+            assert_eq!(view.state.as_ref().unwrap().project, source);
+        });
         editor.update(cx, |view, _| {
+            view.cancel_section_launch_wait();
             view.invalidate_prepared_seek();
             view.save_dialog_open = true;
         });

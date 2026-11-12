@@ -90,7 +90,7 @@ impl SeekKind {
         match self {
             Self::Fresh | Self::Locator(_) => ArrangementSeekMode::Interactive,
             Self::History => ArrangementSeekMode::HistoryPreservingInteractive,
-            Self::Section(section) => ArrangementSeekMode::SectionLoop(section.region),
+            Self::Section(section) => section.mode(),
         }
     }
 }
@@ -548,13 +548,12 @@ impl EditorView {
         &mut self,
         section: hex_session::arrangement_seek::SectionLaunch,
     ) {
-        if self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.loop_region())
-            != Some(section.region)
-        {
-            self.error = Some("section launch requires its enabled arrangement loop".into());
+        if !section.matches_loop(
+            self.state
+                .as_ref()
+                .and_then(|state| state.project.loop_region()),
+        ) {
+            self.error = Some("section launch requires its arrangement loop state".into());
             return;
         }
         self.request_prepared_seek_with_kind(

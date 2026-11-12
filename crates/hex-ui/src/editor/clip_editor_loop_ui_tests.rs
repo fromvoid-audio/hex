@@ -287,7 +287,7 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
     });
     visual.simulate_keystrokes("cmd-z");
     clip_drag_ui_test::pump_move(&editor, &mut visual);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     clip_drag_ui_test::pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let c = v.state.as_ref().unwrap().project.clip(clip).unwrap();
@@ -331,7 +331,8 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
     let source_tab = visual.debug_bounds("audio-source-tab").unwrap();
     visual.simulate_click(source_tab.center(), Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("w l");
+    visual.simulate_keystrokes("w");
+    crate::editor::section_launch::test_tap_loop_shortcut(&mut visual, "l");
     clip_drag_ui_test::pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
