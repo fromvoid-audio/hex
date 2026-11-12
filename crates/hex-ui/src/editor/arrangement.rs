@@ -482,9 +482,9 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
-                            // An open menu paints above this body; its rows
-                            // own the press, never a section or range gesture.
+                            // Foreground controls own the press while open.
                             if view.context_menu.is_some()
+                                || view.theme_settings.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return (false, false);
