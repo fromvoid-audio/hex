@@ -1122,6 +1122,10 @@ impl EditorView {
         }
         let paste_view = match self.service.try_arrangement_edit_view() {
             Ok(view) if matches!(view.kind, ArrangementEditViewKind::Paste) => Some(view),
+            Ok(view) if matches!(view.kind, ArrangementEditViewKind::LocatorAdd(_)) => {
+                visible_change |= self.observe_locator_add_view(view);
+                None
+            }
             Ok(view) if matches!(view.kind, ArrangementEditViewKind::TimeRangeCopy) => {
                 visible_change |= self.observe_time_range_copy_view(view);
                 None
