@@ -1177,6 +1177,7 @@ fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
     use std::sync::{Barrier, atomic::AtomicBool};
     let (control, _callback, _worker) = channel(BINDING, 8).unwrap();
     assert_eq!(control.received_program(), None);
+    assert!(control.has_no_pcm_pickup());
     let barrier = Barrier::new(2);
     let finished = AtomicBool::new(false);
     std::thread::scope(|scope| {
@@ -1224,8 +1225,12 @@ fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
         .record_received_program(32768, None)
         .unwrap();
     assert_eq!(control.received_program().unwrap().program, None);
+    assert!(!control.has_no_pcm_pickup());
     control.revoke();
     assert_eq!(control.received_program(), None);
+    let (unstarted, _, _) = channel(BINDING, 8).unwrap();
+    unstarted.revoke();
+    assert!(!unstarted.has_no_pcm_pickup());
 }
 
 #[test]

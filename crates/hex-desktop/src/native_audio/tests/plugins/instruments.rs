@@ -3,6 +3,7 @@ use super::*;
 use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
+mod automation_start;
 mod section_edit;
 mod track_duplicate;
 
@@ -989,6 +990,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 enum InstrumentWorkflow {
     Playback,
     Authoring,
+    AuthoringAcrossPlay,
     PacedAuthoring,
     PacedMonitoring,
     Takeover,
@@ -1218,6 +1220,14 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    if matches!(workflow, InstrumentWorkflow::AuthoringAcrossPlay) {
+        automation_start::verify(
+            &mut harness,
+            project_track.instrument().unwrap().id(),
+            applied,
+        );
+        return;
+    }
     if takeover {
         verify_instrument_takeover(
             &mut harness,
