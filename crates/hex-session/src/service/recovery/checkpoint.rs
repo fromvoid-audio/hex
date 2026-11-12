@@ -543,6 +543,106 @@ mod tests {
     }
 
     #[test]
+    fn committed_locator_views_precede_ordered_recovery_terminals() {
+        use std::time::{Duration, Instant};
+        let (service, directory, path, _, initial) = locator_worker_fixture("views");
+        let (entered, release) = hold_locator_checkpoint(&path);
+        submit_locator(&service, 24_000);
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let first_view = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break Some(view);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        if first_view.is_none() {
+            release.send(()).unwrap();
+        }
+        let first_view = first_view.expect("first committed locator view before recovery terminal");
+        let first_state = first_view.state.upgrade().unwrap();
+        assert_eq!(first_state.revision, initial + 1);
+        let first_id = first_state.project.arrangement_locators()[0].id();
+        assert!(
+            matches!(first_view.kind, ArrangementEditViewKind::LocatorAdd(id) if id == first_id)
+        );
+        assert_eq!(
+            first_state
+                .project
+                .arrangement_locator(first_id)
+                .unwrap()
+                .frame(),
+            24_000
+        );
+        submit_locator(&service, 48_000);
+        let until = Instant::now() + Duration::from_millis(180);
+        let second_view = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break Some(view);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let second_view =
+            second_view.expect("second committed locator view before recovery terminal");
+        let second_state = second_view.state.upgrade().unwrap();
+        assert_eq!(second_state.revision, initial + 2);
+        let second_id = second_state.project.arrangement_locators()[1].id();
+        assert!(
+            matches!(second_view.kind, ArrangementEditViewKind::LocatorAdd(id) if id == second_id)
+        );
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            second_state
+                .project
+                .arrangement_locator(second_id)
+                .unwrap()
+                .frame(),
+            48_000
+        );
+        assert_eq!(
+            first_view.project_generation,
+            second_view.project_generation
+        );
+        assert_eq!(
+            (first_view.previous_revision, second_view.previous_revision),
+            (initial, initial + 1)
+        );
+        let first = next(&service);
+        let second = next(&service);
+        assert_eq!(first.created, Some(Created::ArrangementLocator(first_id)));
+        assert_eq!(second.created, Some(Created::ArrangementLocator(second_id)));
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second.state.project
+        );
+        submit_locator(&service, 48_000);
+        next(&service);
+        assert!(matches!(
+            service.try_arrangement_edit_view(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        submit_locator(&service, u64::MAX);
+        assert!(next(&service).error.is_some());
+        assert!(matches!(
+            service.try_arrangement_edit_view(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn consecutive_locator_adds_commit_while_first_checkpoint_is_held() {
         check_consecutive_locator_adds(false);
     }

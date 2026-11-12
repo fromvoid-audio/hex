@@ -403,12 +403,15 @@ pub enum ArrangementEditViewKind {
     Duplicate(Created),
     Paste,
     TimeRangeCopy,
+    /// A locator identity in the exact committed view.
+    LocatorAdd(hex_project::LocatorId),
 }
 
-/// The committed Arrangement copy or paste, available before checkpoint
-/// I/O. Its bounded delivery is best effort. Only the ordinary terminal
-/// can acknowledge the edit, install authoring state or advance repeats.
-/// A missed observation does not keep an old project's media alive.
+/// A committed Arrangement edit, available before checkpoint I/O. Delivery is
+/// bounded and best effort. Only the ordinary terminal acknowledges completion
+/// and recovery or installs canonical authoring state. Consumers may act on a
+/// matched view while retaining terminal custody. A missed observation does not
+/// keep an old project's media alive.
 pub struct ArrangementEditViewObservation {
     pub project_generation: u64,
     /// First predecessor in a contiguous run of coalesced paste revisions.
@@ -9276,6 +9279,12 @@ fn run_worker(
             Some(ArrangementEditViewKind::Paste)
         } else if time_range_copy && canonical_changed && error.is_none() {
             Some(ArrangementEditViewKind::TimeRangeCopy)
+        } else if locator_add
+            && canonical_changed
+            && error.is_none()
+            && let Some(Created::ArrangementLocator(id)) = created
+        {
+            Some(ArrangementEditViewKind::LocatorAdd(id))
         } else {
             committed_arrangement_duplicate.map(ArrangementEditViewKind::Duplicate)
         };
