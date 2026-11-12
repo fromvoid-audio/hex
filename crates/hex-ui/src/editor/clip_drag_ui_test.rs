@@ -5142,6 +5142,29 @@ fn held_new_track_audition_uses_captured_defaults_for_release_and_undo(cx: &mut 
                 .expect("updated callback-applied marker")
         });
         assert_ne!(actual_a, actual_b);
+        let destination = editor.update(&mut visual, |view, cx| {
+            let drag = view.active_clip_drag.as_ref().unwrap().clone();
+            let destination = drag.destination.get();
+            drag.destination.set(None);
+            assert!(view.sync_held_clip_move_audition());
+            cx.notify();
+            destination
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("new-track-audition-audible-marker")
+                .is_none()
+        );
+        editor.update(&mut visual, |view, cx| {
+            view.active_clip_drag
+                .as_ref()
+                .unwrap()
+                .destination
+                .set(destination);
+            assert!(view.sync_held_clip_move_audition());
+            cx.notify();
+        });
         visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
