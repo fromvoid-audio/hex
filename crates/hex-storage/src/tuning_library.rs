@@ -593,7 +593,7 @@ mod tests {
         save(&d.0, 1, "old", Scale::equal(12)).unwrap();
         let path = d.0.join("slot-1.freqs");
         let original = fs::read(&path).unwrap();
-        let status = std::process::Command::new("/bin/sh")
+        let output = std::process::Command::new("/bin/sh")
             .args(["-c", "ulimit -f 0; trap '' XFSZ; exec \"$@\"", "hex-test"])
             .arg(std::env::current_exe().unwrap())
             .args([
@@ -601,9 +601,14 @@ mod tests {
                 "tuning_library::tests::failed_staged_write_retains_original_and_recovery_file",
             ])
             .env(CHILD, &d.0)
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success());
+        assert!(
+            output.status.success(),
+            "child failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(fs::read(path).unwrap(), original);
         assert!(d.0.join("slot-1-recovery-01.freqs").is_file());
     }
