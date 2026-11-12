@@ -76,7 +76,7 @@ fn held_single_midi_move_reschedules_the_note_before_commit() {
         sequence: 1,
         clips: vec![clip].into(),
         anchor: clip,
-        track,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(track),
         position: ClipGroupPosition::Midi(beat(1)),
         mode: ArrangementMoveMode::Move,
     };
@@ -158,7 +158,7 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
         sequence: 1,
         clips: vec![clip].into(),
         anchor: clip,
-        track,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(track),
         position: ClipGroupPosition::Audio(48_000),
         mode: ArrangementMoveMode::Move,
     };
@@ -228,6 +228,92 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
 }
 
 #[test]
+fn held_audio_move_to_new_track_is_transient_and_commits_once() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{
+        ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
+        ClipMovePreviewDestination, NewTrackMoveDestination,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, _) = h.applied(initial);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let looped = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = looped.state.project.snapshot();
+    let destination = NewTrackMoveDestination::new(Arc::from("track 2"), Some(track), 0.5).unwrap();
+    let mut target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 25,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: ArrangementMoveDestination::NewTrack(destination),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert_eq!(
+        target.identity().destination,
+        ClipMovePreviewDestination::NewTrack {
+            before_track: Some(track)
+        }
+    );
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+    assert!(!h.service.audition_arrangement_move(None));
+    let (restored, _) = h.applied(preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    target.sequence = 2;
+    target.position = ClipGroupPosition::Audio(0);
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, _) = h.applied(restored);
+    assert!(h.render().iter().all(|f| (f[0] - 0.125).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipToNewTrack {
+            clip,
+            name: "track 2".into(),
+            before_track: Some(track),
+            start: 0,
+            initial_gain: Some(0.5),
+        },
+    });
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert_eq!(committed.state.revision, looped.state.revision + 1);
+    assert_eq!(committed.state.project.tracks().len(), 2);
+    assert_eq!(committed.state.project.tracks()[0].gain(), 0.5);
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, _) = h.applied(preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.125).abs() < 1e-5));
+    let mut expected_undo = original;
+    expected_undo.next_id = committed.state.project.snapshot().next_id;
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), expected_undo);
+    h.applied(committed_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+}
+
+#[test]
 fn held_group_move_auditions_both_clips_and_commits_once() {
     use hex_project::{ClipGroupPosition, Command};
     use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
@@ -251,7 +337,9 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
         sequence: 1,
         clips: vec![a, b].into(),
         anchor: a,
-        track: second.state.project.tracks()[0].id(),
+        destination: hex_session::service::ArrangementMoveDestination::Existing(
+            second.state.project.tracks()[0].id(),
+        ),
         position: ClipGroupPosition::Audio(48_000),
         mode: ArrangementMoveMode::Move,
     };
@@ -293,7 +381,7 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
         command: Command::MoveClipsWithOverwrite {
             clips: target.clips.to_vec(),
             anchor: a,
-            track: target.track,
+            track: second.state.project.tracks()[0].id(),
             position: target.position,
             copy: false,
         },
@@ -361,7 +449,7 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
         command: Command::MoveClipsWithOverwrite {
             clips: copy.clips.to_vec(),
             anchor: copy.anchor,
-            track: copy.track,
+            track: second.state.project.tracks()[0].id(),
             position: copy.position,
             copy: true,
         },
@@ -401,7 +489,7 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
         command: Command::DuplicateAliasClipsAt {
             clips: alias.clips.to_vec(),
             anchor: alias.anchor,
-            track: alias.track,
+            track: second.state.project.tracks()[0].id(),
             position: alias.position,
         },
     });

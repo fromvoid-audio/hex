@@ -346,7 +346,7 @@ impl EditorView {
                 state.project.tempo_map().beat_to_frame(beat).ok()?
             }
         };
-        Some((applied.track, frame))
+        Some((applied.destination.existing_track()?, frame))
     }
 
     pub(super) fn pending_clip_move_matches(&self, request: &Request) -> bool {
