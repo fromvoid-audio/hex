@@ -213,6 +213,7 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/update.rs": ("update::tests::cancelled_ready_cannot_block_or_replace_a_new_request",),
     "src/context_menu.rs": ("context_menu::tests::",),
     "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/header.rs": ("editor::header::tests::",),
@@ -229,6 +230,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/device_panel/utility_panel.rs": ("editor::device_panel::utility_panel::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
+    "src/editor/controller_input.rs": ("editor::controller_input::tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
     "src/section_surface/focus.rs": ("section_surface::focus::tests::",),
     "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
@@ -253,8 +255,16 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
+    "src/editor_backend.rs": ("editor_backend::tests::",),
+    "src/editor/truncated_import.rs": ("editor::truncated_import::unit_tests::",),
+    "src/editor/timeline_strip.rs": ("editor::timeline_strip::tests::",),
+    "src/editor/shortcut_tests.rs": ("editor::shortcut_tests::",),
+    "src/editor/scrub_tests.rs": ("editor::scrub::tests::latest_target_replaces_moves_and_release_survives_an_in_flight_destination",),
+    "src/editor/sample_recorder/beat_guides.rs": ("editor::sample_recorder::beat_guides::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/recovery.rs": ("editor::recovery::cursor_tests::",),
+    "src/editor/project_recovery.rs": ("editor::project_recovery::tests::",),
     "src/editor/dialogs.rs": ("editor::dialogs::tests::",),
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
     "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
@@ -265,6 +275,10 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
+    "src/editor/device_panel/sampler_cursor_tests.rs": ("editor::device_panel::sampler_overview::tests::sampler_cursor_original_frame_mapping_bounds_and_time",),
+    "src/editor/device_panel/vst3_parameters/scrollbar.rs": ("editor::device_panel::vst3_parameters::scrollbar::tests::thumb_clamps_extents_and_rejects_invalid_geometry",),
+    "src/editor/device_panel/rattle_panel.rs": ("editor::device_panel::rattle_panel::tests::",),
+    "src/editor/device_panel/modulators.rs": ("editor::device_panel::modulators::tests::",),
     "src/editor/device_panel/eq_panel/gestures.rs": ("editor::device_panel::eq_panel::gestures::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
@@ -277,6 +291,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq_panel.rs": ("editor::device_panel::eq_panel::tests::",),
     "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
     "src/editor/fade_handles.rs": ("editor::fade_handles::tests::",),
+    "src/editor/controller/submission.rs": ("editor::controller::submission::observation_tests::",),
     "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
                                    CONTROLLER_SOURCE_BINDING_UNIT),
     "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
@@ -290,6 +305,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/tracks.rs": ("editor::tracks::midi_trim_unit_tests::",),
     "src/editor/pending_clip_move.rs": ("editor::pending_clip_move::tests::",),
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
+    "src/editor/midi_origin_view.rs": ("editor::midi_origin_view::tests::",),
     "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
     "src/editor/midi_ruler.rs": ("editor::midi_ruler::geometry_tests::",),
     "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
@@ -501,6 +517,12 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor_backend::": (
+        "editor::recovery::tests::explicit_play_from_recovers_degraded_vst3_at_the_requested_frame",
+    ),
+    "editor::shortcut_tests::": (
+        "editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus",
+    ),
     "editor::zoom_fit::tests::": ("editor::zoom_fit::unit_tests::",),
     "editor::browser::ui_test::": ("editor::browser::unit_tests::",),
     "editor::browser::ui_test::scrollbar_ui_tests::": (
@@ -512,6 +534,13 @@ UI_MODULE_TEST_DEPENDENCIES = {
         "editor::context_menu::tests::menu_escape_outside_click_and_enter_do_not_leak_to_editor",
     ),
     "editor::context_menu::": ("context_menu::tests::",),
+    "editor::device_panel::rattle_panel::": (
+        "editor::device_panel::tests::rattle_ui_tests::rattle_display_reads_authored_automation_and_manual_draft_precedence",
+        "editor::device_panel::tests::rattle_ui_tests::rattle_track_return_panel_fits_and_drive_draft_commits_one_undo",
+    ),
+    "editor::device_panel::vst3_parameters::scrollbar::": (
+        "editor::device_panel::vst3_parameters::tests::vst3_header_and_list_bounds_stay_fixed_across_touch_states",
+    ),
     "editor::display_error::": (
         "editor::controller::project_replacement_tests::failed_batch_worker_event_displays_original_path_in_status_and_tooltip",
     ),
@@ -547,6 +576,14 @@ UI_MODULE_TEST_DEPENDENCIES = {
         "editor::drag::group_drag_ui_test::group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit",
     ),
     "editor::clip_content_cache::tests::": ("editor::clip_content_cache::unit_tests::",),
+    "editor::device_panel::modulators::": (
+        "editor::device_panel::tests::modulation_panel_adds_and_maps_an_audio_rate_modulator",
+    ),
+    "editor::midi_origin_view::": ("editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges",),
+    "editor::midi_origin_view::tests::": ("editor::clip_drag_ui_test::midi_origin_capture_is_beat_exact_at_both_edges",),
+    "editor::project_recovery::": (
+        "editor::leftover_recovery::tests::launch_offers_each_untitled_leftover_and_sets_a_recovered_foreign_slot_aside",
+    ),
     "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
     "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
     "editor::drag::": ("editor::drag_autoscroll::tests::",),
@@ -620,6 +657,11 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                       "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
                       "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
+                    {"editor::sample_recorder::beat_guides::tests::",
+                     "editor::sample_recorder::waveform::tests::take_waveform_drag_selects_exact_original_frames"},
+                    {"editor::timeline_strip::tests::",
+                     "editor::timeline_strip_ui_tests::arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces",
+                     "editor::timeline_strip_ui_tests::loop_endpoints_exactly_at_viewport_edges_remain_painted"},
                     {"editor::midi_canvas::geometry::",
                      "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
                     {"editor::midi_pan::tests::",

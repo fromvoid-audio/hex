@@ -1235,62 +1235,18 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
     ) -> Result<(), String> {
-        use hex_session::service::ResidentPublicationAcceptance;
-        use std::time::{Duration, Instant};
-
-        let ResidentPublicationAcceptance::Submitted {
-            output_identity,
-            audio_revision,
-        } = acceptance
-        else {
-            return Ok(());
-        };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let control = self
-                .output
-                .as_mut()
-                .and_then(|output| output.publication.control())
-                .filter(|control| control.output_identity() == Some(output_identity))
-                .ok_or("source edit lost its audio output")?;
-            let status = &control.status;
-            if status.recording_source().is_some_and(|source| {
-                source.output_identity == output_identity
-                    && source.audio_revision == audio_revision
-                    && source.context == context
-            }) {
-                return Ok(());
-            }
-            if let Some((revision, reason)) = status.rejected_revision()
-                && revision == audio_revision
-            {
-                return Err(format!(
-                    "source edit playback refused · {}",
-                    reason.message()
-                ));
-            }
-            if status.device_fault.load(Acquire)
-                || status.render_fault.load(Acquire)
-                || Instant::now() >= deadline
-            {
-                // A queued candidate must not install after the editor refuses
-                // its revision. Retire this output before reporting loss.
-                self.relinquish_output();
-                return Err("source edit lost audio confirmation · restart audio".into());
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        self.confirm_resident_edit_publication(context, acceptance, "source edit")
     }
     fn resident_publication_readiness(
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
         NativeAudioSink::resident_publication_readiness(self)
     }
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        input: hex_session::service::PluginStateSaveInput<'_>,
+        input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
-        self.capture_plugin_save(input)
+        self.capture_current_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.request_cancellation = Some(cancellation);
@@ -1304,18 +1260,35 @@ impl WorkerAudioSink for NativeAudioSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        if self.plugins.finish_reopen(context, accepted)
-            && accepted
-            && self
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        if !self.plugins.finish_reopen(context, result.is_ok())
+            || self
                 .document_rebind
                 .as_ref()
-                .is_none_or(|rebind| rebind.context != context || !rebind.restores_plugins)
+                .is_some_and(|rebind| rebind.context == context && rebind.restores_plugins)
         {
-            // The exact replacement graph was admitted with this unpublished
-            // owner still inventoried. Retire it on control only after success.
-            self.resident
-                .discard_obsolete_pending_after_restore(context);
+            return;
+        }
+        match result {
+            Ok(()) => {
+                // The exact replacement graph was admitted with this unpublished
+                // owner still inventoried. Retire it on control only after success.
+                self.resident
+                    .discard_obsolete_pending_after_restore(context);
+            }
+            Err(reason) => {
+                // The Session error alone has no output identity. Report this
+                // refusal on the fresh output so the editor can finish recovery.
+                self.observe(
+                    context,
+                    "vst3 restore refused",
+                    EditorPublicationState::Refused(reason.into()),
+                );
+            }
         }
     }
     fn prepare_stopped_playback_restore(
@@ -1827,7 +1800,20 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        NativeAudioSink::begin_section_edit(self, context, allow_playing)
+        NativeAudioSink::begin_section_edit(self, context, allow_playing, false)
+    }
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<(), String> {
+        NativeAudioSink::begin_section_edit(self, context, true, true)
+    }
+    fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        NativeAudioSink::confirm_section_edit_recovery(self, context, acceptance)
     }
     fn section_edit_ready(
         &mut self,

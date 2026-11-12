@@ -19,7 +19,7 @@ use super::trim::{TrimDrag, loop_handles};
 use super::viewport::Viewport;
 use super::waveform::{
     ClipTooltip, button, fade_envelope_samples, toggle_button_with_style,
-    waveform_source_segment_view, waveform_summary_view,
+    waveform_source_segment_view_cached, waveform_summary_view_cached,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -67,6 +67,7 @@ struct ClipGhostDecor {
     selector: &'static str,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     contents: Option<Div>,
+    waveform_cache: std::rc::Rc<super::waveform_geometry::WaveformViewCache>,
 }
 
 /// Body-only clipping leaves the title and outer selection/rounded mask intact.
@@ -123,6 +124,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         selector,
         grid,
         contents,
+        waveform_cache,
     } = decor;
     let stroke = 1.0 / scale.max(1.0);
     let has_border = hex_widgets::rectangle_border_width(width) > 0.0;
@@ -175,8 +177,9 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
         ghost = ghost.children([loop_handles::body(
-            clip_waveform_body(waveform_summary_view(
+            clip_waveform_body(waveform_summary_view_cached(
                 std::sync::Arc::clone(waveform),
+                waveform_cache,
                 theme::waveform_ink_for_fill(fill),
             )),
             looping,
@@ -1278,14 +1281,16 @@ impl EditorView {
                     .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
                     .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
                 {
-                    drop_preview =
-                        drop_preview.children([clip_waveform_body(waveform_source_segment_view(
+                    drop_preview = drop_preview.children([clip_waveform_body(
+                        waveform_source_segment_view_cached(
                             waveform,
                             preview.start_frame,
                             visible_start,
                             visible_end,
+                            std::rc::Rc::clone(&self.waveform_geometry_cache),
                             crate::theme::color(crate::theme::PaletteRole::Waveform),
-                        ))]);
+                        ),
+                    )]);
                 }
                 if clip_preview.is_some()
                     && self
@@ -1633,6 +1638,7 @@ impl EditorView {
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        let (muted, soloed) = self.displayed_track_switches(track);
         // Empty header gutters bubble to the shared selection/focus owner.
         // Only actual control hit regions stop clicks; row-wide stops make the
         // lower header background unreachable for ordinary/modifier selection.
@@ -1647,10 +1653,8 @@ impl EditorView {
                 .children([name_area.child(track_name_view).flex_1().min_w_0()])
                 .child(self.sample_arm_button(sample_source, cx))
         } else if resident_layout {
-            let (active_background, active_text) =
-                super::track_gain::activator_colors(!track.muted());
-            let (solo_background, solo_text) =
-                super::track_gain::activator_colors(self.displayed_solo(track_id, track.soloed()));
+            let (active_background, active_text) = super::track_gain::activator_colors(!muted);
+            let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
                 .w_full()
@@ -1701,7 +1705,7 @@ impl EditorView {
                 );
             let activator = toggle_button_with_style(
                 "",
-                if track.muted() {
+                if muted {
                     "activate track"
                 } else {
                     "deactivate track"
@@ -1851,15 +1855,10 @@ impl EditorView {
                 .child(
                     toggle_button_with_style(
                         "",
-                        if track.muted() {
-                            "unmute track"
-                        } else {
-                            "mute track"
-                        },
+                        if muted { "unmute track" } else { "mute track" },
                         ("track-mute", track_id.value()),
                         {
-                            let (background, text) =
-                                super::track_gain::activator_colors(!track.muted());
+                            let (background, text) = super::track_gain::activator_colors(!muted);
                             theme::action_style().with_state_colors(background, text)
                         },
                     )
@@ -1882,9 +1881,7 @@ impl EditorView {
                         "solo track · s · cmd+click additive",
                         ("track-solo", track_id.value()),
                         {
-                            let (background, text) = super::track_gain::activator_colors(
-                                self.displayed_solo(track_id, track.soloed()),
-                            );
+                            let (background, text) = super::track_gain::activator_colors(soloed);
                             theme::action_style().with_state_colors(background, text)
                         },
                     )
@@ -2158,8 +2155,17 @@ impl EditorView {
                     && g.ids.binary_search(&id).is_ok()
             })
         };
+        // Section focus shows every clip in each visible row. The canonical
+        // ID cache cannot yet contain new IDs from a committed copy or paste.
+        let is_committed_edit_view = self
+            .arrangement_duplicate_view()
+            .or_else(|| self.committed_section_copy_view())
+            .or_else(|| self.arrangement_paste_view())
+            .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
-            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
+            if hides_group_member(clip.id())
+                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
+            {
                 continue;
             }
             let Some(end) = clip.start().checked_add(clip.duration()) else {
@@ -2257,7 +2263,9 @@ impl EditorView {
             }
         }
         for clip in track.midi_clips() {
-            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
+            if hides_group_member(clip.id())
+                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
+            {
                 continue;
             }
             let Some(preview) = state.midi_preview.get(clip.id()) else {
@@ -3267,6 +3275,7 @@ impl EditorView {
                     scale,
                 },
                 ClipGhostDecor {
+                    waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
                     looping: clip_repeats(&state.project, payload.clip),
                     notched: visible_end == preview.end_frame,
                     fill: theme::clip_activity_fill(
@@ -3341,6 +3350,7 @@ impl EditorView {
                 scale,
             },
             ClipGhostDecor {
+                waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
                 looping: self
                     .state
                     .as_ref()

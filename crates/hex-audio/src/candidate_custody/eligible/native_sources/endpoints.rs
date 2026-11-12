@@ -198,6 +198,20 @@ impl NativeEndpointBank {
             .capacity()
             .checked_mul(std::mem::size_of::<Option<NativeEndpointEnvelope>>())
     }
+    #[cfg(test)]
+    pub(crate) fn install_for_test(
+        &mut self,
+        callback: crate::plugin_effects::NativeEffectCallback,
+    ) {
+        let binding = callback.binding();
+        let endpoint = NativeEndpointEnvelope(Box::new(Endpoint {
+            slot: 0,
+            binding,
+            callback: Some(NativeEffectEntry::new(callback)),
+            signal: Arc::new(EndpointSignal::new()),
+        }));
+        assert!(self.install(binding.root, endpoint).is_ok());
+    }
     pub(crate) fn install(
         &mut self,
         root: u64,

@@ -42,12 +42,14 @@ pub(super) struct PendingKinds {
     midi_drag: bool,
     fade: bool,
     locator_move: bool,
+    locator_add: Option<u64>,
     clip_gain: bool,
     clip_activation: bool,
     gain: bool,
     gain_take: bool,
     device_automation: bool,
     time_copy: bool,
+    time_duplicate: bool,
     sample_drop: bool,
     project_rate: bool,
 }
@@ -108,12 +110,14 @@ impl EditorView {
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
                 locator_move: self.locators.matches(request),
+                locator_add: self.locators.queued_add_frame(request),
                 clip_gain: self.clip_gain_matches(request),
                 clip_activation: self.clip_activation_matches(request),
                 gain: self.pending_gain_matches(request),
                 gain_take: self.pending_gain_take_matches(request),
                 device_automation: self.pending_device_automation_matches(request),
                 time_copy: self.pending_time_copy_matches(request),
+                time_duplicate: self.pending_time_duplicate_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
                 project_rate: self.project_rate_settings.matches(request),
             },
@@ -159,6 +163,9 @@ impl EditorView {
         self.truncated_import_submitted(import_intent);
         if kinds.time_copy {
             self.time_copy_submitted();
+        }
+        if kinds.time_duplicate {
+            self.time_duplicate_submitted();
         }
         if kinds.trim {
             self.trim_request_submitted();
@@ -217,6 +224,10 @@ impl EditorView {
         }
         if kinds.locator_move {
             self.locators.submitted(self.worker_requests_pending);
+        }
+        if let Some(frame) = kinds.locator_add {
+            self.locators
+                .add_submitted(frame, self.worker_requests_pending);
         }
         if kinds.fade {
             self.fade_submitted();
@@ -285,6 +296,9 @@ impl EditorView {
         if kinds.time_copy {
             self.pending_created_note_selection = None;
         }
+        if kinds.time_duplicate {
+            visible |= self.pending_time_range_move.take().is_some();
+        }
         if kinds.trim {
             visible |= self.retire_pending_trim();
         }
@@ -339,6 +353,9 @@ impl EditorView {
         if kinds.locator_move {
             visible |= self.locators.refuse();
         }
+        if let Some(frame) = kinds.locator_add {
+            visible |= self.locators.refuse_add(frame);
+        }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();
         }
@@ -368,7 +385,7 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod observation_tests {
     use super::*;
 

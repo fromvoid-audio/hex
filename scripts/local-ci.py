@@ -1147,6 +1147,24 @@ class LocalCiRunner:
     def _execution_policy_error(self) -> str | None:
         return cli_policy_error(self.root) if self._cli_policy_bound else delivery_source_error(self.root)
 
+    def _step_sequence_error(self) -> str | None:
+        """Reject incomplete qualifying execution before any target is prepared.
+
+        This binds execution to the submitted plan, not the plan to source;
+        independent plan authentication is a separate requirement.
+        """
+        if self.mode not in {"full", "merge", "release"} or self.plan is not None and self.plan.get("qualifies_merge") is False:
+            return None
+        if self.plan is not None and self.plan.get("qualifies_merge") is not True:
+            return "plan must explicitly declare its qualification status"
+        try:
+            expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
+        except (KeyError, TypeError, ValueError) as error:
+            return f"cannot select qualifying steps: {error}"
+        if self.steps != expected:
+            return "qualifying steps differ from the complete declared configuration"
+        return None
+
     def __init__(
         self,
         root: Path = ROOT,
@@ -1188,8 +1206,8 @@ class LocalCiRunner:
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
-        self.steps = steps or (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
-                               else planned_steps({"scope": "full"}))
+        self.steps = steps if steps is not None else (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
+                                                      else planned_steps({"scope": "full"}))
         self.output_dir = self.root / "artifacts" / "local-ci" / self.run_id
         self.summary_path = self.output_dir / "summary.json"
         self.started_monotonic = time.monotonic()
@@ -2755,6 +2773,9 @@ class LocalCiRunner:
             elif (error := self._execution_policy_error()) is not None:
                 key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
                 self.summary.update(status="failed", exit_code=2, **{key: error})
+            elif (error := self._step_sequence_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_sequence_error=error)
             elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -2868,7 +2889,7 @@ class LocalCiRunner:
                 if self.mode == "merge" and not failed:
                     self.summary["test_budget"] = merge_test_budget(
                         self.summary["steps"], self.over_budget_reason)
-                partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
+                partial = self.mode not in {"full", "merge", "release"} or self.plan is not None and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
                 self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0

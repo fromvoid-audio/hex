@@ -3,6 +3,9 @@ use super::*;
 use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
+mod section_edit;
+mod track_duplicate;
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
@@ -15,7 +18,9 @@ fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
             .args(["--exact", &test, "--ignored", "--nocapture"])
             .env(CHILD, "1");
         if installed.is_none() {
-            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "127");
+            child
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+                .env("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET", "1");
         }
         let result = child.output().unwrap();
         assert!(
@@ -105,6 +110,33 @@ fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
         .unwrap()
         .state()
         .clone();
+    if installed.is_none() {
+        let original = hex_plugin_state::decode(&state).unwrap().component.unwrap();
+        assert_eq!(f32::from_le_bytes(original[8..12].try_into().unwrap()), 1.0);
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        // Send a live note so the fixture selects a preset internally. The
+        // canonical project still contains the insertion-time default.
+        let live_peak = (0..6)
+            .flat_map(|_| render_completed_block(&harness))
+            .flatten()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        assert!(live_peak > 0.001, "the instrument must sound before bounce");
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Pause)
+            .unwrap();
+        render_completed_block(&harness);
+    }
     let control = hex_export::ExportControl::default();
     harness
         .service
@@ -154,9 +186,10 @@ fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
     if installed.is_none() {
         let first = hex_export::FLOAT32_WAV_HEADER_BYTES as usize;
         let sample = f32::from_le_bytes(wav[first..first + 4].try_into().unwrap());
+        let expected = 100.0 / 127.0 * 0.5;
         assert!(
-            sample > 0.001,
-            "offline bridge latency must be trimmed: {sample}"
+            (sample - expected).abs() < 1e-6,
+            "the compensated bounce must start with the live preset: {sample} vs {expected}"
         );
     }
     let (applied, _) = harness.applied(applied);

@@ -1469,7 +1469,11 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         let ready = view
             .applied
             .is_some_and(|source| source.audio_revision > before_stop)
-            && visual.debug_bounds(knob).is_some();
+            && visual.debug_bounds(knob).is_some()
+            && view
+                .parameter_controls
+                .iter()
+                .any(|&(current, parameter, _)| current == device.value() && parameter == 7);
         assert!(
             ready || Instant::now() < deadline,
             "restore status: {:?}; applied: {:?}; before: {before_stop}; knob: {:?}; restoring: {}; retry: {}; pending: {}; queued: {}",

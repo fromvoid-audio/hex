@@ -155,10 +155,11 @@ fn capture_outgoing(
     let Some(audio) = events.sampler_edit_audio() else {
         return Ok(None);
     };
-    let captures = audio.capture_plugin_states_for_save(super::PluginStateSaveInput {
+    let captures = audio.capture_plugin_states(super::PluginStateCaptureInput {
         project,
         context,
         cancellation,
+        device_filter: None,
     })?;
     if cancellation.is_cancelled() {
         return Err("sample rate change cancelled".into());

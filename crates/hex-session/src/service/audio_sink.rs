@@ -467,7 +467,7 @@ pub enum ResidentPublicationPolicy {
         requires_plugin_profile: bool,
     },
     FreshIfUnchanged(ResidentFreshRuntimeFence),
-    SectionWhenReady {
+    QuantizedSeekWhenReady {
         fence: ResidentFreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },
@@ -588,15 +588,15 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
     /// Capture every active hosted instance required by this exact canonical
-    /// save input. The existing worker retains request order while the adapter
+    /// capture input. The existing worker retains request order while the adapter
     /// drains each admitted native token to its matching terminal, including
     /// failure/cancellation. No stop, canonical edit or source owner transfer.
     /// An output without native hosting has no runtime states to capture and
     /// preserves the project's opaque unavailable state. Native hosts must
     /// override this method; failed capture must never fall back to empty data.
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        _input: PluginStateSaveInput<'_>,
+        _input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
         Ok(Vec::new())
     }
@@ -627,10 +627,11 @@ pub trait WorkerAudioSink: Send {
     }
     /// Exact same-context recompilation terminal. Before acceptance, the sink
     /// retains its admitted unpublished document graph and original resources.
+    /// Refusals carry the reason for the matching output's recovery consumer.
     fn finish_plugin_state_restore(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-        _accepted: bool,
+        _result: Result<(), &str>,
     ) {
     }
     /// Renew stopped native sources through their original output owner. None
@@ -917,6 +918,23 @@ pub trait WorkerAudioSink: Send {
         Err("native arrangement edits are unavailable".into())
     }
     /// Callback-observed transport. None means the command prefix is pending.
+    /// A structural section edit can recover from a refused same-project
+    /// publication by fencing the exact runtime still installed on the output.
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        self.begin_section_edit(context, true)
+    }
+    /// A recovered section edit must reach its callback terminal before commit.
+    /// An ordinary section edit uses the existing publication contract.
+    fn confirm_section_edit_recovery(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
         None
     }
@@ -1033,6 +1051,7 @@ pub(super) struct WorkerEvents {
     // Observed-request timing only; absent without an installed observer.
     diagnostic_started: Option<std::time::Instant>,
     section_phases: Option<super::diagnostics::SectionPhases>,
+    recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -1046,6 +1065,15 @@ pub(super) struct WorkerEvents {
     publication_wait: Option<super::publication_wait::Wait>,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
+}
+/// One request's unsent event and diagnostic identity stay together if the
+/// control worker has to retain an outcome before delivering it.
+pub(super) struct PendingOutcome {
+    pub(super) event: Event,
+    diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    diagnostic_started: Option<std::time::Instant>,
+    section_phases: Option<super::diagnostics::SectionPhases>,
+    recovery_timing: Option<(&'static str, Duration)>,
 }
 /// One bounded control poll may make a previously admitted gesture ready.
 /// The queued user FIFO retains priority over this copied continuation.
@@ -1073,6 +1101,7 @@ impl WorkerEvents {
         self.diagnostic = request;
         self.diagnostic_started = request.map(|_| std::time::Instant::now());
         self.section_phases = None;
+        self.recovery_timing = None;
         self.diagnostics.emit(
             request,
             super::diagnostics::DiagnosticStage::WorkerBegin {
@@ -1099,6 +1128,20 @@ impl WorkerEvents {
         if let (Some(phases), Some(started)) = (&mut self.section_phases, started) {
             phases.view += started.elapsed();
         }
+        result
+    }
+    /// Time recovery maintenance only for observed requests with a named phase.
+    pub(super) fn measure_recovery<T>(
+        &mut self,
+        field: &'static str,
+        maintain: impl FnOnce() -> T,
+    ) -> T {
+        let Some(_) = self.diagnostic else {
+            return maintain();
+        };
+        let started = std::time::Instant::now();
+        let result = maintain();
+        self.recovery_timing = Some((field, started.elapsed()));
         result
     }
     pub(super) fn begin_request(
@@ -1169,6 +1212,7 @@ impl WorkerEvents {
             diagnostic: None,
             diagnostic_started: None,
             section_phases: None,
+            recovery_timing: None,
             shutdown,
             audio,
             last_context: None,
@@ -1267,9 +1311,14 @@ impl WorkerEvents {
     /// backpressure already retries at the busy cadence.
     pub(super) fn send_with_control_poll<R>(
         &mut self,
-        mut event: Event,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+        event: Event,
+        control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
     ) -> bool {
+        let pending = self.capture_outcome(event);
+        self.send_pending_with_control_poll(pending, control_poll)
+    }
+
+    pub(super) fn capture_outcome(&mut self, mut event: Event) -> PendingOutcome {
         if let Some(source) = &event.state.canonical_audio_source {
             self.canonical_source_changed(source);
         }
@@ -1320,11 +1369,30 @@ impl WorkerEvents {
                     })
             })
             .map(|active| (active.key, active.sequence));
-        let diagnostic = self.diagnostic.take();
-        let worker = self.diagnostic_started.take().map(|start| start.elapsed());
-        let section = self.section_phases.take();
+        PendingOutcome {
+            event,
+            diagnostic: self.diagnostic.take(),
+            diagnostic_started: self.diagnostic_started.take(),
+            section_phases: self.section_phases.take(),
+            recovery_timing: self.recovery_timing.take(),
+        }
+    }
+
+    pub(super) fn send_pending_with_control_poll<R>(
+        &mut self,
+        pending: PendingOutcome,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+    ) -> bool {
+        let PendingOutcome {
+            mut event,
+            diagnostic,
+            diagnostic_started,
+            section_phases: section,
+            recovery_timing,
+        } = pending;
+        let worker = diagnostic_started.map(|start| start.elapsed());
         self.diagnostics
-            .outcome(diagnostic, &event, false, worker, section);
+            .outcome(diagnostic, &event, false, worker, section, recovery_timing);
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
@@ -1401,13 +1469,14 @@ impl WorkerEvents {
         &mut self,
         queued: QueuedRequest,
         source: hex_engine::AudioSourceContext,
+        recover: bool,
     ) -> Option<QueuedRequest> {
         let sink = self
             .audio
             .as_mut()
             .filter(|audio| audio.resident_publication_enabled())
             .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
-        self.stopped_fence.defer(sink, queued, source)
+        self.stopped_fence.defer(sink, queued, source, recover)
     }
     /// The lease outcome resolved before dispatch for `source`, if any.
     pub(super) fn take_stopped_fence(
@@ -1686,6 +1755,108 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn retained_outcomes_keep_their_request_identity_and_order() {
+        use super::super::diagnostics::{DiagnosticOrigin, DiagnosticRequest, Hooks};
+        use std::sync::atomic::AtomicU64;
+
+        let mut service = Service::new(48_000, 8, 1024).unwrap();
+        let first = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack { name: "one".into() }))
+            .unwrap();
+        let second = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        let first_context = first
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let second_context = second
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let observed = Arc::new(Observation::default());
+        let mut events = WorkerEvents::new_with_diagnostics(
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(Sink {
+                observed: Arc::clone(&observed),
+                fail: false,
+                idle: true,
+            })),
+            Arc::new(Hooks::default()),
+        );
+        let intent = AtomicU64::new(0);
+        let mut queued = QueuedRequest::continuation(Request::CopyClips(Vec::new()), &intent);
+        queued.diagnostic = Some(DiagnosticRequest {
+            request_id: 1,
+            origin: DiagnosticOrigin::Submitted,
+            ui_action_id: None,
+            kind: "first",
+            operation: None,
+        });
+        events.begin_diagnostics(&queued, 0, first.state.revision);
+        let first_revision = first.state.revision;
+        let first = events.capture_outcome(first);
+        queued.diagnostic.as_mut().unwrap().request_id = 2;
+        events.begin_diagnostics(&queued, 0, second.state.revision);
+        let second_revision = second.state.revision;
+        let second = events.capture_outcome(second);
+        {
+            let sources = observed.sources.lock().unwrap();
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|(generation, revision, _)| (*generation, *revision))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (
+                        first_context.project_generation,
+                        first_context.editor_revision
+                    ),
+                    (
+                        second_context.project_generation,
+                        second_context.editor_revision
+                    ),
+                ]
+            );
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(events.send_pending_with_control_poll(first, |_| ()));
+        assert!(events.send_pending_with_control_poll(second, |_| ()));
+        let first = receiver.try_recv().unwrap();
+        let second = receiver.try_recv().unwrap();
+        assert_eq!(
+            (
+                first.request.unwrap().request_id,
+                first.event.state.revision
+            ),
+            (1, first_revision)
+        );
+        assert_eq!(
+            (
+                second.request.unwrap().request_id,
+                second.event.state.revision
+            ),
+            (2, second_revision)
+        );
+    }
     #[derive(Default)]
     struct Observation {
         sources: Mutex<Vec<(u64, u64, thread::ThreadId)>>,

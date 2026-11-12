@@ -594,19 +594,9 @@ mod tests {
         let observation = Arc::new(
             hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
         );
-        let deadline = crate::test_wait::hang_deadline();
-        let (mut output, _backend) = loop {
-            match hex_audio::worker_fixture::open(48_000) {
-                Ok(output) => break output,
-                Err(error)
-                    if error == "audio output is open or still shutting down"
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::yield_now()
-                }
-                Err(error) => panic!("{error}"),
-            }
-        };
+        let _output_serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, mut backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
         let client = output.take_client().unwrap();
         let applied = client.status().unwrap().applied_revision.load(Acquire);
         let (window, editor) = editor_window(cx, project, Arc::default());
@@ -711,5 +701,10 @@ mod tests {
             assert_eq!(view.track_meters.scratch.visible.as_ptr(), pointers.0);
             assert_eq!(view.track_meters.scratch.readings.as_ptr(), pointers.1);
         });
+        editor.update(cx, |view, _| {
+            view.audio.take().unwrap().control.close();
+        });
+        backend.close();
+        drop(output);
     }
 }

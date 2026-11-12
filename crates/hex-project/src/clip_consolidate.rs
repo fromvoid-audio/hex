@@ -116,7 +116,24 @@ fn group(
             .filter(|n| *n <= MAX_NOTES)
             .ok_or(Invalid("grouped midi note expansion exceeds project limit"))
     })?;
-    let removed: usize = clips.iter().map(|c| c.notes().len()).sum();
+    // Shared notes remain in the project budget until their last placement
+    // is consumed, including peers on other tracks or in the Console.
+    let retained_sources: BTreeSet<_> = project
+        .aliases
+        .members
+        .iter()
+        .filter_map(|(clip, source)| (!selected.contains(clip)).then_some(*source))
+        .collect();
+    let mut removed_sources = BTreeSet::new();
+    let removed: usize = clips
+        .iter()
+        .filter(|clip| {
+            project.clip_alias(clip.id()).is_none_or(|source| {
+                !retained_sources.contains(&source) && removed_sources.insert(source)
+            })
+        })
+        .map(|clip| clip.notes().len())
+        .sum();
     if crate::midi::note_count(project)
         .checked_sub(removed)
         .and_then(|n| n.checked_add(count))
@@ -226,8 +243,7 @@ fn group(
     Arc::make_mut(&mut merged.source).notes = notes;
     let result = merged.id;
     project.track_mut(track)?.content.midi_clips.push(merged);
-    project.validate_arrangement_occupancy()?;
-    Project::from_snapshot(project.snapshot())?;
+    validate_grouped_placements(project)?;
     Ok(Created::Clip(result))
 }
 
@@ -409,9 +425,17 @@ fn audio(
         .audio_clips
         .retain(|c| !selected.contains(&c.id()));
     row.content.audio_clips.push(merged);
+    validate_grouped_placements(project)?;
+    Ok(Created::Clip(result))
+}
+
+fn validate_grouped_placements(project: &mut Project) -> Result<(), Invalid> {
+    // The retained audio roots own content, while alias membership names live
+    // placements. Reconcile the consumed IDs before validating the snapshot.
+    crate::clip_alias_commands::prune(project);
     project.validate_arrangement_occupancy()?;
     Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(result))
+    Ok(())
 }
 
 pub(crate) fn event_range(

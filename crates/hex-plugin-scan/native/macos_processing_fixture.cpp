@@ -509,6 +509,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
         fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant;
+    const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -995,9 +996,12 @@ public:
         if (fault==10) return kResultFalse;
         const float scale=(fault==127 || held_parameter_input(fault))?1.0f:0.5f+static_cast<float>(block)*0.125f;
         const auto point_count=primary.count;
-        double current_gain=gain.load();
         bool silent=true;
         const auto event_count=data.inputEvents?data.inputEvents->getEventCount():0;
+        // Model a plugin-internal preset change after its initial state capture.
+        // It changes the opaque component state without a host parameter edit.
+        if(live_preset && process_mode==kRealtime && event_count) gain.store(0.5f);
+        double current_gain=gain.load();
         int32 next_event=0;
         Event event{};
         if (event_count && data.inputEvents->getEvent(0,event)!=kResultOk) return kResultFalse;

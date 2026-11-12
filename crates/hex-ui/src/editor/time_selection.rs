@@ -1,12 +1,16 @@
 //! Arrangement time selection, range movement and worker clipboard routing.
-use super::edit_cursor::EditCursor;
-use super::{EditorMode, EditorView};
+use super::{
+    EditorMode, EditorView,
+    duplicate::MAX_QUEUED_REPEATS,
+    edit_cursor::EditCursor,
+    pending_edit::{Disposition, Receipt},
+};
 use crate::theme;
 use gpui::{
     Context, CursorStyle, Div, Stateful, Window, canvas, div, prelude::*, px, relative, rgb,
 };
 use hex_project::{ClipId, Command, TrackId};
-use hex_session::service::Request;
+use hex_session::service::{Event, Request};
 use hex_widgets::{RangeSelectionTarget, RangeSelectionZones};
 use std::time::Instant;
 
@@ -80,7 +84,7 @@ pub(super) struct TimeRangeMoveDisplay<'a> {
     pub copy_modifier: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct PendingTimeRangeMove {
     pub source: hex_project::TimeRange,
     pub range: hex_project::TimeRange,
@@ -90,6 +94,14 @@ pub(super) struct PendingTimeRangeMove {
     pub source_revision: u64,
     pub selection_intent_epoch: u64,
     pub copy_modifier: bool,
+    pub(super) keyboard: Option<KeyboardTimeCopy>,
+}
+
+#[derive(Debug)]
+pub(super) struct KeyboardTimeCopy {
+    receipt: Receipt,
+    /// Cancellation drops future repeats while retaining the released copy.
+    repeats: Option<u8>,
 }
 
 impl EditorView {
@@ -726,6 +738,7 @@ impl EditorView {
                 destination_last_index: last,
                 source_revision,
                 copy_modifier: gesture.copy_modifier,
+                keyboard: None,
             });
         }
         true
@@ -749,7 +762,8 @@ impl EditorView {
     }
 
     /// Duplicate the bounded Arrangement rectangle through the existing atomic
-    /// copy edit. Normal overwrite semantics match Option-drag range copying.
+    /// copy edit. Each repeat starts from the last acknowledged destination
+    /// and receives its own undo step.
     pub(super) fn duplicate_time_selection(&mut self, window: &Window) -> bool {
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
@@ -767,7 +781,43 @@ impl EditorView {
             self.error = Some("time selection no longer belongs to current tracks".into());
             return true;
         };
-        if self.edit_pending()
+        if self.time_duplicate_input_blocked() {
+            self.error = Some("finish the current edit before duplicating time".into());
+            return true;
+        }
+        let revision = self.state.as_ref().map_or(0, |state| state.revision);
+        if let Some(pending) = &mut self.pending_time_range_move
+            && let Some(keyboard) = &mut pending.keyboard
+        {
+            if pending.source != range
+                || pending.source_revision != revision
+                || self.selection_intent_epoch != Some(pending.selection_intent_epoch)
+                || self.time_selection_project_scope != pending.project_scope
+            {
+                self.error = Some("time duplicate is still completing".into());
+                return true;
+            }
+            match &mut keyboard.repeats {
+                Some(repeats) if *repeats < MAX_QUEUED_REPEATS => *repeats += 1,
+                Some(_) => {
+                    self.error = Some("duplicate queue full · maximum 32 queued repeats".into());
+                }
+                None => self.error = Some("time duplicate is still completing".into()),
+            }
+            return true;
+        }
+        if self.edit_pending() {
+            self.error = Some("finish the current edit before duplicating time".into());
+            return true;
+        }
+        self.start_time_duplicate(range, 0);
+        true
+    }
+
+    fn time_duplicate_input_blocked(&self) -> bool {
+        self.opening_project
+            || self.close_prompt_open
+            || self.automation_close_preflight.frozen()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.clip_name_edit.is_some()
@@ -776,21 +826,20 @@ impl EditorView {
             || self.context_menu.is_some()
             || self.save_dialog_open
             || self.export_dialog_open
-        {
-            self.error = Some("finish the current edit before duplicating time".into());
-            return true;
-        }
+    }
+
+    fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
         let Some(end) = range.end().checked_add(range.duration()) else {
             self.error = Some("duplicated time range would overflow".into());
-            return true;
+            return;
         };
         let Some((first, last)) = self.time_selection_track_indices() else {
-            return true;
+            return;
         };
         let Ok(destination) =
             hex_project::TimeRange::new(range.tracks().to_vec(), range.end(), end)
         else {
-            return true;
+            return;
         };
         let revision = self.state.as_ref().map_or(0, |state| state.revision);
         let command = Command::CopyTimeRangeTo {
@@ -803,21 +852,74 @@ impl EditorView {
                 "selection intent exhausted · reopen the editor before moving or copying time"
                     .into(),
             );
-            return true;
+            return;
         };
-        if self.enqueue(Request::Edit(command)) {
-            self.pending_time_range_move = Some(PendingTimeRangeMove {
-                selection_intent_epoch,
-                source: range,
-                range: destination,
-                project_scope: self.time_selection_project_scope,
-                destination_first_index: first,
-                destination_last_index: last,
-                source_revision: revision,
-                copy_modifier: true,
-            });
+        self.pending_time_range_move = Some(PendingTimeRangeMove {
+            selection_intent_epoch,
+            source: range,
+            range: destination,
+            project_scope: self.time_selection_project_scope,
+            destination_first_index: first,
+            destination_last_index: last,
+            source_revision: revision,
+            copy_modifier: true,
+            keyboard: Some(KeyboardTimeCopy {
+                receipt: Receipt::new(self.project_generation),
+                repeats: Some(repeats),
+            }),
+        });
+        if !self.enqueue(Request::Edit(command)) {
+            self.pending_time_range_move = None;
         }
-        true
+    }
+
+    pub(super) fn continue_time_duplicate(&mut self, repeats: u8) {
+        if let Some(remaining) = repeats.checked_sub(1)
+            && self.mode == EditorMode::Arrangement
+            && !self.edit_pending()
+            && !self.time_duplicate_input_blocked()
+            && let Some(range) = self.normalized_time_selection()
+        {
+            self.start_time_duplicate(range, remaining);
+        }
+    }
+
+    pub(super) fn cancel_time_duplicate_repeats(&mut self) {
+        if let Some(keyboard) = self
+            .pending_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            keyboard.repeats = None;
+        }
+    }
+
+    pub(super) fn pending_time_duplicate_matches(&self, request: &Request) -> bool {
+        self.pending_time_range_move
+            .as_ref()
+            .is_some_and(|pending| {
+                pending
+                    .keyboard
+                    .as_ref()
+                    .is_some_and(|keyboard| keyboard.receipt.is_queued())
+                    && matches!(
+                        request,
+                        Request::Edit(Command::CopyTimeRangeTo { range, track, frame })
+                            if *range == pending.source
+                                && pending.range.tracks().first() == Some(track)
+                                && pending.range.start() == *frame
+                    )
+            })
+    }
+
+    pub(super) fn time_duplicate_submitted(&mut self) {
+        if let Some(keyboard) = self
+            .pending_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            keyboard.receipt.submitted(self.worker_requests_pending);
+        }
     }
 
     pub(super) fn copy_time_selection(&mut self, cut: bool, window: &Window) {
@@ -924,20 +1026,40 @@ impl EditorView {
         true
     }
 
-    pub(super) fn move_time_selection_complete(&mut self, event: &hex_session::service::Event) {
-        let Some(pending) = self.pending_time_range_move.take() else {
-            return;
+    pub(super) fn move_time_selection_complete(&mut self, event: &Event) -> u8 {
+        let Some(mut pending) = self.pending_time_range_move.take() else {
+            return 0;
         };
-        if !event.request_complete {
+        let mut repeats = 0;
+        if let Some(keyboard) = &mut pending.keyboard {
+            match keyboard.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete && !event.plugin_parameter_observation,
+            ) {
+                Disposition::Waiting => {
+                    self.pending_time_range_move = Some(pending);
+                    return 0;
+                }
+                Disposition::Invalidated => return 0,
+                Disposition::Terminal => {}
+            }
+            if pending.source_revision.checked_add(1) != Some(event.state.revision) {
+                return 0;
+            }
+            if event.error.is_none() {
+                repeats = keyboard.repeats.unwrap_or(0);
+            }
+        } else if !event.request_complete || event.gesture_request || event.tuning_gesture_request {
             self.pending_time_range_move = Some(pending);
-            return;
+            return 0;
         }
         // The copy/move is admitted with no other pending edit. Its advanced
         // canonical revision witnesses the commit; a later recovery checkpoint
         // can still attach an error to that same completion. Keep that diagnostic,
         // but settle the committed destination. Refused edits do not advance it.
         if event.state.revision <= pending.source_revision {
-            return;
+            return 0;
         }
         // The accepted copy still commits, but its selection intent does not
         // own a later pointer choice or a range the user has cancelled.
@@ -948,25 +1070,25 @@ impl EditorView {
             || self.time_selection_project_scope != pending.project_scope
             || self.normalized_time_selection().as_ref() != Some(&pending.source)
         {
-            return;
+            return 0;
         }
         let (first_track, last_track) = if pending.project_scope {
             let Some(first) = event.state.project.tracks().first().map(|track| track.id()) else {
                 self.time_selection = None;
                 self.time_selection_project_scope = false;
                 self.edit_cursor = None;
-                return;
+                return 0;
             };
             let Some(last) = event.state.project.tracks().last().map(|track| track.id()) else {
                 self.time_selection = None;
                 self.time_selection_project_scope = false;
                 self.edit_cursor = None;
-                return;
+                return 0;
             };
             (first, last)
         } else {
             let Some((&first, rest)) = pending.range.tracks().split_first() else {
-                return;
+                return 0;
             };
             (first, rest.last().copied().unwrap_or(first))
         };
@@ -986,6 +1108,7 @@ impl EditorView {
             self.selected_track = Some(last_track);
         }
         self.selected_clip = None;
+        repeats
     }
 
     pub(super) fn update_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
