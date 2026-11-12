@@ -311,11 +311,13 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = true);
-    visual.simulate_keystrokes("a shift-a");
+    visual.simulate_keystrokes("a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
+    visual.simulate_keystrokes("shift-a");
+    editor.read_with(&visual, |v, _| assert!(v.automation_view.enabled));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = false);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    for enabled in [true, false] {
+    for enabled in [false, true, false] {
         visual.simulate_keystrokes("a");
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {

@@ -187,8 +187,10 @@ impl EditorView {
                     shift: true,
                     ..Modifiers::default()
                 });
-        let plain = matches!(key, "a" | "h" | "q") && modifiers == Modifiers::default();
-        if (!reset && (self.computer_keyboard.enabled || !(plain || reveal_automation)))
+        let plain = matches!(key, "a" | "h" | "q")
+            && modifiers == Modifiers::default()
+            && !self.computer_keyboard.enabled;
+        if !(reset || plain || reveal_automation)
             || event.is_held
             || !(self.focus.is_focused(window)
                 || self.track_header_focused(window)
