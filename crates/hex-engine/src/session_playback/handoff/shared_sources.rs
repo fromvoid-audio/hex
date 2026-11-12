@@ -4274,11 +4274,12 @@ mod tests {
             let mut output = [[0.0; 2]; 16];
             unmuted.render(&mut output).unwrap();
             for (index, frame) in output.iter().enumerate() {
+                let gain = 0.25 + 0.25 * (0.5 + 0.5 * index as f32 / 40.0);
                 for channel in 0..2 {
-                    let bound = PCM[(27 + index) % 4][channel].abs() * 0.5 + 0.000_002;
+                    let expected = PCM[(27 + index) % 4][channel] * gain;
                     assert!(
-                        frame[channel].abs() <= bound,
-                        "index={index}, frame={frame:?}, bound={bound}"
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "index={index}, frame={frame:?}, expected={expected}"
                     );
                 }
             }
@@ -4332,10 +4333,13 @@ mod tests {
                 let mut output = [[0.0; 2]; 8];
                 undone.render(&mut output).unwrap();
                 for (index, frame) in output.iter().enumerate() {
-                    let reference = PCM[(162 + index) % 4][0];
-                    if reference != 0.0 {
-                        let gain = frame[0] / reference;
-                        assert!((0.25..=0.5).contains(&gain), "solo={solo}, gain={gain}");
+                    let gain = 0.25 + 0.25 * index as f32 / 40.0;
+                    for channel in 0..2 {
+                        let expected = PCM[(162 + index) % 4][channel] * gain;
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "solo={solo}, index={index}, frame={frame:?}, expected={expected}"
+                        );
                     }
                 }
             }
