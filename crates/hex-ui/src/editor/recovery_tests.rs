@@ -397,6 +397,7 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
         v.receive(added);
         assert!(v.service.try_event().is_err(), "no repeated insertion");
     });
+    editor.update(cx, |v, _| assert!(v.retire_audio_preserving_gain_take()));
     drop(fresh_backend);
     fresh_output.publication.close();
 }

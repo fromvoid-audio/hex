@@ -37,7 +37,7 @@ impl EditorView {
     }
 
     pub(super) fn native_effect_insert_needs_recovery(&self, request: &Request) -> bool {
-        (self.has_degraded_vst3_output() || self.recovery.generation().is_some())
+        (self.has_degraded_vst3_output() || self.recovery.native_effect.is_some())
             && matches!(
                 request,
                 Request::DropBrowserDeviceOnArrangement {
