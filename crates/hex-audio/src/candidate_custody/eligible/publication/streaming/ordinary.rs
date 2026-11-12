@@ -136,6 +136,7 @@ impl OrdinaryStreams {
         pending_play: bool,
         prefix: u64,
         frames: usize,
+        fenced_restart: bool,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let mut empty = None;
         let mut old = previous.map(|(runtime, context, revision)| StateView {
@@ -157,6 +158,7 @@ impl OrdinaryStreams {
                 pending_play,
                 command_prefix: prefix,
                 frames,
+                fenced_restart,
             },
             hex_stream::ProtectionRole::Candidate,
         )

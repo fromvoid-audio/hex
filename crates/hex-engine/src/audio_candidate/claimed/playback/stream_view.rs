@@ -221,6 +221,22 @@ impl StreamPlayback<'_> {
             next.preview_stream_handoff(old, maximum_frames, playing, visit)
         }
     }
+    /// Preview only: the publication owner must validate the actual live fence
+    /// and protect these pages before committing the corresponding reset.
+    pub fn preview_ordinary_fenced_restart(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
+                next.preview_ordinary_fenced_restart(old, maximum_frames, playing, visit)
+            }
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
     /// Borrow the existing admitted foreign endpoints through the same runtime
     /// facade. Neither this view nor page facts grant endpoint authority.
     pub fn render_with_foreign_processors(
