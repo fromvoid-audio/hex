@@ -45,6 +45,7 @@ impl State {
     ) -> Result<Request, String> {
         let arrangement_import = match &request {
             Request::Import(_)
+            | Request::InsertProjectSample { .. }
             | Request::ImportToTrack { .. }
             | Request::ImportToTrackWithOverwrite { .. }
             | Request::ImportToNewTrack { .. } => true,
@@ -65,10 +66,14 @@ impl State {
 /// Off without any later preference read. Explicit batches retain their original
 /// strict source context; Console and sampler requests are untouched.
 fn capture(
-    request: Request,
+    mut request: Request,
     warp: AudioImportWarp,
     context: AudioBatchContext,
 ) -> Result<Request, String> {
+    if let Request::InsertProjectSample { warp: captured, .. } = &mut request {
+        *captured = warp;
+        return Ok(request);
+    }
     let (path, destination, overwrite) = match request {
         Request::ImportAudioBatch {
             paths,
