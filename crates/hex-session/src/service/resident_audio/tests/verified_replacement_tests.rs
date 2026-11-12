@@ -32,6 +32,70 @@ impl WorkerAudioSink for CatalogSink {
     fn close(&mut self) {}
 }
 
+struct DispatchSink {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    expected: hex_engine::AudioSourceContext,
+    refuse: bool,
+}
+impl WorkerAudioSink for DispatchSink {
+    fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+        Ok(16_000)
+    }
+    fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+    fn resident_publication_enabled(&self) -> bool {
+        true
+    }
+    fn prepare_resident_file_metadata(
+        &mut self,
+        input: ResidentFileInput<'_>,
+    ) -> Result<Option<ResidentFileMetadata>, String> {
+        CatalogSink { reject: false }.prepare_resident_file_metadata(input)
+    }
+    fn publish_resident_with_files(
+        &mut self,
+        playback: hex_engine::playback::Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        _: Arc<hex_engine::PreparedPlaybackObservation>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        _: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+        files: Option<ResidentFilePublication<'_>>,
+    ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(metadata.context, self.expected);
+        assert!(matches!(
+            policy,
+            ResidentPublicationPolicy::ReplaceDocument { .. }
+        ));
+        assert!(playback.contains_streamed_sources());
+        assert!(resources.is_some_and(|resources| resources.metadata_bytes().unwrap() > 0));
+        let files = files.unwrap().sources;
+        assert_eq!(files.context(), self.expected);
+        assert_eq!(files.metadata().catalog_generation(), 7);
+        assert_eq!(files.files().len(), 1);
+        if self.refuse {
+            return Err(ResidentPublicationRefusal {
+                kind: super::super::ResidentPublicationFailure::Other,
+                playback,
+                error: "fixture publication refused".into(),
+            });
+        }
+        if let Err(error) = admit(&[]) {
+            return Err(ResidentPublicationRefusal {
+                kind: super::super::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
+        }
+        Ok(ResidentPublicationAcceptance::OfflineRetained)
+    }
+    fn poll(&mut self) {}
+    fn close(&mut self) {}
+}
+
 #[test]
 fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
     let original = sampler_export::tests::Files::new(false);
@@ -45,7 +109,9 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
     let service = Service::with_native_reservation(16_000, 16, 1024, limits).unwrap();
     sampler_export::tests::event(&service);
     service.submit(Request::Import(clip)).unwrap();
-    assert!(sampler_export::tests::event(&service).error.is_none());
+    let imported = sampler_export::tests::event(&service);
+    assert!(imported.error.is_none());
+    let file_only_project = imported.state.project.as_ref().clone();
     sampler_export::tests::assign(&service, original.source().to_owned());
     service.submit(Request::SaveNew(saved.clone())).unwrap();
     assert!(sampler_export::tests::event(&service).error.is_none());
@@ -119,6 +185,95 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
             )
             .is_err()
     );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let expected = hex_engine::AudioSourceContext {
+        project_generation: 4,
+        editor_revision: 10,
+    };
+    let (sender, _receiver) = std::sync::mpsc::sync_channel(4);
+    let mut events = WorkerEvents::new(
+        sender,
+        Arc::new(AtomicBool::new(false)),
+        Some(Box::new(DispatchSink {
+            calls: Arc::clone(&calls),
+            expected,
+            refuse: false,
+        })),
+    );
+    let dispatched = prepare_document_replacement(
+        &candidate,
+        &old,
+        context,
+        &mut events,
+        None,
+        sampler_export::Admission::default(),
+    )
+    .unwrap();
+    assert!(dispatched.resident.is_some());
+    assert!(dispatched.sources.is_none());
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(old.project().snapshot(), before);
+    let (sender, _receiver) = std::sync::mpsc::sync_channel(4);
+    let mut events = WorkerEvents::new(
+        sender,
+        Arc::new(AtomicBool::new(false)),
+        Some(Box::new(DispatchSink {
+            calls: Arc::clone(&calls),
+            expected,
+            refuse: true,
+        })),
+    );
+    assert!(
+        prepare_document_replacement(
+            &candidate,
+            &old,
+            context,
+            &mut events,
+            None,
+            sampler_export::Admission::default()
+        )
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(old.project().snapshot(), before);
+    let file_only = recovery::prepare_project(
+        &old,
+        16,
+        file_only_project,
+        saved.parent().unwrap(),
+        DocumentAudioMode::VerifiedStreaming,
+        Some(file_reservation(2)),
+        Some(limits),
+        1024,
+        sampler_export::Admission::default(),
+    )
+    .unwrap();
+    let (sender, _receiver) = std::sync::mpsc::sync_channel(4);
+    let mut events = WorkerEvents::new(
+        sender,
+        Arc::new(AtomicBool::new(false)),
+        Some(Box::new(DispatchSink {
+            calls: Arc::clone(&calls),
+            expected,
+            refuse: false,
+        })),
+    );
+    let unchanged = prepare_document_replacement(
+        &file_only,
+        &old,
+        context,
+        &mut events,
+        None,
+        sampler_export::Admission::default(),
+    )
+    .unwrap();
+    assert!(unchanged.resident.is_none());
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "verified file-only projects retain their existing owner"
+    );
+    assert_eq!(old.project().snapshot(), before);
     sink.reject = true;
     assert!(build(&mut sink).is_err());
     candidate.shutdown.store(true, Ordering::Release);
