@@ -1381,23 +1381,29 @@ impl GestureMachine {
         }
     }
 
-    /// An accepted output restart relinquishes native device previews.
-    /// Restore authored values on the next output and preserve key ordering.
+    /// An accepted restart relinquishes output-bound previews. An unrecorded
+    /// plugin preview has lost its original source, so report that its edit was
+    /// not saved. Recorded gestures retain their separate recovery custody.
     pub(crate) fn retire_native_on_restart(&mut self) -> Option<GestureAck> {
-        let active = self
-            .active
-            .as_ref()
-            .filter(|active| !matches!(active.kind, ActiveKind::Plugin { .. }))?
-            .snapshot;
+        let active = self.active.as_ref()?;
+        if matches!(active.kind, ActiveKind::Plugin { recording: true }) {
+            return None;
+        }
+        let plugin = matches!(active.kind, ActiveKind::Plugin { .. });
+        let snapshot = active.snapshot;
         self.active = None;
         Some(GestureAck {
-            key: active.key,
+            key: snapshot.key,
             phase: GesturePhase::Cancel,
             sequence: 0,
             accepted: false,
             preview_retained: false,
-            source_lost: false,
-            reason: Some("device edit canceled · audio is restarting".into()),
+            source_lost: plugin,
+            reason: Some(if plugin {
+                "vst3 parameter edit was not saved · audio restarted".into()
+            } else {
+                "device edit canceled · audio is restarting".into()
+            }),
         })
     }
 
