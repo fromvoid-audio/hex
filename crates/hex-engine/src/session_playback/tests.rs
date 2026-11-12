@@ -13890,6 +13890,158 @@ mod reverb_bypass_tests;
 mod utility_bypass_tests;
 
 #[test]
+fn session_audio_release_handoff_never_renders_a_replaced_source() {
+    let project = audio_project(0, 32, 4);
+    let original = crate::Audio::new(48_000, vec![[0.5; 2]; 32]).unwrap();
+    let replacement = crate::Audio::new(48_000, vec![[-0.5; 2]; 32]).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepare = |project: &Project, audio: &crate::Audio| {
+        Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &audio_media(project, audio, audio),
+                Arc::clone(&table),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let original_revision = prepare(&project, &original);
+    let track = project.tracks()[0].id();
+    let clip = original_revision.session().audio_clips()[0].id;
+    let changed_region = audio_project(1, 32, 4);
+    let changed_asset = audio_project(0, 32, 5);
+    let mut snapshot = project.snapshot();
+    snapshot.session.cells.clear();
+    let removed = Project::from_snapshot(snapshot).unwrap();
+    for (candidate, expected_release) in [
+        (prepare(&project, &original), true),
+        (prepare(&project, &replacement), false),
+        (prepare(&changed_region, &original), false),
+        (prepare(&changed_asset, &original), false),
+        (prepare(&removed, &original), false),
+    ] {
+        let mut old = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+        old.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 8]).unwrap();
+        old.apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        let mut first = [[0.0; 2]; 1];
+        old.render(&mut first).unwrap();
+        assert!(first[0][0] > 0.0);
+        let mut next = SessionPlayback::new(candidate).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut after = [[0.0; 2]; 1];
+        next.render(&mut after).unwrap();
+        if expected_release {
+            assert!(after[0][0] > 0.0, "unchanged source retains its release");
+        } else {
+            assert_eq!(
+                after,
+                [[0.0; 2]],
+                "a replacement must not sound as the old release"
+            );
+        }
+    }
+}
+
+#[test]
+fn streamed_session_release_handoff_demands_only_the_unchanged_source() {
+    struct Pages {
+        frames: [[f32; 2]; 32],
+    }
+    impl MediaPages for Pages {
+        fn page(
+            &mut self,
+            _key: StreamSourceKey,
+            page_index: u64,
+        ) -> Option<BorrowedMediaPage<'_>> {
+            (page_index == 0).then_some(BorrowedMediaPage {
+                page_index,
+                frames: &self.frames,
+            })
+        }
+        fn request_page(&mut self, _key: StreamSourceKey, _page_index: u64) {}
+    }
+    let project = audio_project(0, 32, 4);
+    let prepare = |generation| {
+        let sources = project
+            .assets()
+            .map(|asset| {
+                let metadata = StreamedSourceMetadata::new(
+                    StreamSourceKey::new(generation, asset.id()),
+                    48_000,
+                    48_000,
+                    32,
+                    32,
+                    hex_project::IDENTITY_CONVERSION,
+                    [0x42; 32],
+                )
+                .unwrap();
+                (
+                    asset.id(),
+                    PreparedAudioSource::Streamed(Arc::new(metadata)),
+                )
+            })
+            .collect();
+        Arc::new(
+            PreparedRevision::prepare_with_prepared_audio_sources(
+                &project,
+                &sources,
+                generation,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let revision = prepare(1);
+    let track = project.tracks()[0].id();
+    let clip = revision.session().audio_clips()[0].id;
+    for (generation, keeps_release) in [(1, true), (2, false)] {
+        let mut pages = Pages {
+            frames: [[0.5; 2]; 32],
+        };
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        old.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_pages(&mut [[0.0; 2]; 8], &mut pages)
+            .unwrap();
+        old.apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.render_with_pages(&mut [[0.0; 2]; 1], &mut pages)
+            .unwrap();
+        let mut next = SessionPlayback::new(prepare(generation)).unwrap();
+        let mut extents = Vec::new();
+        next.preview_stream_handoff(&mut old, 1, None, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(!extents.is_empty(), keeps_release);
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut after = [[0.0; 2]; 1];
+        next.render_with_pages(&mut after, &mut pages).unwrap();
+        assert_eq!(after[0][0] > 0.0, keeps_release);
+    }
+}
+
+#[test]
 fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
     let source: Vec<Frame> = (0..32)
         .map(|i| [i as f32 / 64.0, -(i as f32) / 64.0])
