@@ -61,7 +61,7 @@ impl Drop for Files {
         let _ = fs::remove_dir_all(self.source.parent().unwrap());
     }
 }
-fn reservation() -> crate::ResidentNativeReservation {
+pub(crate) fn reservation() -> crate::ResidentNativeReservation {
     crate::ResidentNativeReservation {
         storage: hex_engine::AudioStorageLedgerReservation {
             data_rows: 512,
@@ -73,7 +73,7 @@ fn reservation() -> crate::ResidentNativeReservation {
         max_scan_frames: 1024,
     }
 }
-fn event(s: &Service) -> Event {
+pub(crate) fn event(s: &Service) -> Event {
     // Blocks on the event channel; bounded only against hangs.
     match s.events.recv_timeout(crate::test_wait::HANG_BOUND) {
         Ok(event) => event,
@@ -98,7 +98,7 @@ fn edit(s: &Service, c: Command) -> Event {
     assert!(e.error.is_none(), "{:?}", e.error);
     e
 }
-fn assign(s: &Service, path: PathBuf) -> Event {
+pub(crate) fn assign(s: &Service, path: PathBuf) -> Event {
     s.submit(Request::ImportDeviceAsset {
         path,
         cancel: Arc::new(AtomicBool::new(false)),

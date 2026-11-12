@@ -15,6 +15,7 @@ mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
 mod resident_export;
+mod resident_file_metadata;
 mod resident_grouping;
 mod resident_history_seek;
 mod resident_lifecycle;
