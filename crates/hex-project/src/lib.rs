@@ -234,7 +234,9 @@ pub use midi::{
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
-pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
+pub use midi_note_overwrite::{
+    MidiNoteOverwriteChange, MidiNoteOverwriteGeometry, MidiNoteOverwritePreview,
+};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };

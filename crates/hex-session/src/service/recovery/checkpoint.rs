@@ -322,12 +322,106 @@ mod tests {
     }
 
     #[test]
+    fn section_copy_view_precedes_the_durable_terminal() {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-section-copy-checkpoint-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let initial = next(&service);
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "intro".into(),
+                    start: hex_project::BeatTime::ZERO,
+                    end: hex_project::BeatTime::ONE,
+                    color: hex_project::ElementColor::Cyan,
+                },
+            })
+            .unwrap();
+        let before = next(&service);
+        let Some(Created::ArrangementSection(section)) = before.created else {
+            panic!("section");
+        };
+        let duplicate = |revision| Request::EditArrangementSection {
+            project_generation: 0,
+            revision,
+            command: Command::DuplicateArrangementSection(section),
+        };
+        service.submit(duplicate(initial.state.revision)).unwrap();
+        assert!(next(&service).error.is_some());
+        assert!(service.try_duplicate_view().is_err());
+
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service.submit(duplicate(before.state.revision)).unwrap();
+        entered
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap();
+        let display = service
+            .try_duplicate_view()
+            .expect("committed section before checkpoint");
+        assert_eq!(display.project_generation, 0);
+        assert_eq!(display.previous_revision, before.state.revision);
+        let visible = display.state.upgrade().unwrap();
+        assert_eq!(visible.revision, before.state.revision + 1);
+        assert_eq!(visible.project.arrangement_sections().len(), 2);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *before.state.project
+        );
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let committed = next(&service);
+        assert!(committed.request_complete && committed.error.is_none());
+        assert!(Arc::ptr_eq(&visible, &committed.state));
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *committed.state.project
+        );
+        service.submit(Request::Undo).unwrap();
+        let mut undone = next(&service).state.project.snapshot();
+        let before = before.state.project.snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before);
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(next(&service).state.project, committed.state.project);
+        assert!(service.try_duplicate_view().is_err());
+        service.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() {
         let directory =
             std::env::temp_dir().join(format!("hex-duplicate-checkpoint-{}", std::process::id()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("untitled.hex-journal");
         let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let diagnostic_rows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let diagnostic_sink = Arc::clone(&diagnostic_rows);
+        service
+            .set_diagnostic_observer(Arc::new(diagnostics::DiagnosticObserver::new(
+                move |event| {
+                    diagnostic_sink.lock().unwrap().push((
+                        event.request,
+                        event.stage,
+                        event.details.clone(),
+                    ));
+                },
+            )))
+            .unwrap();
         next(&service);
         service
             .submit(Request::Edit(Command::AddTrack {
@@ -399,6 +493,83 @@ mod tests {
             clip = first;
             revision = terminal.state.revision;
         }
+        let before_range = hex_storage::load_journal(&path).unwrap();
+        let clip = before_range.midi_clip(clip).unwrap();
+        let tempo = before_range.tempo_map();
+        let start = tempo.beat_to_frame(clip.start()).unwrap();
+        let end_beat = hex_project::BeatTime::from_raw(clip.start().raw() + clip.length().raw());
+        let end = tempo.beat_to_frame(end_beat).unwrap();
+        let range = hex_project::TimeRange::new(vec![track], start, end).unwrap();
+        service
+            .submit(Request::Edit(Command::CopyTimeRangeTo {
+                range,
+                track,
+                frame: end,
+            }))
+            .unwrap();
+        let range_terminal = next(&service);
+        assert!(range_terminal.request_complete && range_terminal.error.is_none());
+        assert_eq!(range_terminal.state.revision, revision + 1);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *range_terminal.state.project
+        );
+
+        service.submit(Request::Undo).unwrap();
+        let unrelated = next(&service);
+        assert!(unrelated.request_complete && unrelated.error.is_none());
+        let rows = diagnostic_rows.lock().unwrap();
+        let copy_requests = [
+            ("duplicate_clips", None),
+            ("duplicate_alias_clips", None),
+            ("edit", Some("copy_time_range_to")),
+        ];
+        for (kind, operation) in copy_requests {
+            let submitted: Vec<_> = rows
+                .iter()
+                .filter_map(|(request, stage, _)| {
+                    request.filter(|request| {
+                        request.kind == kind
+                            && request.operation == operation
+                            && *stage == diagnostics::DiagnosticStage::SubmitAttempt
+                    })
+                })
+                .collect();
+            let [submitted] = submitted.as_slice() else {
+                panic!("expected one submission for {kind}");
+            };
+            let timed: Vec<_> = rows
+                .iter()
+                .filter(|(request, _, _)| request.as_ref() == Some(submitted))
+                .flat_map(|(_, stage, details)| {
+                    details
+                        .split_whitespace()
+                        .filter_map(|part| part.strip_prefix("duplicate_recovery_us="))
+                        .map(move |value| (stage, value))
+                })
+                .collect();
+            let [
+                (
+                    diagnostics::DiagnosticStage::OutcomeReady {
+                        request_complete: true,
+                        ..
+                    },
+                    value,
+                ),
+            ] = timed.as_slice()
+            else {
+                panic!("expected recovery timing only on the terminal outcome for {kind}");
+            };
+            assert!(value.parse::<u128>().is_ok());
+        }
+        assert!(rows.iter().all(|(request, _, details)| {
+            request
+                .is_some_and(|request| copy_requests.contains(&(request.kind, request.operation)))
+                || !details
+                    .split_whitespace()
+                    .any(|part| part.starts_with("duplicate_recovery_us="))
+        }));
+        drop(rows);
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();
         drop(service);
         std::fs::remove_dir_all(directory).unwrap();

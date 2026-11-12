@@ -48,6 +48,7 @@ pub(super) struct PendingKinds {
     gain_take: bool,
     device_automation: bool,
     time_copy: bool,
+    time_duplicate: bool,
     sample_drop: bool,
     project_rate: bool,
 }
@@ -114,6 +115,7 @@ impl EditorView {
                 gain_take: self.pending_gain_take_matches(request),
                 device_automation: self.pending_device_automation_matches(request),
                 time_copy: self.pending_time_copy_matches(request),
+                time_duplicate: self.pending_time_duplicate_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
                 project_rate: self.project_rate_settings.matches(request),
             },
@@ -159,6 +161,9 @@ impl EditorView {
         self.truncated_import_submitted(import_intent);
         if kinds.time_copy {
             self.time_copy_submitted();
+        }
+        if kinds.time_duplicate {
+            self.time_duplicate_submitted();
         }
         if kinds.trim {
             self.trim_request_submitted();
@@ -284,6 +289,9 @@ impl EditorView {
         }
         if kinds.time_copy {
             self.pending_created_note_selection = None;
+        }
+        if kinds.time_duplicate {
+            visible |= self.pending_time_range_move.take().is_some();
         }
         if kinds.trim {
             visible |= self.retire_pending_trim();

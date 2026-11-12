@@ -54,6 +54,16 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// Validate PlayFrom without changing the running playback before a fade.
+    pub(crate) fn admits_play_from(&self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export || self.revision.requires_control_sampler_sources() {
+            self.admits_transport(&SessionPlaybackCommand::Seek(frame))?;
+            self.admits_transport(&SessionPlaybackCommand::Play)
+        } else {
+            self.play_from_coordinates(frame).map(|_| ())
+        }
+    }
+
     fn apply_admitted(
         &mut self,
         command: SessionPlaybackCommand,
@@ -374,6 +384,14 @@ impl SessionPlayback {
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.runtime.reset();
+        }
+    }
+
+    pub(crate) fn cut_retained_foreign_gates_from(&mut self, previous: &mut Self) {
+        // Exact source identity also proves the prepared generator index order.
+        if Arc::ptr_eq(&self.revision, &previous.revision) {
+            self.foreign_arrangement
+                .cut_retained_gates_from(&mut previous.foreign_arrangement);
         }
     }
 

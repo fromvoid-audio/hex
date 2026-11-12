@@ -385,13 +385,14 @@ pub struct SoloViewObservation {
     pub tracks: Vec<(hex_project::TrackId, bool)>,
 }
 
-/// The committed Arrangement duplication view, available before checkpoint
+/// The committed Arrangement clip or section copy, available before checkpoint
 /// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
 /// can acknowledge the edit, install authoring state or advance repeats.
 /// A missed observation does not keep an old project's media alive.
 pub struct DuplicateViewObservation {
     pub project_generation: u64,
     pub previous_revision: u64,
+    pub created: Created,
     pub state: std::sync::Weak<ViewState>,
 }
 
@@ -3013,9 +3014,18 @@ fn run_worker(
             &request,
             Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
         );
+        let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
         let arrangement_duplicate = matches!(
             &request,
-            Request::DuplicateClips { .. } | Request::DuplicateAliasClips { .. }
+            Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::EditArrangementSection {
+                    command: Command::DuplicateArrangementSection(_)
+                        | Command::DuplicateArrangementSectionAt { .. }
+                        | Command::AppendArrangementSectionCopy { .. }
+                        | Command::ReplaceArrangementSection { copy: true, .. },
+                    ..
+                }
         );
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
@@ -4594,8 +4604,7 @@ fn run_worker(
                     } else {
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
-                                if let Some(retired) = device_gesture.retire_mixer_gain_on_restart()
-                                {
+                                if let Some(retired) = device_gesture.retire_native_on_restart() {
                                     if resident_preview
                                         .as_ref()
                                         .and_then(resident_preview::Preview::device_identity)
@@ -4762,7 +4771,7 @@ fn run_worker(
                                 .and_then(resident_preview::Preview::device_identity)
                                 .is_none_or(|preview| preview.key != outcome.ack.key)
                         {
-                            device_gesture.retire_unpublished_mixer_terminal(&mut outcome.ack);
+                            device_gesture.retire_unpublished_native_terminal(&mut outcome.ack);
                         }
                         outcome
                     } else {
@@ -8927,30 +8936,45 @@ fn run_worker(
                 });
             }
         }
-        if arrangement_duplicate
-            && canonical_changed
-            && error.is_none()
-            && matches!(created, Some(Created::Clips { .. }))
-        {
+        let committed_arrangement_duplicate = created.filter(|created| {
+            arrangement_duplicate
+                && canonical_changed
+                && error.is_none()
+                && matches!(
+                    created,
+                    Created::Clips { .. } | Created::ArrangementSection(_)
+                )
+        });
+        if let Some(created) = committed_arrangement_duplicate {
             let _ = duplicate_views.try_send(DuplicateViewObservation {
                 project_generation,
                 previous_revision: revision_before_request,
+                created,
                 state: Arc::downgrade(&state),
             });
         }
         if let Some(untitled_path) = recovery.as_deref() {
-            let journal_result = recovery_tracker.maintain(
-                recovery::RecoveryContext {
-                    session: &session,
-                    base: media_base.as_deref(),
-                    document: document.as_ref(),
-                    untitled: untitled_path,
-                    journal: &mut journal,
-                    generation: project_generation,
-                },
-                unsaved,
-                revision != revision_before_request,
-            );
+            let mut maintain_recovery = || {
+                recovery_tracker.maintain(
+                    recovery::RecoveryContext {
+                        session: &session,
+                        base: media_base.as_deref(),
+                        document: document.as_ref(),
+                        untitled: untitled_path,
+                        journal: &mut journal,
+                        generation: project_generation,
+                    },
+                    unsaved,
+                    revision != revision_before_request,
+                )
+            };
+            let journal_result = if committed_arrangement_duplicate.is_some()
+                || (time_range_copy && canonical_changed && error.is_none())
+            {
+                events.measure_duplicate_recovery(maintain_recovery)
+            } else {
+                maintain_recovery()
+            };
             match journal_result {
                 Ok(Some(_)) => {
                     status =

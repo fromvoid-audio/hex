@@ -242,7 +242,7 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        self.recovery.fail();
+        super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -1211,6 +1211,7 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
@@ -1798,7 +1799,7 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            self.recovery.fail();
+            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2374,7 +2375,7 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            self.recovery.fail();
+            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;
@@ -2605,12 +2606,13 @@ impl EditorView {
             event.project_replaced,
             resize_owns_viewport,
         );
-        if event.project_replaced {
+        let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
-        } else if !event.gesture_request && !event.tuning_gesture_request {
-            self.move_time_selection_complete(&event);
-        }
+            0
+        } else {
+            self.move_time_selection_complete(&event)
+        };
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -3266,6 +3268,7 @@ impl EditorView {
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
+        self.continue_time_duplicate(time_duplicate_repeats);
         successfully_opened_path
     }
 
@@ -3428,7 +3431,12 @@ impl EditorView {
         true
     }
 
-    fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+    /// Enqueue a request with any import policy already captured.
+    pub(super) fn enqueue_request(
+        &mut self,
+        request: Request,
+        duplicate_continuation: bool,
+    ) -> bool {
         self.wake_poll();
         if matches!(&request, Request::QueryPluginParameters(_)) {
             // The panel owns retryable read intent. A full/busy service must
@@ -3800,8 +3808,8 @@ impl EditorView {
             self.pending_requests.push_back(request);
             return true;
         }
-        if self.native_effect_insert_needs_recovery(&request) {
-            return self.recover_before_native_effect_insert(request);
+        if let Some(kind) = self.recoverable_graph_edit(&request) {
+            return self.recover_before_graph_edit(kind, request);
         }
         if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
@@ -3952,6 +3960,7 @@ impl EditorView {
 
     pub(super) fn cancel_duplicate_chain(&mut self) {
         self.duplicate_intent.cancel_chain();
+        self.cancel_time_duplicate_repeats();
     }
 
     pub(super) fn zoom_timeline(&mut self, inward: bool) {

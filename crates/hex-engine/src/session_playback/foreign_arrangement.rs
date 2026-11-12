@@ -24,7 +24,9 @@ mod hardware;
 mod live_keys;
 use live_keys::Input;
 
-const MAX_RENDER_EVENTS: usize = MAX_FOREIGN_NOTES + 2 * COMPUTER_KEY_COUNT + hardware::NOTE_BUDGET;
+const MAX_AUTHORED_EVENTS_AT_CUT: usize = 2 * MAX_FOREIGN_NOTES;
+const MAX_RENDER_EVENTS: usize =
+    MAX_AUTHORED_EVENTS_AT_CUT + 2 * COMPUTER_KEY_COUNT + hardware::NOTE_BUDGET;
 
 fn next_note_id(next: &mut u64) -> Result<NonZeroU32, MutableInstrumentRuntimeError> {
     let id = next
@@ -455,6 +457,29 @@ impl ForeignArrangement {
         }
     }
 
+    /// A fresh Arrangement seek on the same revision keeps the worker but
+    /// restarts its authored clock. Keep the physical quantum phase and note
+    /// IDs, so the first destination frame releases old authored gates before
+    /// chasing new ones. A rebound monitor input keeps its own held gates.
+    pub(super) fn cut_retained_gates_from(&mut self, previous: &mut Self) {
+        let shares_input = self.shares_keyboard(previous);
+        let input_track = self.keyboard.as_ref().map(|input| input.track);
+        for (next, old) in self.generators.iter_mut().zip(&mut previous.generators) {
+            let (Some(next), Some(old)) = (next, old) else {
+                continue;
+            };
+            if next.track != old.track || next.processor != old.processor {
+                continue;
+            }
+            std::mem::swap(&mut next.committed, &mut old.committed);
+            next.committed.cut = true;
+            if !shares_input || input_track != Some(next.track) {
+                next.committed.live.disconnect();
+                next.committed.hardware.disconnect();
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // Borrow the existing callback and its disjoint scratch.
     pub(super) fn render_frame(
         &mut self,
@@ -495,8 +520,13 @@ impl ForeignArrangement {
             .ok_or(SessionPlaybackError::DeviceRuntime)?;
         let events = &mut self.events;
         events.clear();
+        let authored_capacity = if ledger.cut {
+            MAX_AUTHORED_EVENTS_AT_CUT
+        } else {
+            MAX_FOREIGN_NOTES
+        };
         let mut emit = |gate| -> Result<(), MutableInstrumentRuntimeError> {
-            if events.len() == MAX_FOREIGN_NOTES {
+            if events.len() == authored_capacity {
                 return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
             }
             events.push(ForeignNote::try_from(gate)?);

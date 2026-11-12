@@ -188,25 +188,67 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
 fn degraded_native_effect_waits_for_recovery_and_uses_the_original_track(
     cx: &mut gpui::TestAppContext,
 ) {
-    native_effect_recovery(cx, EffectRecovery::Ready);
+    graph_edit_recovery(cx, EditFixture::Effect, EditRecovery::Ready);
 }
 
 #[gpui::test]
 fn degraded_native_effect_refuses_changed_project_and_failed_recovery(
     cx: &mut gpui::TestAppContext,
 ) {
-    native_effect_recovery(&mut cx.new_app(), EffectRecovery::ProjectChanged);
-    native_effect_recovery(&mut cx.new_app(), EffectRecovery::Failed);
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::Effect,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(&mut cx.new_app(), EditFixture::Effect, EditRecovery::Failed);
+}
+
+#[gpui::test]
+fn degraded_sample_drop_waits_for_recovery_and_keeps_the_captured_destination(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::ExistingTrackSample,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(cx, EditFixture::NewTrackSample, EditRecovery::Ready);
+}
+
+#[gpui::test]
+fn degraded_sample_drop_releases_the_preview_on_failed_or_stale_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::NewTrackSample,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::ExistingTrackSample,
+        EditRecovery::ProjectEditPending,
+    );
+    graph_edit_recovery(cx, EditFixture::NewTrackSample, EditRecovery::Failed);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum EffectRecovery {
+enum EditFixture {
+    Effect,
+    ExistingTrackSample,
+    NewTrackSample,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditRecovery {
     Ready,
     ProjectChanged,
+    ProjectEditPending,
     Failed,
 }
 
-fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery) {
+fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome: EditRecovery) {
+    use crate::editor::drag::BrowserDropDestination;
     use hex_engine::{DeviceTypeId, NativeDeviceClass};
     use hex_session::service::ArrangementDeviceDestination;
 
@@ -229,7 +271,7 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
 
     let (restarts, restarted) = sync_channel(1);
     let service =
-        Service::with_audio_sink(16, 0, None, Box::new(RestartObserver(restarts))).unwrap();
+        Service::with_audio_sink(16, 8_000_000, None, Box::new(RestartObserver(restarts))).unwrap();
     let next = |service: &Service| {
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -255,6 +297,11 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
     let ready = next(&service).state;
     let other = ready.project.tracks()[1].id();
     let revision = ready.revision;
+    let sample = (edit != EditFixture::Effect).then(|| {
+        let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
+        let path = files.wav("recovery.wav", 48_000, 512);
+        (files, path)
+    });
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(
         cx,
         ready.project.as_ref().clone(),
@@ -301,11 +348,60 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
         v.project_generation = 0;
         v.audio = Some(old_audio);
         v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
-        assert!(v.enqueue_device_barrier(request()));
+        if let Some((_, path)) = &sample {
+            let start = 24_000;
+            let (destination, import) = if edit == EditFixture::NewTrackSample {
+                let before_track = Some(other);
+                (
+                    BrowserDropDestination::NewTrack {
+                        before_track,
+                        start,
+                    },
+                    Request::ImportToNewTrack {
+                        path: path.clone(),
+                        before_track,
+                        start,
+                    },
+                )
+            } else {
+                (
+                    BrowserDropDestination::ExistingTrack {
+                        track: target,
+                        start,
+                    },
+                    Request::ImportToTrackWithOverwrite {
+                        path: path.clone(),
+                        track: target,
+                        start,
+                    },
+                )
+            };
+            v.track_defaults.set_test_state(0.25, false, true);
+            v.set_auto_warp_imports_for_test(edit == EditFixture::NewTrackSample);
+            let drag = v
+                .audio_file_drag_payload(
+                    path.clone(),
+                    "recovery".into(),
+                    None,
+                    Default::default(),
+                    Default::default(),
+                )
+                .unwrap();
+            assert!(
+                v.enqueue_sample_drop(import, &drag, destination),
+                "{:?}",
+                v.error
+            );
+            assert_eq!(v.sample_drop_target(), Some(destination));
+            v.set_auto_warp_imports_for_test(false);
+            v.track_defaults.set_test_state(0.5, false, true);
+        } else {
+            assert!(v.enqueue_device_barrier(request()));
+        }
         let generation = v
             .recovery
             .generation()
-            .expect("device insertion starts audio recovery");
+            .expect("graph edit starts audio recovery");
         assert_eq!(v.recovery.position(), Some(64));
         assert!(v.deferred_play.is_some());
         assert!(!v.enqueue_device_barrier(request()), "one deferred effect");
@@ -328,20 +424,21 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
         assert_eq!(restart.state.revision, revision);
         v.receive(restart);
         assert!(v.service.try_event().is_err());
-        if outcome == EffectRecovery::ProjectChanged {
+        if outcome == EditRecovery::ProjectChanged {
             assert!(v.enqueue(add_track("intervening edit")));
             let changed = next(&v.service);
             assert_eq!(changed.state.revision, revision + 1);
             v.receive(changed);
         }
-        if outcome == EffectRecovery::Failed {
+        if outcome == EditRecovery::Failed {
             v.fail_audio_recovery("fixture audio recovery failed");
-            assert!(v.recovery.native_effect.is_none());
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.pending_sample_drop.is_none());
             assert!(v.service.try_event().is_err());
             assert_eq!(v.state.as_ref().unwrap().revision, revision);
         }
     });
-    if outcome == EffectRecovery::Failed {
+    if outcome == EditRecovery::Failed {
         return;
     }
 
@@ -362,39 +459,91 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
             !v.finish_audio_recovery_tick(),
             "cursor seek must reach the callback"
         );
+        if outcome == EditRecovery::ProjectEditPending {
+            assert!(v.enqueue(add_track("intervening edit")));
+        }
     });
     fresh_backend.render(&mut [[0.0; 2]; 64]).unwrap();
     editor.update(cx, |v, _| {
         assert!(v.finish_audio_recovery_tick());
-        assert!(v.recovery.native_effect.is_none());
+        assert!(v.recovery.deferred_edit.is_none());
         assert!(!v.finish_audio_recovery_tick());
-        if outcome == EffectRecovery::ProjectChanged {
+        if outcome == EditRecovery::ProjectChanged {
             assert!(v.service.try_event().is_err());
-            assert_eq!(
-                v.error.as_deref(),
-                Some("device insertion canceled · project changed during audio recovery")
+            assert!(v.pending_sample_drop.is_none());
+            assert!(
+                v.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("project changed during audio recovery")
             );
+            return;
+        }
+        if outcome == EditRecovery::ProjectEditPending {
+            assert!(v.pending_sample_drop.is_none());
+            assert_eq!(v.worker_requests_pending, 1, "only the intervening edit");
+            assert!(v.error.as_deref().unwrap().contains("project work pending"));
+            let changed = next(&v.service);
+            assert_eq!(changed.state.revision, revision + 1);
+            assert!(
+                changed
+                    .state
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .clips()
+                    .is_empty()
+            );
+            v.receive(changed);
+            assert!(v.service.try_event().is_err());
             return;
         }
         assert_eq!(v.worker_requests_pending, 1, "{:?}", v.error);
         let added = next(&v.service);
         assert_eq!(added.state.revision, revision + 1);
-        let devices = added.state.project.track(target).unwrap().devices();
-        assert_eq!(devices.len(), 1);
-        assert_eq!(
-            devices[0].state().type_id(),
-            DeviceTypeId::from_static("hex.eq")
-        );
-        assert!(
-            added
-                .state
-                .project
-                .track(other)
-                .unwrap()
-                .devices()
-                .is_empty()
-        );
+        let project = &added.state.project;
+        match edit {
+            EditFixture::Effect => {
+                let devices = project.track(target).unwrap().devices();
+                assert_eq!(devices.len(), 1);
+                assert_eq!(
+                    devices[0].state().type_id(),
+                    DeviceTypeId::from_static("hex.eq")
+                );
+                assert!(project.track(other).unwrap().devices().is_empty());
+            }
+            EditFixture::ExistingTrackSample => {
+                assert_eq!(project.tracks().len(), 2);
+                let [clip] = project.track(target).unwrap().clips() else {
+                    panic!("one sample on the captured track");
+                };
+                assert_eq!(clip.start(), 24_000);
+                assert!(project.track(other).unwrap().clips().is_empty());
+            }
+            EditFixture::NewTrackSample => {
+                let [first, inserted, last] = project.tracks() else {
+                    panic!("one inserted track");
+                };
+                assert_eq!((first.id(), last.id()), (target, other));
+                assert_eq!(inserted.gain(), 0.25);
+                let [clip] = inserted.clips() else {
+                    panic!("one sample on the inserted track");
+                };
+                assert_eq!(clip.start(), 24_000);
+                assert!(
+                    clip.audio_edit().is_some(),
+                    "capture auto-warp before recovery"
+                );
+            }
+        }
+        if sample.is_some() {
+            assert!(
+                v.pending_sample_drop.is_some(),
+                "preview waits for its terminal"
+            );
+        }
         v.receive(added);
+        assert!(v.pending_sample_drop.is_none());
         assert!(v.service.try_event().is_err(), "no repeated insertion");
     });
     editor.update(cx, |v, _| assert!(v.retire_audio_preserving_gain_take()));
