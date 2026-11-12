@@ -82,6 +82,7 @@ impl GainBatch {
         &self.values[..self.len]
     }
 }
+#[allow(clippy::too_many_arguments)] // Borrowed segment owners and distinct source/performance clocks.
 pub(super) fn gains_for_segment(
     pair: &NativeInstrumentRuntimePair,
     proofs: &mut [MutableOccurrence],
