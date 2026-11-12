@@ -110,7 +110,7 @@ impl EditorView {
             return false;
         }
         let Some(range) = self.automation_view.devices.range else {
-            return false;
+            return true;
         };
         if let Err(reason) = self.apply_automation_range_edit(edit, range, cx) {
             self.error = Some(reason.into());

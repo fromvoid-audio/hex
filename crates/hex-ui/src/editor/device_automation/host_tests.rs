@@ -538,6 +538,8 @@ fn moved_host_target_refusal_retires_only_its_own_receipt_without_new_history(
             revision,
             points: points.clone(),
             receipt: Receipt::new(view.project_generation),
+            select_range: None,
+            cut_clipboard: None,
         });
         assert!(view.enqueue(Request::Edit(Command::MoveDevice {
             device,
@@ -2105,6 +2107,12 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
         }));
     });
     pump(&mut visual, &editor);
+    let background_range = crate::editor::time_selection::TimeSelection {
+        anchor_track: Some(track),
+        end_track: Some(track),
+        anchor_frame: 0,
+        end_frame: 2,
+    };
     let clips = editor.update(&mut visual, |view, _| {
         let clips = view
             .state
@@ -2115,7 +2123,9 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
             .unwrap()
             .clips()
             .to_vec();
+        assert_eq!(clips.len(), 1, "{:?}", view.error);
         view.selected_clip = Some(clips[0].id());
+        view.time_selection = Some(background_range);
         clips
     });
     let from = lane_point(&mut visual, device, target, [0.1, 0.78]);
@@ -2166,6 +2176,21 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
                 .clips(),
             clips
         );
-        assert!(view.time_selection.is_none());
+        assert_eq!(view.time_selection, Some(background_range));
     });
+
+    let other = DeviceAutomationTarget::HostInputGain;
+    header_assign(&mut visual, &editor, Owner::Track(track), other);
+    let blank = lane_point(&mut visual, device, other, [0.3, 0.78]);
+    visual.simulate_click(blank, CMD);
+    visual.simulate_keystrokes("cmd-v");
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("different lane"))
+        );
+    });
+    assert!(lane_points(&visual, &editor, device, other).is_empty());
+    assert_eq!(lane_points(&visual, &editor, device, target), duplicate);
 }
