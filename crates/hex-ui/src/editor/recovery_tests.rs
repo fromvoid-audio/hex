@@ -184,6 +184,220 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
     output.publication.close();
 }
 
+#[gpui::test]
+fn degraded_native_effect_waits_for_recovery_and_uses_the_original_track(
+    cx: &mut gpui::TestAppContext,
+) {
+    native_effect_recovery(cx, EffectRecovery::Ready);
+}
+
+#[gpui::test]
+fn degraded_native_effect_refuses_changed_project_and_failed_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    native_effect_recovery(&mut cx.new_app(), EffectRecovery::ProjectChanged);
+    native_effect_recovery(&mut cx.new_app(), EffectRecovery::Failed);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EffectRecovery {
+    Ready,
+    ProjectChanged,
+    Failed,
+}
+
+fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery) {
+    use hex_engine::{DeviceTypeId, NativeDeviceClass};
+    use hex_session::service::ArrangementDeviceDestination;
+
+    // Substitute only output creation. Restart and the eventual edit go
+    // through the real session FIFO, and a headless callback owns the cursor.
+    struct RestartObserver(SyncSender<(u64, u64)>);
+    impl WorkerAudioSink for RestartObserver {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn restart_audio(&mut self, generation: u64, request: u64) -> Result<(), String> {
+            self.0
+                .try_send((generation, request))
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    let (restarts, restarted) = sync_channel(1);
+    let service =
+        Service::with_audio_sink(16, 0, None, Box::new(RestartObserver(restarts))).unwrap();
+    let next = |service: &Service| {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            match service.try_event() {
+                Ok(event) => {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    break event;
+                }
+                Err(TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "session event");
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    };
+    next(&service);
+    let add_track = |name: &str| Request::Edit(Command::AddTrack { name: name.into() });
+    service.submit(add_track("target")).unwrap();
+    let first = next(&service);
+    let target = first.state.project.tracks()[0].id();
+    service.submit(add_track("other")).unwrap();
+    let ready = next(&service).state;
+    let other = ready.project.tracks()[1].id();
+    let revision = ready.revision;
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        ready.project.as_ref().clone(),
+        Arc::clone(&ready.midi_preview),
+    );
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let open = || {
+        let (mut output, mut backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+        output
+            .publication
+            .control()
+            .unwrap()
+            .publish(playback)
+            .unwrap();
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let audio = EditorAudio {
+            control: output.take_client().unwrap(),
+            sample_rate: 48_000,
+            label: "effect recovery fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        };
+        (output, backend, audio)
+    };
+    let (old_output, mut old_backend, mut old_audio) = open();
+    old_audio.control.command(PlaybackCommand::Play).unwrap();
+    old_backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let request = || Request::DropBrowserDeviceOnArrangement {
+        project_generation: 0,
+        revision,
+        class: NativeDeviceClass::Effect,
+        type_id: DeviceTypeId::from_static("hex.eq"),
+        destination: ArrangementDeviceDestination::ExistingTrack {
+            track: target,
+            instrument: None,
+        },
+        new_track_gain: None,
+    };
+    let recovery = editor.update(cx, |v, _| {
+        v.service = service;
+        v.state = Some(ready);
+        v.project_generation = 0;
+        v.audio = Some(old_audio);
+        v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        assert!(v.enqueue_device_barrier(request()));
+        let generation = v
+            .recovery
+            .generation()
+            .expect("device insertion starts audio recovery");
+        assert_eq!(v.recovery.position(), Some(64));
+        assert!(v.deferred_play.is_some());
+        assert!(!v.enqueue_device_barrier(request()), "one deferred effect");
+        assert_eq!(v.worker_requests_pending, 1, "only restart is admitted");
+        v.selected_track = Some(other);
+        generation
+    });
+    assert_eq!(
+        restarted
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap(),
+        (0, 1)
+    );
+    drop(old_backend);
+    old_output.publication.close();
+    drop(old_output);
+
+    editor.update(cx, |v, _| {
+        let restart = next(&v.service);
+        assert_eq!(restart.state.revision, revision);
+        v.receive(restart);
+        assert!(v.service.try_event().is_err());
+        if outcome == EffectRecovery::ProjectChanged {
+            assert!(v.enqueue(add_track("intervening edit")));
+            let changed = next(&v.service);
+            assert_eq!(changed.state.revision, revision + 1);
+            v.receive(changed);
+        }
+        if outcome == EffectRecovery::Failed {
+            v.fail_audio_recovery("fixture audio recovery failed");
+            assert!(v.recovery.native_effect.is_none());
+            assert!(v.service.try_event().is_err());
+            assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        }
+    });
+    if outcome == EffectRecovery::Failed {
+        return;
+    }
+
+    let (fresh_output, mut fresh_backend, fresh_audio) = open();
+    editor.update(cx, |v, _| {
+        v.audio = Some(fresh_audio);
+        v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
+        assert!(v.recovery.opened(recovery));
+        assert!(
+            !v.finish_audio_recovery_tick(),
+            "an open output is not a restored graph"
+        );
+        assert!(v.service.try_event().is_err());
+        assert!(v.recovery.restored(recovery));
+        assert!(
+            !v.finish_audio_recovery_tick(),
+            "cursor seek must reach the callback"
+        );
+    });
+    fresh_backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(cx, |v, _| {
+        assert!(v.finish_audio_recovery_tick());
+        assert!(v.recovery.native_effect.is_none());
+        assert!(!v.finish_audio_recovery_tick());
+        if outcome == EffectRecovery::ProjectChanged {
+            assert!(v.service.try_event().is_err());
+            assert_eq!(
+                v.error.as_deref(),
+                Some("device insertion canceled · project changed during audio recovery")
+            );
+            return;
+        }
+        let added = next(&v.service);
+        assert_eq!(added.state.revision, revision + 1);
+        let devices = added.state.project.track(target).unwrap().devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(
+            devices[0].state().type_id(),
+            DeviceTypeId::from_static("hex.eq")
+        );
+        assert!(
+            added
+                .state
+                .project
+                .track(other)
+                .unwrap()
+                .devices()
+                .is_empty()
+        );
+        v.receive(added);
+        assert!(v.service.try_event().is_err(), "no repeated insertion");
+    });
+    drop(fresh_backend);
+    fresh_output.publication.close();
+}
+
 // An already-open actual worker endpoint, without a second lifecycle implementation. The native
 // desktop tests own reopen/teardown; this fixture exercises UI recovery through the real Service
 // seek worker, ordinary resource book, callback and protected scalar observation channel.

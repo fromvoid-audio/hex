@@ -1,8 +1,16 @@
 //! Readiness belongs to the new control's counters, never an old stream's tickets.
+use super::audio_admission::ProjectRevision;
+use hex_session::service::Request;
+
+pub(super) struct DeferredNativeEffect {
+    pub(super) project: ProjectRevision,
+    pub(super) request: Box<Request>,
+}
 #[derive(Default)]
 pub(super) struct RecoveryState {
     next_generation: u64,
     active: Option<Attempt>,
+    pub(super) native_effect: Option<DeferredNativeEffect>,
 }
 
 struct Attempt {
@@ -26,6 +34,7 @@ impl RecoveryState {
             .checked_add(1)
             .ok_or("audio recovery generation exhausted")?;
         self.next_generation = generation;
+        self.native_effect = None;
         self.active = Some(Attempt {
             generation,
             position,
@@ -232,5 +241,6 @@ impl RecoveryState {
 
     pub(super) fn fail(&mut self) {
         self.active = None;
+        self.native_effect = None;
     }
 }
