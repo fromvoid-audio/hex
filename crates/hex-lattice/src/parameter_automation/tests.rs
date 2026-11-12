@@ -217,16 +217,27 @@ fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
         )
         .is_err()
     );
-    assert!(
-        PreparedParameterAutomation::new(
-            vec![ParameterAutomationLane {
-                points: 0..2,
-                ..lane.clone()
-            }],
-            vec![point, point]
-        )
-        .is_err()
-    );
+    for points in [
+        vec![point, point, point],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 1,
+                ..point
+            },
+            point,
+        ],
+    ] {
+        assert!(
+            PreparedParameterAutomation::new(
+                vec![ParameterAutomationLane {
+                    points: 0..points.len(),
+                    ..lane.clone()
+                }],
+                points,
+            )
+            .is_err()
+        );
+    }
     assert!(
         PreparedParameterAutomation::new(vec![lane.clone(); MAX_AUTOMATION_LANES + 1], vec![point])
             .is_err()
