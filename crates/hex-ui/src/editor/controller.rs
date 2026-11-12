@@ -1218,6 +1218,7 @@ impl EditorView {
                     visible_change |= self.duplicate_intent.reject();
                     visible_change |= self.pending_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
+                    visible_change |= self.locators.clear_adds();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.committed_paste_view.take().is_some();
                     visible_change |= self.retire_clip_detail();
@@ -1296,6 +1297,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_device_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_locator_adds();
         visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
@@ -2343,6 +2345,10 @@ impl EditorView {
         let midi_edit_audition = self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
+        if event.project_replaced {
+            self.pending_requests
+                .retain(|request| self.locators.queued_add_frame(request).is_none());
+        }
         self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
         self.clip_activation_complete(&event);
