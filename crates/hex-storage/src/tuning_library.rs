@@ -475,6 +475,39 @@ mod tests {
         fs::create_dir(&p).unwrap();
         Directory(p)
     }
+    #[test]
+    fn substituted_tuning_temporary_preserves_other_files() {
+        for fail_before_publish in [true, false] {
+            let d = directory();
+            let destination = d.0.join("export.freqs");
+            let original = d.0.join("original-stage");
+            let mut substituted = None;
+            let result = publish_with_guard(
+                &destination,
+                b"intended preset",
+                false,
+                fs::hard_link,
+                || {
+                    let entry = fs::read_dir(&d.0).unwrap().next().unwrap().unwrap().path();
+                    fs::rename(&entry, &original).unwrap();
+                    fs::write(&entry, b"foreign work").unwrap();
+                    substituted = Some(entry);
+                    if fail_before_publish {
+                        Err("simulated failure".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            let path = substituted.unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"foreign work");
+            assert_eq!(fs::read(&original).unwrap(), b"intended preset");
+            if result.is_ok() {
+                assert_eq!(fs::read(destination).unwrap(), b"intended preset");
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn slot_lock_releases_when_an_inherited_descriptor_remains_open() {
