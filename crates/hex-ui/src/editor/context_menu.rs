@@ -616,7 +616,7 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
-            EditorContextAction::SourcePicker(choice) => choice.perform(self, cx),
+            EditorContextAction::SourcePicker(choice) => choice.perform(self, window, cx),
             EditorContextAction::HistoryPlayback(action) => {
                 self.history_playback_menu_action(action, cx)
             }
