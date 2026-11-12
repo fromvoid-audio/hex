@@ -586,7 +586,7 @@ fn tiny_derived_roots_cannot_accumulate_large_original_source_cache_owners() {
         );
         old_sources.push(weak);
         let cache = context.cache.borrow();
-        assert_eq!(cache.source_bytes, 64_000);
+        assert_eq!(source_charge(cache.entries.iter(), None).unwrap(), 64_000);
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(cache.bytes, 512);
     }
@@ -611,14 +611,11 @@ fn tiny_derived_roots_cannot_accumulate_large_original_source_cache_owners() {
                 let pending = context.pending.borrow();
                 let entries = pending.as_ref().unwrap();
                 assert_eq!(entries.len(), 1);
+                assert_eq!(source_charge(entries.iter(), None).unwrap(), 64_000);
                 assert_eq!(
-                    entries
-                        .iter()
-                        .map(|entry| entry.source_bytes)
-                        .sum::<usize>(),
-                    64_000
+                    source_charge(context.cache.borrow().entries.iter(), None).unwrap(),
+                    0
                 );
-                assert_eq!(context.cache.borrow().source_bytes, 0);
             }
             Ok(())
         })
@@ -3272,5 +3269,38 @@ fn selection_crossfade_pcm_is_the_two_source_mix_with_unchanged_outside_audio() 
     assert_eq!(
         render(&prepare(&editor, &media, &context), 0, 8_000, 17),
         actual
+    );
+}
+
+#[test]
+fn distinct_transforms_share_one_bounded_source_charge_across_edits() {
+    let (mut editor, clip, media) = fixture(false);
+    let context = AudioTransformPreparation {
+        source_limit: 64_000,
+        ..isolated(512_000, 512_000, 16)
+    };
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let first = prepare(&editor, &media, &context);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 250 })
+        .unwrap();
+    let second = prepare(&editor, &media, &context);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let again = prepare(&editor, &media, &context);
+    let source = |revision: &crate::PreparedRevision| {
+        revision.arrangement().audio_clip_views()[0].audio.clone()
+    };
+    assert!(
+        source(&first).shares_pcm_with(&source(&again)),
+        "unchanged derived audio should be reused"
+    );
+    assert!(!source(&first).shares_pcm_with(&source(&second)));
+    assert_eq!(
+        source_charge(context.cache.borrow().entries.iter(), None).unwrap(),
+        64_000
     );
 }

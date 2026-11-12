@@ -31,8 +31,11 @@ impl EditorView {
                 project_generation: generation,
                 revision,
                 asset,
-                track,
-                start,
+                destination: hex_session::import_batch::AudioBatchDestination::Track {
+                    track,
+                    start,
+                },
+                new_track_gain: None,
                 warp: hex_project::AudioImportWarp::Off,
                 audition_timing,
             })

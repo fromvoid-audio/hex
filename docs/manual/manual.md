@@ -1038,7 +1038,7 @@ the complete edit.
 | set loop from selection / toggle matching loop | l / w |
 | toggle active transport loop | command+l |
 | import audio | command+i |
-| add track | command+t |
+| add track | t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser | command+option+b |

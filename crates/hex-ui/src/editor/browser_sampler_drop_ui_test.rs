@@ -12,6 +12,7 @@ fn sample_drag(view: &EditorView, path: std::path::PathBuf) -> BrowserAudioDrag 
     let state = view.state.as_ref().expect("project state");
     let viewport = view.visible_viewport(state.timeline_frames);
     BrowserAudioDrag {
+        project_asset: None,
         project_generation: view.project_generation,
         revision: state.revision,
         browser_generation: Some(view.browser.scan_generation()),

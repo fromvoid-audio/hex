@@ -28,8 +28,17 @@ pub(super) fn save_as(
             }
         }
         Destination::Folder(folder) => {
-            let image = Image::new(project, Some(folder.root()), recovery_path)?;
-            image.collect(cancellation)?;
+            let image = (|| {
+                let image = Image::new(project, Some(folder.root()), recovery_path)?;
+                image.collect(cancellation)?;
+                Ok::<_, String>(image)
+            })()
+            .map_err(|error| {
+                format!(
+                    "{error} · staging path {} was not removed by hex · inspect it before using or removing it",
+                    hex_storage::text::verbatim(folder.root().display())
+                )
+            })?;
             let outcome = folder
                 .publish(&image.project, || cancellation.is_cancelled())
                 .map_err(display)?;

@@ -1785,14 +1785,14 @@ impl PreparedSessionInventory {
         &self,
         id: TrackId,
         arrangement: &crate::Track,
-    ) -> Result<usize, crate::Invalid> {
+    ) -> Result<(usize, usize), crate::Invalid> {
         let (voices, _, _) = arrangement_midi_envelope(arrangement)?;
         let session = self
             .tracks
             .iter()
             .find(|track| track.id == id)
             .ok_or(crate::Invalid("shared contributor inventory is missing"))?;
-        Ok(voices.max(session.work.active_voices))
+        Ok((voices, voices.max(session.work.active_voices)))
     }
 
     pub fn contains_streamed_sources(&self) -> bool {

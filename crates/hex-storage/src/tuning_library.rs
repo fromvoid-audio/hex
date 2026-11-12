@@ -1,9 +1,14 @@
 //! Eight named native tuning presets and bounded portable Freqs file I/O.
 //! Paths are supplied by the control worker; this module owns no project edits.
 //! Slot writes hold a persistent per-slot advisory lock and recheck the bytes
-//! read before replacement. Older Hex versions and external writers do not
-//! honor that lock; they can still race the final check and rename. This is not
-//! an atomic compare-and-swap, and such a writer's changes can be lost.
+//! read before replacement. Existing slots are exchanged with a retained file;
+//! a writer holding the displaced inode can continue to write to that file.
+//! Recovery entries are never removed by Hex, even after failed publication.
+//! The finite per-slot inventory refuses further replacement when full. An
+//! external writer with an open handle may grow a retained inode, so the entry
+//! limit is not a byte quota. External processes can still replace paths
+//! independently; this is not CAS. On filesystems without atomic exchange or
+//! directory synchronization, replacements refuse and retain staged bytes.
 //! The empty lock file is never removed: its open handle is held until the
 //! operation finishes, and the OS releases the lock if the process exits.
 use hex_tuning::{
@@ -18,6 +23,7 @@ use std::{
 };
 
 pub const SLOT_COUNT: usize = 8;
+const RECOVERY_LIMIT: usize = 32;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slot {
     pub number: usize,
@@ -127,7 +133,17 @@ fn save_with_hook(
     };
     publish_slot(&path, text.as_bytes(), expected.as_deref(), before_check)
 }
-fn lock_slot(path: &Path) -> Result<File, String> {
+// Explicitly unlock before closing: a descriptor duplicated by a concurrent
+// subprocess can otherwise keep the advisory lock alive past this operation.
+struct SlotLock(File);
+
+impl Drop for SlotLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn lock_slot(path: &Path) -> Result<SlotLock, String> {
     let lock_path = path.with_extension("freqs.lock");
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -154,6 +170,7 @@ fn lock_slot(path: &Path) -> Result<File, String> {
             format!("cannot lock tuning slot · {e}")
         }
     })?;
+    let lock = SlotLock(file);
     let current = fs::symlink_metadata(&lock_path)
         .map_err(|e| format!("cannot inspect tuning slot lock · {e}"))?;
     if current.file_type().is_symlink() || !current.is_file() || current.len() != 0 {
@@ -166,7 +183,7 @@ fn lock_slot(path: &Path) -> Result<File, String> {
             return Err("tuning slot lock changed · try again".into());
         }
     }
-    Ok(file)
+    Ok(lock)
 }
 fn rename_with_hook(
     directory: &Path,
@@ -220,24 +237,129 @@ fn publish_slot(
     expected: Option<&[u8]>,
     before_check: impl FnOnce(),
 ) -> Result<(), String> {
+    if let Some(expected) = expected {
+        return replace_preserving(destination, bytes, expected, before_check);
+    }
     publish_with_guard(
         destination,
         bytes,
-        expected.is_some(),
+        false,
         |source, target| fs::hard_link(source, target),
         || {
             before_check();
-            if let Some(expected) = expected {
-                let actual = read_validated(destination)
-                    .map_err(|_| "tuning slot changed · try again".to_owned())?
-                    .1;
-                if actual != expected {
-                    return Err("tuning slot changed · try again".into());
-                }
-            }
             Ok(())
         },
     )
+}
+
+/// Stage each replacement under its permanent recovery name. Once exchanged,
+/// that name refers to the displaced inode and must never be cleaned up here.
+fn replace_preserving(
+    destination: &Path,
+    bytes: &[u8],
+    expected: &[u8],
+    before_check: impl FnOnce(),
+) -> Result<(), String> {
+    replace_preserving_with(
+        destination,
+        bytes,
+        expected,
+        before_check,
+        exchange_files,
+        || Ok(()),
+    )
+}
+fn replace_preserving_with(
+    destination: &Path,
+    bytes: &[u8],
+    expected: &[u8],
+    before_check: impl FnOnce(),
+    exchange: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    after_exchange: impl FnOnce() -> std::io::Result<()>,
+) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let stem = destination
+        .file_stem()
+        .ok_or("invalid tuning slot name")?
+        .to_string_lossy();
+    let mut reserved = None;
+    for number in 1..=RECOVERY_LIMIT {
+        let path = parent.join(format!("{stem}-recovery-{number:02}.freqs"));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                reserved = Some((path, file));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot reserve tuning recovery file · {e}")),
+        }
+    }
+    let (recovery, mut file) = reserved.ok_or_else(|| format!(
+        "tuning recovery is full · close external writers, then inspect and move {stem}-recovery-*.freqs within the same volume from {} before retrying",
+        crate::text::verbatim(parent.display())
+    ))?;
+    let recovery_label = crate::text::verbatim(recovery.display());
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| {
+            format!("tuning save did not finish · retained recovery file {recovery_label} · {e}")
+        })?;
+    drop(file);
+    sync_recovery_parent(parent).map_err(|e| {
+        format!("tuning save did not publish · retained recovery file {recovery_label} · {e}")
+    })?;
+    before_check();
+    let actual = read_validated(destination)
+        .map_err(|_| format!("tuning slot changed · save retained at {recovery_label}"))?
+        .1;
+    if actual != expected {
+        return Err(format!(
+            "tuning slot changed · save retained at {recovery_label}"
+        ));
+    }
+    exchange(&recovery, destination).map_err(|e| {
+        format!("cannot safely replace tuning slot · save retained at {recovery_label} · {e}")
+    })?;
+    after_exchange().map_err(|e| format!("tuning saved; recovery retained at {recovery_label}, but publication did not finish · {e}"))?;
+    sync_recovery_parent(parent).map_err(|e| {
+        format!(
+            "tuning saved; recovery retained at {recovery_label}, but directory sync failed · {e}"
+        )
+    })?;
+    let displaced = read_validated(&recovery).map(|(_, bytes)| bytes);
+    if displaced.as_deref() != Ok(expected) {
+        return Err(format!(
+            "tuning saved but previous slot changed · preserve and inspect recovery file {recovery_label}"
+        ));
+    }
+    Ok(())
+}
+
+fn sync_recovery_parent(parent: &Path) -> std::io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn exchange_files(left: &Path, right: &Path) -> std::io::Result<()> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        left,
+        rustix::fs::CWD,
+        right,
+        rustix::fs::RenameFlags::EXCHANGE,
+    )
+    .map_err(std::io::Error::from)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn exchange_files(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic tuning replacement is unavailable",
+    ))
 }
 fn publish_with_link(
     destination: &Path,
@@ -353,6 +475,19 @@ mod tests {
         fs::create_dir(&p).unwrap();
         Directory(p)
     }
+    #[cfg(unix)]
+    #[test]
+    fn slot_lock_releases_when_an_inherited_descriptor_remains_open() {
+        let d = directory();
+        let path = d.0.join("slot-1.freqs");
+        let lock = lock_slot(&path).unwrap();
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(lock_slot(&path).is_err(), "another writer must be excluded");
+        drop(lock);
+        let next = lock_slot(&path).expect("operation must release the slot lock");
+        drop(next);
+        drop(inherited);
+    }
     #[test]
     fn save_preserves_a_slot_created_during_preparation() {
         let d = directory();
@@ -378,6 +513,219 @@ mod tests {
             };
             assert!(result.is_err());
             assert_eq!(fs::read(&path).unwrap(), competing.as_bytes());
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn retained_recovery_keeps_late_external_writes_after_publisher_exit() {
+        use std::io::{Seek, SeekFrom};
+        const CHILD: &str = "HEX_TUNING_EXCHANGE_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let path = Path::new(&directory).join("slot-1.freqs");
+            let (_, expected) = read_validated(&path).unwrap();
+            let new = preset::encode("new", Scale::equal(19)).unwrap();
+            let _ = replace_preserving_with(
+                &path,
+                new.as_bytes(),
+                &expected,
+                || {},
+                exchange_files,
+                || std::process::exit(0),
+            );
+            std::process::exit(1);
+        }
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let mut external = OpenOptions::new().write(true).open(&path).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tuning_library::tests::retained_recovery_keeps_late_external_writes_after_publisher_exit"])
+            .env(CHILD, &d.0)
+            .status().unwrap();
+        assert!(status.success());
+        let late = preset::encode("external", Scale::equal(24)).unwrap();
+        external.seek(SeekFrom::Start(0)).unwrap();
+        external.write_all(late.as_bytes()).unwrap();
+        external.set_len(late.len() as u64).unwrap();
+        assert_eq!(read_file(&path).unwrap().name, "new");
+        assert_eq!(
+            fs::read(d.0.join("slot-1-recovery-01.freqs")).unwrap(),
+            late.as_bytes()
+        );
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn final_window_change_is_retained_and_reported() {
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let (_, expected) = read_validated(&path).unwrap();
+        let new = preset::encode("new", Scale::equal(19)).unwrap();
+        let external = preset::encode("external", Scale::equal(24)).unwrap();
+        let result = replace_preserving_with(
+            &path,
+            new.as_bytes(),
+            &expected,
+            || {},
+            |left, right| {
+                fs::write(right, external.as_bytes())?;
+                exchange_files(left, right)
+            },
+            || Ok(()),
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("tuning saved but previous slot changed"));
+        assert_eq!(read_file(&path).unwrap().name, "new");
+        assert_eq!(
+            fs::read(d.0.join("slot-1-recovery-01.freqs")).unwrap(),
+            external.as_bytes()
+        );
+    }
+    #[test]
+    fn unsupported_exchange_preserves_slot_and_new_candidate() {
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let (_, expected) = read_validated(&path).unwrap();
+        let new = preset::encode("new", Scale::equal(19)).unwrap();
+        let error = replace_preserving_with(
+            &path,
+            new.as_bytes(),
+            &expected,
+            || {},
+            |_, _| Err(std::io::ErrorKind::Unsupported.into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("cannot safely replace"));
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert_eq!(
+            fs::read(d.0.join("slot-1-recovery-01.freqs")).unwrap(),
+            new.as_bytes()
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn failed_staged_write_retains_original_and_recovery_file() {
+        const CHILD: &str = "HEX_TUNING_WRITE_FAILURE_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let error = save(Path::new(&directory), 1, "new", Scale::equal(19)).unwrap_err();
+            assert!(error.contains("tuning save did not finish"));
+            return;
+        }
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let original = fs::read(&path).unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -f 0; trap '' XFSZ; exec \"$@\"", "hex-test"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tuning_library::tests::failed_staged_write_retains_original_and_recovery_file",
+            ])
+            .env(CHILD, &d.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(d.0.join("slot-1-recovery-01.freqs").is_file());
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn occupied_recovery_symlink_is_preserved() {
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let target = d.0.join("other");
+        fs::write(&target, b"keep").unwrap();
+        let occupied = d.0.join("slot-1-recovery-01.freqs");
+        std::os::unix::fs::symlink(&target, &occupied).unwrap();
+        save(&d.0, 1, "new", Scale::equal(19)).unwrap();
+        assert_eq!(fs::read_link(&occupied).unwrap(), target);
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        assert_eq!(
+            read_file(&d.0.join("slot-1-recovery-02.freqs"))
+                .unwrap()
+                .name,
+            "old"
+        );
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn failure_after_exchange_reports_published_slot_and_retained_original() {
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let (_, expected) = read_validated(&path).unwrap();
+        let new = preset::encode("new", Scale::equal(19)).unwrap();
+        let error = replace_preserving_with(
+            &path,
+            new.as_bytes(),
+            &expected,
+            || {},
+            exchange_files,
+            || Err(std::io::Error::other("simulated interruption")),
+        )
+        .unwrap_err();
+        assert!(error.contains("tuning saved; recovery retained"));
+        assert_eq!(read_file(&path).unwrap().name, "new");
+        assert_eq!(
+            read_file(&d.0.join("slot-1-recovery-01.freqs"))
+                .unwrap()
+                .name,
+            "old"
+        );
+    }
+    #[test]
+    fn interrupted_prepublication_keeps_original_and_staged_candidate() {
+        const CHILD: &str = "HEX_TUNING_PREPARE_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let path = Path::new(&directory).join("slot-1.freqs");
+            let (_, expected) = read_validated(&path).unwrap();
+            let new = preset::encode("new", Scale::equal(19)).unwrap();
+            let _ = replace_preserving(&path, new.as_bytes(), &expected, || std::process::exit(0));
+            std::process::exit(1);
+        }
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tuning_library::tests::interrupted_prepublication_keeps_original_and_staged_candidate"])
+            .env(CHILD, &d.0).status().unwrap();
+        assert!(status.success());
+        assert_eq!(read_file(&d.0.join("slot-1.freqs")).unwrap().name, "old");
+        assert_eq!(
+            read_file(&d.0.join("slot-1-recovery-01.freqs"))
+                .unwrap()
+                .name,
+            "new"
+        );
+    }
+    #[test]
+    fn full_recovery_inventory_refuses_and_preserves_every_file() {
+        let d = directory();
+        save(&d.0, 1, "original", Scale::equal(12)).unwrap();
+        for number in 1..=RECOVERY_LIMIT {
+            fs::write(
+                d.0.join(format!("slot-1-recovery-{number:02}.freqs")),
+                b"keep",
+            )
+            .unwrap();
+        }
+        let original = fs::read(d.0.join("slot-1.freqs")).unwrap();
+        let error = save(&d.0, 1, "new", Scale::equal(19)).unwrap_err();
+        assert!(error.contains("recovery is full"));
+        assert!(error.contains(&d.0.to_string_lossy().to_string()));
+        assert_eq!(fs::read(d.0.join("slot-1.freqs")).unwrap(), original);
+        for number in 1..=RECOVERY_LIMIT {
+            assert_eq!(
+                fs::read(d.0.join(format!("slot-1-recovery-{number:02}.freqs"))).unwrap(),
+                b"keep"
+            );
         }
     }
     #[test]
