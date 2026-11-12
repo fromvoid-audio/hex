@@ -150,11 +150,14 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
     });
     let source = visual.debug_bounds("browser-project-samples").unwrap();
     visual.simulate_click(source.center(), Modifiers::default());
-    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    let search = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(search.center(), Modifiers::default());
     visual.simulate_input("absent");
     visual.run_until_parked();
     editor.read_with(visual, |view, cx| {
-        assert!(view.browser_project_samples(cx).is_empty())
+        assert_eq!(view.browser.section, BrowserSection::ProjectSamples);
+        assert!(view.browser_project_samples(cx).is_empty());
     });
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("Loop");
