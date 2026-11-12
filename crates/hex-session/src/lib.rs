@@ -509,6 +509,7 @@ impl Session {
             native,
             originals,
             None,
+            DocumentAudioMode::Resident,
         )
     }
 
@@ -524,6 +525,7 @@ impl Session {
         native: Option<ResidentNativeReservation>,
         originals: native_assets::ReconstructedOriginalSources<'_>,
         files: Option<audio_sources::ReconstructedFileSources>,
+        mode: DocumentAudioMode,
     ) -> Result<Self, SessionError> {
         let native_assets::ReconstructedOriginalSources {
             assets: native_assets,
@@ -534,6 +536,13 @@ impl Session {
             Some(files) => (Some(files.reservation.validate()?), files.files),
             None => (None, BTreeMap::new()),
         };
+        if mode == DocumentAudioMode::VerifiedStreaming
+            && (source_reservation.is_none() || !prepared_assets.is_empty())
+        {
+            return Err(SessionError::Invalid(
+                "verified recovery requires file-backed clip sources",
+            ));
+        }
         for (id, file) in &verified_sources {
             let asset = project
                 .asset(*id)
@@ -722,7 +731,7 @@ impl Session {
             } else {
                 0
             },
-            audio_mode: DocumentAudioMode::Resident,
+            audio_mode: mode,
             source_reservation,
             resident_frames,
             max_resident_frames,

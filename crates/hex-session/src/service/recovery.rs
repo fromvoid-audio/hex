@@ -287,7 +287,15 @@ pub(super) fn open_source_with_limits(
     }
     // Validate saved sampler identity before inspecting its media. The prepare
     // boundary repeats this check because other callers enter it directly.
-    validate_sampler_source_identity(&project)?;
+    let private_sampler = validate_sampler_source_identity(&project)?;
+    if mode == DocumentAudioMode::VerifiedStreaming
+        && (private_sampler
+            || project
+                .assets()
+                .any(|asset| asset.original_source().is_some()))
+    {
+        return Err("device-original verified opening is not yet available".into());
+    }
     project = with_missing_media_offline(project, &project_dir)?;
     let session = prepare_project(
         current,
@@ -319,9 +327,7 @@ pub(super) fn prepare_project(
 ) -> Result<Session, String> {
     let private_sampler = validate_sampler_source_identity(&project)?;
     let has_originals = project.assets().any(|a| a.original_source().is_some());
-    if (has_originals || private_sampler)
-        && (mode != DocumentAudioMode::Resident || native.is_none())
-    {
+    if (has_originals || private_sampler) && native.is_none() {
         return Err("device-original reopening requires resident native limits".into());
     }
     if current.shutdown.load(Ordering::Acquire) {
@@ -363,7 +369,7 @@ pub(super) fn prepare_project(
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
         && (required_pcm > frame_allowance || oversized_plain_asset);
-    if mode == DocumentAudioMode::VerifiedStreaming {
+    if mode == DocumentAudioMode::VerifiedStreaming && !has_originals && !private_sampler {
         let reservation = reservation
             .ok_or("verified source reservation is required")?
             .validate()
@@ -398,13 +404,14 @@ pub(super) fn prepare_project(
         candidate.sine_table = current.sine_table();
         return Ok(candidate);
     }
-    let mut file_candidate = if ordinary_file_backed {
+    let mut file_candidate = if ordinary_file_backed || mode == DocumentAudioMode::VerifiedStreaming
+    {
         Some(
             Session::new_with_audio_mode_in_overview_domain(
                 project.sample_rate(),
                 history_capacity,
                 current.max_resident_frames(),
-                DocumentAudioMode::Resident,
+                mode,
                 reservation,
                 current.overview_budget.clone(),
             )
@@ -439,6 +446,20 @@ pub(super) fn prepare_project(
             }
             candidate.verified_sources.insert(asset.id(), file);
             continue;
+        }
+        if mode == DocumentAudioMode::VerifiedStreaming && asset.original_source().is_none() {
+            return Err("verified recovery does not support resident clip processing".into());
+        }
+        if mode == DocumentAudioMode::VerifiedStreaming
+            && (project.tracks().iter().any(|track| {
+                track.clips().iter().any(|clip| {
+                    clip.referenced_assets().any(|referenced| referenced == asset.id())
+                })
+            }) || project.session_cells().iter().any(|cell| {
+                matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == asset.id())
+            }))
+        {
+            return Err("verified recovery cannot use device originals as clip sources".into());
         }
         let required_frames = if asset.original_source().is_some() {
             asset.source_frames()
@@ -630,6 +651,7 @@ pub(super) fn prepare_project(
                 cancel: &current.shutdown,
             },
             files,
+            mode,
         )
     } else {
         Session::from_prepared_with_native_limits_in_overview_domain(
