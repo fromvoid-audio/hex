@@ -46,6 +46,37 @@ fn duplicate(editor: &mut Editor, clip: ClipId) -> ClipId {
     first
 }
 #[test]
+fn grouping_linked_midi_clips_preserves_the_unselected_alias() {
+    let (mut editor, _, first) = midi();
+    let second = duplicate(&mut editor, first);
+    let surviving = duplicate(&mut editor, second);
+    let before = editor.project().clone();
+    let source = before.clip_alias(surviving).unwrap();
+
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap()
+    else {
+        panic!("grouped midi clip");
+    };
+
+    let grouped = editor.project();
+    assert_eq!(grouped.clip_alias(group), None);
+    assert_eq!(grouped.clip_alias(first), None);
+    assert_eq!(grouped.clip_alias(second), None);
+    assert_eq!(grouped.clip_alias(surviving), Some(source));
+    assert_eq!(grouped.midi_clip(surviving), before.midi_clip(surviving));
+    let notes = grouped.midi_clip(group).unwrap().notes();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0].start(), beat(1));
+    assert_eq!(notes[1].start(), beat(5));
+    assert_eq!(
+        Project::from_snapshot(grouped.snapshot()).unwrap(),
+        *grouped
+    );
+}
+
+#[test]
 fn midi_alias_content_local_settings_unique_and_original_deletion_round_trip() {
     let (mut editor, _, original) = midi();
     let alias = duplicate(&mut editor, original);

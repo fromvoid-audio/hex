@@ -12847,6 +12847,83 @@ mod service_tests {
     }
 
     #[test]
+    fn grouping_linked_audio_clips_keeps_the_outside_alias_and_round_trips() {
+        let directory = TestDir::new();
+        let wav = directory.0.join("linked-audio.wav");
+        fs::write(&wav, wav_mono(&[16_384; 128])).unwrap();
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        next_event(&service);
+        let submit = |request| {
+            service.submit(request).unwrap();
+            let event = next_event(&service);
+            assert!(event.request_complete);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            event
+        };
+        let imported = submit(Request::Import(wav));
+        let first = imported.state.project.tracks()[0].clips()[0].id();
+        let duplicate = |clip, revision| {
+            let event = submit(Request::DuplicateAliasClips {
+                project_generation: 0,
+                revision,
+                clips: vec![clip],
+            });
+            let Some(Created::Clips { first, last }) = event.created else {
+                panic!("linked duplicate");
+            };
+            assert_eq!(first, last);
+            (first, event)
+        };
+        let (second, duplicated) = duplicate(first, imported.state.revision);
+        let (surviving, before) = duplicate(second, duplicated.state.revision);
+        let before_project = &before.state.project;
+        let source = before_project.clip_alias(first).unwrap();
+        assert_eq!(before_project.clip_alias(second), Some(source));
+        assert_eq!(before_project.clip_alias(surviving), Some(source));
+
+        let grouped = submit(Request::GroupClips {
+            project_generation: 0,
+            revision: before.state.revision,
+            clips: vec![first, second],
+        });
+        let Some(Created::Clip(group)) = grouped.created else {
+            panic!("grouped audio clip");
+        };
+        assert_eq!(grouped.state.revision, before.state.revision + 1);
+        let project = &grouped.state.project;
+        assert!(project.clip(first).is_none());
+        assert!(project.clip(second).is_none());
+        assert_eq!(project.clip_alias(group), None);
+        assert_eq!(project.clip_alias(surviving), Some(source));
+        assert_eq!(project.clip(surviving), before_project.clip(surviving));
+        let clip = project.clip(group).unwrap();
+        assert_eq!((clip.start(), clip.duration()), (0, 256));
+        let events = clip.editable_audio_events().unwrap();
+        assert_eq!(events.sources.len(), 2);
+        assert_eq!(events.events.len(), 2);
+        for (event, (id, start)) in events.events.iter().zip([(first, 0), (second, 128)]) {
+            assert_eq!((event.start, event.end), (start, start + 128));
+            assert_eq!(
+                events
+                    .sources
+                    .iter()
+                    .find(|root| root.id == event.source)
+                    .map(|root| &root.clip),
+                before_project.clip(id)
+            );
+        }
+
+        let undone = submit(Request::Undo).state.project.snapshot();
+        let mut original = before_project.snapshot();
+        original.next_id = undone.next_id;
+        assert_eq!(undone, original);
+        assert_eq!(submit(Request::Redo).state.project, *project);
+        let path = directory.0.join("grouped.hex");
+        submit(Request::SaveNew(path.clone()));
+        assert_eq!(submit(Request::Open(path)).state.project, *project);
+    }
+
+    #[test]
     fn grouping_requests_refuse_stale_generation_or_revision_without_history_changes() {
         for time_range in [false, true] {
             let service = Service::new(48_000, 32, 8_000_000).expect("service");
