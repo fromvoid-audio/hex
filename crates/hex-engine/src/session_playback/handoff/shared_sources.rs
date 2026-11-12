@@ -2335,6 +2335,401 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_session_launch_with_live_keys_respects_reserved_capacity() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::{PlaybackAction, PlaybackCommand};
+
+            let mut f = fixture();
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "capacity".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "next".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            for pitch in 40..48 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            let mut output = [[0.0; 2]; 64];
+            candidate.render(&mut output).unwrap();
+            assert!(input.rejected(), "the fixture must saturate live admission");
+            assert!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "the fixture must also admit at least one live voice"
+            );
+            candidate
+                .try_apply_action(PlaybackAction::Session(
+                    SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: crate::LaunchQuantization::Immediate,
+                    },
+                ))
+                .unwrap();
+            candidate.render(&mut output).unwrap();
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+            assert!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "the launch must retain admitted live voices"
+            );
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut unmuted, _) = live_playback_on(&f, &input, f.receiver);
+            let (mut active, refused) = match unmuted.try_inherit_runtime_in_control_context(
+                &mut candidate,
+                Some(19),
+                Some(19),
+            ) {
+                Ok(()) => (unmuted, false),
+                Err(error) => {
+                    assert!(matches!(
+                        error,
+                        crate::playback::PlaybackHandoffError::Session(
+                            SessionPlaybackError::SharedSourceVoiceCapacity
+                        )
+                    ));
+                    (candidate, true)
+                }
+            };
+            active.render(&mut output).unwrap();
+            assert_eq!(
+                active
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+            assert!(
+                active
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "unmute or its refusal must retain live voices"
+            );
+            assert!(!input.is_cancelled());
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            active.apply(PlaybackCommand::Stop);
+            active.render(&mut output).unwrap();
+            assert!(input.is_cancelled());
+            if refused {
+                let retry_input = Arc::new(ComputerKeyboardInput::default());
+                let (mut retry, _) = live_playback_on(&f, &retry_input, f.receiver);
+                retry
+                    .try_inherit_runtime_in_control_context(&mut active, Some(19), Some(19))
+                    .expect("unmute must retry after Stop clears source pressure");
+                retry.apply(PlaybackCommand::Play);
+                retry.render(&mut output).unwrap();
+                assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            }
+        });
+    }
+
+    #[test]
+    fn shared_source_refuses_session_launch_at_retained_voice_capacity_atomically() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..14 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "capacity".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(session_clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "next".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            f.editor
+                .execute(Command::AddMidiNote {
+                    clip: session_clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 64,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            let mut old = playback(&f);
+            let mut twin = playback(&f);
+            for runtime in [&mut old, &mut twin] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 7]).unwrap();
+            }
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            let mut oracle = playback(&f);
+            candidate.try_inherit_state_from(&mut old).unwrap();
+            oracle.try_inherit_state_from(&mut twin).unwrap();
+            let result = candidate.apply(SessionPlaybackCommand::LaunchClip {
+                clip: session_clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            });
+            assert!(
+                matches!(result, Err(SessionPlaybackError::SharedSourceVoiceCapacity)),
+                "{result:?}"
+            );
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = actual;
+            candidate.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(
+                actual, expected,
+                "refused launch must not alter the running source"
+            );
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            // The held notes end at one quarter note and their declared
+            // one-second tails then retire. A fresh explicit launch can retry.
+            for _ in 0..190 {
+                candidate.render(&mut actual).unwrap();
+            }
+            candidate
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: session_clip,
+                    quantization: crate::LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            candidate.render(&mut actual).unwrap();
+            assert_eq!(
+                candidate.owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip: session_clip })
+            );
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+            for _ in 0..130 {
+                candidate.render(&mut actual).unwrap();
+            }
+            assert_eq!(actual, [[0.0; 2]; 64]);
+        });
+    }
+
+    #[test]
+    fn shared_source_rejects_live_key_at_capacity_without_fault_or_stuck_input() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..12 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut muted, _) = live_playback_on(&f, &input, f.receiver);
+            muted
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            muted.render(&mut output).unwrap();
+            assert!(
+                input.rejected(),
+                "a full source must report the refused press"
+            );
+            assert!(
+                !input.is_cancelled(),
+                "capacity refusal must not cancel the input"
+            );
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "the existing peer must continue"
+            );
+            for _ in 0..190 {
+                muted.render(&mut output).unwrap();
+            }
+            assert_eq!(
+                output, [[0.0; 2]; 64],
+                "a rejected held key must not replay when capacity returns"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            input.set_key(0, Some((60, 100, 2))).unwrap();
+            muted.render(&mut output).unwrap();
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "a fresh press must work after the voices retire"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            muted.apply(PlaybackCommand::Stop);
+            for _ in 0..130 {
+                muted.render(&mut output).unwrap();
+            }
+            assert_eq!(
+                output, [[0.0; 2]; 64],
+                "stop and release must drain the source"
+            );
+        });
+    }
+
+    #[test]
     fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
