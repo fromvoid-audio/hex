@@ -507,6 +507,162 @@ fn shared_source_higher_arrangement_peak_refuses_publication_without_callback_al
     Ok(())
 }
 
+#[test]
+fn shared_source_authored_release_pressure_refuses_publication_without_callback_allocation()
+-> Result<(), Box<dyn Error>> {
+    use hex_devices::operator_state::parameter;
+    use hex_engine::playback::PlaybackHandoffRejection;
+    let mut editor = Editor::new(Project::new(48_000)?, 32)?;
+    let registry = hex_devices::native_instrument_registry()?;
+    let mut state = registry.default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)?;
+    state = registry.patch_parameter(&state, parameter::GLOBAL_MODE, ParameterValue::Choice(1))?;
+    for operator in 1..=4 {
+        state = registry.patch_parameter(
+            &state,
+            parameter::envelope(operator, parameter::EnvelopeField::Release),
+            ParameterValue::Float(1.0),
+        )?;
+    }
+    let Created::Track(receiver) = editor.execute(Command::InsertTrackWithDevice {
+        name: "receiver".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state,
+    })?
+    else {
+        return Err("receiver missing".into());
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .and_then(|track| track.source_id())
+        .ok_or("source missing")?;
+    let Created::Track(contributor) = editor.execute(Command::AddMidiTrack {
+        name: "contributor".into(),
+    })?
+    else {
+        return Err("contributor missing".into());
+    };
+    editor.execute(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    })?;
+    let mut contributor_clip = None;
+    for track in [receiver, contributor] {
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })?
+        else {
+            return Err("clip missing".into());
+        };
+        let count = if track == contributor { 48 } else { 1 };
+        for pitch in 0..count {
+            editor.execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                velocity: 100,
+                channel: 0,
+            })?;
+        }
+        if track == contributor {
+            contributor_clip = Some(clip);
+        }
+    }
+    let initial = Playback::try_from_prepared_with_session(prepared(editor.project())?)?;
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    let original_revision = control.publish(initial).map_err(|error| error.reason)?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "play queue full")?;
+    let mut output = [[0.0; 2]; 128];
+    let render = |callback: &mut prepared::Callback,
+                  output: &mut [[f32; 2]; 128]|
+     -> Result<(), Box<dyn Error>> {
+        let mut result = None;
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            result = Some(callback.render(output));
+        });
+        result.ok_or("render missing")??;
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        Ok(())
+    };
+    render(&mut callback, &mut output)?;
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001)
+    );
+    let clip = contributor_clip.ok_or("contributor clip missing")?;
+    let notes: Vec<_> = editor
+        .project()
+        .midi_source(clip)
+        .ok_or("source missing")?
+        .notes()
+        .iter()
+        .map(|note| note.id())
+        .collect();
+    if notes.len() != 48 {
+        return Err("fixture did not create 48 authored notes".into());
+    }
+    for note in notes {
+        editor.execute(Command::RemoveMidiNote(note))?;
+    }
+    for pitch in 32..80 {
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::from_ratio(1, 16)?,
+            duration: BeatTime::from_ratio(1, 2)?,
+            pitch,
+            velocity: 100,
+            channel: 0,
+        })?;
+    }
+    let candidate = Playback::try_from_prepared_with_session(prepared(editor.project())?)?;
+    let candidate_revision = control.publish(candidate).map_err(|error| error.reason)?;
+    render(&mut callback, &mut output)?;
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((
+            candidate_revision,
+            PlaybackHandoffRejection::SharedSourceVoiceCapacity
+        ))
+    );
+    assert_eq!(
+        control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        original_revision
+    );
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001)
+    );
+    assert!(control.status.render_fault_snapshot().is_none());
+    control.stop();
+    render(&mut callback, &mut output)?;
+    control.request_shutdown();
+    render(&mut callback, &mut output)?;
+    control.reclaim();
+    Ok(())
+}
+
 fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 32)?;
     let Created::Track(a) = editor.execute(Command::InsertTrackWithDevice {

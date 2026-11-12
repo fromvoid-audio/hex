@@ -335,7 +335,8 @@ impl SharedSourceHandoff {
                 ));
             }
             let live = old_runtime.transition_live_count(false);
-            if shared && live != 0 {
+            let authored_proofs = old_runtime.transition_proofs(false).len();
+            if shared && (live != 0 || authored_proofs != 0) {
                 let authored_envelope = new_routing.contributors(new_index).iter().try_fold(
                     0usize,
                     |sum, &index| {
@@ -353,11 +354,17 @@ impl SharedSourceHandoff {
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)
                     },
                 )?;
-                if live
-                    > new_runtime.live_voice_capacity_for_proofs(
-                        old_runtime.transition_proofs(false).len(),
-                        authored_envelope,
-                    )
+                let authored = authored_proofs.saturating_add(authored_envelope);
+                let authored_overflow = authored
+                    > new_runtime
+                        .max_active_occurrences()
+                        .min(new_runtime.transition_proof_capacity())
+                    || authored.saturating_mul(2).saturating_add(3)
+                        > new_runtime.max_events_per_block();
+                if authored_overflow
+                    || live
+                        > new_runtime
+                            .live_voice_capacity_for_proofs(authored_proofs, authored_envelope)
                 {
                     // An unchanged Arrangement has already admitted these
                     // voices. Prove that case with a bounded number of
@@ -1748,6 +1755,107 @@ mod tests {
                 heard_new_notes,
                 "retry must render the newly authored notes"
             );
+        });
+    }
+
+    #[test]
+    fn shared_source_future_notes_do_not_overrun_retained_authored_releases() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..13 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let mut old = playback(&f);
+            let mut oracle = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            oracle.render(&mut [[0.0; 2]; 7]).unwrap();
+            let notes: Vec<_> = f
+                .editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .map(|note| note.id())
+                .collect();
+            assert_eq!(notes.len(), 14);
+            for note in notes {
+                f.editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            }
+            for pitch in 30..44 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_ratio(1, 16).unwrap(),
+                        duration: BeatTime::from_ratio(1, 2).unwrap(),
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let mut candidate = playback(&f);
+            let mut output = [[0.0; 2]; 64];
+            let mut expected = output;
+            assert!(matches!(
+                candidate.try_inherit_state_from(&mut old),
+                Err(SessionPlaybackError::SharedSourceVoiceCapacity)
+            ));
+            old.render(&mut output)
+                .expect("refused edit must leave the old source rendering");
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(output, expected, "refusal must preserve existing audio");
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            old.apply(SessionPlaybackCommand::Stop).unwrap();
+            for _ in 0..130 {
+                old.render(&mut output).unwrap();
+            }
+            let mut retry = playback(&f);
+            retry.try_inherit_state_from(&mut old).unwrap();
+            retry.apply(SessionPlaybackCommand::Play).unwrap();
+            for _ in 0..8 {
+                retry.render(&mut output).unwrap();
+            }
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
         });
     }
 
