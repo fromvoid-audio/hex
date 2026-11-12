@@ -654,7 +654,7 @@ fn continuous(previous: Option<u64>, next: Option<u64>) -> bool {
 
 fn knot_reservation(points: &[AutomationPoint], tempo: &TempoMap) -> Option<usize> {
     points.windows(2).try_fold(points.len(), |count, pair| {
-        if pair[0].outgoing != AutomationInterpolation::Linear {
+        if pair[0].outgoing != AutomationInterpolation::Linear || pair[0].beat == pair[1].beat {
             return Some(count);
         }
         let markers = tempo.points();
@@ -678,7 +678,7 @@ fn prepare_knots(
     knots
         .try_reserve_exact(capacity)
         .map_err(|_| Invalid("could not reserve foreign automation knots"))?;
-    let mut push = |beat, value, linear| -> Result<(), Invalid> {
+    let mut push = |beat, value, linear, coincident: bool| -> Result<(), Invalid> {
         let frame = tempo
             .beat_to_frame(beat)
             .map_err(|error| Invalid(error.0))?;
@@ -687,7 +687,10 @@ fn prepare_knots(
             value,
             linear,
         };
-        if let Some(last) = knots.last_mut().filter(|last| last.frame == frame) {
+        if let Some(last) = knots
+            .last_mut()
+            .filter(|last| last.frame == frame && !coincident)
+        {
             *last = knot;
         } else {
             knots.push(knot);
@@ -697,15 +700,17 @@ fn prepare_knots(
     for (index, point) in points.iter().enumerate() {
         let value = f64::from(point.value.get());
         let next = points.get(index + 1);
-        let linear =
-            steps == 0 && point.outgoing == AutomationInterpolation::Linear && next.is_some();
+        let linear = steps == 0
+            && point.outgoing == AutomationInterpolation::Linear
+            && next.is_some_and(|next| next.beat > point.beat);
         let value = if steps == 0 {
             value
         } else {
             let steps = f64::from(steps);
             (value * steps).round() / steps
         };
-        push(point.beat, value, linear)?;
+        let coincident = index > 0 && points[index - 1].beat == point.beat;
+        push(point.beat, value, linear, coincident)?;
         if linear && let Some(next) = next {
             let markers = tempo.points();
             let first = markers.partition_point(|marker| marker.beat() <= point.beat);
@@ -714,7 +719,7 @@ fn prepare_knots(
                 let fraction = (marker.beat().raw() - point.beat.raw()) as f64
                     / (next.beat.raw() - point.beat.raw()) as f64;
                 let marker_value = value + (f64::from(next.value.get()) - value) * fraction;
-                push(marker.beat(), marker_value, true)?;
+                push(marker.beat(), marker_value, true, false)?;
             }
         }
     }
@@ -790,12 +795,24 @@ impl Lane {
         let mut emitted = start;
         while let Some(knot) = self.knots.get(next).filter(|knot| knot.frame <= last) {
             let offset = start + (knot.frame - origin) as usize;
-            if let Some(previous) = step_before(&self.knots, next)
+            let paired = self
+                .knots
+                .get(next + 1)
+                .filter(|outgoing| outgoing.frame == knot.frame);
+            let previous = if paired.is_some() {
+                // VST3 queues cannot hold two values at one offset. Preserve the
+                // incoming ramp to the sample immediately before the jump.
+                Some(self.value(knot.frame - 1, next))
+            } else {
+                step_before(&self.knots, next)
+            };
+            if let Some(previous) = previous
                 && offset - 1 > emitted
             {
                 self.emit(offset - 1, previous, output, count)?;
             }
-            self.emit(offset, knot.value, output, count)?;
+            self.emit(offset, paired.unwrap_or(knot).value, output, count)?;
+            next += usize::from(paired.is_some());
             emitted = offset;
             next += 1;
         }
