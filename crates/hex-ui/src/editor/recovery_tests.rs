@@ -231,7 +231,7 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
     let service =
         Service::with_audio_sink(16, 0, None, Box::new(RestartObserver(restarts))).unwrap();
     let next = |service: &Service| {
-        let deadline = crate::test_wait::hang_deadline();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
         loop {
             match service.try_event() {
                 Ok(event) => {
@@ -348,6 +348,8 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
     let (mut fresh_output, mut fresh_backend, fresh_audio) = open();
     editor.update(cx, |v, _| {
         v.audio = Some(fresh_audio);
+        // Opening a new output clears observations belonging to the old one.
+        v.degraded_plugins = Default::default();
         v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
         assert!(v.recovery.opened(recovery));
         assert!(
@@ -374,6 +376,7 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
             );
             return;
         }
+        assert_eq!(v.worker_requests_pending, 1, "{:?}", v.error);
         let added = next(&v.service);
         assert_eq!(added.state.revision, revision + 1);
         let devices = added.state.project.track(target).unwrap().devices();
