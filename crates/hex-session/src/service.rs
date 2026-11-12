@@ -94,9 +94,9 @@ pub use audio_sink::{
     PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
     PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationFailure,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -313,6 +313,10 @@ pub struct Event {
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
+    /// This exact range-copy request was refused before canonical commit because
+    /// native source custody was unavailable. Ordered request completion and
+    /// source context correlate the receipt; it does not establish the cause.
+    pub range_copy_source_unavailable: Option<hex_engine::AudioSourceContext>,
     /// Persistent automatic-recovery failure; successful edits need not clear it.
     pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.
@@ -2751,6 +2755,7 @@ fn run_worker(
                     .then(|| native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
+                range_copy_source_unavailable: None,
                 recovery_failure: None,
                 audio_batch_failure: None,
                 import_truncation: None,
@@ -2794,6 +2799,7 @@ fn run_worker(
             playback: None,
             status: None,
             error: Some(error),
+            range_copy_source_unavailable: None,
             recovery_failure: None,
             audio_batch_failure: None,
             import_truncation: None,
@@ -3383,6 +3389,7 @@ fn run_worker(
         let mut restore_prepared = None;
         let mut status = None;
         let mut error = None;
+        let mut range_copy_source_unavailable = None;
         let mut export_completion = None;
         let mut export_job = None;
         let mut gesture_ack = None;
@@ -6286,7 +6293,18 @@ fn run_worker(
                             }
                             resident_snapshot = Some(snapshot);
                         }
-                        Err(reason) => error = Some(reason.to_string()),
+                        Err(reason) => {
+                            if time_range_copy
+                                && matches!(reason, SessionError::NativeSourceUnavailable(_))
+                            {
+                                range_copy_source_unavailable =
+                                    Some(hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    });
+                            }
+                            error = Some(reason.to_string());
+                        }
                     }
                 }
                 Request::Edit(command)
@@ -9844,6 +9862,7 @@ fn run_worker(
             playback,
             status,
             error,
+            range_copy_source_unavailable,
             recovery_failure: recovery_tracker.failure(),
             request_complete,
             sampler_load_complete,
