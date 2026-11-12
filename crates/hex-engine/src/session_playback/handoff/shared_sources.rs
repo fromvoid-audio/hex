@@ -390,7 +390,7 @@ impl SharedSourceHandoff {
                             let new_route = effective_midi_route(revision, routes, index);
                             old_routing.source(old_index) == Some(source)
                                 && old_routing.contributes(old_index)
-                                && track.source_input_enabled() == old_track.source_input_enabled()
+                                && (!track.source_input_enabled() || old_track.source_input_enabled())
                                 && matches!(old_route, Ok(route) if route.owner == RouteOwner::Arrangement && route.pending.is_none())
                                 && matches!(new_route, Ok(route) if route.owner == RouteOwner::Arrangement && route.pending.is_none())
                                 && previous.revision.bounded_mutable_arrangement_sources_match(revision, id, MAX_UNCHANGED_CLIPS)
