@@ -350,6 +350,28 @@ mod tests {
             Err(error) => panic!("next: worker event absent: {error}"),
         }
     }
+    fn prepare_paste(service: &Service) -> hex_project::TrackId {
+        next(service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let track = next(service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            }))
+            .unwrap();
+        let original = next(service);
+        let clip = original.state.project.track(track).unwrap().midi_clips()[0].id();
+        service.submit(Request::CopyClips(vec![clip])).unwrap();
+        assert!(next(service).error.is_none());
+        track
+    }
+
     fn intent(event: &Event) -> RecoveryRestart {
         let failure = event.recovery_failure.as_ref().unwrap();
         RecoveryRestart {
@@ -584,24 +606,7 @@ mod tests {
             Box::new(SourceSink(Arc::clone(&sources))),
         )
         .unwrap();
-        next(&service);
-        service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "source".into(),
-            }))
-            .unwrap();
-        let track = next(&service).state.project.tracks()[0].id();
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::ZERO,
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        let original = next(&service);
-        let clip = original.state.project.track(track).unwrap().midi_clips()[0].id();
-        service.submit(Request::CopyClips(vec![clip])).unwrap();
-        assert!(next(&service).error.is_none());
+        let track = prepare_paste(&service);
         let (entered_tx, entered) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::sync_channel(1);
         CHECKPOINT_GATE
@@ -710,6 +715,39 @@ mod tests {
                 .len(),
             1
         );
+        service.submit(Request::Redo).unwrap();
+        let first_redo = next(&service);
+        assert_eq!(
+            first_redo
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        service.submit(Request::Redo).unwrap();
+        let second_redo = next(&service);
+        assert_eq!(
+            second_redo
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            3
+        );
+        if conflict {
+            assert!(second_redo.recovery_failure.is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), foreign);
+        } else {
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *second_redo.state.project
+            );
+        }
         service.shutdown(Duration::from_secs(2)).unwrap();
         drop(service);
         std::fs::remove_dir_all(directory).unwrap();
@@ -721,24 +759,7 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("untitled.hex-journal");
         let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-        next(&service);
-        service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "source".into(),
-            }))
-            .unwrap();
-        let track = next(&service).state.project.tracks()[0].id();
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::ZERO,
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        let original = next(&service);
-        let clip = original.state.project.track(track).unwrap().midi_clips()[0].id();
-        service.submit(Request::CopyClips(vec![clip])).unwrap();
-        next(&service);
+        let track = prepare_paste(&service);
         let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
         let (release, release_rx) = std::sync::mpsc::sync_channel(1);
         CHECKPOINT_GATE
@@ -790,30 +811,377 @@ mod tests {
     }
 
     #[test]
+    fn project_replacement_follows_both_committed_pastes_without_stale_source() {
+        use std::time::{Duration, Instant};
+        let directory =
+            std::env::temp_dir().join(format!("hex-paste-replace-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_arrangement_edit_view().unwrap();
+        let first_revision = first.state.upgrade().unwrap().revision;
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break view;
+            }
+            assert!(Instant::now() < until, "second paste did not commit");
+            std::thread::yield_now();
+        };
+        let second_state = second.state.upgrade().unwrap();
+        service
+            .submit(Request::NewWithAudioMode {
+                mode: DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap();
+        release.send(()).unwrap();
+        let first = next(&service);
+        let second = next(&service);
+        let replacement = next(&service);
+        assert!(first.error.is_none() && second.error.is_none() && replacement.error.is_none());
+        assert_eq!(
+            (first.state.revision, second.state.revision),
+            (first_revision, second_state.revision)
+        );
+        assert!(replacement.project_replaced);
+        let replacement_context = replacement
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        assert_ne!(
+            replacement_context.project_generation,
+            second_state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .context()
+                .project_generation
+        );
+        assert_eq!(
+            sources.lock().unwrap().last().copied(),
+            Some(replacement_context)
+        );
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second_state.project
+        );
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn third_paste_waits_for_the_single_pending_checkpoint_slot() {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!("hex-paste-full-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_arrangement_edit_view().unwrap();
+        let first_revision = first.state.upgrade().unwrap().revision;
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break view;
+            }
+            assert!(Instant::now() < until, "second paste did not commit");
+            std::thread::yield_now();
+        };
+        let second_revision = second.state.upgrade().unwrap().revision;
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 144_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(60);
+        while Instant::now() < until {
+            assert!(matches!(
+                service.try_arrangement_edit_view(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        let first = next(&service);
+        let second = next(&service);
+        let third = next(&service);
+        assert!(first.error.is_none() && second.error.is_none() && third.error.is_none());
+        assert_eq!(first.state.revision, first_revision);
+        assert_eq!(second.state.revision, second_revision);
+        assert_eq!(third.state.revision, second_revision + 1);
+        assert_eq!(
+            third.state.project.track(track).unwrap().midi_clips().len(),
+            4
+        );
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *third.state.project
+        );
+        for remaining in [3, 2, 1] {
+            service.submit(Request::Undo).unwrap();
+            assert_eq!(
+                next(&service)
+                    .state
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .midi_clips()
+                    .len(),
+                remaining
+            );
+        }
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retained_paste_terminals_survive_a_full_event_queue() {
+        use super::super::diagnostics::{DiagnosticObserver, DiagnosticStage};
+        use std::time::{Duration, Instant};
+        let directory =
+            std::env::temp_dir().join(format!("hex-paste-events-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let queued = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&queued);
+        service
+            .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+                if matches!(event.stage, DiagnosticStage::OutcomeQueued)
+                    && event
+                        .request
+                        .is_some_and(|request| request.kind == "copy_clips")
+                {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }
+            })))
+            .unwrap();
+        // Copying an empty selection fails without changing the clipboard or project.
+        service.submit(Request::CopyClips(Vec::new())).unwrap();
+        service.submit(Request::CopyClips(Vec::new())).unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        while queued.load(Ordering::Relaxed) < 2 {
+            assert!(Instant::now() < until, "event queue did not fill");
+            std::thread::yield_now();
+        }
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_arrangement_edit_view().unwrap();
+        let first_revision = first.state.upgrade().unwrap().revision;
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break view;
+            }
+            assert!(Instant::now() < until, "second paste did not commit");
+            std::thread::yield_now();
+        };
+        let second_revision = second.state.upgrade().unwrap().revision;
+        release.send(()).unwrap();
+        let _first_copy = next(&service);
+        let _second_copy = next(&service);
+        let first = next(&service);
+        let second = next(&service);
+        assert!(first.error.is_none() && second.error.is_none());
+        assert_eq!(
+            (first.state.revision, second.state.revision),
+            (first_revision, second_revision)
+        );
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second.state.project
+        );
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[derive(Clone, Copy)]
+    enum PasteFence {
+        Save,
+        Open,
+        Restart,
+    }
+
+    #[test]
+    fn save_waits_for_an_in_flight_paste_checkpoint() {
+        check_paste_fence(PasteFence::Save);
+    }
+
+    #[test]
+    fn open_waits_for_an_in_flight_paste_checkpoint() {
+        check_paste_fence(PasteFence::Open);
+    }
+
+    #[test]
+    fn stale_recovery_restart_waits_for_an_in_flight_paste_checkpoint() {
+        check_paste_fence(PasteFence::Restart);
+    }
+
+    fn check_paste_fence(fence: PasteFence) {
+        use std::time::{Duration, Instant};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "hex-paste-fence-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let journal = directory.join("untitled.hex-journal");
+        let target = directory.join("other.hex");
+        let other = Project::new(48_000).unwrap();
+        if matches!(fence, PasteFence::Open) {
+            hex_storage::save_new(&target, &other).unwrap();
+        }
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, journal.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((journal.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let view = service.try_arrangement_edit_view().unwrap();
+        let pasted = view.state.upgrade().unwrap();
+        let request = match fence {
+            PasteFence::Save => Request::SaveNew(target.clone()),
+            PasteFence::Open => Request::Open(target.clone()),
+            PasteFence::Restart => Request::RestartRecovery(RecoveryRestart {
+                project_generation: view.project_generation,
+                revision: pasted.revision,
+                failure_id: 1,
+            }),
+        };
+        service.submit(request).unwrap();
+        let until = Instant::now() + Duration::from_millis(60);
+        while Instant::now() < until {
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            if matches!(fence, PasteFence::Save) {
+                assert!(!target.exists());
+            }
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        let paste = next(&service);
+        assert!(paste.error.is_none());
+        assert_eq!(paste.state.revision, pasted.revision);
+        let terminal = next(&service);
+        match fence {
+            PasteFence::Save => {
+                assert!(terminal.error.is_none(), "{:?}", terminal.error);
+                assert!(terminal.save_complete);
+                assert_eq!(hex_storage::load(&target).unwrap(), *pasted.project);
+            }
+            PasteFence::Open => {
+                assert!(terminal.error.is_none(), "{:?}", terminal.error);
+                assert!(terminal.project_replaced);
+                assert_eq!(*terminal.state.project, other);
+                assert_eq!(
+                    hex_storage::load_journal(&journal).unwrap(),
+                    *pasted.project
+                );
+            }
+            PasteFence::Restart => {
+                assert!(terminal.error.is_some());
+                assert_eq!(
+                    hex_storage::load_journal(&journal).unwrap(),
+                    *pasted.project
+                );
+            }
+        }
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn shutdown_retains_an_in_flight_paste_checkpoint_until_publication() {
         let directory =
             std::env::temp_dir().join(format!("hex-paste-shutdown-{}", std::process::id()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("untitled.hex-journal");
         let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-        next(&service);
-        service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "source".into(),
-            }))
-            .unwrap();
-        let track = next(&service).state.project.tracks()[0].id();
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::ZERO,
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        let original = next(&service);
-        let clip = original.state.project.track(track).unwrap().midi_clips()[0].id();
-        service.submit(Request::CopyClips(vec![clip])).unwrap();
-        next(&service);
+        let track = prepare_paste(&service);
         let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
         let (release, release_rx) = std::sync::mpsc::sync_channel(1);
         CHECKPOINT_GATE
