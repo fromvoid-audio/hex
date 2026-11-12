@@ -1,3 +1,4 @@
+use super::device_automation::RangeEdit;
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
@@ -48,6 +49,9 @@ impl EditorView {
             .iter()
             .any(|context| context.contains("hex_text_editing"))
         {
+            return;
+        }
+        if self.edit_automation_range(RangeEdit::Duplicate, window, cx) {
             return;
         }
         if self.track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate) {
@@ -1403,23 +1407,31 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CopyTimeSelection, window, cx| {
-                if !view.copy_section(window) {
+                if !view.edit_automation_range(RangeEdit::Copy, window, cx)
+                    && !view.copy_section(window)
+                {
                     view.copy_time_selection(false, window);
                 }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CutTimeSelection, window, cx| {
-                view.copy_time_selection(true, window);
+                if !view.edit_automation_range(RangeEdit::Cut, window, cx) {
+                    view.copy_time_selection(true, window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &PasteTimeSelection, window, cx| {
-                if !view.paste_section(window) {
+                if !view.edit_automation_range(RangeEdit::Paste, window, cx)
+                    && !view.paste_section(window)
+                {
                     view.paste_time_selection(window);
                 }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &InsertTimeSelection, window, cx| {
-                view.insert_time_selection(window);
+                if !view.edit_automation_range(RangeEdit::Insert, window, cx) {
+                    view.insert_time_selection(window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &DeleteSectionMarker, window, cx| {

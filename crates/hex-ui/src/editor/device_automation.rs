@@ -10,6 +10,8 @@
 pub(super) mod host_tests;
 mod paint;
 mod plot_geometry;
+mod range_edit;
+pub(super) use range_edit::RangeEdit;
 mod read_selection;
 #[cfg(test)]
 mod tests;
@@ -215,6 +217,8 @@ struct Pending {
     revision: u64,
     points: Vec<AutomationPoint>,
     receipt: Receipt,
+    select_range: Option<RangeSelection>,
+    cut_clipboard: Option<range_edit::Clipboard>,
 }
 
 #[derive(Default)]
@@ -224,6 +228,7 @@ pub(super) struct Lanes {
     known: Vec<Entry>,
     selected: Option<Selection>,
     range: Option<RangeSelection>,
+    clipboard: Option<range_edit::Clipboard>,
     draft: Option<Draft>,
     marquee: Option<MarqueeDraft>,
     pending: Option<Pending>,
@@ -1302,7 +1307,9 @@ impl EditorView {
         {
             lanes.range = None;
         }
-        if let Some(selected) = lanes.selected.take() {
+        if let Some(range) = lanes.range {
+            lanes.selected = range.selection(lanes.points_ref(&state.project, range.target));
+        } else if let Some(selected) = lanes.selected.take() {
             let target = selected.target;
             lanes.selected = if lanes
                 .pending
@@ -1365,14 +1372,39 @@ impl EditorView {
         {
             self.automation_view.devices.read_pending = None;
         }
-        if let Some(pending) = &mut self.automation_view.devices.pending
-            && pending.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            ) != Disposition::Waiting
+        let lanes = &mut self.automation_view.devices;
+        let Some(pending) = &mut lanes.pending else {
+            return;
+        };
+        let disposition = pending.receipt.observe(
+            self.project_generation,
+            event.project_replaced,
+            event.request_complete,
+        );
+        if disposition != Disposition::Waiting
+            && let Some(pending) = lanes.pending.take()
+            && disposition == Disposition::Terminal
+            && (pending.cut_clipboard.is_some() || pending.select_range.is_some())
+            // Recovery can report a warning on the same terminal as a committed edit.
+            && event.state.revision > pending.revision
+            && pending.target.identity_current(&event.state.project, self.project_generation)
+                .is_some_and(|device| {
+                    let points = device.automation_target(pending.target.kind)
+                        .map_or(&[][..], |lane| lane.points.as_slice());
+                    points == pending.points
+                })
         {
-            self.retire_pending_device_automation();
+            if let Some(copy) = pending.cut_clipboard {
+                lanes.clipboard = Some(copy);
+            }
+            if let Some(range) = pending.select_range
+                && lanes
+                    .range
+                    .is_some_and(|active| active.target == range.target)
+            {
+                lanes.range = Some(range);
+                lanes.selected = range.selection(&pending.points);
+            }
         }
     }
     pub(super) fn cancel_device_automation_draft(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1440,6 +1472,8 @@ impl EditorView {
             revision,
             points: points.clone(),
             receipt: Receipt::new(target.generation),
+            select_range: None,
+            cut_clipboard: None,
         });
         if !self.enqueue(Request::DeviceAutomation {
             project_generation: target.generation,

@@ -668,23 +668,16 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_numeric_control_keys(cx);
     hex_widgets::bind_selector_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
-    // Background clip shortcuts have no target while the foreground gain lanes
-    // own Arrangement focus. Child text, MIDI and event contexts keep their keys.
+    // Foreground automation handles clipboard and duplicate actions. Other
+    // background clip shortcuts have no target while automation owns focus.
     cx.bind_keys(
         [
-            "cmd-c",
-            "cmd-shift-c",
-            "cmd-x",
-            "cmd-v",
-            "cmd-shift-v",
             "left",
             "right",
             "shift-left",
             "shift-right",
             "cmd-shift-m",
             "cmd-r",
-            "cmd-d",
-            "d",
             "i",
             "e",
             "b",
