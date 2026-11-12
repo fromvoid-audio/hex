@@ -43,24 +43,41 @@ clippy, build or runner) at a time. A session's own worktree target may need
 Do not edit a checkout while a runner is using it: a changed tree marks the
 run stale, and Python self-tests that start scripts would test the edit.
 
-For cooperating sessions, wrap the entire command (including scripts that may
-spawn Cargo) in the shared slot:
+The `--quick` profile runs guards and `cargo fmt --all --check`. It can run in
+an unchanged checkout during another executor's build.
+
+For Cargo-heavy verification, wrap the entire command (including scripts that
+may spawn Cargo) in the shared slot:
 
 ```sh
 python3 scripts/cargo-slot.py cargo test -p OWNER --locked
+python3 scripts/cargo-slot.py --wait-seconds 60 cargo test -p OWNER --locked FILTER
 python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
 ```
 
 All participating Hex and Yield worktrees on the same user account must use the
 same `~/.cache/hex/cargo-slot.lock`. From a Yield worktree, invoke this wrapper
-by its absolute path in a Hex checkout. The wrapper waits for the slot and passes
-its open lock to the child, so killing the wrapper does not free it while the
-child retains the descriptor. Leave the lock file in place; an unlocked file is
-not a stale owner and must not be deleted. This is advisory, separate from the
-runner's target-custody lock, and cannot exclude direct Cargo commands or other
-scripts that do not participate. Check for nonparticipants and coordinate with
-their owners before starting; do not kill their work. `HEX_CARGO_SLOT_FILE` is
-for isolated tests: different values do not coordinate with each other.
+by its absolute path in a Hex checkout. An upgraded wrapper first reserves the
+next turn using the sibling `cargo-slot.lock.admission` lock, then waits for
+the execution lock. Once it reports `next cargo slot reserved`, later upgraded
+wrappers wait behind it. Order among waiters for the reservation is unspecified.
+Legacy wrappers still share the execution lock and can contend for the next turn.
+
+Set `--wait-seconds` to the remaining time available for admission. It covers
+both locks, accepts zero for an immediate attempt, and exits 75 with a timeout
+message before starting the command when the budget expires. Without it, the
+wrapper waits until it acquires both locks. `cargo slot acquired` confirms
+admission; the child exit status reports the command result. Record admission
+wait separately from build and test execution. The active command keeps its
+slot until it finishes or releases its inherited descriptor.
+
+The wrapper passes only the execution lock to the child, so killing the
+wrapper does not free the slot while the child retains that descriptor. Leave
+both lock files in place. These advisory locks are separate from the runner's
+target-custody lock and cover cooperating commands. Check for nonparticipants and
+coordinate with their owners before starting; do not kill their work.
+`HEX_CARGO_SLOT_FILE` is for isolated tests: different values do not coordinate
+with each other.
 
 Reviewed check set template for a PR description:
 
@@ -250,18 +267,18 @@ comprehensive discovery. Merge checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
 eight workers and batches of up to eight ordinary cases from the same
 module or package. When Git on the
-original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
-selected Git once with `xcrun` and puts only that executable ahead of the
+original PATH is Apple's `/usr/bin/git` launcher, sharded runs resolve the
+selected Git once with `xcrun` and put only that executable ahead of the
 original PATH for its child processes. Comprehensive full, release and health runs
 remain serial. Owner selections run through `scripts/python_shards.py`:
-one process per test from a shared work queue (up to 12 workers), which brings
-`test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+ordinary cases from the same module are batched up to eight per process in a
+shared work queue with a default cap of 12 workers.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
-use at most two workers. Owner selections run them after ordinary tests.
-Discovery queues them after the first wave of ordinary batches and shares the
-same worker limit. The real Cargo fixture classes marked
-`__hex_shard_early__ = True` start as isolated cases in that first wave. Both modes report every
-result and include the time spent on every case.
+use at most two workers. Owner selections and discovery queue them after the
+first ordinary wave and share the same worker limit. Real Cargo fixture
+classes marked `__hex_shard_early__ = True` are queued as isolated cases
+ahead of other ordinary batches. Both modes report every case and include
+its execution time.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
