@@ -3045,6 +3045,14 @@ fn run_worker(
                             && !plugin_recording.pending(),
                     )
                 });
+                // Cancelling a preview can prepare a new canonical audio owner.
+                if let Some(snapshot) = resident_snapshot.as_ref()
+                    && compiled
+                        .as_ref()
+                        .is_some_and(|(_, prepared)| !Arc::ptr_eq(prepared, &snapshot.prepared))
+                {
+                    compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                }
                 return audio_sink::ControlPoll {
                     pending,
                     ..Default::default()
