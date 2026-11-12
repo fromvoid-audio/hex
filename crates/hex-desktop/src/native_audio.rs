@@ -1624,7 +1624,11 @@ impl WorkerAudioSink for NativeAudioSink {
                 hex_session::service::ResidentPublicationPolicy::RestorePluginState
             ),
         ) {
-            return Err(hex_session::service::ResidentPublicationRefusal { playback, error });
+            return Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some((source, epoch, playing)) =
@@ -1637,6 +1641,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 != Some((source, epoch))
         {
             return Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "vst3 override transport changed".into(),
             });
@@ -1653,6 +1658,7 @@ impl WorkerAudioSink for NativeAudioSink {
                     requires_plugin_profile,
                 ) {
                     return Err(hex_session::service::ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error,
                     });
@@ -1677,7 +1683,11 @@ impl WorkerAudioSink for NativeAudioSink {
                 admit,
                 files.as_ref().map(|files| files.sources),
             ),
-            Err(error) => Err(hex_session::service::ResidentPublicationRefusal { playback, error }),
+            Err(error) => Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            }),
         };
         if preparing_output && let Err(ref refusal) = result {
             self.refuse_replacement_output(&refusal.error);
