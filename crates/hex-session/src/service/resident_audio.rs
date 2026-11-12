@@ -3368,6 +3368,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3852,7 +3853,7 @@ pub(super) mod tests {
                             gain_recording_track: None,
                             requires_preroll: false,
                         },
-                        ResidentPublicationPolicy::SectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
                             fence: ResidentFreshRuntimeFence {
                                 output_identity: 1,
                                 active_audio_revision: 1,
@@ -3937,6 +3938,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -4050,6 +4052,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,

@@ -1500,16 +1500,16 @@ impl Playback {
             })
     }
 
-    /// Callback-owned boundary for a prepared section seek. The caller keeps
+    /// Callback-owned boundary for a prepared quantized seek. The caller keeps
     /// the current graph rendering until this frame, then installs the fresh
     /// preroll candidate using ordinary seek discontinuity semantics.
-    pub fn section_launch_frame(
+    pub fn quantized_seek_frame(
         &self,
         quantization: crate::LaunchQuantization,
     ) -> Result<u64, Invalid> {
         self.session_runtime
             .as_ref()
-            .ok_or(Invalid("section launch requires prepared session timing"))?
+            .ok_or(Invalid("quantized seek requires prepared session timing"))?
             .scheduled_at(quantization)
             .map(|(frame, _)| frame)
             .map_err(|error| Invalid(error.diagnostic_message()))

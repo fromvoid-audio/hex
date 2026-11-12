@@ -393,14 +393,20 @@ pub struct TrackSwitchState {
     pub soloed: bool,
 }
 
-/// The committed Arrangement clip or section copy, available before checkpoint
+#[derive(Clone, Copy)]
+pub enum ArrangementEditViewKind {
+    Duplicate(Created),
+    Paste,
+}
+
+/// The committed Arrangement copy or paste, available before checkpoint
 /// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
 /// can acknowledge the edit, install authoring state or advance repeats.
 /// A missed observation does not keep an old project's media alive.
-pub struct DuplicateViewObservation {
+pub struct ArrangementEditViewObservation {
     pub project_generation: u64,
     pub previous_revision: u64,
-    pub created: Created,
+    pub kind: ArrangementEditViewKind,
     pub state: std::sync::Weak<ViewState>,
 }
 
@@ -979,10 +985,13 @@ pub enum Request {
     CopyTimeRange(hex_project::TimeRange),
     CopyClips(Vec<hex_project::ClipId>),
     CutTimeRange(hex_project::TimeRange),
+    /// Paste the worker clipboard. Clip clipboard completions report an
+    /// inclusive `Created::Clips` range, including a single birth.
     PasteTimeRange {
         track: hex_project::TrackId,
         frame: u64,
     },
+    /// Ripple-insert the worker clipboard with the same birth receipt as paste.
     InsertTimeRange {
         track: hex_project::TrackId,
         frame: u64,
@@ -1289,7 +1298,7 @@ pub struct Service {
     clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
     track_switch_views: Receiver<TrackSwitchViewObservation>,
-    duplicate_views: Receiver<DuplicateViewObservation>,
+    arrangement_edit_views: Receiver<ArrangementEditViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1607,7 +1616,7 @@ impl Service {
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (track_switch_view_tx, track_switch_views) = mpsc::sync_channel(1);
-        let (duplicate_view_tx, duplicate_views) = mpsc::sync_channel(1);
+        let (arrangement_edit_view_tx, arrangement_edit_views) = mpsc::sync_channel(1);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -1729,7 +1738,7 @@ impl Service {
                     recovery,
                     resident_seek,
                     track_switch_view_tx,
-                    duplicate_view_tx,
+                    arrangement_edit_view_tx,
                     worker_clip_audition,
                 )
             })
@@ -1745,7 +1754,7 @@ impl Service {
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             track_switch_views,
-            duplicate_views,
+            arrangement_edit_views,
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1771,8 +1780,10 @@ impl Service {
     }
 
     /// Receive an optional display observation without consuming a terminal.
-    pub fn try_duplicate_view(&self) -> Result<DuplicateViewObservation, TryRecvError> {
-        self.duplicate_views.try_recv()
+    pub fn try_arrangement_edit_view(
+        &self,
+    ) -> Result<ArrangementEditViewObservation, TryRecvError> {
+        self.arrangement_edit_views.try_recv()
     }
 
     /// Replace the one held stretch audition target outside the canonical FIFO.
@@ -2522,7 +2533,7 @@ fn run_worker(
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
     track_switch_views: SyncSender<TrackSwitchViewObservation>,
-    duplicate_views: SyncSender<DuplicateViewObservation>,
+    arrangement_edit_views: SyncSender<ArrangementEditViewObservation>,
     clip_audition: Arc<clip_audition::Mailbox>,
 ) {
     let mut revision = 0_u64;
@@ -3043,6 +3054,10 @@ fn run_worker(
             )
         );
         let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
+        let arrangement_paste = matches!(
+            &request,
+            Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. }
+        );
         let arrangement_duplicate = matches!(
             &request,
             Request::DuplicateClips { .. }
@@ -9094,11 +9109,25 @@ fn run_worker(
                     Created::Clips { .. } | Created::ArrangementSection(_)
                 )
         });
-        if let Some(created) = committed_arrangement_duplicate {
-            let _ = duplicate_views.try_send(DuplicateViewObservation {
+        let committed_arrangement_paste = arrangement_paste && canonical_changed && error.is_none();
+        let arrangement_edit_view = if committed_arrangement_paste {
+            // Single-clip pastes use the same ordered selection receipt as a
+            // batch. A generic clip creation would reselect after newer input.
+            if let Some(Created::Clip(clip)) = created {
+                created = Some(Created::Clips {
+                    first: clip,
+                    last: clip,
+                });
+            }
+            Some(ArrangementEditViewKind::Paste)
+        } else {
+            committed_arrangement_duplicate.map(ArrangementEditViewKind::Duplicate)
+        };
+        if let Some(kind) = arrangement_edit_view {
+            let _ = arrangement_edit_views.try_send(ArrangementEditViewObservation {
                 project_generation,
                 previous_revision: revision_before_request,
-                created,
+                kind,
                 state: Arc::downgrade(&state),
             });
         }
@@ -9121,6 +9150,8 @@ fn run_worker(
                 || (time_range_copy && canonical_changed && error.is_none())
             {
                 events.measure_recovery("duplicate_recovery_us", maintain_recovery)
+            } else if committed_arrangement_paste {
+                events.measure_recovery("paste_recovery_us", maintain_recovery)
             } else if committed_track_switch {
                 events.measure_recovery("track_switch_recovery_us", maintain_recovery)
             } else {
@@ -13798,7 +13829,7 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let (_track_switch_sender, track_switch_views) = mpsc::sync_channel(1);
-        let (_duplicate_sender, duplicate_views) = mpsc::sync_channel(1);
+        let (_arrangement_edit_sender, arrangement_edit_views) = mpsc::sync_channel(1);
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
@@ -13812,7 +13843,7 @@ mod service_tests {
                 Arc::new(diagnostics::Hooks::default()),
             ),
             track_switch_views,
-            duplicate_views,
+            arrangement_edit_views,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
