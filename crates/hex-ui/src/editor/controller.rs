@@ -1117,8 +1117,8 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_automation_close(cx);
-        if let Ok(view) = self.service.try_solo_view() {
-            visible_change |= self.observe_solo_view(view);
+        if let Ok(view) = self.service.try_track_switch_view() {
+            visible_change |= self.observe_track_switch_view(view);
         }
         if let Ok(view) = self.service.try_duplicate_view() {
             visible_change |= self.observe_duplicate_view(view);
@@ -1211,6 +1211,7 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
@@ -2285,11 +2286,11 @@ impl EditorView {
             return None;
         }
         if self
-            .solo_observation
+            .track_switch_observation
             .as_ref()
             .is_some_and(|view| event.project_replaced || event.state.revision >= view.revision)
         {
-            self.solo_observation = None;
+            self.track_switch_observation = None;
         }
         if event.request_complete && event.error.is_some() {
             self.cancel_new_preparation();
@@ -2329,7 +2330,7 @@ impl EditorView {
             .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
-        self.midi_drag_request_complete(&event);
+        let midi_edit_audition = self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
         self.locators.observe(self.project_generation, &event);
@@ -2605,12 +2606,13 @@ impl EditorView {
             event.project_replaced,
             resize_owns_viewport,
         );
-        if event.project_replaced {
+        let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
-        } else if !event.gesture_request && !event.tuning_gesture_request {
-            self.move_time_selection_complete(&event);
-        }
+            0
+        } else {
+            self.move_time_selection_complete(&event)
+        };
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -3258,7 +3260,14 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
-        self.apply_created_note_selection(created_note_selection);
+        use super::midi_pending_drag::EditAudition;
+        let clip = self.detail_clip_id();
+        let audition_created =
+            matches!(midi_edit_audition, Some(EditAudition::Created(id)) if clip == Some(id));
+        self.apply_created_note_selection(created_note_selection, audition_created);
+        if matches!(midi_edit_audition, Some(EditAudition::Moved(id)) if clip == Some(id)) {
+            self.audition_midi_selection();
+        }
         self.apply_completed_midi_step(midi_step_complete);
         if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
             self.install_drop_cursor(cursor);
@@ -3266,6 +3275,7 @@ impl EditorView {
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
+        self.continue_time_duplicate(time_duplicate_repeats);
         successfully_opened_path
     }
 
@@ -3957,6 +3967,7 @@ impl EditorView {
 
     pub(super) fn cancel_duplicate_chain(&mut self) {
         self.duplicate_intent.cancel_chain();
+        self.cancel_time_duplicate_repeats();
     }
 
     pub(super) fn zoom_timeline(&mut self, inward: bool) {
