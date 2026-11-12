@@ -3,12 +3,9 @@
 //! stamps and owns history; released curves retain their exact ordered receipt.
 //! Provider descriptors and typed host gains have separate value metadata;
 //! reserved widget keys are translated only by the shared binding edge.
-//! Point selection is transient view state within one lane. A blank press adds
-//! a point and drags it; a shift blank drag draws the shared
-//! `hex_widgets::Marquee` (shift+cmd toggles). Dragging a selected point moves
-//! the whole selection, and
-//! delete/shape act on every selected point; each is one whole-lane request,
-//! so one Undo reverts the group edit.
+//! A press on the curve adds or moves a point. Empty space selects a time
+//! range within one lane. Dragging a selected point moves the selected group,
+//! and each edit replaces the lane in one undoable request.
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) mod host_tests;
 mod paint;
@@ -184,19 +181,34 @@ pub(super) struct Draft {
     origin: [f32; 2],
 }
 
-/// Held shift blank press: a click adds `click` on release; a drag becomes a marquee.
+/// A time range is lane-local and retains its bounds even if it contains no points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RangeSelection {
+    target: Target,
+    start: BeatTime,
+    end: BeatTime,
+}
+
+impl RangeSelection {
+    fn selection(self, points: &[AutomationPoint]) -> Option<Selection> {
+        let first = points.partition_point(|point| point.beat < self.start);
+        let last = points.partition_point(|point| point.beat < self.end);
+        Selection::new(
+            self.target,
+            points[first..last].iter().map(|point| point.beat).collect(),
+        )
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct MarqueeDraft {
     target: Target,
     revision: u64,
-    band: hex_widgets::Marquee,
-    mode: hex_widgets::MarqueeMode,
+    anchor: BeatTime,
     base: Option<Selection>,
-    click: Vec<AutomationPoint>,
-    click_beat: BeatTime,
+    base_range: Option<RangeSelection>,
     viewport: super::viewport::Viewport,
     rect: [f32; 4],
-    active: bool,
 }
 struct Pending {
     target: Target,
@@ -211,6 +223,7 @@ pub(super) struct Lanes {
     extra: Vec<Entry>,
     known: Vec<Entry>,
     selected: Option<Selection>,
+    range: Option<RangeSelection>,
     draft: Option<Draft>,
     marquee: Option<MarqueeDraft>,
     pending: Option<Pending>,
@@ -563,6 +576,7 @@ impl Lanes {
     pub(super) fn clear_main(&mut self, owner: Owner) {
         self.main.retain(|entry| entry.target.owner != owner);
         self.selected = None;
+        self.range = None;
     }
     pub(super) fn has_main(&self, owner: Owner) -> bool {
         self.main.iter().any(|entry| entry.target.owner == owner)
@@ -1263,7 +1277,10 @@ impl EditorView {
                     .current(&state.project, self.project_generation)
                     .is_none()
         }) {
-            lanes.marquee = None;
+            if let Some(marquee) = lanes.marquee.take() {
+                lanes.selected = marquee.base;
+                lanes.range = marquee.base_range;
+            }
         }
         for entries in [&mut lanes.main, &mut lanes.extra, &mut lanes.known] {
             entries.retain_mut(|entry| {
@@ -1274,6 +1291,12 @@ impl EditorView {
                     false
                 }
             });
+        }
+        if lanes
+            .range
+            .is_some_and(|range| lanes.entry(range.target).is_none())
+        {
+            lanes.range = None;
         }
         if let Some(selected) = lanes.selected.take() {
             let target = selected.target;
@@ -1353,6 +1376,7 @@ impl EditorView {
         let mut changed = lanes.draft.take().is_some();
         if let Some(marquee) = lanes.marquee.take() {
             lanes.selected = marquee.base;
+            lanes.range = marquee.base_range;
             changed = true;
         }
         if changed {

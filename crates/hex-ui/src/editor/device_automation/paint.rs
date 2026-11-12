@@ -234,7 +234,7 @@ fn recorded_spans(project: &Project, target: Target) -> &[hex_project::DeviceAut
 fn plot(
     view: &mut EditorView,
     state: &ViewState,
-    entry: Entry,
+    mut entry: Entry,
     viewport: Viewport,
     main: bool,
     cx: &mut Context<EditorView>,
@@ -250,7 +250,8 @@ fn plot(
             .is_empty();
     let project = state.project.clone();
     let revision = state.revision;
-    let base = view.live_device_automation_base(&entry);
+    entry.base = view.live_device_automation_base(&entry);
+    let base = entry.base;
     let entity = cx.entity();
     let label = entry.label.clone();
     div()
@@ -271,7 +272,7 @@ fn plot(
         .min_w_0()
         .h_full()
         .overflow_hidden()
-        .cursor(gpui::CursorStyle::Crosshair)
+        .cursor(gpui::CursorStyle::Arrow)
         .child(
             canvas(
                 |_, _, _| (),
@@ -427,12 +428,40 @@ fn plot(
                                 .filter(|marquee| {
                                     marquee.target == target && marquee.revision == revision
                                 });
-                        if let Some(marquee) = marquee.filter(|marquee| marquee.active) {
-                            marquee.band.paint(
-                                bounds,
-                                theme::color(theme::PaletteRole::Secondary),
-                                window,
-                            );
+                        if let Some(range) = lanes.range.filter(|range| range.target == target)
+                            && let (Some(start), Some(end)) = (frame(range.start), frame(range.end))
+                            && let Some(mut band) = hex_widgets::Marquee::new([x(start), rect[1]])
+                        {
+                            band.update([x(end), rect[1] + rect[3]]);
+                            band.paint(bounds, theme::color(theme::PaletteRole::Secondary), window);
+                        }
+                        let mouse = window.mouse_position();
+                        let pos = [f32::from(mouse.x), f32::from(mouse.y)];
+                        if bounds.contains(&mouse)
+                            && recorded.is_empty()
+                            && !view.edit_pending()
+                            && !lanes.pointer_active()
+                            && lanes.pending.is_none()
+                            && all_points.len() < hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE
+                            && let Some(preview) = curve_insertion(
+                                &project,
+                                &entry,
+                                all_points,
+                                view.snap_grid
+                                    .with_platform_modifier(window.modifiers().platform),
+                                viewport,
+                                rect,
+                                pos,
+                            )
+                            && let Some(position) = xy(preview.beat, preview.value.get())
+                            && bounds.contains(&position)
+                        {
+                            let mut dot = PathBuilder::stroke(px(4.0));
+                            dot.move_to(point(position.x - px(0.5), position.y));
+                            dot.line_to(point(position.x + px(0.5), position.y));
+                            if let Ok(dot) = dot.build() {
+                                window.paint_path(dot, color);
+                            }
                         }
                         if (marquee.is_some()
                             || view
@@ -449,11 +478,18 @@ fn plot(
                         {
                             window.renew_pointer_capture(
                                 entity.entity_id(),
-                                gpui::CursorStyle::Crosshair,
+                                gpui::CursorStyle::Arrow,
                             );
                         }
                     }
+                    let hovered = bounds.contains(&window.mouse_position());
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                        if phase.capture() && (hovered || bounds.contains(&event.position)) {
+                            window.refresh();
+                        }
+                    });
                     let owner = entity.clone();
+                    let entry = entry.clone();
                     let generation = target.generation;
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.capture() || !bounds.contains(&event.position) {
@@ -479,7 +515,7 @@ fn plot(
                                 return false;
                             }
                             view.begin_device_automation_pointer(
-                                target, viewport, rect, event, window, cx,
+                                &entry, viewport, rect, event, window, cx,
                             )
                         });
                         if accepted {
@@ -587,13 +623,14 @@ impl EditorView {
 
     fn begin_device_automation_pointer(
         &mut self,
-        target: Target,
+        entry: &Entry,
         viewport: Viewport,
         rect: [f32; 4],
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let target = entry.target;
         let lanes = &self.automation_view.devices;
         if self.edit_pending()
             || lanes.pending.is_some()
@@ -617,10 +654,7 @@ impl EditorView {
             cx.notify();
             return false;
         }
-        let Some(entry) = self.automation_view.devices.entry(target).cloned() else {
-            return false;
-        };
-        let points = self.automation_view.devices.points(state, target);
+        let points = lanes.points_ref(&state.project, target);
         let pos = [f32::from(event.position.x), f32::from(event.position.y)];
         let hit = points
             .iter()
@@ -630,7 +664,11 @@ impl EditorView {
             })
             .copied();
         let revision = state.revision;
-        let previous = self.automation_view.devices.selected.clone();
+        let previous = lanes.selected.clone();
+        let previous_range = lanes.range;
+        let grid = self
+            .snap_grid
+            .with_platform_modifier(event.modifiers.platform);
         if let Some(hit) = hit {
             // Pressing a selected point (or Shift) moves the whole selection.
             let mut beats = previous
@@ -649,9 +687,11 @@ impl EditorView {
                 .iter()
                 .partition(|point| selection.contains(target, point.beat));
             let collapse = !event.modifiers.shift && selection.beats.len() > 1;
+            let points = points.to_vec();
             if !self.capture_device_automation_pointer(target, window, cx) {
                 return false;
             }
+            self.automation_view.devices.range = None;
             self.automation_view.devices.selected = Some(selection);
             self.automation_view.devices.draft = Some(Draft {
                 target,
@@ -666,73 +706,55 @@ impl EditorView {
                 rect,
                 origin: pos,
             });
-        } else {
-            let Some(value) = pointer_value(
-                &state.project,
-                &entry,
-                self.snap_grid
-                    .with_platform_modifier(event.modifiers.platform),
+        } else if let Some(value) =
+            curve_insertion(&state.project, entry, points, grid, viewport, rect, pos)
+        {
+            if points.len() == hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
+                return false;
+            }
+            let index = points.partition_point(|point| point.beat < value.beat);
+            let rest = points.to_vec();
+            let mut points = rest.clone();
+            points.insert(index, value);
+            if !self.capture_device_automation_pointer(target, window, cx) {
+                return false;
+            }
+            self.automation_view.devices.range = None;
+            self.automation_view.devices.selected = Some(Selection::one(target, value.beat));
+            self.automation_view.devices.draft = Some(Draft {
+                target,
+                revision,
+                points,
+                group: vec![value],
+                rest,
+                collapse: false,
+                initial: value,
+                point: value,
                 viewport,
                 rect,
-                pos,
-            ) else {
-                return false;
-            };
-            let mut click = points;
-            match click.binary_search_by_key(&value.beat, |point| point.beat) {
-                Ok(index) => click[index] = value,
-                Err(index) => click.insert(index, value),
-            }
-            if click.len() > hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
-                return false;
-            }
-            // Adding points comes first: a plain blank press inserts the point
-            // and drags it, as before marquee selection; only Shift draws a band.
-            if !hex_widgets::MarqueeMode::starts(event.modifiers) {
-                if !self.capture_device_automation_pointer(target, window, cx) {
-                    return false;
-                }
-                let rest = click
-                    .iter()
-                    .copied()
-                    .filter(|point| point.beat != value.beat)
-                    .collect();
-                self.automation_view.devices.selected = Some(Selection::one(target, value.beat));
-                self.automation_view.devices.draft = Some(Draft {
-                    target,
-                    revision,
-                    points: click,
-                    group: vec![value],
-                    rest,
-                    collapse: false,
-                    initial: value,
-                    point: value,
-                    viewport,
-                    rect,
-                    origin: pos,
-                });
-                self.gain_lane.selected = None;
-                self.focus.focus(window);
-                cx.notify();
-                return true;
-            }
-            let Some(band) = hex_widgets::Marquee::new(pos) else {
+                origin: pos,
+            });
+        } else {
+            let Some(beat) = pointer_beat(&state.project, grid, viewport, rect, pos[0]) else {
                 return false;
             };
             if !self.capture_device_automation_pointer(target, window, cx) {
                 return false;
             }
+            self.automation_view.devices.selected = None;
+            self.automation_view.devices.range = Some(RangeSelection {
+                target,
+                start: beat,
+                end: beat,
+            });
             self.automation_view.devices.marquee = Some(MarqueeDraft {
                 target,
                 revision,
-                band,
-                mode: hex_widgets::MarqueeMode::from_modifiers(event.modifiers),
+                anchor: beat,
                 base: previous,
-                click,
-                click_beat: value.beat,
+                base_range: previous_range,
                 viewport,
                 rect,
-                active: false,
             });
         }
         self.gain_lane.selected = None;
@@ -752,7 +774,7 @@ impl EditorView {
         window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
-            gpui::CursorStyle::Crosshair,
+            gpui::CursorStyle::Arrow,
             move |event, window, cx| {
                 let moved = event.downcast_ref::<MouseMoveEvent>();
                 let released = event
@@ -800,6 +822,7 @@ impl EditorView {
                         && let Some(marquee) = lanes.marquee.take()
                     {
                         lanes.selected = marquee.base;
+                        lanes.range = marquee.base_range;
                         changed = true;
                     }
                     if changed {
@@ -827,15 +850,9 @@ impl EditorView {
             .as_ref()
             .is_some_and(|marquee| marquee.target == target)
         {
-            self.move_device_automation_marquee(pos);
-            if released
-                && let Some(marquee) = self.automation_view.devices.marquee.take()
-                && !marquee.active
-            {
-                // Live: a blank click adds a point; only a drag selects.
-                self.automation_view.devices.selected =
-                    Some(Selection::one(target, marquee.click_beat));
-                self.commit_device_automation(target, marquee.click, cx);
+            self.move_device_automation_marquee(pos[0], free);
+            if released {
+                self.automation_view.devices.marquee = None;
             }
             return true;
         }
@@ -857,34 +874,34 @@ impl EditorView {
         true
     }
 
-    fn move_device_automation_marquee(&mut self, pos: [f32; 2]) {
+    fn move_device_automation_marquee(&mut self, x: f32, free: bool) {
         let Some(state) = &self.state else {
             return;
         };
         let lanes = &mut self.automation_view.devices;
-        let Some(marquee) = lanes.marquee.as_mut() else {
+        let Some(marquee) = lanes.marquee.as_ref() else {
             return;
         };
         if marquee.revision != state.revision {
-            lanes.marquee = None;
             return;
         }
-        marquee.band.update(pos);
-        marquee.active |= marquee.band.crossed_threshold();
-        if !marquee.active {
+        let grid = self.snap_grid.with_platform_modifier(free);
+        let Some(current) = pointer_beat(
+            &state.project,
+            grid,
+            marquee.viewport,
+            marquee.rect,
+            x.clamp(marquee.rect[0], marquee.rect[0] + marquee.rect[2]),
+        ) else {
             return;
-        }
-        let marquee = marquee.clone();
-        let points = lanes.points(state, marquee.target);
-        let hits = marquee.band.hits(points.iter().filter_map(|point| {
-            point_position(&state.project, marquee.viewport, marquee.rect, point)
-                .map(|position| (point.beat, position))
-        }));
-        let base = marquee
-            .base
-            .as_ref()
-            .map_or(&[][..], |base| base.beats_in(marquee.target));
-        lanes.selected = Selection::new(marquee.target, marquee.mode.combine(base, &hits));
+        };
+        let range = RangeSelection {
+            target: marquee.target,
+            start: marquee.anchor.min(current),
+            end: marquee.anchor.max(current),
+        };
+        lanes.range = Some(range);
+        lanes.selected = range.selection(lanes.points_ref(&state.project, range.target));
     }
 
     /// Moves the pressed point to the pointer and the rest of its group by the
@@ -985,6 +1002,66 @@ fn point_position(
     ])
 }
 
+fn pointer_beat(
+    project: &Project,
+    grid: super::super::musical_time::SnapGrid,
+    viewport: Viewport,
+    rect: [f32; 4],
+    x: f32,
+) -> Option<BeatTime> {
+    let frame = super::super::seek::pointer_to_frame(x, rect[0], rect[2], viewport)?;
+    grid.snap_beat(
+        project,
+        project.tempo_map().frame_to_beat(frame).ok()?,
+        viewport,
+        rect[2],
+    )
+}
+
+fn curve_insertion(
+    project: &Project,
+    entry: &Entry,
+    points: &[AutomationPoint],
+    grid: super::super::musical_time::SnapGrid,
+    viewport: Viewport,
+    rect: [f32; 4],
+    pos: [f32; 2],
+) -> Option<AutomationPoint> {
+    let tempo = project.tempo_map();
+    let to_frame = |beat| tempo.beat_to_frame(beat).ok();
+    let frame = super::super::seek::pointer_to_frame(pos[0], rect[0], rect[2], viewport)?;
+    let (at_pointer, _) = super::plot_geometry::value_at_frame(
+        points,
+        frame,
+        to_frame,
+        entry.is_discrete(),
+        entry.base,
+    )?;
+    let y = rect[1] + (1.0 - at_pointer) * (rect[3] - 8.0) + 4.0;
+    if (y - pos[1]).abs() > 5.0 {
+        return None;
+    }
+    let beat = pointer_beat(project, grid, viewport, rect, pos[0])?;
+    if points
+        .binary_search_by_key(&beat, |point| point.beat)
+        .is_ok()
+    {
+        return None;
+    }
+    let (value, outgoing) = super::plot_geometry::value_at_frame(
+        points,
+        to_frame(beat)?,
+        to_frame,
+        entry.is_discrete(),
+        entry.base,
+    )?;
+    Some(AutomationPoint {
+        beat,
+        value: AutomationValue::new(entry.quantize(value)?).ok()?,
+        outgoing,
+    })
+}
+
 fn pointer_value(
     project: &Project,
     entry: &Entry,
@@ -1002,13 +1079,7 @@ fn pointer_value(
     {
         return None;
     }
-    let frame = super::super::seek::pointer_to_frame(pos[0], rect[0], rect[2], viewport)?;
-    let beat = grid.snap_beat(
-        project,
-        project.tempo_map().frame_to_beat(frame).ok()?,
-        viewport,
-        rect[2],
-    )?;
+    let beat = pointer_beat(project, grid, viewport, rect, pos[0])?;
     let value =
         entry.quantize((1.0 - (pos[1] - rect[1] - 4.0) / (rect[3] - 8.0)).clamp(0.0, 1.0))?;
     Some(AutomationPoint {
