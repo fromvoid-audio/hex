@@ -121,7 +121,7 @@ pub(super) fn exercise(
     transact(cx, visual, h, window, "history/delete", |v| {
         v.simulate_keystrokes("cmd-z")
     });
-    click(visual, "show console view · tab");
+    click(visual, "workspace-view-toggle");
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
@@ -263,7 +263,10 @@ fn pcm(
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
-    click(visual, "play or pause · space");
+    click(
+        visual,
+        "play or pause · space · right-click for history playback",
+    );
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
