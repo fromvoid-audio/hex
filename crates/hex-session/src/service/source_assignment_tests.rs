@@ -200,6 +200,41 @@ fn captured_rebinding_preserves_shared_receiver_and_history() {
         "unchanged",
     );
 
+    let unlinked_contributor = run(
+        &service,
+        rebind(assigned.state.revision, 0, contributor, Some(old), None),
+    );
+    assert_eq!(
+        unlinked_contributor
+            .state
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id(),
+        None
+    );
+    assert_eq!(
+        unlinked_contributor
+            .state
+            .project
+            .native_source(old)
+            .unwrap()
+            .receiver(),
+        Some(receiver)
+    );
+    assert_eq!(
+        unlinked_contributor
+            .state
+            .project
+            .source_contributors(old)
+            .count(),
+        1
+    );
+    assert_eq!(
+        run(&service, Request::Undo).state.project,
+        assigned.state.project
+    );
+
     // Moving the receiver is an explicit edit. The former receiver can then
     // leave without silencing the contributor that now owns the output.
     let chosen = run(
