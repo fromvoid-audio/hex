@@ -4,6 +4,7 @@
 //! duplication against the same saved-project fixture. `--paste-recovery`
 //! and `--paste-no-recovery` measure two queued clip pastes; `--time-copy-recovery`
 //! and `--time-copy-no-recovery` measure queued Arrangement time-range copies.
+//! `--locator-recovery` and `--locator-no-recovery` measure queued locator adds.
 //! No argument retains the direct-session profile.
 use hex_project::{
     BeatTime, Command, Created, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project,
@@ -120,9 +121,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(arg) if arg == "--switch-no-recovery" => return profile_switch_service(false),
         Some(arg) if arg == "--time-copy-recovery" => return profile_time_copy_service(true),
         Some(arg) if arg == "--time-copy-no-recovery" => return profile_time_copy_service(false),
+        Some(arg) if arg == "--locator-recovery" => return profile_locator_service(true),
+        Some(arg) if arg == "--locator-no-recovery" => return profile_locator_service(false),
         Some(_) => {
             return Err(
-                "expected --recovery, --no-recovery, --duplicate-recovery, --duplicate-no-recovery, --paste-recovery, --paste-no-recovery, --switch-recovery, --switch-no-recovery, --time-copy-recovery, or --time-copy-no-recovery".into(),
+                "expected --recovery, --no-recovery, --duplicate-recovery, --duplicate-no-recovery, --paste-recovery, --paste-no-recovery, --switch-recovery, --switch-no-recovery, --time-copy-recovery, --time-copy-no-recovery, --locator-recovery, or --locator-no-recovery".into(),
             );
         }
         None => {}
@@ -1028,6 +1031,144 @@ fn profile_time_copy_service(recovery: bool) -> Result<(), Box<dyn Error>> {
     println!(
         "time-copy workload: 100 tracks, 6400 notes, {} document bytes, 48000 hz, 1 warmup and 3 measured pairs; headless worker, not native paint or audio",
         profile.document_bytes
+    );
+    profile.close()
+}
+
+/// Compare locator worker phases on a fixed saved project; this is not native UI timing.
+fn profile_locator_service(recovery: bool) -> Result<(), Box<dyn Error>> {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    use std::sync::{Arc, Mutex};
+    let setup = Instant::now();
+    let project = fixture()?;
+    let (profile, opened) = WorkerProfile::open(&project, recovery)?;
+    let setup_elapsed = setup.elapsed();
+    let service = &profile.service;
+    let baseline = opened.state.project.snapshot();
+    let mut revision = opened.state.revision;
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&records);
+    service.set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+        if let Some(request) = event
+            .request
+            .filter(|request| request.operation == Some("add_arrangement_locator"))
+            && let Ok(mut records) = sink.lock()
+        {
+            records.push((
+                request.request_id,
+                event.stage,
+                Instant::now(),
+                event.details.clone(),
+                event.details_truncated,
+            ));
+        }
+    })))?;
+    for iteration in 0..4 {
+        records
+            .lock()
+            .map_err(|_| "diagnostic lock poisoned")?
+            .clear();
+        for frame in [24_000, 48_000] {
+            submit(
+                service,
+                Request::Edit(Command::AddArrangementLocator { frame }),
+            )?;
+        }
+        let first = next_terminal(service)?;
+        let second = next_terminal(service)?;
+        if first.state.revision != revision + 1 || second.state.revision != revision + 2 {
+            return Err("locator revisions or ordering differ".into());
+        }
+        let (
+            Some(Created::ArrangementLocator(first_id)),
+            Some(Created::ArrangementLocator(second_id)),
+        ) = (first.created, second.created)
+        else {
+            return Err("locator identity missing".into());
+        };
+        if first_id == second_id
+            || first.state.project.arrangement_locator(first_id).is_none()
+            || second
+                .state
+                .project
+                .arrangement_locator(second_id)
+                .is_none()
+        {
+            return Err("locator identity mismatch".into());
+        }
+        profile.verify_journal(&second.state.project)?;
+        let rows = records.lock().map_err(|_| "diagnostic lock poisoned")?;
+        let ids: Vec<_> = rows
+            .iter()
+            .filter_map(|(id, stage, _, _, _)| {
+                matches!(stage, DiagnosticStage::SubmitAttempt).then_some(*id)
+            })
+            .collect();
+        if ids.len() != 2 {
+            return Err("locator diagnostic submissions differ".into());
+        }
+        for (index, id) in ids.iter().enumerate() {
+            let find = |predicate: fn(&DiagnosticStage) -> bool| {
+                rows.iter()
+                    .find(|(candidate, stage, _, _, _)| candidate == id && predicate(stage))
+            };
+            let submitted = find(|stage| matches!(stage, DiagnosticStage::SubmitAttempt))
+                .ok_or("missing submit")?;
+            let begun = find(|stage| matches!(stage, DiagnosticStage::WorkerBegin { .. }))
+                .ok_or("missing worker begin")?;
+            let outcome = find(|stage| {
+                matches!(
+                    stage,
+                    DiagnosticStage::OutcomeReady {
+                        request_complete: true,
+                        error: false,
+                        ..
+                    }
+                )
+            })
+            .ok_or("missing outcome")?;
+            if outcome.4 {
+                return Err("locator diagnostics truncated".into());
+            }
+            let recovery_us = outcome
+                .3
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("locator_recovery_us="));
+            if recovery && recovery_us.is_none() {
+                return Err("missing locator recovery timing".into());
+            }
+            println!(
+                "locator recovery={recovery} iteration={iteration} request={} submit_to_worker_us={} worker_to_outcome_us={} locator_recovery_us={}",
+                index + 1,
+                begun.2.duration_since(submitted.2).as_micros(),
+                outcome.2.duration_since(begun.2).as_micros(),
+                recovery_us.unwrap_or("not-recorded")
+            );
+        }
+        drop(rows);
+        submit(service, Request::Undo)?;
+        let undone_one = next_terminal(service)?;
+        let mut expected_first = first.state.project.snapshot();
+        let actual_one = undone_one.state.project.snapshot();
+        expected_first.next_id = actual_one.next_id;
+        if expected_first != actual_one {
+            return Err("first Undo did not restore first locator".into());
+        }
+        submit(service, Request::Undo)?;
+        let undone = next_terminal(service)?;
+        let mut expected_original = baseline.clone();
+        let actual = undone.state.project.snapshot();
+        expected_original.next_id = actual.next_id;
+        if expected_original != actual {
+            return Err("second Undo did not restore project".into());
+        }
+        revision += 4;
+        profile.verify_journal(&undone.state.project)?;
+    }
+    println!(
+        "locator workload: 100 tracks, 6400 notes, {} document bytes, 48000 hz, setup_us={}, 1 warmup and 3 measured pairs; headless worker, not native paint or audio",
+        profile.document_bytes,
+        setup_elapsed.as_micros()
     );
     profile.close()
 }
