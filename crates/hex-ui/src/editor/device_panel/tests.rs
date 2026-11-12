@@ -16,7 +16,6 @@ mod device_add_ui_tests;
 mod device_comparison_tests;
 mod device_picker_modal_ui_tests;
 mod device_picker_ui_tests;
-mod source_picker_ui_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
@@ -54,6 +53,7 @@ mod rattle_ui_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
+mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {

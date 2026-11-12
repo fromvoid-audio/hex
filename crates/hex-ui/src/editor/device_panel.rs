@@ -53,10 +53,12 @@ pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod device_add;
 mod device_picker;
 mod source_picker;
-pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use device_picker::{
     bind_keys as bind_picker_keys, is_open as picker_is_open, overlay as picker_overlay,
 };
+pub(super) use source_picker::Choice as SourcePickerChoice;
+pub(super) use source_picker::bind_keys as bind_source_picker_keys;
+pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
 mod device_meter;
 mod gate_panel;
 mod keyboard;

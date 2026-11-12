@@ -1062,11 +1062,12 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            if !menu
-                .items
-                .iter()
-                .any(|item| matches!(item.action, EditorContextAction::Automation(_) | EditorContextAction::SourcePicker(_)))
-            {
+            if !menu.items.iter().any(|item| {
+                matches!(
+                    item.action,
+                    EditorContextAction::Automation(_) | EditorContextAction::SourcePicker(_)
+                )
+            }) {
                 return crate::context_menu::popup(
                     menu,
                     window,
