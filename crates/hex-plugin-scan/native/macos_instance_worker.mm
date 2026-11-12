@@ -463,12 +463,13 @@ int main(int argc,char** argv) {
                     // Keep the sequence of the last input for each parameter
                     // until a later input replaces it. Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
-                    std::array<uint64,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
-                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input) -> std::optional<uint64> {
+                    struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
+                    std::array<FeedbackOrigin,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
+                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input,bool editor_input=false) -> std::optional<FeedbackOrigin> {
                         const auto* info=processing_parameters.find(id);
                         if(!info) return std::nullopt;
                         auto& sequence=feedback_sequences[info-processing_parameters.parameters.data()];
-                        if(input) sequence=*input;
+                        if(input) sequence={*input,editor_input};
                         return sequence;
                     };
                     const auto conflicts_with_prior_cohort=[&](const hex_instance::EditEvent& event) {
@@ -581,8 +582,9 @@ int main(int argc,char** argv) {
                                 const auto editor_sequence=staged_editor_sequence(point.id);
                                 if(!is_input && editor_sequence) continue;
                                 const auto sequence=feedback_sequence(point.id,is_input?
-                                    std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt);
-                                if(!sequence || !feedback.put(point.id,point.normalized,*sequence)) return false;
+                                    std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt,
+                                    is_input && editor_sequence);
+                                if(!sequence || !feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                             }
                         }
                         return true;
@@ -747,7 +749,7 @@ int main(int argc,char** argv) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
                             const auto sequence=feedback_sequence(point.id,std::nullopt);
-                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) return false;
+                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                         }
                         return true;
                     };
@@ -1040,12 +1042,14 @@ int main(int argc,char** argv) {
                                 // Native edits enter at quantum offset zero.
                                 // A later authored input replaces the sequence.
                                 std::optional<uint64> input_sequence;
+                                bool editor_input=false;
                                 if(use_input) {
                                     const auto editor_sequence=first || point.offset?0:staged_editor_sequence(point.id);
                                     input_sequence=editor_sequence?editor_sequence:host_frontier;
+                                    editor_input=editor_sequence!=0;
                                 }
-                                const auto sequence=feedback_sequence(point.id,input_sequence);
-                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) valid=false;
+                                const auto sequence=feedback_sequence(point.id,input_sequence,editor_input);
+                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;

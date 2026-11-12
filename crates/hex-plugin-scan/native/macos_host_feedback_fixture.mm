@@ -52,6 +52,10 @@ int main() { @autoreleasepool {
     assert(host.endEdit(7)==kResultOk);
     assert(host.synchronize_parameter_feedback(&controller));
     assert(controller.value==0.75); // Feedback sampled before End stays stale after it.
+    controller.value=0.25; // Some editors defer their controller update to the host.
+    assert(pending.put(7,0.75,during,true) && host.publish_parameter_feedback(pending));
+    assert(host.synchronize_parameter_feedback(&controller));
+    assert(controller.value==0.75); // The final processed native edit remains valid.
     const auto after=host.editor_frontier_on_worker();
     assert(after>during);
     assert(pending.put(7,0.5,after) && host.publish_parameter_feedback(pending));

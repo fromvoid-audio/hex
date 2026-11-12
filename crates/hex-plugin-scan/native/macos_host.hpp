@@ -81,14 +81,14 @@ struct ProcessingParameterSnapshot {
 // Latest processor observations, coalesced by stable ID. This is controller
 // synchronization, not an authored gesture or callback-delivery acknowledgement.
 struct ParameterFeedback {
-    struct Value { ParamID id=0; ParamValue normalized=0; uint64 editor_sequence=0; };
+    struct Value { ParamID id=0; ParamValue normalized=0; uint64 editor_sequence=0; bool editor_input=false; };
     // The per-epoch feedback obligation is independent of the inventory.
     std::array<Value,HOST_FEEDBACK_COUNT> values{};
     uint32 count=0;
     Value at(uint32 index) const { return values[index]; }
-    bool put(ParamID id,ParamValue value,uint64 editor_sequence=0) {
+    bool put(ParamID id,ParamValue value,uint64 editor_sequence=0,bool editor_input=false) {
         if(id>0x7FFFFFFFu || !std::isfinite(value) || value<0 || value>1) return false;
-        const Value next{id,value,editor_sequence};
+        const Value next{id,value,editor_sequence,editor_input};
         for(uint32 n=0;n<count;++n) if(values[n].id==id) { values[n]=next;return true; }
         if(count==values.size()) return false;
         values[count++]=next;return true;
@@ -730,7 +730,7 @@ public:
         auto staged=phase==Ready?feedback.snapshot:ParameterFeedback{};
         for(uint32 n=0;n<pending.count;++n) {
             const auto value=pending.at(n);
-            if(!staged.put(value.id,value.normalized,value.editor_sequence)) {
+            if(!staged.put(value.id,value.normalized,value.editor_sequence,value.editor_input)) {
                 feedback.phase.store(phase,std::memory_order_release);return false;
             }
         }
@@ -765,7 +765,8 @@ public:
             for(size_t i=0;i<active_tokens.size();++i)
                 if(active_tokens[i] && active_ids[i]==value.id) {editing=true;break;}
             if(editing || metadata.parameters[index].editor_sequence>value.editor_sequence ||
-                metadata.parameters[index].feedback_floor>value.editor_sequence) continue;
+                (metadata.parameters[index].feedback_floor>value.editor_sequence &&
+                    !(value.editor_input && metadata.parameters[index].editor_sequence==value.editor_sequence))) continue;
             auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
             if(normalized!=value.normalized) {
                 applying_feedback=true;
