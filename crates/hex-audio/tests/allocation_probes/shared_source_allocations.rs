@@ -194,8 +194,8 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
         source: Some(source),
     })?;
     for (track, pitches) in [
-        (receiver, vec![60]),
-        (contributor, (0..46).collect::<Vec<u8>>()),
+        (receiver, vec![60, 61]),
+        (contributor, (0..45).collect::<Vec<u8>>()),
     ] {
         let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
             track,
@@ -231,14 +231,16 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
     else {
         return Err("session clip missing".into());
     };
-    editor.execute(Command::AddMidiNote {
-        clip: session_clip,
-        start: BeatTime::ZERO,
-        duration: BeatTime::ONE,
-        pitch: 60,
-        velocity: 100,
-        channel: 0,
-    })?;
+    for pitch in 60..78 {
+        editor.execute(Command::AddMidiNote {
+            clip: session_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch,
+            velocity: 100,
+            channel: 0,
+        })?;
+    }
     let input = Arc::new(ComputerKeyboardInput::default());
     let initial = playback(
         editor.project(),
