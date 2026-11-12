@@ -452,6 +452,117 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_clip_pastes_can_commit_while_the_first_checkpoint_is_held() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-paste-queue-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let track = next(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            }))
+            .unwrap();
+        let original = next(&service);
+        let clip = original.state.project.track(track).unwrap().midi_clips()[0].id();
+        service.submit(Request::CopyClips(vec![clip])).unwrap();
+        assert!(next(&service).error.is_none());
+        let (entered_tx, entered) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_arrangement_edit_view().unwrap();
+        let first_state = first.state.upgrade().unwrap();
+        assert_eq!(
+            first_state.project.track(track).unwrap().midi_clips().len(),
+            2
+        );
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_arrangement_edit_view() {
+                break Some(view);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        release.send(()).unwrap();
+        let second = second.expect("second paste must commit while the first checkpoint is held");
+        assert_eq!(second.previous_revision, first_state.revision);
+        let second_state = second.state.upgrade().unwrap();
+        assert_eq!(
+            second_state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            3
+        );
+        let first_terminal = next(&service);
+        let second_terminal = next(&service);
+        assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+        assert_eq!(second_terminal.state.revision, second_state.revision);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second_terminal.state.project
+        );
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            next(&service)
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            next(&service)
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            1
+        );
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
         use hex_project::BeatTime;
         use std::sync::mpsc::{self, TryRecvError};
