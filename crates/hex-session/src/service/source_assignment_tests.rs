@@ -43,6 +43,328 @@ fn refused(service: &Service, before: &Event, request: Request, message: &str) -
     event
 }
 
+fn rebind(
+    revision: u64,
+    generation: u64,
+    track: hex_project::TrackId,
+    expected_source: Option<hex_project::SourceId>,
+    source: Option<hex_project::SourceId>,
+) -> Request {
+    Request::RebindNativeSource {
+        project_generation: generation,
+        revision,
+        track,
+        expected_source,
+        source,
+    }
+}
+
+#[test]
+fn captured_rebinding_preserves_shared_receiver_and_history() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let first = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(receiver) = first.created.unwrap() else {
+        panic!("receiver")
+    };
+    let old = first
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let second = run(
+        &service,
+        Request::Edit(Command::CreateNativeSource {
+            name: "other".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }),
+    );
+    let Created::NativeSource(new) = second.created.unwrap() else {
+        panic!("source")
+    };
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }),
+    );
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    let local = run(
+        &service,
+        Request::Edit(Command::InsertDevice {
+            track: contributor,
+            before: None,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        }),
+    );
+    let local_devices = local
+        .state
+        .project
+        .track(contributor)
+        .unwrap()
+        .devices()
+        .to_vec();
+    let assigned = run(
+        &service,
+        rebind(local.state.revision, 0, contributor, None, Some(old)),
+    );
+    assert_eq!(assigned.state.project.source_contributors(old).count(), 2);
+    assert_eq!(
+        assigned
+            .state
+            .project
+            .native_source(old)
+            .unwrap()
+            .receiver(),
+        Some(receiver)
+    );
+    assert!(
+        !rebind(
+            assigned.state.revision,
+            0,
+            contributor,
+            Some(old),
+            Some(new)
+        )
+        .finalizes_parameter_gesture()
+    );
+
+    refused(
+        &service,
+        &assigned,
+        rebind(
+            assigned.state.revision,
+            1,
+            contributor,
+            Some(old),
+            Some(new),
+        ),
+        "project changed",
+    );
+    refused(
+        &service,
+        &assigned,
+        rebind(
+            assigned.state.revision.saturating_sub(1),
+            0,
+            contributor,
+            Some(old),
+            Some(new),
+        ),
+        "project changed",
+    );
+    refused(
+        &service,
+        &assigned,
+        rebind(assigned.state.revision, 0, contributor, None, Some(new)),
+        "binding changed",
+    );
+    refused(
+        &service,
+        &assigned,
+        rebind(assigned.state.revision, 0, receiver, Some(old), None),
+        "choose another receiver",
+    );
+    refused(
+        &service,
+        &assigned,
+        rebind(assigned.state.revision, 0, receiver, Some(old), Some(new)),
+        "choose another receiver",
+    );
+    refused(
+        &service,
+        &assigned,
+        rebind(
+            assigned.state.revision,
+            0,
+            contributor,
+            Some(old),
+            Some(old),
+        ),
+        "unchanged",
+    );
+
+    let temp = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "deleted".into(),
+        }),
+    );
+    let Created::Track(deleted) = temp.created.unwrap() else {
+        panic!("deleted track")
+    };
+    let removed = run(&service, Request::Edit(Command::RemoveTrack(deleted)));
+    refused(
+        &service,
+        &removed,
+        rebind(removed.state.revision, 0, deleted, None, Some(new)),
+        "track no longer exists",
+    );
+    let temp = run(
+        &service,
+        Request::Edit(Command::CreateNativeSource {
+            name: "deleted".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }),
+    );
+    let Created::NativeSource(deleted_source) = temp.created.unwrap() else {
+        panic!("deleted source")
+    };
+    let removed = run(
+        &service,
+        Request::Edit(Command::RemoveNativeSource(deleted_source)),
+    );
+    refused(
+        &service,
+        &removed,
+        rebind(
+            removed.state.revision,
+            0,
+            contributor,
+            Some(old),
+            Some(deleted_source),
+        ),
+        "source no longer exists",
+    );
+
+    let key = GestureKey {
+        generation: 0,
+        token: 7634,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track: contributor },
+        }),
+    );
+    let blocked = refused(
+        &service,
+        &begun,
+        rebind(begun.state.revision, 0, contributor, Some(old), Some(new)),
+        "active gesture",
+    );
+    assert!(blocked.active_device_gesture.is_some());
+    assert!(blocked.gesture_ack.is_none());
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let before = cancelled.state.project.clone();
+    let changed = run(
+        &service,
+        rebind(
+            cancelled.state.revision,
+            0,
+            contributor,
+            Some(old),
+            Some(new),
+        ),
+    );
+    assert_eq!(
+        changed
+            .state
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id(),
+        Some(new)
+    );
+    assert_eq!(
+        changed.state.project.track(contributor).unwrap().devices(),
+        local_devices
+    );
+    assert_eq!(
+        changed.state.project.native_source(old).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(
+        changed.state.project.native_source(new).unwrap().receiver(),
+        Some(contributor)
+    );
+    let after = changed.state.project.clone();
+    assert_eq!(run(&service, Request::Undo).state.project, before);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, after);
+    let unlinked = run(
+        &service,
+        rebind(redone.state.revision, 0, contributor, Some(new), None),
+    );
+    assert_eq!(
+        unlinked
+            .state
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id(),
+        None
+    );
+    assert_eq!(
+        unlinked
+            .state
+            .project
+            .native_source(new)
+            .unwrap()
+            .receiver(),
+        None
+    );
+    assert!(unlinked.state.project.native_source(new).is_some());
+    let replaced = run(
+        &service,
+        rebind(unlinked.state.revision, 0, receiver, Some(old), Some(new)),
+    );
+    assert_eq!(
+        replaced
+            .state
+            .project
+            .native_source(old)
+            .unwrap()
+            .receiver(),
+        None
+    );
+    assert_eq!(
+        replaced
+            .state
+            .project
+            .native_source(new)
+            .unwrap()
+            .receiver(),
+        Some(receiver)
+    );
+    let restored = run(&service, Request::Undo);
+    assert_eq!(restored.state.project, unlinked.state.project);
+    let cleared = run(
+        &service,
+        rebind(restored.state.revision, 0, receiver, Some(old), None),
+    );
+    assert_eq!(
+        cleared.state.project.track(receiver).unwrap().source_id(),
+        None
+    );
+    assert_eq!(
+        cleared.state.project.native_source(old).unwrap().receiver(),
+        None
+    );
+    assert!(cleared.state.project.native_source(old).is_some());
+}
+
 #[test]
 fn captured_unassigned_source_binding_refuses_stale_and_preserves_history() {
     let service = Service::new(48_000, 32, 0).unwrap();
