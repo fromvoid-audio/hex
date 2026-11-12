@@ -84,6 +84,9 @@ impl CheckpointWorker {
         &mut self,
         journal: &mut Option<hex_storage::Journal>,
     ) -> Result<Option<PathBuf>, String> {
+        if journal.is_some() {
+            return Err("cannot replace existing recovery journal custody".into());
+        }
         let pending = self
             .pending
             .take()
@@ -155,6 +158,8 @@ mod tests {
                 .start(capture(&session, &other), &mut other_journal)
                 .is_err()
         );
+        assert_eq!(other_journal.as_ref().unwrap().path(), other);
+        assert!(worker.finish(&mut other_journal).is_err());
         assert_eq!(other_journal.as_ref().unwrap().path(), other);
         worker.finish(&mut journal).unwrap();
         assert_eq!(journal.as_ref().unwrap().path(), target);
