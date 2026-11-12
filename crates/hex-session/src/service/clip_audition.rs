@@ -36,10 +36,14 @@ pub struct ArrangementMoveAudition {
     pub mode: ArrangementMoveMode,
 }
 
+/// Selects the same authored placement semantics used by the eventual drag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArrangementMoveMode {
+    /// Move the existing identities.
     Move,
+    /// Create independent copies.
     Copy,
+    /// Create linked aliases.
     AliasCopy,
 }
 
