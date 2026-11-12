@@ -121,6 +121,19 @@ pub struct ClipMovePreviewIdentity {
     pub mode: ArrangementMoveMode,
 }
 
+/// Bounded worker-to-host metadata; acceptance is not callback application.
+pub enum VerifiedClipMoveUpdate {
+    Preview(Arc<VerifiedClipMoveSource>),
+    Released {
+        canonical: Arc<CanonicalAudioSourceSnapshot>,
+        identity: ClipMovePreviewIdentity,
+    },
+    Cancelled {
+        canonical: Arc<CanonicalAudioSourceSnapshot>,
+        identity: ClipMovePreviewIdentity,
+    },
+}
+
 impl ArrangementMoveAudition {
     pub fn identity(&self) -> ClipMovePreviewIdentity {
         ClipMovePreviewIdentity {
@@ -596,6 +609,119 @@ fn attempt_interval(kind: Kind, failed: bool, cancelled: bool) -> Duration {
         MOVE_PREVIEW_INTERVAL
     } else {
         RETRY_INTERVAL
+    }
+}
+
+/// One worker-owned delivery state. The host owns graph construction and may
+/// refuse any update; this state never treats delivery as audible playback.
+#[derive(Default)]
+pub(super) struct VerifiedLane {
+    attempted: Option<ArrangementMoveAudition>,
+    active: Option<(Arc<CanonicalAudioSourceSnapshot>, ClipMovePreviewIdentity)>,
+    released: bool,
+    next_attempt: Option<Instant>,
+}
+
+impl VerifiedLane {
+    pub(super) fn drive(
+        &mut self,
+        mailbox: &Mailbox,
+        state: &ViewState,
+        project: &Project,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        available: bool,
+    ) -> bool {
+        let intent = mailbox.lock().intent.clone();
+        let canonical = state.canonical_audio_source.as_ref().filter(|source| {
+            available
+                && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && state.project.as_ref() == project
+                && state.audio_authoring_revision(context) == Some(state.revision)
+                && context.editor_revision == state.revision
+        });
+        let held = match (&intent, canonical) {
+            (Intent::Held(Target::Move(target)), Some(source)) if target.context == context => {
+                Some((target, source))
+            }
+            _ => None,
+        };
+        let release = match (&intent, canonical, self.active.as_ref()) {
+            (
+                Intent::Released(Target::Move(target)),
+                Some(source),
+                Some((active_source, active)),
+            ) if Arc::ptr_eq(source, active_source)
+                && target.context == active.context
+                && target.gesture == active.gesture =>
+            {
+                Some((target.identity(), source))
+            }
+            _ => None,
+        };
+        if let Some((identity, source)) = release {
+            self.attempted = None;
+            if !self.released {
+                self.released = true;
+                sink.verified_clip_move_update(VerifiedClipMoveUpdate::Released {
+                    canonical: Arc::clone(source),
+                    identity,
+                });
+            }
+            return false;
+        }
+        let Some((target, source)) = held else {
+            self.attempted = None;
+            self.released = false;
+            if let Some((canonical, identity)) = self.active.take() {
+                sink.verified_clip_move_update(VerifiedClipMoveUpdate::Cancelled {
+                    canonical,
+                    identity,
+                });
+            }
+            return false;
+        };
+        self.released = false;
+        if self.attempted.as_ref() == Some(target) {
+            return false;
+        }
+        if self.next_attempt.is_some_and(|next| next > Instant::now()) {
+            return true;
+        }
+        self.attempted = Some(target.clone());
+        let Some(cancel) = mailbox.claim(Target::Move(target.clone())) else {
+            self.attempted = None;
+            return true;
+        };
+        let started = Instant::now();
+        let candidate = VerifiedClipMoveSource::capture_current(
+            Arc::clone(source),
+            target.clone(),
+            project,
+            state,
+        );
+        let mut accepted = false;
+        let mut deliverable = false;
+        if let Ok(candidate) = candidate
+            && candidate.candidate_reservation_quote().is_ok()
+            && !cancel.load(Ordering::Acquire)
+        {
+            deliverable = true;
+            let identity = candidate.identity();
+            accepted = sink
+                .verified_clip_move_update(VerifiedClipMoveUpdate::Preview(Arc::new(candidate)));
+            if accepted {
+                self.active = Some((Arc::clone(source), identity));
+            }
+        }
+        let cancelled = cancel.load(Ordering::Acquire);
+        self.next_attempt = Some(started + attempt_interval(Kind::Move, !accepted, cancelled));
+        if !accepted && (deliverable || cancelled) {
+            // Retry a refused or cancelled attempt if its target is still held.
+            self.attempted = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -1088,3 +1214,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "clip_audition/verified_lane_tests.rs"]
+mod verified_lane_tests;

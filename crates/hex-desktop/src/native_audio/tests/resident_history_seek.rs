@@ -289,7 +289,9 @@ fn history_case() {
     let mut invalid = h.seek_intent(4, authored.state.revision, None, None);
     invalid.history = ResidentSeekHistory::Preserve;
     invalid.section = Some(hex_session::arrangement_seek::SectionLaunch {
-        region: hex_project::LoopRegion::new(129, 513, true).unwrap(),
+        // A one-shot launch matches this project without an enabled loop, so
+        // the rejection reaches the history/section incompatibility itself.
+        region: hex_project::LoopRegion::new(129, 513, false).unwrap(),
         quantization: hex_engine::LaunchQuantization::Immediate,
     });
     h.service.submit_resident_arrangement_seek(invalid).unwrap();

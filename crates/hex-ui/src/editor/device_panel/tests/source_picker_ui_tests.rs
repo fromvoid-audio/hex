@@ -75,13 +75,13 @@ fn source_picker_assigns_only_after_explicit_choice_and_undoes(cx: &mut TestAppC
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let menu = view.context_menu.as_ref().expect("source choices");
-        assert_eq!(menu.items.len(), 2);
+        assert_eq!(menu.items.len(), 3);
         let EditorContextAction::SourcePicker(choice) = &menu.items[0].action else {
             panic!("choice")
         };
         let label = crate::editor::context_menu::context_item_label(&menu.items[0]);
         assert!(theme::text(label).contains("1 midi · Bright Source"));
-        let unused_label = crate::editor::context_menu::context_item_label(&menu.items[1]);
+        let unused_label = crate::editor::context_menu::context_item_label(&menu.items[2]);
         assert!(theme::text(unused_label).contains("0 midi · Unused Source · receiver none"));
         assert!(choice.current(view));
         assert_eq!(view.state.as_ref().unwrap().project, original);
@@ -144,6 +144,7 @@ fn source_picker_assigns_only_after_explicit_choice_and_undoes(cx: &mut TestAppC
         )
     });
     visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("down");
     visual.simulate_keystrokes("enter");
     settle(&editor, &mut visual, |view| {
         !view.edit_pending()
@@ -168,6 +169,7 @@ fn source_picker_refuses_pending_gesture_and_stale_choice(cx: &mut TestAppContex
         panic!("target")
     };
     let original = event.state.project.clone();
+    let source = original.track(receiver).unwrap().source_id().unwrap();
     let (handle, editor) = actor_editor_window(cx, service, event.state, target);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(900.0), px(700.0)));
@@ -210,13 +212,18 @@ fn source_picker_refuses_pending_gesture_and_stale_choice(cx: &mut TestAppContex
     visual.run_until_parked();
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
-    let stale = editor.read_with(&visual, |view, _| {
+    let (stale, stale_jump) = editor.read_with(&visual, |view, _| {
         let EditorContextAction::SourcePicker(choice) =
             &view.context_menu.as_ref().unwrap().items[0].action
         else {
             panic!("choice")
         };
-        choice.clone()
+        let EditorContextAction::SourcePicker(jump) =
+            &view.context_menu.as_ref().unwrap().items[1].action
+        else {
+            panic!("jump")
+        };
+        (choice.clone(), jump.clone())
     });
     let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
     editor.update(&mut visual, |view, _| {
@@ -229,21 +236,171 @@ fn source_picker_refuses_pending_gesture_and_stale_choice(cx: &mut TestAppContex
         !view.edit_pending() && view.state.as_ref().unwrap().revision > before
     });
     visual.run_until_parked();
-    editor.update(&mut visual, |view, cx| {
-        assert!(view.context_menu.is_none());
-        let revision = view.state.as_ref().unwrap().revision;
-        stale.perform(view, cx);
-        assert_eq!(view.state.as_ref().unwrap().revision, revision);
-        assert!(
-            view.state
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            assert!(view.context_menu.is_none());
+            let revision = view.state.as_ref().unwrap().revision;
+            stale.perform(view, window, cx);
+            stale_jump.perform(view, window, cx);
+            assert_eq!(view.selected_track(), Some(target));
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .source_id()
+                    .is_none()
+            );
+            assert!(!view.edit_pending());
+        });
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let deleted_jump = editor.read_with(&visual, |view, _| {
+        let EditorContextAction::SourcePicker(jump) =
+            &view.context_menu.as_ref().unwrap().items[1].action
+        else {
+            panic!("jump")
+        };
+        jump.clone()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveTrack(receiver))))
+    });
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
                 .as_ref()
                 .unwrap()
                 .project
-                .track(target)
-                .unwrap()
-                .source_id()
+                .track(receiver)
                 .is_none()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            deleted_jump.clone().perform(view, window, cx);
+            assert_eq!(view.selected_track(), Some(target));
+            assert!(!view.edit_pending());
+        })
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveNativeSource(source))))
+    });
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .is_none()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            deleted_jump.perform(view, window, cx);
+            assert_eq!(view.selected_track(), Some(target));
+            assert!(!view.edit_pending());
+        })
+    });
+}
+
+#[gpui::test]
+fn source_picker_navigates_to_receiver_and_contributor_without_assigning(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(receiver).unwrap().source_id().unwrap();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "Contributor".into(),
+        }))
+        .unwrap();
+    let Created::Track(contributor) = receive_service_event(&service).created.unwrap() else {
+        panic!("contributor")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "Target".into(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::Track(target) = event.created.unwrap() else {
+        panic!("target")
+    };
+    let original = event.state.project.clone();
+    let revision = event.state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, event.state, target);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert_eq!(menu.items.len(), 3);
+        assert!(
+            theme::text(crate::editor::context_menu::context_item_label(
+                &menu.items[1]
+            ))
+            .contains("receiver")
         );
+        assert!(
+            theme::text(crate::editor::context_menu::context_item_label(
+                &menu.items[2]
+            ))
+            .contains("midi · Contributor")
+        );
+    });
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.is_focused(window)))
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_track(), Some(contributor));
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert!(!view.edit_pending());
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_track(target, window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let panel = visual.debug_bounds("context-menu-panel").unwrap();
+    visual.simulate_click(
+        panel.origin + point(px(20.0), px(39.0)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(
+        visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.is_focused(window)))
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_track(), Some(receiver));
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
         assert!(!view.edit_pending());
     });
 }
