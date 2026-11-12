@@ -19,7 +19,7 @@ use super::trim::{TrimDrag, loop_handles};
 use super::viewport::Viewport;
 use super::waveform::{
     ClipTooltip, button, fade_envelope_samples, toggle_button_with_style,
-    waveform_source_segment_view, waveform_summary_view,
+    waveform_source_segment_view_cached, waveform_summary_view_cached,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -67,6 +67,7 @@ struct ClipGhostDecor {
     selector: &'static str,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     contents: Option<Div>,
+    waveform_cache: std::rc::Rc<super::waveform_geometry::WaveformViewCache>,
 }
 
 /// Body-only clipping leaves the title and outer selection/rounded mask intact.
@@ -123,6 +124,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         selector,
         grid,
         contents,
+        waveform_cache,
     } = decor;
     let stroke = 1.0 / scale.max(1.0);
     let has_border = hex_widgets::rectangle_border_width(width) > 0.0;
@@ -175,8 +177,9 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
         ghost = ghost.children([loop_handles::body(
-            clip_waveform_body(waveform_summary_view(
+            clip_waveform_body(waveform_summary_view_cached(
                 std::sync::Arc::clone(waveform),
+                waveform_cache,
                 theme::waveform_ink_for_fill(fill),
             )),
             looping,
@@ -1278,14 +1281,16 @@ impl EditorView {
                     .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
                     .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
                 {
-                    drop_preview =
-                        drop_preview.children([clip_waveform_body(waveform_source_segment_view(
+                    drop_preview = drop_preview.children([clip_waveform_body(
+                        waveform_source_segment_view_cached(
                             waveform,
                             preview.start_frame,
                             visible_start,
                             visible_end,
+                            std::rc::Rc::clone(&self.waveform_geometry_cache),
                             crate::theme::color(crate::theme::PaletteRole::Waveform),
-                        ))]);
+                        ),
+                    )]);
                 }
                 if clip_preview.is_some()
                     && self
@@ -3276,6 +3281,7 @@ impl EditorView {
                     scale,
                 },
                 ClipGhostDecor {
+                    waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
                     looping: clip_repeats(&state.project, payload.clip),
                     notched: visible_end == preview.end_frame,
                     fill: theme::clip_activity_fill(
@@ -3350,6 +3356,7 @@ impl EditorView {
                 scale,
             },
             ClipGhostDecor {
+                waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
                 looping: self
                     .state
                     .as_ref()
