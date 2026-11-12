@@ -2,7 +2,8 @@
 use super::*;
 use crate::editor::test_environment::Environment;
 use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext, point, size};
-use hex_session::service::{Event, Service};
+use hex_project::Command;
+use hex_session::service::{Event, Request, Service};
 use std::{sync::Arc, time::Instant};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
@@ -67,6 +68,18 @@ fn fixture(
     pump(&editor, &mut visual);
     (environment, editor, visual)
 }
+fn toggle_fixture(
+    cx: &mut TestAppContext,
+    old: LoopRegion,
+) -> (Arc<Environment>, Entity<EditorView>, VisualTestContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system().expect("native text shaping");
+        cx.update(|cx| theme::load_fonts(cx).expect("bundled ioskeley mono"));
+    }
+    fixture(cx, old)
+}
+
 fn rail_point(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
     let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
     point(rail.left() + rail.size.width * fraction, rail.center().y)
@@ -93,6 +106,49 @@ fn painted_range(visual: &mut VisualTestContext) -> Bounds<gpui::Pixels> {
     );
     bounds
 }
+fn assert_loop_paint(visual: &mut VisualTestContext, enabled: Option<bool>, message: &str) {
+    let expected_fill: Option<gpui::Background> = enabled.map(|enabled| {
+        let (role, opacity) = if enabled {
+            (theme::PaletteRole::Text, 0.94)
+        } else {
+            (theme::PaletteRole::Muted, 0.62)
+        };
+        gpui::Hsla::from(rgb(theme::color(role)))
+            .alpha(opacity)
+            .into()
+    });
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        expected_fill,
+        "{message}"
+    );
+    if enabled.is_some() {
+        let _ = painted_range(visual);
+    } else {
+        assert!(
+            visual.debug_bounds("loop-rail-range").is_none(),
+            "{message}"
+        );
+        assert!(
+            visual.debug_bounds("loop-guide-start").is_none(),
+            "{message}"
+        );
+        assert!(visual.debug_bounds("loop-guide-end").is_none(), "{message}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let button_role = if enabled == Some(true) {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        };
+        let button_colors = visual.rendered_monochrome_colors("transport-loop-toggle");
+        assert!(
+            button_colors.contains(&rgb(theme::color(button_role)).into()),
+            "{message}: toolbar glyph colors {button_colors:?}"
+        );
+    }
+}
 fn painted_guides(visual: &mut VisualTestContext) -> [Bounds<gpui::Pixels>; 2] {
     ["loop-guide-start", "loop-guide-end"].map(|name| {
         let bounds = visual.debug_bounds(name).expect("rendered loop guide");
@@ -100,6 +156,143 @@ fn painted_guides(visual: &mut VisualTestContext) -> [Bounds<gpui::Pixels>; 2] {
         bounds
     })
 }
+
+#[gpui::test]
+fn toggles_display_the_requested_state_while_the_real_response_is_held(cx: &mut TestAppContext) {
+    let old = LoopRegion::new(24_000, 48_000, false).unwrap();
+    let (_environment, editor, mut visual) = toggle_fixture(cx, old);
+    let bounds = painted_range(&mut visual);
+    for (index, enabled) in [true, false, true, false, true].into_iter().enumerate() {
+        match index {
+            0 | 1 => {
+                let button = visual.debug_bounds("transport-loop-toggle").unwrap();
+                visual.simulate_click(button.center(), Modifiers::default());
+            }
+            2 => visual.simulate_keystrokes("cmd-l"),
+            3 => visual.simulate_click(
+                bounds.center(),
+                Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                },
+            ),
+            _ => visual.simulate_keystrokes("l"),
+        }
+        let response = hold_real_response(&editor, &mut visual);
+        assert!(response.request_complete && response.error.is_none());
+        let expected = LoopRegion::new(old.start(), old.end(), enabled).unwrap();
+        assert_eq!(response.state.project.loop_region(), Some(expected));
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert_ne!(state.project.loop_region(), Some(expected));
+        });
+        let message = if index == 0 {
+            "held toggle must repaint the loop range"
+        } else {
+            "held toggle and response must repaint both loop controls"
+        };
+        assert_loop_paint(&mut visual, Some(enabled), message);
+        install(&editor, &mut visual, response);
+        assert_loop_paint(&mut visual, Some(enabled), "installed toggle repaint");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.loop_region(),
+                Some(expected)
+            );
+            assert!(v.pending_loop.is_none());
+        });
+    }
+
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    assert_loop_paint(&mut visual, Some(false), "undo toggle repaint");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.loop_region(), Some(old));
+    });
+
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    assert_loop_paint(&mut visual, Some(true), "redo toggle repaint");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().project.loop_region(),
+            Some(LoopRegion::new(old.start(), old.end(), true).unwrap())
+        );
+    });
+}
+
+#[gpui::test]
+fn stale_toolbar_toggle_refusal_preserves_clear_history_and_repaints(cx: &mut TestAppContext) {
+    let old = LoopRegion::new(24_000, 48_000, false).unwrap();
+    let (_environment, editor, mut visual) = toggle_fixture(cx, old);
+    let original_range = painted_range(&mut visual);
+    let old_snapshot =
+        editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+
+    // Change the Service's canonical loop without delivering its successful
+    // response, leaving the view stale for the actual toolbar toggle.
+    editor.update(&mut visual, |v, _| {
+        v.service
+            .submit(Request::Edit(Command::ClearLoopRegion))
+            .unwrap();
+    });
+    let cleared = hold_real_response(&editor, &mut visual);
+    assert!(cleared.request_complete && cleared.error.is_none());
+    assert_eq!(cleared.state.project.loop_region(), None);
+    assert!(cleared.state.can_undo);
+
+    let button = visual.debug_bounds("transport-loop-toggle").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    let refused = hold_real_response(&editor, &mut visual);
+    assert!(refused.request_complete && refused.error.is_some());
+    assert_eq!(
+        refused.state.project.snapshot(),
+        cleared.state.project.snapshot()
+    );
+    assert_eq!(refused.state.can_undo, cleared.state.can_undo);
+    assert_eq!(refused.state.can_redo, cleared.state.can_redo);
+    assert_eq!(refused.state.revision, cleared.state.revision);
+    assert_eq!(
+        editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot()),
+        old_snapshot,
+        "the held failure must not install canonical state early"
+    );
+
+    visual.run_until_parked();
+    assert_loop_paint(&mut visual, Some(true), "held refused toggle repaint");
+
+    // The earlier clear terminal is used as the history oracle; install the
+    // genuine failed toggle terminal, which carries that same canonical state.
+    install(&editor, &mut visual, refused);
+    assert_loop_paint(&mut visual, None, "failed toggle installed repaint");
+    editor.read_with(&visual, |v, _| {
+        assert!(v.pending_loop.is_none());
+        assert_eq!(v.worker_requests_pending, 0);
+        assert_eq!(v.state.as_ref().unwrap().project.loop_region(), None);
+        assert_eq!(v.state.as_ref().unwrap().can_undo, cleared.state.can_undo);
+        assert_eq!(v.state.as_ref().unwrap().can_redo, cleared.state.can_redo);
+    });
+
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    assert_eq!(painted_range(&mut visual), original_range);
+    assert_loop_paint(
+        &mut visual,
+        Some(false),
+        "undo failed toggle history repaint",
+    );
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.loop_region(), Some(old));
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    assert_loop_paint(&mut visual, None, "redo failed toggle history repaint");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.loop_region(), None);
+    });
+}
+
 #[gpui::test]
 fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut TestAppContext) {
     let old = LoopRegion::new(24_000, 48_000, true).unwrap();
