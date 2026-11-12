@@ -1,6 +1,6 @@
 //! Scalar arrangement-edit custody on the existing publication endpoint. No PCM,
 //! resource book or runtime is owned here. Accepted gates retire only after the
-//! exact candidate is installed, or with the closing output.
+//! exact candidate installs or refuses, or with the closing output.
 use super::*;
 use hex_audio::prepared::{StoppedEditFence, StoppedEditFenceState};
 
@@ -8,12 +8,14 @@ pub(super) struct Pending {
     fence: StoppedEditFence,
     output: u64,
     submitted: Option<u64>,
+    recovering: bool,
 }
 impl NativeAudioSink {
     pub(super) fn begin_section_edit(
         &mut self,
         context: AudioSourceContext,
         allow_playing: bool,
+        recover: bool,
     ) -> Result<(), String> {
         self.poll_section_edit();
         if self.section_edit.is_some()
@@ -51,7 +53,6 @@ impl NativeAudioSink {
         let submitted = self
             .resident
             .current_submission
-            .filter(|submitted| submitted.source_context == Some(context))
             .ok_or("arrangement audio has not been submitted")?;
         let control = self
             .output
@@ -64,7 +65,33 @@ impl NativeAudioSink {
         if output != submitted.output_identity {
             return Err("arrangement output changed".into());
         }
-        let revision = submitted.audio_revision;
+        // The canonical project can be ahead of the active runtime after a
+        // live edit was refused. Recover only from a known terminal on this
+        // output. Pending publications still cannot be bypassed by a fence.
+        let recovering = recover
+            && submitted
+                .source_context
+                .is_some_and(|source| source.project_generation == context.project_generation)
+            && control
+                .status
+                .rejected_revision()
+                .is_some_and(|(revision, _)| revision == submitted.audio_revision);
+        let revision = if recovering {
+            control
+                .status
+                .recording_source()
+                .filter(|source| {
+                    source.output_identity == output
+                        && source.context.project_generation == context.project_generation
+                        && source.context.editor_revision <= context.editor_revision
+                })
+                .ok_or("arrangement audio has no applied project source")?
+                .audio_revision
+        } else if submitted.source_context == Some(context) {
+            submitted.audio_revision
+        } else {
+            return Err("arrangement audio has not been submitted".into());
+        };
         let fence = if allow_playing {
             control.request_live_arrangement_edit_fence(context.project_generation, revision)
         } else {
@@ -75,9 +102,28 @@ impl NativeAudioSink {
             fence,
             output,
             submitted: None,
+            recovering,
         });
         Ok(())
     }
+    pub(super) fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        if !self
+            .section_edit
+            .as_ref()
+            .is_some_and(|edit| edit.recovering)
+        {
+            return Ok(());
+        }
+        let result =
+            self.confirm_resident_edit_publication(context, acceptance, "arrangement edit");
+        self.poll_section_edit();
+        result
+    }
+
     pub(super) fn section_edit_ready(
         &mut self,
     ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
@@ -175,7 +221,11 @@ impl NativeAudioSink {
             return;
         };
         if control.output_identity() == Some(pending.output)
-            && control.status.applied_revision.load(Acquire) == revision
+            && (control.status.applied_revision.load(Acquire) == revision
+                || control
+                    .status
+                    .rejected_revision()
+                    .is_some_and(|(rejected, _)| rejected == revision))
         {
             control.release_stopped_edit_fence(pending.fence);
             self.section_edit = None;

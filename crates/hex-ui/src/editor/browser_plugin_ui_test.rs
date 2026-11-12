@@ -1138,12 +1138,24 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppContext) {
+fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
-    for (mode, lane) in [
-        (crate::editor::EditorMode::Arrangement, false),
-        (crate::editor::EditorMode::Session, false),
-        (crate::editor::EditorMode::Arrangement, true),
+    use hex_project::TrackDeviceSlot;
+    use hex_session::service::PluginEffectDestination;
+    for (mode, lane, new_track_slot) in [
+        (crate::editor::EditorMode::Arrangement, false, None),
+        (crate::editor::EditorMode::Session, false, None),
+        (crate::editor::EditorMode::Arrangement, true, None),
+        (
+            crate::editor::EditorMode::Arrangement,
+            true,
+            Some(TrackDeviceSlot::Effect),
+        ),
+        (
+            crate::editor::EditorMode::Arrangement,
+            true,
+            Some(TrackDeviceSlot::Instrument),
+        ),
     ] {
         let (handle, editor, tracks, directory, _) =
             browser_drag_fixture_with_tracks(cx, &["selected", "target"]);
@@ -1158,7 +1170,14 @@ fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppCon
             .unwrap()
             .classes[0];
         class.class_flags = Some(0);
-        class.subcategories = Some("Fx".into());
+        class.subcategories = Some(
+            if new_track_slot == Some(TrackDeviceSlot::Instrument) {
+                "Instrument|Synth"
+            } else {
+                "Fx"
+            }
+            .into(),
+        );
         class.class_vendor = Some("Original Vendor".into());
         class.class_version = Some("1".into());
         class.class_sdk_version = Some("3.8".into());
@@ -1198,7 +1217,11 @@ fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppCon
             )
             .into_boxed_str(),
         );
-        let target = visual.debug_bounds(selector).unwrap().center();
+        let bounds = visual.debug_bounds(selector).unwrap();
+        let target = match new_track_slot {
+            Some(_) => point(bounds.center().x, bounds.origin.y),
+            None => bounds.center(),
+        };
         for refusal in 0..2 {
             visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(
@@ -1225,33 +1248,6 @@ fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppCon
                     view.project_generation -= 1;
                 }
                 cx.notify();
-            });
-            visual.run_until_parked();
-        }
-        if lane {
-            let lane_bounds = visual.debug_bounds(selector).unwrap();
-            let insertion = point(lane_bounds.center().x, lane_bounds.origin.y);
-            visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_move(
-                point(source.x + px(12.0), source.y),
-                MouseButton::Left,
-                Modifiers::default(),
-            );
-            visual.simulate_mouse_move(insertion, MouseButton::Left, Modifiers::default());
-            visual.run_until_parked();
-            assert!(
-                visual
-                    .debug_bounds("arrangement-device-drop-preview")
-                    .is_none()
-            );
-            visual.simulate_mouse_up(insertion, MouseButton::Left, Modifiers::default());
-            editor.read_with(&visual, |view, _| {
-                assert!(view.pending_plugin_effect.is_none());
-                assert!(
-                    view.error
-                        .as_ref()
-                        .is_some_and(|error| error.contains("not supported yet"))
-                );
             });
             visual.run_until_parked();
         }
@@ -1286,12 +1282,17 @@ fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppCon
             });
             assert_eq!(
                 pending.destination,
-                hex_session::service::PluginEffectDestination::Track(tracks[1])
+                match new_track_slot {
+                    Some(slot) => PluginEffectDestination::NewTrack {
+                        before_track: Some(tracks[1]),
+                        slot,
+                        gain: 0.251_188_64,
+                        track_identity: view.state.as_ref().unwrap().project.next_identity(),
+                    },
+                    None => PluginEffectDestination::Track(tracks[1]),
+                }
             );
-            assert_eq!(
-                pending.before, None,
-                "the plugin appends to the captured track"
-            );
+            assert_eq!(pending.before, None, "no device-card insertion anchor");
             assert_eq!(view.selected_track, Some(tracks[0]));
         });
     }

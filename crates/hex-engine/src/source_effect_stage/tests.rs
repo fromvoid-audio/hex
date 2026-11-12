@@ -868,6 +868,63 @@ fn aggregate_track_return_main_and_source_budgets_refuse_before_runtime_creation
 }
 
 #[test]
+fn moving_a_loop_behind_the_cursor_keeps_source_effect_history() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+
+    let (mut editor, asset) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let table = Arc::new(crate::SineTable::new());
+    let mut instance = recipe(source, Some(0));
+    instance.configuration = Some(Arc::new(
+        hex_lattice_contract::NativeDeviceState::new(instance.device_type, 1, vec![1]).unwrap(),
+    ));
+    let recipe = PreparedSourceEffects {
+        factory_bytes: 0,
+        source,
+        receiver: 0,
+        instances: Arc::from([instance]),
+    };
+    let mut make = |end| {
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end,
+                enabled: true,
+            })
+            .unwrap();
+        let revision =
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap();
+        SessionPlayback::test_with_source_effects(Arc::new(revision), std::slice::from_ref(&recipe))
+            .unwrap()
+    };
+    let mut playing = make(1024);
+    let mut oracle = make(1024);
+    for runtime in [&mut playing, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 1120]).unwrap();
+        assert_eq!(runtime.arrangement_frame(), 96);
+    }
+    let mut edited = make(64);
+    edited.try_inherit_state_live_from(&mut playing).unwrap();
+    assert_eq!(
+        (edited.arrangement_frame(), edited.performance_frame()),
+        (96, 1120)
+    );
+    // Neither runtime reaches a wrap during this block. Matching PCM proves
+    // the retained effect (with a one-sample memory) did not restart at the edit.
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    edited.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        (edited.arrangement_frame(), edited.performance_frame()),
+        (128, 1152)
+    );
+}
+
+#[test]
 fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_donor_intact() {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError};
     use hex_lattice_contract::NativeDeviceState;

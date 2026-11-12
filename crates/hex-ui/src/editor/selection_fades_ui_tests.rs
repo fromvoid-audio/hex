@@ -151,8 +151,8 @@ fn cmd_f_respects_focused_context_and_explicit_search_intent(cx: &mut TestAppCon
         let before = editor.update(&mut visual, |v, cx| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.time_selection = Some(TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 0,
                 end_frame: 6_000,
             });

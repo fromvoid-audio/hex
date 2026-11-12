@@ -539,7 +539,7 @@ mod tests {
         }
         let start = HEADER_BYTES + 8 * 8;
         for (index, value) in [
-            (10, 65),
+            (10, (MAX_PARAMETER_POINTS + 1) as u8),
             (12, 1),
             (start, 8),
             (start + 2, 1),

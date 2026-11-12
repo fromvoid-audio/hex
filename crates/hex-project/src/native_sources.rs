@@ -417,6 +417,26 @@ impl Project {
             edit(target)
         })
     }
+
+    pub(crate) fn replace_source_instrument(
+        &mut self,
+        source: SourceId,
+        id: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    ) -> Result<(), Invalid> {
+        self.edit_native_source(source, |definition| {
+            definition.instrument = Device {
+                modulation: Default::default(),
+                parent: None,
+                automation: Vec::new(),
+                comparison: None,
+                id,
+                state,
+                bypassed: false,
+            };
+            Ok(())
+        })
+    }
 }
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {

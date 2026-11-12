@@ -3,6 +3,62 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
+fn clip_waveform_scale_toggle_is_independent_and_survives_view_switches(cx: &mut TestAppContext) {
+    use super::super::waveform::WaveformAmplitudeScale;
+
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.waveform_geometry_cache
+            .set_amplitude_scale(WaveformAmplitudeScale::Decibel);
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Linear
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let toggle = visual.debug_bounds("audio-waveform-scale").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+        assert_eq!(
+            view.waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+    });
+    let source = visual.debug_bounds("audio-source-tab").unwrap();
+    visual.simulate_click(source.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.audio_event_editor.source_view);
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+    });
+    let toggle = visual.debug_bounds("audio-waveform-scale").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.clip_waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Linear
+        );
+        assert_eq!(
+            view.waveform_geometry_cache.amplitude_scale(),
+            WaveformAmplitudeScale::Decibel
+        );
+    });
+}
+
+#[gpui::test]
 fn retained_source_selector_dispatches_and_acknowledges_event_activation(cx: &mut TestAppContext) {
     use super::super::drag::group_drag_ui_test::pump;
     use hex_session::service::Request;
@@ -99,7 +155,14 @@ fn retained_source_selector_dispatches_and_acknowledges_event_activation(cx: &mu
     let grip = visual.debug_bounds("audio-event-gain-1").unwrap();
     let from = grip.center();
     let to = point(from.x, from.y + px(20.0));
-    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(
+        from,
+        MouseButton::Left,
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
@@ -537,25 +600,39 @@ fn event_pointer_matches_arrangement_and_retains_move_and_trim_targets(cx: &mut 
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    for (position, expected) in [
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    for (position, modifiers, expected) in [
         (
             point(b.center().x, b.bottom() - px(15.0)),
+            Modifiers::default(),
             gpui::CursorStyle::Arrow,
         ),
         (
             point(b.center().x, b.top() + px(26.0)),
+            Modifiers::default(),
+            gpui::CursorStyle::OpenHand,
+        ),
+        (
+            point(b.center().x, b.top() + px(26.0)),
+            option,
             gpui::CursorStyle::ResizeUpDown,
         ),
         (
             point(b.left() + px(2.0), b.center().y),
+            Modifiers::default(),
             gpui::CursorStyle::ResizeLeftBracket,
         ),
         (
             point(b.right() - px(2.0), b.center().y),
+            Modifiers::default(),
             gpui::CursorStyle::ResizeRightBracket,
         ),
     ] {
-        visual.simulate_mouse_move(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_modifiers_change(modifiers);
+        visual.simulate_mouse_move(position, None, modifiers);
         visual.run_until_parked();
         assert_eq!(visual.rendered_cursor_style(), Some(expected));
     }
@@ -1783,6 +1860,47 @@ fn navigation_rejects_bad_wheel_and_held_input_and_resets_on_source_replacement(
 }
 
 #[gpui::test]
+fn plain_event_top_edge_drag_moves_the_event_without_changing_gain(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        view.audio_event_editor.grid = SnapGrid::Off;
+    });
+    let down = visual.debug_bounds("audio-event-gain-1").unwrap().center();
+    let up = point(down.x + px(80.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.audio_event_editor
+                .gesture
+                .as_ref()
+                .map(|gesture| gesture.kind),
+            Some(Kind::Move(_) | Kind::FreeMove { .. })
+        ));
+    });
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        let pending = view
+            .audio_event_editor
+            .pending
+            .as_ref()
+            .expect("event move");
+        assert!(
+            matches!(
+                pending.operation,
+                AudioEventEdit::Place { event: 1, start } if start > 0
+            ) || matches!(
+                pending.operation,
+                AudioEventEdit::Move { event: 1, start } if start > 0
+            )
+        );
+        assert_eq!(pending.preview.events[0].gain, hex_project::ClipGain::UNITY);
+    });
+}
+
+#[gpui::test]
 fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
     let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1792,7 +1910,14 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
         .expect("event gain handle");
     let down = handle.center();
     let up = point(down.x, down.y + px(20.0));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(
+        down,
+        MouseButton::Left,
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     let fine = point(down.x, up.y + px(10.0));
     visual.simulate_mouse_move(
@@ -1832,7 +1957,14 @@ fn event_gain_escape_discards_held_edit(cx: &mut TestAppContext) {
     visual.run_until_parked();
     let down = visual.debug_bounds("audio-event-gain-1").unwrap().center();
     let up = point(down.x, down.y + px(20.0));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(
+        down,
+        MouseButton::Left,
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());

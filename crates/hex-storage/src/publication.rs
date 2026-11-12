@@ -75,7 +75,7 @@ fn link(staging: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn rename_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn rename_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(test)]
     if let Some(error) = simulate::rename_error() {
         return Err(error);
@@ -91,7 +91,7 @@ fn rename_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
+pub(crate) fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "exclusive rename is unsupported on this platform",

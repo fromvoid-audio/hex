@@ -70,6 +70,10 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    WaveformDecibels {
+        generation: u64,
+        enabled: bool,
+    },
     InputQuantization {
         generation: u64,
         policy: hex_project::InputQuantization,
@@ -495,7 +499,7 @@ impl EditorView {
                 ),
             ];
             if linked {
-                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push(("make unique · shift+i", ClipAliasOperation::MakeUnique));
                 entries.push((
                     "apply settings to aliases",
                     ClipAliasOperation::ApplySettings,
@@ -695,6 +699,17 @@ impl EditorView {
             } => {
                 if generation == self.project_generation {
                     self.set_adaptive_grid_density(density);
+                    cx.notify();
+                }
+            }
+            EditorContextAction::WaveformDecibels {
+                generation,
+                enabled,
+            } => {
+                if generation == self.project_generation {
+                    self.waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
+                    );
                     cx.notify();
                 }
             }
@@ -979,6 +994,7 @@ impl EditorView {
                     *generation != self.project_generation
                 }
                 EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::WaveformDecibels { generation, .. }
                 | EditorContextAction::LaunchQuantization { generation, .. }
                 | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
@@ -1309,6 +1325,7 @@ mod tests {
                     EditorContextAction::ClipFlavor { .. }
                         | EditorContextAction::ClipAlias(_)
                         | EditorContextAction::AdaptiveGrid { .. }
+                        | EditorContextAction::WaveformDecibels { .. }
                 )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
@@ -2103,7 +2120,7 @@ mod tests {
             for label in [
                 "duplicate · d",
                 "duplicate alias · cmd+d",
-                "make unique · i",
+                "make unique · shift+i",
                 "apply settings to aliases",
             ] {
                 assert!(menu.items.iter().any(|item| item.label == label));
@@ -2146,7 +2163,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .find(|item| item.label == "make unique · i")
+                .find(|item| item.label == "make unique · shift+i")
                 .unwrap()
                 .action
                 .clone()

@@ -458,8 +458,8 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
             });
             let first = view.state.as_ref().unwrap().project.tracks()[0].id();
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: first,
-                end_track: first,
+                anchor_track: Some(first),
+                end_track: Some(first),
                 anchor_frame: 111,
                 end_frame: 222,
             });
@@ -599,8 +599,8 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
         let state = view.state.as_ref().unwrap().clone();
         let first = state.project.tracks()[0].id();
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: first,
-            end_track: first,
+            anchor_track: Some(first),
+            end_track: Some(first),
             anchor_frame: 111,
             end_frame: 222,
         });

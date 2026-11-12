@@ -993,6 +993,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1245,6 +1246,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -5182,6 +5184,11 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
     let graph_host_bytes =
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS).unwrap();
+    // The owner slots include the vector headers. Charge their reserved heap
+    // entries independently of the production frozen-parameter quote.
+    let frozen_parameter_bytes_per_owner = hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
+        * (std::mem::size_of::<hex_lattice_contract::ParameterId>()
+            + std::mem::size_of::<Option<hex_lattice_contract::ParameterValue>>());
 
     assert_eq!(
         ledger_bytes,
@@ -5203,6 +5210,8 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
                 * 2
                 * MAX_SIMULTANEOUS_VOICES_PER_TRACK
                 * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
+            + (hex_project::MAX_TRACKS + hex_lattice::MAX_STATEFUL_PROCESSORS)
+                * frozen_parameter_bytes_per_owner
             + std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>()
             + crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
                 * std::mem::size_of::<hex_lattice::NativeInstrumentEvent>()
@@ -5216,6 +5225,17 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     );
     assert!(
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS + 1).is_none()
+    );
+    let one_track_increment = std::mem::size_of::<
+        Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>,
+    >() + ledger_bytes
+        + frozen_parameter_bytes_per_owner
+        + crate::mutable_instrument::MutableInstrumentTrackRuntime::source_live_storage_upper_bound(
+        );
+    assert_eq!(
+        crate::mutable_instrument::host_storage_upper_bound(1).unwrap()
+            - crate::mutable_instrument::host_storage_upper_bound(0).unwrap(),
+        one_track_increment
     );
     println!(
         "mutable storage bytes: track_owner={}, ledger_pair={}, onset_buffer={}, event={}, runtime_pair={}, max_graph_host={graph_host_bytes}",
@@ -12322,14 +12342,12 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             let region = LoopRegion::new(24_000, 48_000, true).unwrap();
-            let source = mutable_feedback_with_stateful_track_and_return();
-            let oracle = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+            let source = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
                 snapshot.loop_region = Some(region)
             });
-            assert!(source.arrangement().loop_region().is_none());
             // Section launches use the interactive Play-from law at the loop
             // start: no prefix replay, empty tails and chased held notes.
-            let mut expected = SessionPlayback::new(oracle).unwrap();
+            let mut expected = SessionPlayback::new(Arc::clone(&source)).unwrap();
             expected.play_from(24_000).unwrap();
             let mut history = SessionPlayback::new(Arc::clone(&expected.revision)).unwrap();
             history.apply(SessionPlaybackCommand::Play).unwrap();
@@ -12367,12 +12385,9 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
             assert_ne!(rendered, replayed, "prefix history is not reconstructed");
             assert_eq!(actual.arrangement_frame(), expected.arrangement_frame());
             assert_eq!(actual.performance_frame(), expected.performance_frame());
-            assert!(
-                source.arrangement().loop_region().is_none(),
-                "saved loop remains unchanged"
-            );
             let playback =
                 crate::playback::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.section_loop(), None);
             assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(

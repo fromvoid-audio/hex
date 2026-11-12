@@ -444,7 +444,7 @@ impl WorkerAudioSink for ObservedSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        self.inner.begin_section_edit(context, allow_playing)
+        WorkerAudioSink::begin_section_edit(&mut self.inner, context, allow_playing)
     }
     fn section_edit_ready(
         &mut self,

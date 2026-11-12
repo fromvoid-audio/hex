@@ -83,6 +83,41 @@ impl Scene {
         self.append_primitive(primitive, order);
     }
 
+    pub(crate) fn insert_disjoint_path_pair(&mut self, paths: [Path<ScaledPixels>; 2]) {
+        let [first, second] = paths.each_ref().map(Path::clipped_bounds);
+        let gap = ScaledPixels::from(1.0);
+        let separated = first.bottom() + gap <= second.top() || second.bottom() + gap <= first.top();
+        let union = first.union(&second);
+        // Reconstructing right and bottom from a floating-point origin and
+        // size can round an outer edge inward. Keep the ordinary insertion
+        // whenever the reservation would not cover both clipped paths.
+        if first.is_empty()
+            || second.is_empty()
+            || !separated
+            || !finite_scene_bounds(&first)
+            || !finite_scene_bounds(&second)
+            || !finite_scene_bounds(&union)
+            || union.right() < first.right().max(second.right())
+            || union.bottom() < first.bottom().max(second.bottom())
+        {
+            for path in paths {
+                self.insert_primitive(path);
+            }
+            return;
+        }
+
+        // One conservative reservation orders both disjoint paths relative to
+        // surrounding primitives. Keep independent paint records and PathIds.
+        let order = self
+            .layer_stack
+            .last()
+            .copied()
+            .unwrap_or_else(|| self.primitive_bounds.insert(union));
+        for path in paths {
+            self.append_primitive(Primitive::Path(path), order);
+        }
+    }
+
     fn append_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
         match &mut primitive {
             Primitive::Shadow(shadow) => {
@@ -165,13 +200,13 @@ impl Scene {
         for operation in operations {
             let bounds = match operation {
                 PaintOperation::Primitive(primitive) => {
-                    if !finite_replay_bounds(primitive.bounds())
-                        || !finite_replay_bounds(&primitive.content_mask().bounds)
+                    if !finite_scene_bounds(primitive.bounds())
+                        || !finite_scene_bounds(&primitive.content_mask().bounds)
                     {
                         return false;
                     }
                     let painted = primitive.painted_bounds();
-                    if !finite_replay_bounds(&painted) {
+                    if !finite_scene_bounds(&painted) {
                         return false;
                     }
                     let clipped = painted.intersect(&primitive.content_mask().bounds);
@@ -198,11 +233,11 @@ impl Scene {
                     continue;
                 }
             };
-            if !finite_replay_bounds(&bounds) {
+            if !finite_scene_bounds(&bounds) {
                 return false;
             }
             let combined = union.map_or(bounds, |union| union.union(&bounds));
-            if !finite_replay_bounds(&combined) {
+            if !finite_scene_bounds(&combined) {
                 return false;
             }
             union = Some(combined);
@@ -298,7 +333,7 @@ impl Scene {
     }
 }
 
-fn finite_replay_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
+fn finite_scene_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
     let values = [
         bounds.origin.x.0,
         bounds.origin.y.0,
@@ -1470,8 +1505,142 @@ mod replay_verification {
         Ok(())
     }
 
+    fn verify_disjoint_path_pair() -> Result<(), String> {
+        fn path(
+            id: u32,
+            bounds: Bounds<ScaledPixels>,
+            mask: Bounds<ScaledPixels>,
+        ) -> Result<Path<ScaledPixels>, String> {
+            let Primitive::Path(path) = primitive(2, id, bounds, mask) else {
+                return Err("path fixture did not produce a path".to_owned());
+            };
+            Ok(path)
+        }
+
+        fn operation_order(scene: &Scene, index: usize) -> Result<u32, String> {
+            match scene.paint_operations.get(index) {
+                Some(PaintOperation::Primitive(primitive)) => Ok(primitive.order()),
+                _ => Err("expected primitive paint operation".to_owned()),
+            }
+        }
+
+        let mask = bounds(-20.0, -20.0, 60.0, 80.0, 1.0);
+        let upper_bounds = bounds(0.0, 0.0, 12.0, 10.0, 1.0);
+        let lower_bounds = bounds(0.0, 12.0, 12.0, 10.0, 1.0);
+        let upper = path(20, upper_bounds, mask)?;
+        let lower = path(21, lower_bounds, mask)?;
+
+        // One conservative union order must respect neighbors overlapping
+        // either member while retaining two separate path operations/IDs.
+        let mut ordered = Scene::default();
+        ordered.insert_primitive(primitive(
+            1,
+            22,
+            bounds(1.0, 2.0, 4.0, 4.0, 1.0),
+            mask,
+        ));
+        ordered.insert_disjoint_path_pair([upper.clone(), lower.clone()]);
+        ordered.insert_primitive(primitive(
+            1,
+            23,
+            bounds(1.0, 14.0, 4.0, 4.0, 1.0),
+            mask,
+        ));
+        require(ordered.len() == 4, "pair did not preserve separate paint records")?;
+        let pair_order = operation_order(&ordered, 1)?;
+        require(
+            operation_order(&ordered, 0)? < pair_order && pair_order == operation_order(&ordered, 2)?,
+            "pair order did not follow the earlier overlapping neighbor",
+        )?;
+        require(
+            pair_order < operation_order(&ordered, 3)?,
+            "later primitive overlapping the pair was not ordered afterward",
+        )?;
+        require(
+            ordered.paths[0].id == PathId(0) && ordered.paths[1].id == PathId(1),
+            "pair paths did not receive separate contiguous IDs",
+        )?;
+
+        // Overlap and a clipped-away member must use ordinary insertion.
+        let mut overlapping = Scene::default();
+        overlapping.insert_disjoint_path_pair([
+            upper.clone(),
+            path(24, bounds(0.0, 9.5, 12.0, 10.0, 1.0), mask)?,
+        ]);
+        require(overlapping.len() == 2, "overlapping fallback dropped a path")?;
+        require(
+            operation_order(&overlapping, 0)? < operation_order(&overlapping, 1)?,
+            "overlapping pair incorrectly shared an order",
+        )?;
+        let mut subpixel_gap = Scene::default();
+        subpixel_gap.insert_primitive(primitive(1, 30, bounds(1.0, 2.0, 4.0, 4.0, 1.0), mask));
+        subpixel_gap.insert_disjoint_path_pair([
+            upper.clone(),
+            path(29, bounds(0.0, 10.5, 12.0, 10.0, 1.0), mask)?,
+        ]);
+        require(
+            operation_order(&subpixel_gap, 1)? > operation_order(&subpixel_gap, 2)?,
+            "subpixel gap incorrectly qualified for a shared order",
+        )?;
+
+        let wide_mask = bounds(-100_000_016.0, -20.0, 100_000_032.0, 80.0, 1.0);
+        let far_upper = bounds(-100_000_000.0, 0.0, 32.0, 10.0, 1.0);
+        let near_lower = bounds(0.0, 12.0, 1.0, 10.0, 1.0);
+        require(
+            far_upper.union(&near_lower).right() < near_lower.right(),
+            "inward-rounding fixture no longer loses the right edge",
+        )?;
+        let mut rounded_union = Scene::default();
+        rounded_union.insert_primitive(primitive(1, 31, far_upper, wide_mask));
+        rounded_union.insert_disjoint_path_pair([
+            path(32, far_upper, wide_mask)?,
+            path(33, near_lower, wide_mask)?,
+        ]);
+        require(
+            operation_order(&rounded_union, 1)? > operation_order(&rounded_union, 2)?,
+            "inward-rounded reservation incorrectly shared an order",
+        )?;
+
+        let narrow_mask = bounds(-1.0, -1.0, 14.0, 12.0, 1.0);
+        let mut clipped = Scene::default();
+        clipped.insert_disjoint_path_pair([
+            path(25, upper_bounds, narrow_mask)?,
+            path(26, lower_bounds, narrow_mask)?,
+        ]);
+        require(
+            clipped.len() == 1 && clipped.paths[0].id == PathId(0),
+            "clipped member was not omitted with normal single-path semantics",
+        )?;
+
+        // A containing layer supplies the shared order; pair insertion must
+        // not add nested layer records of its own.
+        let layer_bounds = bounds(-5.0, -5.0, 30.0, 35.0, 1.0);
+        let mut layered = Scene::default();
+        layered.push_layer(layer_bounds);
+        layered.insert_disjoint_path_pair([upper.clone(), lower.clone()]);
+        layered.pop_layer();
+        require(layered.len() == 4, "pair added layer records inside its owner layer")?;
+        require(
+            operation_order(&layered, 1)? == operation_order(&layered, 2)?,
+            "pair did not inherit the containing layer order",
+        )?;
+
+        // Cached replay of the adjacent independent operations must match the
+        // legacy path, including fresh PathIds and painted-cell order.
+        let mut fast = Scene::default();
+        let mut legacy = Scene::default();
+        require(
+            fast.try_bulk_replay(0..ordered.len(), &ordered),
+            "bulk replay refused a cached disjoint path pair",
+        )?;
+        legacy.replay_legacy(0..ordered.len(), &ordered);
+        equivalent(&mut fast, &mut legacy)?;
+        Ok(())
+    }
+
     pub(super) fn verify() -> Result<(), String> {
         verify_path_clone_value_semantics()?;
+        verify_disjoint_path_pair()?;
         for scale in [1.0, 2.0] {
             for seed in 1..=12 {
                 let (previous, range) = source(scale, seed);
@@ -1693,5 +1862,41 @@ mod replay_verification {
         normal.insert_primitive(primitive(1, 6, area, area));
         refused(&mut destination, 0..normal.len(), &normal)?;
         Ok(())
+    }
+}
+
+impl Path<Pixels> {
+    /// Translate in logical pixels, then scale the retained path into a scene path.
+    pub(crate) fn scale_with_offset(
+        &self,
+        factor: f32,
+        offset: Point<Pixels>,
+        content_mask: &ContentMask<Pixels>,
+    ) -> Path<ScaledPixels> {
+        Path {
+            id: self.id,
+            order: self.order,
+            bounds: Bounds {
+                origin: (self.bounds.origin + offset).scale(factor),
+                size: self.bounds.size.scale(factor),
+            },
+            content_mask: content_mask.scale(factor),
+            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
+                .map(|vertex| vertex.scale_with_offset(factor, offset)).collect())),
+            start: (self.start + offset).scale(factor),
+            current: (self.current + offset).scale(factor),
+            contour_count: self.contour_count,
+            color: self.color,
+        }
+    }
+}
+
+impl PathVertex<Pixels> {
+    fn scale_with_offset(&self, factor: f32, offset: Point<Pixels>) -> PathVertex<ScaledPixels> {
+        PathVertex {
+            xy_position: (self.xy_position + offset).scale(factor),
+            st_position: self.st_position,
+            content_mask: self.content_mask.scale(factor),
+        }
     }
 }

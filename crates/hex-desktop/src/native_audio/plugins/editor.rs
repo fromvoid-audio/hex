@@ -1,10 +1,10 @@
 //! Serialize editor operations on the exact hosted instance. A committed
 //! replacement can reopen an attached editor after its predecessor detaches.
-//! Only view intent crosses the handoff. Root owns both processors and state.
+//! Only view intent and placement cross the handoff. Root owns processors and state.
 use super::*;
 use hex_audio::plugin_worker::{
     ControllerRequest, NativeWorkerControllerProgress, NativeWorkerControllerQuery,
-    PluginEditorState,
+    PluginEditorPosition, PluginEditorState,
 };
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ pub(super) enum EditorAction {
     Toggle,
     Close,
     Detach,
-    Reopen,
+    Reopen(Option<PluginEditorPosition>),
 }
 
 impl EditorAction {
@@ -22,7 +22,7 @@ impl EditorAction {
             Self::Toggle => ControllerRequest::ToggleEditor,
             Self::Close => ControllerRequest::CloseEditor,
             Self::Detach => ControllerRequest::DetachEditor,
-            Self::Reopen => ControllerRequest::ReopenEditor,
+            Self::Reopen(position) => ControllerRequest::ReopenEditor(position),
         }
     }
 }
@@ -150,7 +150,7 @@ impl Plugins {
             && matches!(
                 self.editor,
                 Some(EditorOperation::Pending {
-                    action: EditorAction::Reopen,
+                    action: EditorAction::Reopen(_),
                     request: None,
                     ..
                 })
@@ -163,7 +163,7 @@ impl Plugins {
         let can_reopen = match &self.editor {
             Some(EditorOperation::Pending {
                 binding,
-                action: EditorAction::Reopen,
+                action: EditorAction::Reopen(_),
                 request: None,
                 ..
             }) => {
@@ -222,11 +222,10 @@ impl Plugins {
             Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
                 return;
             }
-            Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::Open)) => Ok(true),
-            Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::Closed)) => Ok(false),
             Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::Unavailable)) => {
                 Err("native editor unavailable for this vst3".into())
             }
+            Ok(NativeWorkerControllerProgress::Editor(state)) => Ok(state),
             Err(error) => Err(error.into()),
             Ok(_) => Err("vst3 editor operation failed".into()),
         };
@@ -239,10 +238,10 @@ impl Plugins {
         binding: Binding,
         generation: u64,
         action: EditorAction,
-        result: Result<bool, String>,
+        result: Result<PluginEditorState, String>,
         current: Option<AudioSourceContext>,
     ) {
-        if matches!(action, EditorAction::Detach | EditorAction::Reopen)
+        if matches!(action, EditorAction::Detach | EditorAction::Reopen(_))
             && let Err(reason) = &result
             && let Some(log) = &self.diagnostics
         {
@@ -252,7 +251,14 @@ impl Plugins {
                 &format!("vst3_editor v=1 stage=handoff_refused action={action:?} binding={binding:?} reason={reason}"),
             );
         }
-        let open = result == Ok(true);
+        let placement = match &result {
+            Ok(PluginEditorState::Detached(position)) => Some(*position),
+            _ => None,
+        };
+        let open = matches!(
+            result,
+            Ok(PluginEditorState::Open | PluginEditorState::Detached(_))
+        );
         if let Some(source) = self
             .sources
             .iter_mut()
@@ -260,7 +266,7 @@ impl Plugins {
         {
             match action {
                 EditorAction::Detach | EditorAction::Close => source.editor_open = false,
-                EditorAction::Toggle | EditorAction::Reopen if result.is_ok() => {
+                EditorAction::Toggle | EditorAction::Reopen(_) if result.is_ok() => {
                     source.editor_open = open;
                     if open {
                         self.editor_checked = None;
@@ -272,14 +278,16 @@ impl Plugins {
                 _ => {}
             }
         }
-        self.editor = (action == EditorAction::Toggle)
-            .then_some(EditorOperation::Complete { generation, result });
+        self.editor = (action == EditorAction::Toggle).then_some(EditorOperation::Complete {
+            generation,
+            result: result.map(|_| open),
+        });
         if action == EditorAction::Detach
             && open
             && current.is_some_and(|context| context.project_generation == generation)
             && let Some(successor) = self.editor_successor(binding)
         {
-            self.queue_editor(successor, generation, EditorAction::Reopen);
+            self.queue_editor(successor, generation, EditorAction::Reopen(placement));
         }
     }
 
@@ -414,6 +422,7 @@ mod tests {
             epoch: 2,
             ..old
         };
+        let position = PluginEditorPosition::new(-120.25, 905.5).unwrap();
         for (accepted, was_open) in [(false, true), (true, false), (true, true)] {
             let mut plugins = Plugins {
                 edit: Some(after),
@@ -433,12 +442,27 @@ mod tests {
             }
             assert!(plugins.sources[0].retiring);
             assert!(plugins.editor_holds(old));
-            plugins.finish_editor_action(old, 1, EditorAction::Detach, Ok(was_open), Some(after));
+            let state = if was_open {
+                PluginEditorState::Detached(position)
+            } else {
+                PluginEditorState::Closed
+            };
+            plugins.finish_editor_action(old, 1, EditorAction::Detach, Ok(state), Some(after));
             assert!(!plugins.editor_holds(old));
             assert!(!plugins.sources[0].editor_open);
             assert_eq!(plugins.editor_holds(new), was_open);
             if was_open {
-                plugins.finish_editor_action(new, 1, EditorAction::Reopen, Ok(true), Some(after));
+                assert!(matches!(
+                    plugins.editor,
+                    Some(EditorOperation::Pending { action: EditorAction::Reopen(Some(p)), .. }) if p == position
+                ));
+                plugins.finish_editor_action(
+                    new,
+                    1,
+                    EditorAction::Reopen(Some(position)),
+                    Ok(PluginEditorState::Open),
+                    Some(after),
+                );
                 assert!(plugins.sources[1].editor_open);
                 assert!(plugins.editor.is_none());
             }

@@ -814,10 +814,10 @@ mod tests {
             None
         );
         let mut full = Parameters::default();
-        for id in 1..=64 {
+        for frame in 0..MAX_PARAMETER_POINTS {
             full.push(ParameterPoint {
-                frame: 0,
-                id,
+                frame: u16::try_from(frame).unwrap(),
+                id: 1,
                 normalized: 0.25,
             })
             .unwrap();
@@ -826,27 +826,29 @@ mod tests {
         assert_eq!(merge_parameter_input(&full, host, 64).unwrap(), None);
         assert_eq!(full, before);
         let mut almost_full = Parameters::default();
-        for id in 1..=63 {
+        for frame in 0..MAX_PARAMETER_POINTS - 1 {
             almost_full
                 .push(ParameterPoint {
-                    frame: 0,
-                    id,
+                    frame: u16::try_from(frame).unwrap(),
+                    id: 1,
                     normalized: 0.25,
                 })
                 .unwrap();
         }
+        let before = almost_full;
         assert_eq!(
             merge_parameter_input(&almost_full, host, 0).unwrap(),
             None,
             "completed quantum's free slot does not override an exhausted physical callback"
         );
+        assert_eq!(almost_full, before);
         assert_eq!(
             merge_parameter_input(&almost_full, host, 1)
                 .unwrap()
                 .unwrap()
                 .as_slice()
                 .len(),
-            64
+            MAX_PARAMETER_POINTS
         );
     }
 }

@@ -95,6 +95,7 @@ fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut Test
                         stroke,
                         bottom_radius: 0.0,
                         header_height: 14.0,
+                        header_gradient: None,
                         notch: super::Notch::new(native),
                     },
                     native,
@@ -911,32 +912,6 @@ fn adjacent_clip_edges_share_one_grid_pixel(cx: &mut TestAppContext) {
     );
 }
 
-#[test]
-fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
-    use super::{Notch, corner_extent};
-    assert_eq!(corner_extent(100.0, 44.0), 5.0);
-    assert_eq!(corner_extent(6.0, 44.0), 3.0);
-    assert_eq!(corner_extent(100.0, 4.0), 2.0);
-    assert_eq!(corner_extent(0.0, 44.0), 0.0);
-    assert_eq!(corner_extent(-1.0, 44.0), 0.0);
-    assert_eq!(corner_extent(f32::NAN, 44.0), 0.0);
-    let notch = Notch::new(true);
-    let edge = notch.clone();
-    for width in [100.0, 6.0, 100.0] {
-        notch.observe(gpui::Bounds::new(
-            gpui::point(gpui::px(10.0), gpui::px(20.0)),
-            gpui::size(gpui::px(width), gpui::px(44.0)),
-        ));
-        assert_eq!(edge.extent(), corner_extent(width, 44.0));
-    }
-    let cropped = Notch::default();
-    cropped.observe(gpui::Bounds::new(
-        gpui::point(gpui::px(0.0), gpui::px(0.0)),
-        gpui::size(gpui::px(100.0), gpui::px(44.0)),
-    ));
-    assert_eq!(cropped.extent(), 0.0);
-}
-
 #[gpui::test]
 fn resolved_clip_canvas_can_paint_a_distinct_edge_in_the_parent_scene(cx: &mut TestAppContext) {
     use gpui::{
@@ -1225,6 +1200,7 @@ fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestApp
                 stroke: 1.0 / window.scale_factor(),
                 bottom_radius: 2.0,
                 header_height: 12.0,
+                header_gradient: None,
                 notch: super::Notch::new(true),
             };
             div()
@@ -1290,6 +1266,7 @@ fn profile_clip_edge_paint_composition(cx: &mut TestAppContext) {
                         stroke,
                         bottom_radius: 0.0,
                         header_height: 18.0,
+                        header_gradient: None,
                         notch: notch.clone(),
                     };
                     let observe = notch.clone();

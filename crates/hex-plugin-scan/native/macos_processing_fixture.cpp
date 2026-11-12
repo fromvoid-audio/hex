@@ -413,10 +413,16 @@ public:
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
             info.flags=ParameterInfo::kIsReadOnly;
+            if(index==0 && shape && !std::strcmp(shape,"2593")) {
+                info.flags=0x400;
+                info.defaultNormalizedValue=-1;
+            }
             const char16_t name[]=u"observed";
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
+        const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+        if(shape && !std::strcmp(shape,"invalid-default")) info.defaultNormalizedValue=-1;
         if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==touched_automation_variant || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
@@ -503,6 +509,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
         fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant;
+    const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -989,9 +996,12 @@ public:
         if (fault==10) return kResultFalse;
         const float scale=(fault==127 || held_parameter_input(fault))?1.0f:0.5f+static_cast<float>(block)*0.125f;
         const auto point_count=primary.count;
-        double current_gain=gain.load();
         bool silent=true;
         const auto event_count=data.inputEvents?data.inputEvents->getEventCount():0;
+        // Model a plugin-internal preset change after its initial state capture.
+        // It changes the opaque component state without a host parameter edit.
+        if(live_preset && process_mode==kRealtime && event_count) gain.store(0.5f);
+        double current_gain=gain.load();
         int32 next_event=0;
         Event event{};
         if (event_count && data.inputEvents->getEvent(0,event)!=kResultOk) return kResultFalse;
@@ -1067,7 +1077,9 @@ public:
                 return kResultFalse;
             if(fault==125) queue->addRef();
         }
-        if(point_count || fault==83 || fault==84) {
+        // Emit an old processor observation one quantum after the edit that
+        // caused it, with no parameter input in that second quantum.
+        if(point_count || fault==83 || fault==84 || (fault==135 && block==1)) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=parameter_id(fault);

@@ -6,7 +6,7 @@ use super::Fault;
 /// Total distinct parameter/offset pairs in one native quantum, in either
 /// direction. Inline storage travels through the existing eight-slot rings;
 /// channel and endpoint storage quotes account for its actual size.
-pub const MAX_PARAMETER_POINTS: usize = 64;
+pub const MAX_PARAMETER_POINTS: usize = hex_lattice_contract::MAX_FOREIGN_PARAMETER_POINTS;
 
 pub use hex_lattice_contract::ForeignParameterPoint as ParameterPoint;
 
@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(
             points.push(ParameterPoint {
                 frame: 7,
-                id: 64,
+                id: MAX_PARAMETER_POINTS as u32,
                 normalized: 0.5
             }),
             Err(Fault::InvalidParameters)

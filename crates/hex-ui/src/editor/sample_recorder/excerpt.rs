@@ -181,7 +181,6 @@ impl EditorView {
                 "drag this exact range to arrangement or session",
                 ("take-excerpt-drag", 0),
             )
-            .debug_selector(|| "take-excerpt-drag".into())
             .on_drag(payload, move |payload, _, window, cx| {
                 let pointer = window.mouse_position();
                 payload.snap_modifier.set(window.modifiers().platform);

@@ -29,6 +29,11 @@ impl EditorView {
             .child(
                 div()
                     .id("console-main-header")
+                    .on_drop(super::sampler_load::track_drop_listener(
+                        cx,
+                        None,
+                        hex_project::InstrumentLoadPlacement::First,
+                    ))
                     .debug_selector(|| "console-main-header".into())
                     .size_full()
                     .px(px(6.0))
@@ -101,12 +106,12 @@ impl EditorView {
                 .filter(|track| track.id() == column.id)
         }) {
             let id = track.id();
-            let (background, text) = super::track_gain::activator_colors(!track.muted());
-            let (solo_background, solo_text) =
-                super::track_gain::activator_colors(self.displayed_solo(id, track.soloed()));
+            let (muted, soloed) = self.displayed_track_switches(track);
+            let (background, text) = super::track_gain::activator_colors(!muted);
+            let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
             let activator = toggle_button_with_style(
                 "on",
-                if track.muted() {
+                if muted {
                     "activate track"
                 } else {
                     "deactivate track"

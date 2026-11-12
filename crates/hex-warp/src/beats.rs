@@ -10,6 +10,13 @@ mod synthesis;
 use super::*;
 use resample::{Bandlimited, bank_bytes};
 
+// Detected source onsets are independent of authored warp and envelope points.
+// Admit one full projected schedule's worth without changing either map limit.
+const MAX_DETECTED_TRANSIENTS: usize = MAX_MAP_SEGMENTS;
+// The full-rate stereo spectral pass alone can exceed the shared work budget
+// on a long clip. Keep a separate ceiling for Beats analysis and synthesis.
+pub(super) const MAX_RENDER_WORK_UNITS: u64 = 4 * MAX_WORK_UNITS;
+
 #[derive(Clone, Copy)]
 struct Anchor {
     source: f64,
@@ -17,6 +24,12 @@ struct Anchor {
     before: usize,
     after: usize,
     attack: bool,
+}
+
+fn plan_bytes(request: &Request<'_>) -> usize {
+    MAX_DETECTED_TRANSIENTS * std::mem::size_of::<u64>()
+        + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
+        + plan::scratch(request)
 }
 
 pub(super) fn render(
@@ -48,9 +61,7 @@ pub(super) fn render(
     }
     let max_grain = (request.input.sample_rate as usize / 20).max(4);
     let ring = max_grain * 2 + 4;
-    let plan_bytes = MAX_POINTS * std::mem::size_of::<u64>()
-        + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
-        + plan::scratch(request);
+    let plan_bytes = plan_bytes(request);
     // Work::scratch is a maximum recorder, not an adder. Quote the complete
     // concurrently live plan/search/filter/ring family before its first Vec.
     work.scratch(
@@ -173,4 +184,58 @@ fn copy(request: &Request<'_>, work: &mut Work<'_>) -> Result<Vec<Frame>, Error>
         )?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detected_transients_beyond_the_authored_point_limit_still_anchor_audio() {
+        const ATTACK: Frame = [0.9, -0.45];
+        let mut frames = vec![[0.0; 2]; 132_300];
+        for frame in frames.iter_mut().skip(100).step_by(100) {
+            *frame = ATTACK;
+        }
+        let output_frames = frames.len() * 11 / 10;
+        let map = TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: output_frames as u64,
+                source_start_q32: 0,
+                source_end_q32: frames.len() as i128 * Q32,
+            }],
+            output_frames,
+        )
+        .unwrap();
+        let rendered = crate::render(
+            &Request {
+                attacks: &[],
+                input: Input {
+                    frames: &frames,
+                    sample_rate: 44_100,
+                    region_start: 0,
+                    region_length: frames.len() as u64,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                map: &map,
+                output_frames,
+                pitch_cents: 0,
+                mode: Mode::Beats {
+                    division_frames: None,
+                    tail: Tail::Forward,
+                    decay: 100,
+                },
+            },
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(rendered.frames.len(), output_frames);
+        for attack in [100, 120_000, 132_200] {
+            assert_eq!(rendered.frames[attack * 11 / 10], ATTACK);
+        }
+        assert!(rendered.peak_scratch_bytes <= MAX_SCRATCH_BYTES);
+    }
 }

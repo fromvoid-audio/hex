@@ -37,6 +37,9 @@ use std::{
     time::Duration,
 };
 
+mod window;
+pub use window::{BROWSER_PREVIEW_WINDOW_FRAMES, PreviewWindowSource};
+
 // Browser audition is independent of canonical resident-import admission. Bound
 // encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
 // Source and converted PCM can coexist during conversion (512 MiB total);
@@ -156,8 +159,18 @@ impl PreviewSources {
         cancel: &AtomicBool,
     ) -> Result<Audio, PreviewFailure> {
         let source = self.source(path.as_ref(), cancel)?;
+        Self::prepare_resident_playback(&source, output_sample_rate, cancel)
+    }
+
+    /// Prepare audition PCM from a captured resident source without reopening
+    /// its path. Applies the same output-rate conversion and bounds as file audition.
+    pub fn prepare_resident_playback(
+        source: &Audio,
+        output_sample_rate: u32,
+        cancel: &AtomicBool,
+    ) -> Result<Audio, PreviewFailure> {
         hex_media::resample_cancellable(
-            &source,
+            source,
             output_sample_rate,
             ResampleLimits {
                 max_source_frames: BROWSER_PREVIEW_FRAME_LIMIT,

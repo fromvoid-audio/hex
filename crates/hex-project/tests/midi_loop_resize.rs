@@ -175,6 +175,59 @@ fn cycle_resize_keeps_outer_occupancy_and_rebases_a_wrapped_window_at_the_same_p
 }
 
 #[test]
+fn cycle_extension_past_source_adds_empty_time_before_each_repeat() {
+    let (mut editor, _, clip) = fixture(true, 2, 32);
+    let original = editor.project().midi_clip(clip).unwrap().clone();
+    let operation = Resize::CycleEnd { beat: beat(20) };
+    let preview = original.preview_loop_resize(operation).unwrap();
+    assert_eq!(preview.first_repeat_boundary(), Some(beat(20)));
+    resize(&mut editor, clip, operation);
+    let extended = editor.project().midi_clip(clip).unwrap().clone();
+    assert_eq!(
+        (extended.start(), extended.length()),
+        (original.start(), original.length())
+    );
+    assert_eq!(
+        (extended.source_length(), extended.loop_end()),
+        (beat(12), beat(12))
+    );
+    assert_eq!(extended.notes(), original.notes());
+    let playback = extended.source_playback().unwrap();
+    assert_eq!(preview.source_playback().unwrap(), playback);
+    let mut onsets: Vec<_> = extended
+        .notes()
+        .iter()
+        .flat_map(|note| {
+            playback
+                .note_occurrences(note.start(), note.duration())
+                .unwrap()
+                .iter()
+                .map(|occurrence| (occurrence.timeline_start(), note.pitch()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    onsets.sort_unstable();
+    assert_eq!(
+        onsets,
+        vec![
+            (beat(0), 60),
+            (beat(1), 64),
+            (beat(5), 67),
+            (beat(11), 60),
+            (beat(12), 64),
+            (beat(16), 67),
+            (beat(22), 60),
+            (beat(23), 64),
+            (beat(27), 67),
+        ]
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().midi_clip(clip), Some(&original));
+    assert!(editor.redo());
+    assert_eq!(editor.project().midi_clip(clip), Some(&extended));
+}
+
+#[test]
 fn captured_once_keeps_its_cycle_when_reactivated_from_a_silent_elapsed_window() {
     let (mut e, _, clip) = fixture(false, 1, 3);
     resize(&mut e, clip, Resize::RepeatOuterEnd { beat: beat(18) });

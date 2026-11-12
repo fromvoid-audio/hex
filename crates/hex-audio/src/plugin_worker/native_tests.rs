@@ -102,23 +102,7 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
         },
         0,
     );
-    let (release, held) = std::sync::mpsc::sync_channel(1);
-    let (mut owner, mut callback) =
-        NativeWorker::start_retained_with(instance, |guard, published| {
-            let run = transport_runner(guard, published);
-            let job = move || {
-                let _ = held.recv_timeout(Duration::from_secs(3));
-                run()
-            };
-            let capture_data_bytes = std::mem::size_of_val(&job);
-            thread::Builder::new()
-                .spawn(job)
-                .map(|join| SpawnedTransport {
-                    join,
-                    capture_data_bytes,
-                })
-        })
-        .unwrap();
+    let (release, mut owner, mut callback) = hold_original_worker(instance);
     let render = |callback: &mut Callback, events: &[MidiEvent]| {
         let mut output = [[0.0; 2]; 8];
         let counts = allocation_counter::measure(|| {
@@ -164,6 +148,56 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
     assert_eq!(render(&mut callback, &[]), resumed);
     assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
     wait_for(6);
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+}
+
+fn hold_original_worker(
+    instance: hex_plugin_host::native::Prepared,
+) -> (std::sync::mpsc::SyncSender<()>, NativeWorker, Callback) {
+    let (release, held) = std::sync::mpsc::sync_channel(1);
+    let (owner, callback) = NativeWorker::start_retained_with(instance, |guard, published| {
+        let run = transport_runner(guard, published);
+        let job = move || {
+            let _ = held.recv_timeout(Duration::from_secs(3));
+            run()
+        };
+        let capture_data_bytes = std::mem::size_of_val(&job);
+        thread::Builder::new()
+            .spawn(job)
+            .map(|join| SpawnedTransport {
+                join,
+                capture_data_bytes,
+            })
+    })
+    .unwrap();
+    (release, owner, callback)
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_effect_resumes_from_one_late_reply_without_replacing_its_worker() {
+    let (release, mut owner, mut callback) = hold_original_worker(original_instance());
+    let mut render = |input| {
+        let mut output = [[0.0; 2]; 8];
+        callback.stage(&[input; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        output
+    };
+    assert_eq!(render([0.125, -0.25]), [[0.0; 2]; 8]);
+    assert_eq!(render([0.5, -0.25]), [[0.0; 2]; 8]);
+    assert_eq!(render([0.25, -0.5]), [[0.0; 2]; 8]);
+    release.send(()).unwrap();
+    let wait_for = |blocks| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while owner.published_blocks_on_control() < blocks {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+    };
+    wait_for(3);
+    assert_eq!(render([0.0; 2]), [[0.3125, -0.15625]; 8]);
+    assert_eq!(render([0.0; 2]), [[0.1875, -0.375]; 8]);
+    wait_for(5);
     assert!(owner.retire_on_control().unwrap().failure.is_none());
 }
 

@@ -12,6 +12,10 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env("HEX_ORDINARY_MANUAL_BASE_DRIVER", "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            // This isolated native-fixture test constructs several retained
+            // graphs on its test thread. The default test stack overflows;
+            // bound this child's test thread to the verified 16 MiB stack.
+            .env("RUST_MIN_STACK", "16777216")
             .output()
             .unwrap();
         assert!(

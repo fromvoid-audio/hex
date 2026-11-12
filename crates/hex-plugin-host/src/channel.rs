@@ -117,7 +117,7 @@ impl Channel {
                         b"HXVIFL01",
                         b"HXVIGE01",
                         b"HXVIGE02",
-                        b"HXVIMD02",
+                        b"HXVIMD03",
                         b"HXVLCA02",
                         b"HXVIER01",
                         b"HXVITR01",

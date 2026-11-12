@@ -109,6 +109,7 @@ struct Borrowed {
     ring: [Frame; 19],
     cursor: usize,
     next_offset: usize,
+    initial_unstamped_frames: usize,
     processed: usize,
     fail_at: Option<usize>,
     revoked: bool,
@@ -122,6 +123,7 @@ impl Borrowed {
             ring: [[0.0; 2]; 19],
             cursor: 0,
             next_offset: 0,
+            initial_unstamped_frames: 0,
             processed: 0,
             fail_at: None,
             revoked: false,
@@ -153,10 +155,11 @@ impl ForeignProcessors for Borrowed {
             1,
             "the existing content-origin path remains authoritative"
         );
-        assert!(
+        assert_eq!(
             clock
                 .and_then(|clock| clock.performance_frame_at_offset(0))
-                .is_some()
+                .is_some(),
+            self.processed >= self.initial_unstamped_frames
         );
         self.next_offset += frames.len();
         self.processed += frames.len();

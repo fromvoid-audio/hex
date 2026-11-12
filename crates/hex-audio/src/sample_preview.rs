@@ -1,6 +1,9 @@
 //! Independent browser and take audition PCM on the existing output stream.
 //! One incoming owner, two retirement slots and one latest control-side pending
-//! owner bound memory and callback work. Only control reclaims PCM.
+//! owner bound memory and callback work. Windows use the same slots: at most
+//! one active and one queued window, with at most one transition per callback.
+//! A full input slot returns its owner to control; underflow or retirement
+//! pressure leaves the remainder silent. Only control reclaims PCM.
 //! A latest-value atomic controls preview gain independently of PCM custody.
 //! Live changes slew over at most about 5 ms at the current sample rate.
 use hex_engine::{Audio, Frame, Invalid};
@@ -13,12 +16,57 @@ use std::sync::{
     },
 };
 
+/// Maximum PCM frames in a single window admitted to the preview callback.
+pub const MAX_WINDOW_FRAMES: usize = 4096;
+
 struct Preview {
     generation: u64,
     audio: Audio,
     position: usize,
     repeat: bool,
+    window: Option<Window>,
 }
+
+#[derive(Clone, Copy)]
+struct Window {
+    start: usize,
+    total: usize,
+}
+
+struct WindowAdmission {
+    next: usize,
+    total: usize,
+}
+
+/// A window can be retried unchanged when the input slot is occupied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowRefusalReason {
+    Full,
+    Invalid,
+}
+
+/// Admission never transfers PCM ownership on refusal.
+pub struct WindowRefusal {
+    pub reason: WindowRefusalReason,
+    pub audio: Audio,
+}
+
+impl std::fmt::Debug for WindowRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowRefusal")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for WindowRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.reason {
+            WindowRefusalReason::Full => "sample preview window queue is full",
+            WindowRefusalReason::Invalid => "invalid sample preview window",
+        })
+    }
+}
+impl std::error::Error for WindowRefusal {}
 
 /// Submission is preparing until the callback actually consumes PCM. Completion
 /// reports the last rendered frame, independently of PCM retirement pressure.
@@ -62,6 +110,7 @@ pub struct Control {
     incoming: Producer<Preview>,
     retired: Consumer<Preview>,
     pending: Option<Preview>,
+    windows: Option<WindowAdmission>,
     generation: Arc<AtomicU64>,
     fault_epoch: Arc<AtomicU64>,
     started: Arc<AtomicU64>,
@@ -106,6 +155,7 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             incoming,
             retired,
             pending: None,
+            windows: None,
             generation: generation.clone(),
             fault_epoch: fault_epoch.clone(),
             started: started.clone(),
@@ -159,7 +209,9 @@ impl Control {
             Phase::Unavailable
         } else if generation == 0 {
             Phase::Idle
-        } else if self.finished.load(Acquire) == generation {
+        } else if (self.windows.is_some() && self.start == self.frames)
+            || self.finished.load(Acquire) == generation
+        {
             Phase::Finished
         } else if self.started.load(Acquire) == generation {
             Phase::Playing
@@ -168,7 +220,8 @@ impl Control {
         };
         let frame = match phase {
             Phase::Preparing => self.start as u64,
-            Phase::Playing | Phase::Finished => self.position.load(Acquire).min(self.frames as u64),
+            Phase::Playing => self.position.load(Acquire).min(self.frames as u64),
+            Phase::Finished => self.frames as u64,
             _ => 0,
         };
         Snapshot {
@@ -217,6 +270,7 @@ impl Control {
         }
         self.start = 0;
         self.frames = 0;
+        self.windows = None;
         self.last_generation = generation;
         self.generation.store(generation, SeqCst);
         if self.fault_epoch.load(SeqCst) != epoch || !self.permitted() {
@@ -276,6 +330,12 @@ impl Control {
         if generation != self.generation.load(Acquire) {
             return Ok(());
         }
+        if self.windows.is_some() {
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview request already uses windows"),
+                audio,
+            });
+        }
         if audio.sample_rate() != self.rate {
             return Err(PublishRefusal {
                 reason: Invalid("sample preview rate does not match audio output"),
@@ -295,9 +355,91 @@ impl Control {
             audio,
             position: frame,
             repeat,
+            window: None,
         });
         self.reclaim();
         Ok(())
+    }
+
+    /// Start an ordered output-rate window sequence at an absolute frame.
+    /// A seek starts a fresh request. At exact EOF completion is immediate.
+    pub fn begin_windows(
+        &mut self,
+        generation: u64,
+        start: usize,
+        total: usize,
+    ) -> Result<(), Invalid> {
+        if !self.permitted()
+            || generation == 0
+            || self.generation.load(Acquire) != generation
+            || self.windows.is_some()
+            || self.frames != 0
+            || start > total
+        {
+            return Err(Invalid("invalid sample preview window request"));
+        }
+        self.start = start;
+        self.frames = total;
+        self.windows = Some(WindowAdmission { next: start, total });
+        Ok(())
+    }
+
+    /// Admit the next nonempty, contiguous window. The single input slot
+    /// applies backpressure; retry a full submission after the callback runs.
+    /// Each window's PCM length and backing capacity are at most 4096 frames.
+    pub fn publish_window(
+        &mut self,
+        generation: u64,
+        start: usize,
+        audio: Audio,
+    ) -> Result<(), WindowRefusal> {
+        let length = audio.frames().len();
+        let Some(end) = start.checked_add(length) else {
+            return Err(WindowRefusal {
+                reason: WindowRefusalReason::Invalid,
+                audio,
+            });
+        };
+        let valid = self.permitted()
+            && generation != 0
+            && generation == self.generation.load(Acquire)
+            && audio.sample_rate() == self.rate
+            && (1..=MAX_WINDOW_FRAMES).contains(&length)
+            && audio.pcm_capacity_frames() <= MAX_WINDOW_FRAMES
+            && self
+                .windows
+                .as_ref()
+                .is_some_and(|w| start == w.next && end <= w.total);
+        if !valid {
+            return Err(WindowRefusal {
+                reason: WindowRefusalReason::Invalid,
+                audio,
+            });
+        }
+        let Some(windows) = self.windows.as_mut() else {
+            return Err(WindowRefusal {
+                reason: WindowRefusalReason::Invalid,
+                audio,
+            });
+        };
+        let total = windows.total;
+        let preview = Preview {
+            generation,
+            audio,
+            position: 0,
+            repeat: false,
+            window: Some(Window { start, total }),
+        };
+        match self.incoming.push(preview) {
+            Ok(()) => {
+                windows.next = end;
+                Ok(())
+            }
+            Err(PushError::Full(preview)) => Err(WindowRefusal {
+                reason: WindowRefusalReason::Full,
+                audio: preview.audio,
+            }),
+        }
     }
 
     pub(crate) fn reclaim(&mut self) {
@@ -324,6 +466,7 @@ impl Control {
         self.generation.store(0, Release);
         self.start = 0;
         self.frames = 0;
+        self.windows = None;
         self.pending = None;
         self.reclaim();
     }
@@ -366,7 +509,9 @@ impl Callback {
         {
             // A fresh audition starts at the selected level, including seeks
             // and a gain set while transport was stopped.
-            self.gain = f32::from_bits(self.target_gain.load(Acquire));
+            if preview.window.is_none() || self.started.load(Acquire) != preview.generation {
+                self.gain = f32::from_bits(self.target_gain.load(Acquire));
+            }
             self.active = Some(preview);
             if (closing
                 || self
@@ -396,6 +541,38 @@ impl Callback {
     /// Preview is added after the project's master stage. It never moves
     /// project transport and is not captured by project-node spectrum taps.
     pub(crate) fn mix(&mut self, output: &mut [Frame]) {
+        // A single input slot permits at most one window transition per block,
+        // even if control refills concurrently. Underflow leaves silence.
+        let Some(preview) = self.active.as_ref() else {
+            return;
+        };
+        if preview.generation != self.generation.load(Acquire) {
+            return;
+        }
+        if preview.window.is_none() {
+            self.mix_one(output);
+            return;
+        }
+        let count = output
+            .len()
+            .min(preview.audio.frames().len() - preview.position);
+        let (first, rest) = output.split_at_mut(count);
+        self.mix_one(first);
+        if rest.is_empty() || self.retired.is_full() || self.incoming.is_empty() {
+            return;
+        }
+        let Some(preview) = self.active.take() else {
+            return;
+        };
+        if let Err(PushError::Full(preview)) = self.retired.push(preview) {
+            self.active = Some(preview);
+            return;
+        }
+        self.begin_block(false);
+        self.mix_one(rest);
+    }
+
+    fn mix_one(&mut self, output: &mut [Frame]) {
         let Some(preview) = self.active.as_mut() else {
             return;
         };
@@ -438,12 +615,18 @@ impl Callback {
             }
             remaining = rest;
         }
-        self.position.store(preview.position as u64, Release);
+        let absolute = preview
+            .window
+            .map_or(preview.position, |window| window.start + preview.position);
+        self.position.store(absolute as u64, Release);
         if played {
             self.started.store(preview.generation, Release);
         }
         // A request at EOF also completes on a zero-frame callback.
-        if !preview.repeat && preview.position == frames.len() {
+        if !preview.repeat
+            && preview.position == frames.len()
+            && preview.window.is_none_or(|window| absolute == window.total)
+        {
             self.finished.store(preview.generation, Release);
         }
     }
@@ -464,6 +647,242 @@ mod tests {
 
     fn pcm(value: f32, frames: usize) -> Audio {
         Audio::new(48_000, vec![[value, -value]; frames]).unwrap()
+    }
+
+    #[test]
+    fn windows_render_contiguously_and_recover_from_underflow() {
+        let (mut control, mut callback) = channel(48_000);
+        let token = control.request().unwrap();
+        control.begin_windows(token, 2, 9).unwrap();
+        control.publish_window(token, 2, pcm(0.25, 3)).unwrap();
+        callback.begin_block(false);
+        control.publish_window(token, 5, pcm(0.5, 3)).unwrap();
+        let mut output = [[0.0; 2]; 4];
+        let mut render = || callback.mix(&mut output);
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        assert_eq!(
+            output,
+            [[0.25, -0.25], [0.25, -0.25], [0.25, -0.25], [0.5, -0.5]]
+        );
+        assert_eq!(control.snapshot().frame, 6);
+        let mut underflow = [[0.0; 2]; 4];
+        callback.mix(&mut underflow);
+        assert_eq!(underflow, [[0.5, -0.5], [0.5, -0.5], [0.0; 2], [0.0; 2]]);
+        assert_eq!(control.snapshot().phase, Phase::Playing);
+        assert_eq!(control.snapshot().frame, 8);
+        control.reclaim();
+        control.publish_window(token, 8, pcm(0.75, 1)).unwrap();
+        callback.begin_block(false);
+        let mut tail = [[0.0; 2]; 2];
+        callback.mix(&mut tail);
+        assert_eq!(tail, [[0.75, -0.75], [0.0; 2]]);
+        assert_eq!(control.snapshot().phase, Phase::Finished);
+        assert_eq!(control.snapshot().frame, 9);
+    }
+
+    #[test]
+    fn window_backpressure_order_stop_and_retirement_preserve_owners() {
+        let (mut control, mut callback) = channel(48_000);
+        let token = control.request().unwrap();
+        control.begin_windows(token, 0, 3).unwrap();
+        control.publish_window(token, 0, pcm(0.25, 1)).unwrap();
+        let refused = control.publish_window(token, 1, pcm(0.5, 1)).unwrap_err();
+        assert_eq!(refused.reason, WindowRefusalReason::Full);
+        assert_eq!(
+            control
+                .publish_window(token, 2, refused.audio)
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Invalid
+        );
+        callback.begin_block(false);
+        control.publish_window(token, 1, pcm(0.5, 1)).unwrap();
+        // Fill the retirement ring without relinquishing the active owner.
+        for _ in 0..2 {
+            callback
+                .retired
+                .push(Preview {
+                    generation: 0,
+                    audio: pcm(0.1, 1),
+                    position: 0,
+                    repeat: false,
+                    window: None,
+                })
+                .ok()
+                .unwrap();
+        }
+        let mut output = [[0.0; 2]; 2];
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| callback.mix(&mut output));
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.25, -0.25], [0.0; 2]]);
+        assert!(callback.active.is_some());
+        control.reclaim();
+        callback.begin_block(false);
+        output.fill([0.0; 2]);
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.5, -0.5], [0.0; 2]]);
+        control.publish_window(token, 2, pcm(0.75, 1)).unwrap();
+        control.cancel();
+        output.fill([0.0; 2]);
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                callback.mix(&mut output);
+                callback.begin_block(false);
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.mix(&mut output);
+            callback.begin_block(false);
+        }
+        assert_eq!(output, [[0.0; 2]; 2]);
+        assert_eq!(
+            control
+                .publish_window(token, 2, pcm(0.75, 1))
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Invalid
+        );
+        let replacement = control.request().unwrap();
+        control.begin_windows(replacement, 3, 3).unwrap();
+        assert_eq!(control.snapshot().phase, Phase::Finished);
+        assert_eq!(control.snapshot().frame, 3);
+    }
+
+    #[test]
+    fn replacement_window_discards_stale_queue_and_keeps_gain_slew() {
+        let (mut control, mut callback) = channel(48_000);
+        let old = control.request().unwrap();
+        control.begin_windows(old, 0, 4).unwrap();
+        control.publish_window(old, 0, pcm(0.5, 2)).unwrap();
+        callback.begin_block(false);
+        control.publish_window(old, 2, pcm(0.5, 2)).unwrap();
+        let current = control.request().unwrap();
+        control.begin_windows(current, 4, 8).unwrap();
+        assert_eq!(
+            control
+                .publish_window(current, 4, pcm(1.0, 2))
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Full
+        );
+        callback.begin_block(false); // return both stale owners
+        control.reclaim();
+        control.publish_window(current, 4, pcm(1.0, 2)).unwrap();
+        callback.begin_block(false);
+        control.publish_window(current, 6, pcm(1.0, 2)).unwrap();
+        control.set_gain(0.0).unwrap();
+        let mut output = [[0.0; 2]; 4];
+        callback.mix(&mut output);
+        for pair in output.windows(2) {
+            assert!(
+                pair[1][0] < pair[0][0],
+                "gain must slew across the window boundary"
+            );
+        }
+        assert_eq!(control.snapshot().phase, Phase::Finished);
+    }
+
+    #[test]
+    fn window_validation_and_fault_invalidate_queued_audio() {
+        let (mut control, mut callback) = channel(48_000);
+        let token = control.request().unwrap();
+        assert!(control.begin_windows(token, 4, 3).is_err());
+        control.begin_windows(token, 0, 5000).unwrap();
+        assert_eq!(
+            control
+                .publish_window(token, 0, pcm(0.5, MAX_WINDOW_FRAMES + 1))
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Invalid
+        );
+        let mut oversized = Vec::with_capacity(MAX_WINDOW_FRAMES + 1);
+        oversized.push([0.5, -0.5]);
+        let oversized = Audio::new(48_000, oversized).unwrap();
+        assert_eq!(
+            control
+                .publish_window(token, 0, oversized)
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Invalid
+        );
+        control.publish_window(token, 0, pcm(0.5, 2)).unwrap();
+        callback.begin_block(false);
+        control.publish_window(token, 2, pcm(0.5, 2)).unwrap();
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| {
+            callback.invalidate_on_fault();
+            callback.begin_block(false);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.invalidate_on_fault();
+            callback.begin_block(false);
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let mut output = [[0.0; 2]; 4];
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.0; 2]; 4]);
+        assert_eq!(
+            control
+                .publish_window(token, 4, pcm(0.5, 1))
+                .unwrap_err()
+                .reason,
+            WindowRefusalReason::Invalid
+        );
+        control.reclaim();
+        let fresh = control.request().unwrap();
+        control.begin_windows(fresh, 4, 5).unwrap();
+        control.publish_window(fresh, 4, pcm(0.25, 1)).unwrap();
+        callback.begin_block(false);
+        callback.mix(&mut output);
+        assert_eq!(output[0], [0.25, -0.25]);
     }
 
     #[test]
@@ -776,6 +1195,7 @@ mod tests {
                     audio: pcm(value, 2),
                     position: 0,
                     repeat: false,
+                    window: None,
                 })
                 .ok()
                 .unwrap();
@@ -794,6 +1214,7 @@ mod tests {
                     audio: pcm(value, 2),
                     position: 0,
                     repeat: false,
+                    window: None,
                 })
                 .ok()
                 .unwrap();

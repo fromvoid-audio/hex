@@ -42,6 +42,9 @@ pub struct ResidentArrangementSeekIntent {
     pub start_playing: bool,
     pub history: ResidentSeekHistory,
     pub section: Option<crate::arrangement_seek::SectionLaunch>,
+    /// An ordinary playing seek with no section loop edit. Section launches
+    /// carry their quantization in the section intent.
+    pub locator_quantization: Option<hex_engine::LaunchQuantization>,
     pub fence: ResidentFreshRuntimeFence,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
@@ -176,6 +179,13 @@ impl Lane {
                 || !intent.start_playing
         }) {
             return Err("section launch requires its exact enabled loop start".into());
+        }
+        if intent.locator_quantization.is_some()
+            && (intent.history != ResidentSeekHistory::Fresh
+                || intent.section.is_some()
+                || !intent.start_playing)
+        {
+            return Err("locator quantization requires an ordinary playing seek".into());
         }
         let mode = preparation_mode(intent.history, intent.section)?;
         let selected = selected_source(&intent, current, admission.preview)?;
@@ -431,13 +441,17 @@ impl Lane {
                                 .prepared
                                 .arrangement_seek_requires_preroll(),
                         },
-                        job.intent.section.map_or(
-                            ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
-                            |section| ResidentPublicationPolicy::SectionWhenReady {
-                                fence: job.intent.fence,
-                                quantization: section.quantization,
-                            },
-                        ),
+                        job.intent
+                            .section
+                            .map(|section| section.quantization)
+                            .or(job.intent.locator_quantization)
+                            .map_or(
+                                ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                                |quantization| ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                                    fence: job.intent.fence,
+                                    quantization,
+                                },
+                            ),
                         &job.intent.cancelled,
                     )
                     .map_err(|e| e.to_string())

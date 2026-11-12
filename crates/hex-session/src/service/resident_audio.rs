@@ -21,6 +21,21 @@ pub(super) struct Snapshot {
     pub(super) inputs: RuntimeInputs,
     pub(super) file_sources: Option<ResidentFileSet>,
 }
+fn canonical_metadata(
+    snapshot: &Snapshot,
+    context: hex_engine::AudioSourceContext,
+) -> ResidentPublicationMetadata {
+    ResidentPublicationMetadata {
+        context,
+        device_preview: None,
+        tuning_preview: None,
+        seek_request: None,
+        stopped_restore: false,
+        computer_keyboard_request: None,
+        gain_recording_track: snapshot.prepared.gain_recording_track(),
+        requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+    }
+}
 struct Inputs<'a> {
     native_parameter_input: Option<hex_engine::NativeParameterInputTarget>,
     native: NativeSamplerSources<'a>,
@@ -348,16 +363,7 @@ impl Inputs<'_> {
         sink: &mut dyn WorkerAudioSink,
         context: hex_engine::AudioSourceContext,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let metadata = ResidentPublicationMetadata {
-            context,
-            device_preview: None,
-            tuning_preview: None,
-            seek_request: None,
-            stopped_restore: false,
-            computer_keyboard_request: None,
-            gain_recording_track: snapshot.prepared.gain_recording_track(),
-            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
-        };
+        let metadata = canonical_metadata(snapshot, context);
         self.publish_tagged(snapshot, project, sink, metadata)
     }
     /// Stopped section edits (and their Undo/Redo) keep the raw cursor but start
@@ -550,14 +556,16 @@ impl Inputs<'_> {
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
         selected.selected_after(&previous)?;
-        let accepted = self.publish_runtime(
-            snapshot,
-            playback,
-            sink,
-            metadata,
-            policy,
-            selected.allowance()?,
-        )?;
+        let additional_bytes = selected
+            .allowance()?
+            .checked_add(
+                playback
+                    .browser_audition_retained_bytes_on_control()
+                    .ok_or(SessionError::Invalid("browser audition storage overflow"))?,
+            )
+            .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
+        let accepted =
+            self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
         selected.cancel_retired_from(&previous);
         snapshot.inputs = selected;
         Ok(accepted)
@@ -998,7 +1006,15 @@ pub(super) fn prepare_import(
     current: Option<&Snapshot>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
-    prepare_bounce_import(input, context, sink, admission, current, None, admit)
+    prepare_import_playback(
+        input,
+        context,
+        sink,
+        admission,
+        current,
+        ImportPlayback::Normal,
+        admit,
+    )
 }
 /// An in-place bounce passes the applied source context it fences after its
 /// render. The lease admits playing (Pulse #3784): a stopped witness keeps the
@@ -1013,6 +1029,34 @@ pub(super) fn prepare_bounce_import(
     fence: Option<hex_engine::AudioSourceContext>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
+    let mode = fence.map_or(ImportPlayback::Normal, ImportPlayback::Bounce);
+    prepare_import_playback(input, context, sink, admission, current, mode, admit)
+}
+
+pub(super) enum ImportPlayback {
+    Normal,
+    Bounce(hex_engine::AudioSourceContext),
+    Browser {
+        track: hex_project::TrackId,
+        start: u64,
+        timing: hex_engine::playback::BrowserAuditionTiming,
+    },
+}
+
+#[allow(clippy::too_many_arguments)] // One prospective import with a transient playback intent.
+pub(super) fn prepare_import_playback(
+    input: crate::import_batch::Preparation<'_>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+    mode: ImportPlayback,
+    admit: &mut dyn FnMut() -> Result<(), SessionError>,
+) -> Result<Snapshot, SessionError> {
+    let fence = match &mode {
+        ImportPlayback::Bounce(source) => Some(*source),
+        _ => None,
+    };
     let position = fence
         .map(|source| {
             // Adoption fences after its render, so it keeps the bounded poll.
@@ -1055,6 +1099,25 @@ pub(super) fn prepare_bounce_import(
     admit()?;
     if let Some(position) = position {
         inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
+    } else if let ImportPlayback::Browser {
+        track,
+        start,
+        timing,
+    } = mode
+    {
+        let (policy, section_loop) =
+            inherited_runtime(sink, context, ResidentPublicationPolicy::InheritRuntime)?;
+        let mut playback = playback_with_loop(&snapshot, section_loop)?;
+        playback.arm_browser_audition(track, start, timing);
+        let metadata = canonical_metadata(&snapshot, context);
+        inputs.publish_tagged_playback(
+            &mut snapshot,
+            input.project,
+            sink,
+            metadata,
+            policy,
+            playback,
+        )?;
     } else {
         inputs.publish(&mut snapshot, input.project, sink, context)?;
     }
@@ -1828,6 +1891,7 @@ impl Session {
         Ok(snapshot)
     }
 
+    #[allow(clippy::too_many_arguments)] // The overlay borrows existing resident custody through admission.
     pub(super) fn prepare_resident_preview(
         &self,
         command: Command,
@@ -1836,8 +1900,9 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: &Snapshot,
+        cancel: Option<&AtomicBool>,
     ) -> Result<(Arc<Project>, Snapshot), SessionError> {
-        let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
+        let inputs = self.resident_seek_inputs(admission, Some(current), cancel)?;
         let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
         let (_, prepared) = editor.execute_prepared_transition(command, |source, candidate| {
             let mut snapshot = inputs.prepare_transition(
@@ -1852,6 +1917,9 @@ impl Session {
                 context,
             )?;
             let project = Arc::new(candidate.clone());
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+                return Err(SessionError::Invalid("clip audition cancelled"));
+            }
             let metadata = ResidentPublicationMetadata {
                 context,
                 device_preview: match identity {
@@ -2412,7 +2480,15 @@ impl Session {
             if let Some(position) = bounce_position {
                 inputs.publish_fenced_bounce(&mut snapshot, project, sink, context, position)?;
             } else if let Some(cursor) = stopped_cursor {
-                inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
+                let accepted = inputs.publish_stopped_section(
+                    &mut snapshot,
+                    project,
+                    sink,
+                    context,
+                    cursor,
+                )?;
+                sink.confirm_section_edit_recovery(context, accepted)
+                    .map_err(SessionError::NativeAudio)?;
             } else if section_transition {
                 // A changed tempo map or relocated instrument MIDI no longer
                 // refuses here: the callback's live handoff restarts audio at
@@ -2429,7 +2505,7 @@ impl Session {
                     })
                     .transpose()?;
                 let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
-                inputs.publish_tagged_with_loop(
+                let accepted = inputs.publish_tagged_with_loop(
                     &mut snapshot,
                     project,
                     sink,
@@ -2446,6 +2522,8 @@ impl Session {
                     ResidentPublicationPolicy::ArrangementEdit,
                     region,
                 )?;
+                sink.confirm_section_edit_recovery(context, accepted)
+                    .map_err(SessionError::NativeAudio)?;
             } else {
                 let accepted = inputs.publish(&mut snapshot, project, sink, context)?;
                 if plugin_parameter {
@@ -2844,8 +2922,9 @@ pub(super) mod tests {
             .import_resident_sampler(
                 decoded,
                 &AtomicBool::new(false),
-                crate::native_assets::NativeAssetDestination::EmptyInstrument {
+                crate::native_assets::NativeAssetDestination::NewInstrument {
                     track,
+                    placement: hex_project::InstrumentLoadPlacement::First,
                     state,
                     source_slot,
                 },
@@ -2991,6 +3070,78 @@ pub(super) mod tests {
         }
     }
 
+    #[test]
+    fn project_sample_placement_publishes_or_refuses_before_commit() {
+        let observed = Arc::new(Observed::default());
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            1024,
+            None,
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap();
+        let receive = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        receive();
+        let files = sampler_export::tests::Files::new(false);
+        service
+            .submit(Request::Import(files.source().to_owned()))
+            .unwrap();
+        let imported = receive();
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        let track = imported.state.project.tracks()[0].id();
+        let asset = imported.state.project.assets().next().unwrap().id();
+        let request = |revision| Request::InsertProjectSample {
+            project_generation: 0,
+            revision,
+            asset,
+            track,
+            start: 32,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: Some(hex_engine::playback::BrowserAuditionTiming {
+                grid: hex_project::ResolvedInputGrid::off(),
+                transport_epoch: 0,
+            }),
+        };
+        let accepted_before = observed.accepted.lock().unwrap().len();
+        service.submit(request(imported.state.revision)).unwrap();
+        let placed = receive();
+        assert!(placed.error.is_none(), "{:?}", placed.error);
+        assert_eq!(placed.state.project.assets().count(), 1);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted_before + 1);
+        observed.refuse.store(true, Ordering::Release);
+        service.submit(request(placed.state.revision)).unwrap();
+        let refused = receive();
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fixture publication refused"))
+        );
+        assert_eq!(refused.state.project, placed.state.project);
+        assert_eq!(refused.state.revision, placed.state.revision);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted_before + 1);
+    }
+
     // Exercise the real default-stack canonical worker: factories and Playback are constructed
     // there, never in an enlarged fixture thread or UI event. Final publication refusal must
     // preserve the prior authoring/history state while the old private pending owner survives.
@@ -3070,7 +3221,7 @@ pub(super) mod tests {
                 project_generation: 0,
                 revision: sampler_track.state.revision,
                 track: sampler_track_id,
-                empty_sampler: None,
+                slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
                 path: files.source().to_owned(),
                 cancel: Arc::new(AtomicBool::new(false)),
             })
@@ -3217,6 +3368,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3701,7 +3853,7 @@ pub(super) mod tests {
                             gain_recording_track: None,
                             requires_preroll: false,
                         },
-                        ResidentPublicationPolicy::SectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
                             fence: ResidentFreshRuntimeFence {
                                 output_identity: 1,
                                 active_audio_revision: 1,
@@ -3786,6 +3938,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3899,6 +4052,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,

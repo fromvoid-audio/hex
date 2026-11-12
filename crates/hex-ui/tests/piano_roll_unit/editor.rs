@@ -27,3 +27,6 @@ mod midi_viewport_grid;
 #[allow(dead_code)]
 #[path = "../../src/editor/midi_wheel_mapping.rs"]
 mod midi_wheel_mapping;
+
+#[path = "midi_canvas.rs"]
+mod midi_canvas;

@@ -25,8 +25,8 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
         v.viewport = prior;
         let track = v.selected_track.unwrap();
         v.time_selection = Some(TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 96_000,
             end_frame: 48_000,
         });
@@ -281,33 +281,6 @@ fn text_numeric_modal_and_musical_typing_keep_shortcuts_from_navigation(cx: &mut
         assert!(v.last_enqueued_edit.is_none());
     });
 }
-#[test]
-fn fit_interval_normalizes_bounds_and_handles_empty_minimum_and_overflow_limits() {
-    assert_eq!(
-        interval(9, 3, 12, 1),
-        Some(Viewport {
-            start: 3,
-            length: 6
-        })
-    );
-    assert_eq!(
-        interval(0, 1, 16, 4),
-        Some(Viewport {
-            start: 0,
-            length: 4
-        })
-    );
-    assert_eq!(interval(9, 9, 12, 1), None);
-    assert_eq!(interval(0, 1, 0, 1), None);
-    assert_eq!(
-        interval(u64::MAX - 1, u64::MAX, u64::MAX, 8),
-        Some(Viewport {
-            start: u64::MAX - 8,
-            length: 8
-        })
-    );
-}
-
 #[gpui::test]
 fn empty_arrangement_fits_existing_horizon_and_restores_without_a_musical_edit(
     cx: &mut TestAppContext,
@@ -816,8 +789,8 @@ fn arrange_vertical_back_prunes_removed_rows_and_clamps_scroll_after_resize(
         view.selected_track = Some(tracks[2]);
         view.track_selection.replace(&tracks[..3]);
         view.time_selection = Some(TimeSelection {
-            anchor_track: tracks[0],
-            end_track: tracks[2],
+            anchor_track: Some(tracks[0]),
+            end_track: Some(tracks[2]),
             anchor_frame: 0,
             end_frame: 48_000,
         });
