@@ -305,7 +305,16 @@ fn rejected_unapplied_candidate_never_becomes_audible() {
 }
 
 #[test]
-fn clip_preview_requires_exact_applied_revision_and_current_intent() {
+fn clip_preview_requires_exact_applied_revision_and_current_gesture() {
+    let mut project = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = project
+        .execute(hex_project::Command::AddTrack {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
     let identity = hex_session::service::ClipMovePreviewIdentity {
         context: hex_engine::AudioSourceContext {
             project_generation: 2,
@@ -313,6 +322,9 @@ fn clip_preview_requires_exact_applied_revision_and_current_intent() {
         },
         gesture: 9,
         sequence: 3,
+        track,
+        position: hex_project::ClipGroupPosition::Audio(240),
+        mode: hex_session::service::ArrangementMoveMode::Move,
     };
     let mut preview = candidate(5, 40, 2);
     preview.clip_preview_identity = Some(identity);
@@ -347,6 +359,18 @@ fn clip_preview_requires_exact_applied_revision_and_current_intent() {
     newer.sequence += 1;
     assert_eq!(
         classify(5, 2, Some(40), Some(newer)),
+        AppliedCandidateSource::Current
+    );
+    let mut different_gesture = newer;
+    different_gesture.gesture += 1;
+    assert_eq!(
+        classify(5, 2, Some(40), Some(different_gesture)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    let mut conflicting_target = identity;
+    conflicting_target.position = hex_project::ClipGroupPosition::Midi(hex_project::BeatTime::ONE);
+    assert_eq!(
+        classify(5, 2, Some(40), Some(conflicting_target)),
         AppliedCandidateSource::SupersededPreview
     );
     let mut queue = VecDeque::from([preview]);
