@@ -789,7 +789,7 @@ fn vst3_shared_beat_emits_the_incoming_ramp_then_the_jump() {
         CLASS,
         &[capability],
         &tempo,
-        QuantumProfile::arbitrary(8, 2),
+        QuantumProfile::arbitrary(6, 2),
     )
     .unwrap()
     .unwrap();
