@@ -10,6 +10,7 @@ pub(super) struct PairDrag {
     key: GestureKey,
     origin_y: f32,
     mode: PairMode,
+    touch: super::super::eq_automation::DragTouch,
 }
 
 #[derive(Clone, Copy)]
@@ -21,6 +22,7 @@ enum PairMode {
 
 pub(super) fn paired_event(
     view: &mut EditorView,
+    cx: &Context<EditorView>,
     device: DeviceId,
     node: Node,
     event: ResponseGraphEvent,
@@ -77,13 +79,20 @@ pub(super) fn paired_event(
             key: snapshot.key,
             origin_y: event.position[1],
             mode,
+            touch: super::super::eq_automation::DragTouch::new(
+                event.position,
+                view.device_panel
+                    .eq_panels
+                    .get(&device)
+                    .and_then(|panel| panel.entity.read(cx).plot_bounds()),
+            ),
         };
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.pair_drag = Some(plan);
         }
         return;
     }
-    let Some(plan) = view
+    let Some(mut plan) = view
         .device_panel
         .eq_panels
         .get(&device)
@@ -145,6 +154,18 @@ pub(super) fn paired_event(
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
     } else {
+        if let Some(target) = plan.touch.moved(
+            event.position,
+            (!matches!(plan.mode, PairMode::OptionQ)).then_some(plan.first),
+            plan.second,
+        ) {
+            view.remember_automation_parameter(device, target);
+        }
+        if event.phase == ResponseGraphPhase::Change
+            && let Some(panel) = view.device_panel.eq_panels.get_mut(&device)
+        {
+            panel.pair_drag = Some(plan);
+        }
         for (parameter, value) in [(plan.first, values.first), (plan.second, values.second)] {
             view.device_panel
                 .pending_values
@@ -161,6 +182,8 @@ pub(in crate::editor::device_panel) struct GroupDrag {
     key: GestureKey,
     origin: [f32; 2],
     nodes: Vec<(Node, [f32; 2])>,
+    grabbed: NodeId,
+    touch: super::super::eq_automation::DragTouch,
 }
 
 fn group_snapshot(
@@ -195,7 +218,9 @@ fn group_snapshot(
 
 pub(super) fn group_event(
     view: &mut EditorView,
+    cx: &Context<EditorView>,
     device: DeviceId,
+    node: Node,
     group: &[NodeId],
     event: ResponseGraphEvent,
 ) {
@@ -231,6 +256,11 @@ pub(super) fn group_event(
                         key,
                         origin: event.position,
                         nodes,
+                        grabbed: node.id,
+                        touch: super::super::eq_automation::DragTouch::new(
+                            event.position,
+                            panel.entity.read(cx).plot_bounds(),
+                        ),
                     });
                 }
             }
@@ -238,7 +268,7 @@ pub(super) fn group_event(
         }
         return;
     }
-    let Some(plan) = view
+    let Some(mut plan) = view
         .device_panel
         .eq_panels
         .get_mut(&device)
@@ -251,7 +281,7 @@ pub(super) fn group_event(
             && snapshot.key.generation == view.project_generation
             && snapshot.target == GestureTarget::DeviceParameterSnapshot { device }
     }) && !view.device_gesture.has_pending_terminal();
-    if !owned {
+    if !owned || node.id != plan.grabbed {
         return;
     }
     let delta = [
@@ -262,18 +292,29 @@ pub(super) fn group_event(
         ResponseGraphPhase::Cancel => view.cancel_device_gesture(),
         ResponseGraphPhase::Commit => group_snapshot(&plan.nodes, delta, rate)
             .and_then(|values| view.device_gesture.finish_snapshot(values)),
-        ResponseGraphPhase::Change => {
-            let result = group_snapshot(&plan.nodes, delta, rate)
-                .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()));
-            if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-                panel.group_drag = Some(plan);
-            }
-            result
-        }
+        ResponseGraphPhase::Change => group_snapshot(&plan.nodes, delta, rate)
+            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ())),
         _ => Ok(()),
     };
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
+    } else if matches!(
+        event.phase,
+        ResponseGraphPhase::Change | ResponseGraphPhase::Commit
+    ) && let Ok(frequency) = node.id.parameter(NodeParameter::Frequency)
+        && let Ok(vertical) = node.id.parameter(if group_move::edits_q(node.kind) {
+            NodeParameter::Q
+        } else {
+            NodeParameter::Gain
+        })
+        && let Some(target) = plan.touch.moved(event.position, Some(frequency), vertical)
+    {
+        view.remember_automation_parameter(device, target);
+    }
+    if event.phase == ResponseGraphPhase::Change
+        && let Some(panel) = view.device_panel.eq_panels.get_mut(&device)
+    {
+        panel.group_drag = Some(plan);
     }
 }
 

@@ -159,7 +159,7 @@ fn handle_graph_event(
         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
             panel.collapse_band = None;
         }
-        group::event(view, device, selected, event);
+        group::event(view, device, selected, event, cx);
         cx.notify();
         return;
     }
@@ -255,6 +255,13 @@ fn handle_graph_event(
                     1.0
                 },
                 q_by_delta,
+                touch: super::super::eq_automation::DragTouch::new(
+                    event.position,
+                    view.device_panel
+                        .eq8_graphs
+                        .get(&device)
+                        .and_then(|graph| graph.entity.read(cx).plot_bounds()),
+                ),
             },
         );
         cx.notify();
@@ -329,19 +336,23 @@ fn handle_graph_event(
         },
         pair.second,
     );
-    match event.phase {
-        hex_widgets::ResponseGraphPhase::Change => {
-            if let Err(error) = view.change_device_pair_gesture(pair) {
-                view.device_panel.message = Some(error.to_owned());
-            }
-        }
-        hex_widgets::ResponseGraphPhase::Commit => {
-            if let Err(error) = view.finish_device_pair_gesture(pair) {
-                view.device_panel.message = Some(error.to_owned());
-            }
-            view.device_panel.eq8_graph_gestures.remove(&device);
-        }
-        _ => {}
+    let result = match event.phase {
+        hex_widgets::ResponseGraphPhase::Change => view.change_device_pair_gesture(pair),
+        hex_widgets::ResponseGraphPhase::Commit => view.finish_device_pair_gesture(pair),
+        _ => return,
+    };
+    if let Err(error) = result {
+        view.device_panel.message = Some(error.to_owned());
+    } else if let Some(target) = view
+        .device_panel
+        .eq8_graph_gestures
+        .get_mut(&device)
+        .and_then(|plan| plan.touch.moved(event.position, Some(first), second))
+    {
+        view.remember_automation_parameter(device, target);
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Commit {
+        view.device_panel.eq8_graph_gestures.remove(&device);
     }
     cx.notify();
 }
@@ -559,13 +570,14 @@ fn effective_state(
 ) -> Option<NativeDeviceState> {
     let mut state = canonical_state.clone();
     for parameter in &device_view.parameters {
-        let effective = effective_parameter_value(
+        let effective = super::super::eq_automation::effective_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            parameter.value,
+            device_view.type_id,
+            parameter,
         );
         if effective != parameter.value {
             state = hex_engine::patch_native_device_parameter_for_class(
@@ -605,13 +617,14 @@ pub(super) fn value(
     parameter_id: ParameterId,
 ) -> Option<ParameterValue> {
     let parameter = parameter(device_view.parameters.as_slice(), parameter_id)?;
-    Some(effective_parameter_value(
+    Some(super::super::eq_automation::effective_value(
         view,
         ParameterKey {
             device,
             parameter: parameter_id,
         },
-        parameter.value,
+        device_view.type_id,
+        parameter,
     ))
 }
 
