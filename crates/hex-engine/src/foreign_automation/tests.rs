@@ -58,6 +58,74 @@ fn render(program: &Program, origins: &[Option<u64>], cuts: &[u16]) -> Vec<Forei
 }
 
 #[test]
+fn disabled_effect_loop_admits_delayed_wraps_and_preserves_linear_only_projects() {
+    let tempo = tempo();
+    let enabled = hex_project::LoopRegion::new(1024, 1536, true).unwrap();
+    let disabled = hex_project::LoopRegion::new(1024, 1536, false).unwrap();
+    let capabilities = std::array::from_fn::<_, 7, _>(|id| ParameterCapability {
+        id: id as u32,
+        steps: 0,
+        normalized_base_bits: 0,
+    });
+    let lanes = capabilities.map(|parameter| {
+        lane(
+            parameter.id,
+            vec![
+                point(BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+                point(BeatTime::ONE, 0.75, AutomationInterpolation::Step),
+            ],
+        )
+    });
+    let source = hex_lattice::ForeignAutomationSource {
+        binding: hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        },
+        revision: std::num::NonZeroU64::MIN,
+        class: CLASS,
+        sample_rate: tempo.sample_rate(),
+        quantum_frames: 256,
+        dense_parameter: None,
+        parameters: &capabilities,
+    };
+    let prepare = |count, region| {
+        Program::prepare_arrangement_source(
+            &lanes[..count],
+            hex_lattice::ForeignAutomationSource {
+                parameters: &capabilities[..count],
+                ..source
+            },
+            &tempo,
+            Some(region),
+            false,
+        )
+    };
+    let old = prepare(1, enabled).unwrap().unwrap();
+    let next = prepare(1, disabled).unwrap().unwrap();
+    // An effect downstream of a delay can get this old wrap even after
+    // playback starts generating origins for the disabled loop.
+    let origins = std::array::from_fn::<_, 256, _>(|frame| {
+        Some(if frame < 64 {
+            1472 + frame as u64
+        } else {
+            1024 + (frame - 64) as u64
+        })
+    });
+    let cuts = [16, 32, 48, 80, 96, 112, 128];
+    let points = render(&next, &origins, &cuts);
+    assert_eq!(points.len(), 18);
+    assert_eq!(points, render(&old, &origins, &cuts));
+    assert!(points[8].normalized < points[7].normalized);
+
+    assert!(matches!(prepare(7, enabled), Err(AUTOMATION_POINT_LIMIT)));
+    let dense_disabled = prepare(7, disabled).unwrap().unwrap();
+    let linear = std::array::from_fn::<_, 256, _>(|frame| Some(1472 + frame as u64));
+    assert_eq!(render(&dense_disabled, &linear, &cuts).len(), 112);
+}
+
+#[test]
 fn projects_the_ramp_at_each_tempo_boundary_then_chases_after_wrap() {
     use AutomationInterpolation::{Linear, Step};
     let lane = lane(
