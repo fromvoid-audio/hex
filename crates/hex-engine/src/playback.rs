@@ -367,7 +367,6 @@ pub struct Playback {
     // Boxed so publication results carrying a `Playback` stay small.
     transport_fade: Box<transport_fade::TransportFade>,
     playing: bool,
-    section_end: Option<u64>,
 }
 impl Playback {
     /// Quote resource-free observation metadata for this actual runtime, including a
@@ -949,7 +948,6 @@ impl Playback {
             performance_clock_exhausted: _,
             transport_fade: _,
             playing: _,
-            section_end: _,
         } = self;
         if tuning_audition.is_some() || resident_pcm_publication.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
@@ -986,7 +984,6 @@ impl Playback {
             performance_frame: 0,
             performance_clock_exhausted: false,
             transport_fade: Box::default(),
-            section_end: None,
             playing: false,
         }
     }
@@ -1105,7 +1102,6 @@ impl Playback {
             performance_frame,
             performance_clock_exhausted: false,
             transport_fade: Box::default(),
-            section_end: None,
             playing,
         }
     }
@@ -1151,7 +1147,6 @@ impl Playback {
             performance_frame: 0,
             performance_clock_exhausted: false,
             transport_fade: Box::default(),
-            section_end: None,
             playing: false,
         }
     }
@@ -1520,7 +1515,7 @@ impl Playback {
         {
             return Err(Invalid("invalid one-shot section transport"));
         }
-        self.section_end = Some(region.end());
+        self.transport_fade.section_end = Some(region.end());
         Ok(())
     }
 
@@ -1752,7 +1747,7 @@ impl Playback {
             )
         {
             if !transport_fade::pauses(action) {
-                self.section_end = None;
+                self.transport_fade.section_end = None;
             }
             self.reset_metronome();
         }
@@ -1775,7 +1770,7 @@ impl Playback {
             )
             .is_ok()
         {
-            self.section_end = None;
+            self.transport_fade.section_end = None;
             self.reset_metronome();
         }
     }
@@ -1911,16 +1906,17 @@ impl Playback {
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
-        self.inherit_section_end(previous);
+        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
     }
 
-    fn inherit_section_end(&mut self, previous: &Self) {
-        self.section_end = previous
+    fn inherited_section_end(&self, previous: &Self) -> Option<u64> {
+        previous
+            .transport_fade
             .section_end
             .filter(|_| self.automation_capture_loop().is_none())
             .and_then(|end| remapped_linear_position(&self.project, &previous.project, end).ok())
-            .filter(|&end| end > self.position());
+            .filter(|&end| end > self.position())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -1975,7 +1971,7 @@ impl Playback {
         next.inherit_candidate_groups(old, groups)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
-        self.inherit_section_end(previous);
+        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
     }
 
@@ -2231,8 +2227,9 @@ impl Playback {
             previous.cancel_computer_keyboard();
         }
         // A fade in progress continues on the inheriting graph's transport.
+        let section_end = self.inherited_section_end(previous);
         *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
-        self.inherit_section_end(previous);
+        self.transport_fade.section_end = section_end;
         Ok(())
     }
 
@@ -2721,9 +2718,13 @@ impl Playback {
             let start = self.position();
             let playing = self.playing();
             let part_len = self.transport_fade.part_len(output.len() - offset, frames);
-            let remaining = self.section_end.filter(|_| playing).map(|section_end| {
-                usize::try_from(section_end.saturating_sub(start)).unwrap_or(usize::MAX)
-            });
+            let remaining =
+                self.transport_fade
+                    .section_end
+                    .filter(|_| playing)
+                    .map(|section_end| {
+                        usize::try_from(section_end.saturating_sub(start)).unwrap_or(usize::MAX)
+                    });
             let end = offset + remaining.map_or(part_len, |left| part_len.min(left));
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
@@ -2739,10 +2740,11 @@ impl Playback {
                 self.complete_transport_fade();
             }
             if self
+                .transport_fade
                 .section_end
                 .is_some_and(|limit| self.playing() && self.position() >= limit)
             {
-                self.section_end = None;
+                self.transport_fade.section_end = None;
                 self.apply_now(PlaybackAction::Transport(PlaybackCommand::Pause))
                     .map_err(|_| Invalid("could not pause at the section end"))?;
             }
