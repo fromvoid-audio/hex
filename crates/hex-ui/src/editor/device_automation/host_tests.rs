@@ -271,7 +271,7 @@ fn plot(
         ))
         .unwrap()
 }
-fn dotted_lane_point(
+pub(in crate::editor) fn dotted_lane_point(
     visual: &mut VisualTestContext,
     device: DeviceId,
     target: DeviceAutomationTarget,
@@ -284,7 +284,7 @@ fn dotted_lane_point(
     point(bounds.left() + bounds.size.width * x, bounds.top())
 }
 
-fn lane_value_point(
+pub(in crate::editor) fn lane_value_point(
     visual: &mut VisualTestContext,
     device: DeviceId,
     target: DeviceAutomationTarget,
