@@ -305,6 +305,12 @@ impl EditorView {
     /// Retain the worker's exact display for this admitted Arrangement copy.
     /// Selection and edit admission still use the ordered terminal.
     pub(super) fn observe_duplicate_view(&mut self, observation: DuplicateViewObservation) -> bool {
+        if let Created::ArrangementSection(copy) = observation.created {
+            return self.observe_section_copy_view(observation, copy);
+        }
+        if !matches!(observation.created, Created::Clips { .. }) {
+            return false;
+        }
         let Some(pending) = self.duplicate_intent.pending.as_mut() else {
             return false;
         };
