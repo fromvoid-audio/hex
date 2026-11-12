@@ -118,6 +118,11 @@ impl RecoveryTracker {
         self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| worker.ready())
     }
 
+    /// Whether an admitted publication still needs its control owner to wait.
+    pub fn async_waiting(&self) -> bool {
+        self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| !worker.ready())
+    }
+
     /// Collect the sole pending publication on control and update the same
     /// persistent failure state used by synchronous maintenance.
     pub fn finish_async(
@@ -298,6 +303,111 @@ mod tests {
         }
         fn poll(&mut self) {}
         fn close(&mut self) {}
+    }
+
+    struct PollSink {
+        requested: Arc<std::sync::atomic::AtomicBool>,
+        polled: std::sync::mpsc::SyncSender<()>,
+    }
+    impl WorkerAudioSink for PollSink {
+        fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {
+            if self
+                .requested
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                let _ = self.polled.try_send(());
+            }
+        }
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn staged_section_copy_keeps_audio_control_polling_during_checkpoint() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-section-poll-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let requested = Arc::new(AtomicBool::new(false));
+        let (polled_tx, polled) = std::sync::mpsc::sync_channel(1);
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(PollSink {
+                requested: Arc::clone(&requested),
+                polled: polled_tx,
+            }),
+        )
+        .unwrap();
+        let initial = next(&service);
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "section".into(),
+                    start: hex_project::BeatTime::ZERO,
+                    end: hex_project::BeatTime::ONE,
+                    color: hex_project::ElementColor::Cyan,
+                },
+            })
+            .unwrap();
+        let before = next(&service);
+        let Some(Created::ArrangementSection(section)) = before.created else {
+            panic!("section")
+        };
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        let duplicate = |revision| Request::EditArrangementSection {
+            project_generation: 0,
+            revision,
+            command: Command::DuplicateArrangementSection(section),
+        };
+        service.submit(duplicate(before.state.revision)).unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service
+            .submit(duplicate(before.state.revision + 1))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(180);
+        loop {
+            if service
+                .try_arrangement_edit_view()
+                .ok()
+                .and_then(|view| view.state.upgrade())
+                .is_some_and(|state| state.revision == before.state.revision + 2)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "second copy did not commit");
+            std::thread::yield_now();
+        }
+        requested.store(true, Ordering::Release);
+        let result = polled.recv_timeout(Duration::from_millis(150));
+        assert!(
+            service.try_event().is_err(),
+            "terminal preceded checkpoint release"
+        );
+        release.send(()).unwrap();
+        assert!(
+            result.is_ok(),
+            "audio control was not polled while checkpoint was held"
+        );
+        assert_eq!(next(&service).state.revision, before.state.revision + 1);
+        assert_eq!(next(&service).state.revision, before.state.revision + 2);
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     struct Fixture {
         directory: PathBuf,
