@@ -3770,7 +3770,11 @@ pub(super) mod tests {
                 assert_eq!(v.sections.selection.len(), if start == 0 { 2 } else { 1 });
                 v.state.as_ref().unwrap().project.clone()
             });
-            visual.simulate_keystrokes(key);
+            if key == "l" {
+                crate::editor::section_launch::test_tap_loop_key(&mut visual);
+            } else {
+                visual.simulate_keystrokes(key);
+            }
             editor.read_with(cx, |v, _| assert!(matches!(v.last_enqueued_edit,
                 Some(Command::SetLoopRegion { start: a, end: b, enabled: true }) if (a,b)==(start,end)),
                 "selected sections must dispatch a loop request"));
