@@ -613,6 +613,7 @@ mod tests {
                 mode: hex_session::DocumentAudioMode::Resident,
             });
             view.audible_playback = Some(super::super::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: None,
                 observation: Some(observation),
                 audio_revision: applied,

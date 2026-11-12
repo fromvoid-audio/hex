@@ -44,6 +44,7 @@ impl EditorView {
             && audible.state.revision == state.revision
             && audible.device_preview_identity.is_none()
             && audible.tuning_preview_identity.is_none()
+            && audible.clip_preview_identity.is_none()
             && audio.control.status().is_some_and(|status| {
                 status.applied_revision.load(Ordering::Acquire) == audible.audio_revision
             })

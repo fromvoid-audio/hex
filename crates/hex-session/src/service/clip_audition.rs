@@ -29,6 +29,10 @@ pub struct ArrangementPlayStartAudition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrangementMoveAudition {
     pub context: hex_engine::AudioSourceContext,
+    /// Gesture identity and monotonically increasing target sequence, supplied
+    /// by the control-side caller; neither is an audio application receipt.
+    pub gesture: u64,
+    pub sequence: u64,
     pub clips: Arc<[ClipId]>,
     pub anchor: ClipId,
     pub track: hex_project::TrackId,
@@ -47,7 +51,23 @@ pub enum ArrangementMoveMode {
     AliasCopy,
 }
 
+/// Scalar correlation for one submitted clip-move preview. The actual
+/// callback audio revision and output identity remain separate witnesses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipMovePreviewIdentity {
+    pub context: hex_engine::AudioSourceContext,
+    pub gesture: u64,
+    pub sequence: u64,
+}
+
 impl ArrangementMoveAudition {
+    pub fn identity(&self) -> ClipMovePreviewIdentity {
+        ClipMovePreviewIdentity {
+            context: self.context,
+            gesture: self.gesture,
+            sequence: self.sequence,
+        }
+    }
     pub(super) fn valid(&self) -> bool {
         !self.clips.is_empty()
             && self.clips.len() <= hex_project::MAX_CLIPS
@@ -183,6 +203,13 @@ impl Target {
             Self::Stretch(target) => target.context,
             Self::PlayStart(target) => target.context,
             Self::Move(target) => target.context,
+        }
+    }
+
+    pub(super) fn move_identity(&self) -> Option<ClipMovePreviewIdentity> {
+        match self {
+            Self::Move(target) => Some(target.identity()),
+            _ => None,
         }
     }
 
@@ -507,6 +534,8 @@ mod tests {
                 project_generation: 3,
                 editor_revision: 7,
             },
+            gesture: 1,
+            sequence: 1,
             anchor: clips[0],
             clips: clips.into(),
             track,

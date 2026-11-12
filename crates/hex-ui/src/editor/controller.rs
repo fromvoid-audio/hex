@@ -117,6 +117,7 @@ impl EditorView {
             candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         };
         let resident_applied = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.audible_playback.as_ref().is_some_and(|candidate| {
@@ -443,6 +444,7 @@ impl EditorView {
     }
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
+        self.expected_clip_preview = None;
         self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
         self.prepared_seek = None;
@@ -487,6 +489,7 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        clip_preview_identity: None,
                         worker_requires_preroll: None,
                         observation: None,
                         audio_revision,
@@ -524,7 +527,13 @@ impl EditorView {
                     return;
                 }
                 if metadata.is_some_and(|metadata| {
-                    metadata.device_preview.is_some() && metadata.tuning_preview.is_some()
+                    u8::from(metadata.device_preview.is_some())
+                        + u8::from(metadata.tuning_preview.is_some())
+                        + u8::from(metadata.clip_preview.is_some())
+                        > 1
+                        || metadata
+                            .clip_preview
+                            .is_some_and(|identity| identity.context != context)
                 }) {
                     self.error =
                         Some("audio publication has conflicting preview identities".into());
@@ -542,6 +551,7 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        clip_preview_identity: metadata.and_then(|metadata| metadata.clip_preview),
                         worker_requires_preroll: metadata.map(|metadata| metadata.requires_preroll),
                         observation,
                         audio_revision,
@@ -556,7 +566,9 @@ impl EditorView {
                     });
                 }
                 if metadata.is_none_or(|metadata| {
-                    metadata.device_preview.is_none() && metadata.tuning_preview.is_none()
+                    metadata.device_preview.is_none()
+                        && metadata.tuning_preview.is_none()
+                        && metadata.clip_preview.is_none()
                 }) {
                     self.audio_admission.published(
                         super::audio_admission::ProjectRevision {
@@ -1000,6 +1012,7 @@ impl EditorView {
                         .published(project_revision, audio_revision);
                 }
                 self.playback_candidates.push_back(PlaybackCandidate {
+                    clip_preview_identity: None,
                     worker_requires_preroll: None,
                     observation: None,
                     audio_revision,
@@ -1692,6 +1705,31 @@ impl EditorView {
         );
         visible_change |= reconciled;
 
+        // Submission metadata can lag or be coalesced independently of the
+        // callback. During a held move, an unknown newer applied revision must
+        // not leave the previously audible canonical graph reported as current.
+        if self.expected_clip_preview.is_some()
+            && applied != 0
+            && (self
+                .audible_playback
+                .as_ref()
+                .is_some_and(|candidate| candidate.audio_revision != applied)
+                || (self.applied_project_revision.is_some()
+                    && self
+                        .audio_admission
+                        .current()
+                        .and_then(|current| current.audio_revision)
+                        != Some(applied)))
+            && !self
+                .playback_candidates
+                .iter()
+                .any(|candidate| candidate.audio_revision == applied)
+        {
+            visible_change |= self.applied_project_revision.take().is_some();
+            visible_change |= self.audible_playback.take().is_some();
+            visible_change |= self.audio_admission.preview_applied(applied);
+        }
+
         if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
             &self.playback_candidates,
             applied,
@@ -1711,7 +1749,22 @@ impl EditorView {
                     .map(|request| (request, candidate.audio_revision))
         });
         if let Some(candidate) = audible {
-            let source = if candidate.seek_request_id.is_some_and(|request_id| {
+            if candidate.clip_preview_identity.is_some() {
+                self.applied_project_revision = None;
+                visible_change |= self
+                    .audio_admission
+                    .preview_applied(candidate.audio_revision);
+            }
+            let source = if let Some(identity) = candidate.clip_preview_identity {
+                applied_clip_candidate_source(
+                    &candidate,
+                    identity,
+                    applied,
+                    self.project_generation,
+                    self.state.as_ref().map(|state| state.revision),
+                    self.expected_clip_preview,
+                )
+            } else if candidate.seek_request_id.is_some_and(|request_id| {
                 current_seek_source != Some((request_id, candidate.device_preview_identity))
             }) {
                 AppliedCandidateSource::SupersededPreview
@@ -1741,6 +1794,7 @@ impl EditorView {
                 }
                 if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
+                    && candidate.clip_preview_identity.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
                     if matches!(
@@ -1754,6 +1808,8 @@ impl EditorView {
                     }
                 }
                 self.audible_playback = Some(candidate);
+            } else if candidate.clip_preview_identity.is_some() {
+                self.audible_playback = None;
             } else if source == AppliedCandidateSource::InvalidPreview {
                 visible_change |= replace_error(
                     &mut self.error,
@@ -1778,6 +1834,7 @@ impl EditorView {
                         || candidate.project_generation != source.context.project_generation
                 }) {
                     self.audible_playback = Some(PlaybackCandidate {
+                        clip_preview_identity: None,
                         worker_requires_preroll: None,
                         observation: None,
                         audio_revision: source.audio_revision,
@@ -2356,6 +2413,7 @@ impl EditorView {
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
         if event.project_replaced {
+            self.expected_clip_preview = None;
             self.pending_requests
                 .retain(|request| self.locators.queued_add_frame(request).is_none());
         }
@@ -5119,6 +5177,7 @@ fn latest_applied_canonical_candidate(
                 && Some(candidate.audio_revision) != rejected_audio_revision
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         })
         .map(|candidate| {
             (
@@ -5142,6 +5201,7 @@ fn rejected_candidate_project(
                 && candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         })
         .map(|candidate| super::audio_admission::ProjectRevision {
             generation: candidate.project_generation,
@@ -5191,6 +5251,27 @@ enum AppliedCandidateSource {
     Current,
     SupersededPreview,
     InvalidPreview,
+}
+
+fn applied_clip_candidate_source(
+    candidate: &PlaybackCandidate,
+    identity: hex_session::service::ClipMovePreviewIdentity,
+    applied_audio_revision: u64,
+    generation: u64,
+    revision: Option<u64>,
+    expected: Option<hex_session::service::ClipMovePreviewIdentity>,
+) -> AppliedCandidateSource {
+    if candidate.audio_revision == applied_audio_revision
+        && identity.context.project_generation == generation
+        && candidate.project_generation == generation
+        && identity.context.editor_revision == candidate.state.revision
+        && revision == Some(candidate.state.revision)
+        && expected == Some(identity)
+    {
+        AppliedCandidateSource::Current
+    } else {
+        AppliedCandidateSource::SupersededPreview
+    }
 }
 
 fn applied_candidate_source(
@@ -5883,10 +5964,9 @@ mod sampler_native_ui_protocol_tests {
         let client = output.take_client().unwrap();
         assert!(client.worker_owns_graph_publication());
         let publish = |output: &mut hex_audio::WorkerPreparedOutput| {
-            output
-                .publication
-                .control()
-                .unwrap()
+            let control = output.publication.control().unwrap();
+            control.reclaim();
+            control
                 .publish_with_policy_and_context_generation(
                     hex_engine::playback::Playback::try_from_prepared_with_device_resources(
                         Arc::clone(&prepared),
@@ -5970,6 +6050,7 @@ mod sampler_native_ui_protocol_tests {
             assert!(view.applied_project_revision.is_none());
             assert_eq!(view.audio_admission, before);
             let mut metadata = hex_session::service::ResidentPublicationMetadata {
+                clip_preview: None,
                 context,
                 device_preview: Some(identity),
                 tuning_preview: None,
@@ -6024,6 +6105,118 @@ mod sampler_native_ui_protocol_tests {
             let audible = view.audible_playback.as_ref().unwrap();
             assert_eq!(audible.audio_revision, canonical_revision);
             assert!(audible.device_preview_identity.is_none());
+
+            let clip_identity = hex_session::service::ClipMovePreviewIdentity {
+                context,
+                gesture: 13,
+                sequence: 2,
+            };
+            let canonical_project = super::super::audio_admission::ProjectRevision {
+                generation: context.project_generation,
+                revision: canonical.revision,
+            };
+            view.audio_admission.canonical_revision(canonical_project);
+            view.audio_admission
+                .published(canonical_project, canonical_revision);
+            view.audio_admission
+                .applied(canonical_project, canonical_revision);
+            view.expected_clip_preview = Some(clip_identity);
+            metadata.clip_preview = Some(clip_identity);
+            let clip_revision = publish(&mut output);
+            view.retain_publication_observation(
+                context,
+                output_identity.wrapping_add(1),
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            assert!(
+                !view
+                    .playback_candidates
+                    .iter()
+                    .any(|candidate| candidate.audio_revision == clip_revision)
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                canonical_revision
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                backend.status().unwrap().applied_revision.load(Acquire),
+                clip_revision
+            );
+            assert!(view.audible_playback.is_none());
+            assert!(view.applied_project_revision.is_none());
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            let audible = view.audible_playback.as_ref().unwrap();
+            assert_eq!(audible.audio_revision, clip_revision);
+            assert_eq!(audible.clip_preview_identity, Some(clip_identity));
+            assert!(view.applied_project_revision.is_none());
+            assert_ne!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Applied
+            );
+
+            let stale_revision = publish(&mut output);
+            view.expected_clip_preview = Some(hex_session::service::ClipMovePreviewIdentity {
+                sequence: clip_identity.sequence + 1,
+                ..clip_identity
+            });
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: stale_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            for _ in 0..128 {
+                backend.render(&mut [[0.0; 2]; 64]).unwrap();
+                view.tick(cx);
+                if backend.status().unwrap().applied_revision.load(Acquire) == stale_revision {
+                    break;
+                }
+            }
+            assert_eq!(
+                backend.status().unwrap().applied_revision.load(Acquire),
+                stale_revision,
+                "rejected: {:?}",
+                backend.status().unwrap().rejected_revision()
+            );
+            assert!(view.audible_playback.is_none());
+            assert!(view.applied_project_revision.is_none());
+            view.expected_clip_preview = None;
+            metadata.clip_preview = None;
+            let restored_revision = publish(&mut output);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: restored_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                restored_revision
+            );
             if loaded_sampler {
                 view.audio = None;
                 return;
@@ -6200,6 +6393,7 @@ mod sampler_native_ui_protocol_tests {
                 canonical_revision: canonical.revision,
             };
             let metadata = hex_session::service::ResidentPublicationMetadata {
+                clip_preview: None,
                 context,
                 device_preview: Some(identity),
                 tuning_preview: None,

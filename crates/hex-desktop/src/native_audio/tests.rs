@@ -1956,6 +1956,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
     };
     let metadata = ResidentPublicationMetadata {
+        clip_preview: None,
         context,
         device_preview: None,
         tuning_preview: None,
