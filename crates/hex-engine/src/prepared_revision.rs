@@ -56,6 +56,8 @@ struct PreparedArrangementMidiSource {
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedMutableTrackRevision {
     id: TrackId,
+    /// Supplemental evidence is visible only to the bounded source query.
+    continuity_only: bool,
     midi_source_track: TrackId,
     instrument: Option<PreparedDeviceIdentity>,
     instrument_position: Option<usize>,
@@ -1830,8 +1832,8 @@ impl PreparedRevision {
         track: TrackId,
         maximum: usize,
     ) -> bool {
-        self.mutable_track_revision(track)
-            .zip(candidate.mutable_track_revision(track))
+        self.source_track_revision(track)
+            .zip(candidate.source_track_revision(track))
             .is_some_and(|(old, new)| {
                 old.midi_source_track == new.midi_source_track
                     && old.arrangement_midi_sources.len() <= maximum
@@ -1840,7 +1842,22 @@ impl PreparedRevision {
             })
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_mutable_track_revision(&self, track: TrackId) -> bool {
+        self.mutable_track_revision(track).is_some()
+    }
+
     fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
+        self.source_track_revision(track)
+            .filter(|revision| !revision.continuity_only)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_source_track_revision(&self, track: TrackId) -> bool {
+        self.source_track_revision(track).is_some()
+    }
+
+    fn source_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
         self.mutable_track_revisions
             .binary_search_by_key(&track, |revision| revision.id)
             .ok()
@@ -1863,15 +1880,26 @@ fn prepare_mutable_track_revisions(
             "mutable revision descriptors do not match compiled tracks",
         ));
     }
-    // Keep bounded source/topology evidence for providers that authorize a
-    // future analytic import as well as for existing mutable owners.
-    let needs_descriptor = |track: &crate::Track| {
+    // Keep bounded source/topology evidence for every contributor to a mutable
+    // source as well as for providers that authorize a future analytic import.
+    // Only the receiver owns the mutable runtime; contributor identity still
+    // matters when a live handoff proves that its notes did not change.
+    let owns_descriptor = |track: &crate::Track| {
         complete_source_evidence
             || track.has_mutable_instrument()
             || track
                 .instrument_id
                 .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
                 .is_some_and(|owner| owner.context().import_identity().is_some())
+    };
+    let needs_descriptor = |track: &crate::Track| {
+        owns_descriptor(track)
+            || track
+                .source_receiver_index()
+                .and_then(|index| arrangement.tracks().get(index))
+                .is_some_and(|receiver| {
+                    receiver.source_id() == track.source_id() && receiver.has_mutable_instrument()
+                })
     };
     let mutable_track_count = arrangement
         .tracks()
@@ -1939,6 +1967,7 @@ fn prepare_mutable_track_revisions(
 
         revisions.push(PreparedMutableTrackRevision {
             id: track.id(),
+            continuity_only: !owns_descriptor(compiled),
             midi_source_track: source_id,
             instrument: track.instrument().map(PreparedDeviceIdentity::from),
             instrument_position: track.instrument_position(),

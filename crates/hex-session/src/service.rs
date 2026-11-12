@@ -148,6 +148,8 @@ pub mod preset;
 mod project_rate;
 mod recovery;
 pub use project_rate::ProjectSampleRate;
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub use recovery::{HeldCheckpoint, hold_next_checkpoint};
 #[cfg(test)]
 mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
@@ -658,6 +660,9 @@ pub enum Request {
     /// Existing clip drag release, bound to the gesture's source. Existing and
     /// new-track move/copy commands are accepted; unrelated work may precede it,
     /// but an intervening canonical edit must refuse rather than retarget it.
+    /// Resident playback parks this request in FIFO order for at most 500 ms
+    /// behind an in-flight publication; output replacement, refusal, project
+    /// replacement or timeout refuses the edit without changing the project.
     MoveExistingClips {
         project_generation: u64,
         revision: u64,
@@ -3230,26 +3235,32 @@ fn run_worker(
             .as_ref()
             .and_then(resident_preview::Preview::clip_target)
             .is_some_and(|target| target.matches_release(&queued.request));
+        // A move can arrive after its audition was cancelled but before that
+        // preview publication has reached the callback. Keep its FIFO place
+        // behind the same bounded publication wait as a matching release.
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
                 || matches!(
                     &queued.request,
-                    Request::Edit(
-                        Command::ToggleDeviceBypass { .. }
-                            | Command::SetDeviceBypass { .. }
-                            | Command::ReplaceDeviceState { .. }
-                    ) | Request::DeviceGesture(
-                        GestureRequest::Change { .. }
-                            | GestureRequest::ChangePair { .. }
-                            | GestureRequest::ChangeSnapshot { .. }
-                            | GestureRequest::ChangeEqCreation { .. }
-                            | GestureRequest::Commit { .. }
-                            | GestureRequest::CommitPair { .. }
-                            | GestureRequest::CommitSnapshot { .. }
-                            | GestureRequest::CommitEqCreation { .. }
-                            | GestureRequest::Cancel { .. }
-                    ) | Request::SetDeviceParameter { .. }
+                    Request::MoveExistingClips { .. }
+                        | Request::Edit(
+                            Command::ToggleDeviceBypass { .. }
+                                | Command::SetDeviceBypass { .. }
+                                | Command::ReplaceDeviceState { .. }
+                        )
+                        | Request::DeviceGesture(
+                            GestureRequest::Change { .. }
+                                | GestureRequest::ChangePair { .. }
+                                | GestureRequest::ChangeSnapshot { .. }
+                                | GestureRequest::ChangeEqCreation { .. }
+                                | GestureRequest::Commit { .. }
+                                | GestureRequest::CommitPair { .. }
+                                | GestureRequest::CommitSnapshot { .. }
+                                | GestureRequest::CommitEqCreation { .. }
+                                | GestureRequest::Cancel { .. }
+                        )
+                        | Request::SetDeviceParameter { .. }
                 )) {
             match events.defer_publication(queued) {
                 Some(queued) => queued,
@@ -10002,6 +10013,13 @@ fn run_worker(
             let previous = pending_recovery_outcome
                 .take()
                 .map(|(previous_kind, mut previous)| {
+                    // The callback may apply the successor while the older
+                    // checkpoint owns the journal. Keep its control-side
+                    // fence progressing without acknowledging either outcome.
+                    while recovery_tracker.async_waiting() {
+                        events.poll();
+                        std::thread::sleep(stopped_arrangement::FENCE_POLL);
+                    }
                     let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
                     previous.finish_recovery(
                         previous_kind.metric(),
