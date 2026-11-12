@@ -271,7 +271,13 @@ pub(super) fn render_parameter(
         parameter: parameter.descriptor.id,
     };
     let descriptor = parameter.descriptor;
-    let value = effective_parameter_value(view, key, parameter.value);
+    let value = if identity.type_id == hex_engine::eq::EQ_TYPE_ID
+        || identity.type_id.as_str() == Ok("hex.eq8")
+    {
+        super::eq_automation::effective_value(view, key, identity.type_id, parameter)
+    } else {
+        effective_parameter_value(view, key, parameter.value)
+    };
     let enabled = parameter.enabled;
     let compatible = matches!(
         (descriptor.kind, value),
