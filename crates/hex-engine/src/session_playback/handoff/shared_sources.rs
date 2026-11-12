@@ -1687,11 +1687,11 @@ mod tests {
             );
             for track in [receiver, contributor] {
                 assert!(
-                    old.has_mutable_track_revision(track),
+                    old.has_source_track_revision(track),
                     "old descriptor missing for {track:?}"
                 );
                 assert!(
-                    candidate.has_mutable_track_revision(track),
+                    candidate.has_source_track_revision(track),
                     "candidate descriptor missing for {track:?}"
                 );
                 assert!(
@@ -1699,6 +1699,11 @@ mod tests {
                     "operator arrangement identity changed for {track:?}"
                 );
             }
+            assert!(
+                !old.has_mutable_track_revision(contributor),
+                "supplemental evidence must not change the existing mutable-owner query"
+            );
+            assert!(!candidate.has_mutable_track_revision(contributor));
             let clip = editor.project().track(contributor).unwrap().midi_clips()[0].id();
             editor
                 .execute(Command::AddMidiNote {
