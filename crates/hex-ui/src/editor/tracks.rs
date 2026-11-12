@@ -3669,7 +3669,10 @@ impl EditorView {
                 });
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
-                drag_entity.update(cx, |_, cx| cx.notify());
+                drag_entity.update(cx, |view, cx| {
+                    view.sync_held_clip_move_audition();
+                    cx.notify();
+                });
                 cx.new(|_| ClipDragGhost)
             })
             .on_drag_move::<ClipDrag>(move |event, window, cx| {
@@ -3694,7 +3697,10 @@ impl EditorView {
                 });
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
-                move_entity.update(cx, |_, cx| cx.notify());
+                move_entity.update(cx, |view, cx| {
+                    view.sync_held_clip_move_audition();
+                    cx.notify();
+                });
             })
     }
 }

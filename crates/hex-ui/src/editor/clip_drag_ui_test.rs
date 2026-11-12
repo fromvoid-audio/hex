@@ -4403,3 +4403,258 @@ fn parameter_observations_preserve_audio_and_midi_resize_custody(cx: &mut TestAp
         visual.run_until_parked();
     }
 }
+
+#[gpui::test]
+fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    use std::time::{Duration, Instant};
+
+    let mut project_editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let mut commands = Vec::new();
+    let mut edit = |command: Command| {
+        let result = project_editor.execute(command.clone()).unwrap();
+        commands.push(command);
+        result
+    };
+    let Created::Track(source) = edit(Command::AddTrack {
+        name: "source".into(),
+    }) else {
+        panic!("track")
+    };
+    edit(Command::AddTrack {
+        name: "target".into(),
+    });
+    let Created::Clip(clip) = edit(Command::PlaceMidiClip {
+        track: source,
+        start: BeatTime::ONE,
+        length: BeatTime::from_quarters(2).unwrap(),
+    }) else {
+        panic!("clip")
+    };
+    edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    });
+    let mut fixture = super::worker_ui_fixture::open_with_audition_readiness(cx, commands, true);
+    let editor = fixture.editor.clone();
+    let original = editor.read_with(cx, |view, _| {
+        Arc::clone(&view.state.as_ref().unwrap().project)
+    });
+    editor.update(cx, |view, _| {
+        view.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(hex_engine::PlaybackCommand::Play)
+            .unwrap();
+    });
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    let (_, destination) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 90.0);
+    let identity = editor.update(&mut visual, |view, cx| {
+        view.sync_held_clip_move_audition();
+        let identity = view.expected_clip_preview.expect("held target submitted");
+        assert!(
+            view.applied_clip_preview.is_none(),
+            "submission is not a callback ACK"
+        );
+        cx.notify();
+        identity
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let applied = editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            view.applied_clip_preview
+                .is_some_and(|(revision, current)| {
+                    current == identity
+                        && view.audio_status().unwrap().applied_revision.load(Acquire) == revision
+                })
+        });
+        if applied {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "held move did not reach the callback"
+        );
+        std::thread::yield_now();
+    }
+    editor.read_with(&visual, |view, _| {
+        assert!(view.active_clip_drag.is_some());
+        assert_eq!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            original.as_ref()
+        );
+        assert!(view.applied_project_revision.is_none());
+    });
+    editor.update(&mut visual, |view, _| {
+        let drag = view.active_clip_drag.as_ref().unwrap().clone();
+        drag.copy_modifier.set(true);
+        view.sync_held_clip_move_audition();
+        let copy = view.expected_clip_preview.unwrap();
+        assert_eq!(copy.gesture, identity.gesture);
+        assert!(copy.sequence > identity.sequence);
+        assert_eq!(
+            view.clip_move_audition
+                .as_ref()
+                .unwrap()
+                .target
+                .as_ref()
+                .unwrap()
+                .mode,
+            hex_session::service::ArrangementMoveMode::Copy
+        );
+        view.sync_held_clip_move_audition();
+        assert_eq!(
+            view.expected_clip_preview,
+            Some(copy),
+            "unchanged target coalesces"
+        );
+        drag.snap_modifier.set(true);
+        view.sync_held_clip_move_audition();
+        let alias = view.expected_clip_preview.unwrap();
+        assert!(alias.sequence > copy.sequence);
+        assert_eq!(
+            view.clip_move_audition
+                .as_ref()
+                .unwrap()
+                .target
+                .as_ref()
+                .unwrap()
+                .mode,
+            hex_session::service::ArrangementMoveMode::AliasCopy
+        );
+        drag.destination.set(None);
+        view.sync_held_clip_move_audition();
+        assert!(view.expected_clip_preview.is_none());
+        assert!(view.applied_clip_preview.is_none());
+    });
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let settled = editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            view.pending_clip_move.is_none() && view.worker_requests_pending == 0
+        });
+        if settled {
+            break;
+        }
+        assert!(Instant::now() < deadline, "move release did not settle");
+        std::thread::yield_now();
+    }
+    editor.read_with(&visual, |view, _| {
+        assert_ne!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            original.as_ref()
+        );
+        assert!(view.expected_clip_preview.is_none());
+    });
+    drop(visual);
+    fixture.finish(cx);
+}
+
+#[gpui::test]
+fn held_group_audition_reuses_all_selected_members(cx: &mut TestAppContext) {
+    let mut project_editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let mut commands = Vec::new();
+    let mut edit = |command: Command| {
+        let result = project_editor.execute(command.clone()).unwrap();
+        commands.push(command);
+        result
+    };
+    let Created::Track(source) = edit(Command::AddTrack {
+        name: "source".into(),
+    }) else {
+        panic!("track")
+    };
+    edit(Command::AddTrack {
+        name: "target".into(),
+    });
+    let mut clips = Vec::new();
+    for beat in [1, 4] {
+        let Created::Clip(clip) = edit(Command::PlaceMidiClip {
+            track: source,
+            start: BeatTime::from_quarters(beat).unwrap(),
+            length: BeatTime::ONE,
+        }) else {
+            panic!("clip")
+        };
+        clips.push(clip);
+    }
+    let mut fixture = super::worker_ui_fixture::open_with_audition_readiness(cx, commands, true);
+    let editor = fixture.editor.clone();
+    editor.update(cx, |view, _| {
+        view.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(hex_engine::PlaybackCommand::Play)
+            .unwrap();
+    });
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    super::drag::group_drag_ui_test::click(&mut visual, clips[0], false);
+    super::drag::group_drag_ui_test::click(&mut visual, clips[1], true);
+    let selector = Box::leak(format!("clip-drag-surface-{}", clips[0].value()).into_boxed_str());
+    let source_bounds = visual.debug_bounds(selector).unwrap();
+    let down = point(
+        source_bounds.center().x,
+        source_bounds.top() + source_bounds.size.height / 4.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        point(
+            down.x + px(90.0),
+            source_bounds.origin.y + px(22.0) + px(44.0),
+        ),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        view.sync_held_clip_move_audition();
+        let previous = view
+            .clip_move_audition
+            .as_ref()
+            .unwrap()
+            .target
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(previous.clips.as_ref(), clips.as_slice());
+        assert_eq!(previous.anchor, clips[0]);
+        let drag = view.active_clip_drag.as_ref().unwrap().clone();
+        drag.copy_modifier.set(true);
+        view.sync_held_clip_move_audition();
+        let next = view
+            .clip_move_audition
+            .as_ref()
+            .unwrap()
+            .target
+            .as_ref()
+            .unwrap();
+        assert!(Arc::ptr_eq(&previous.clips, &next.clips));
+        assert!(next.sequence > previous.sequence);
+        assert_eq!(next.mode, hex_session::service::ArrangementMoveMode::Copy);
+        assert!(view.retire_active_clip_drag());
+        assert!(view.expected_clip_preview.is_none());
+    });
+    drop(visual);
+    fixture.finish(cx);
+}
