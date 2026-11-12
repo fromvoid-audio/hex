@@ -972,6 +972,42 @@ fn lane_line_press_adds_a_point_and_drags_it_without_a_time_selection(cx: &mut T
     // Unsnapped (Cmd) so the dragged point lands exactly under the pointer.
     let from = lane_value_point(&mut visual, device, target, 0.6, points[0].value.get());
     let to = lane_point(&mut visual, device, target, [0.6, 0.2]);
+    let selector = Box::leak(
+        format!(
+            "automation-plot-{}-{}-false",
+            device.value(),
+            TargetKey(target)
+        )
+        .into_boxed_str(),
+    );
+    let scale = visual.update(|window, _| window.scale_factor());
+    let preview_dots = |visual: &mut VisualTestContext| {
+        visual
+            .rendered_filled_quads(selector)
+            .into_iter()
+            .filter(|(bounds, _)| {
+                (f64::from(bounds.size.width) - 5.0 * f64::from(scale)).abs() < 0.01
+                    && (f64::from(bounds.size.height) - 5.0 * f64::from(scale)).abs() < 0.01
+            })
+            .count()
+    };
+    visual.simulate_mouse_move(to, None, CMD);
+    visual.run_until_parked();
+    assert_eq!(preview_dots(&mut visual), 0);
+    visual.simulate_mouse_move(from, None, CMD);
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    assert_eq!(
+        preview_dots(&mut visual),
+        1,
+        "hovering the curve paints the insertion node"
+    );
+    visual.simulate_mouse_move(to, None, CMD);
+    visual.run_until_parked();
+    assert_eq!(preview_dots(&mut visual), 0);
     let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
     let assert_draft_only = |visual: &VisualTestContext| {
         editor.read_with(visual, |view, _| {

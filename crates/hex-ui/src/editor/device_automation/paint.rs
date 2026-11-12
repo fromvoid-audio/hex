@@ -456,12 +456,12 @@ fn plot(
                             && let Some(position) = xy(preview.beat, preview.value.get())
                             && bounds.contains(&position)
                         {
-                            let mut dot = PathBuilder::stroke(px(4.0));
-                            dot.move_to(point(position.x - px(0.5), position.y));
-                            dot.line_to(point(position.x + px(0.5), position.y));
-                            if let Ok(dot) = dot.build() {
-                                window.paint_path(dot, color);
-                            }
+                            let radius = px(2.5);
+                            let dot = Bounds::new(
+                                point(position.x - radius, position.y - radius),
+                                size(radius * 2.0, radius * 2.0),
+                            );
+                            window.paint_quad(gpui::fill(dot, color).corner_radii(radius));
                         }
                         if (marquee.is_some()
                             || view
