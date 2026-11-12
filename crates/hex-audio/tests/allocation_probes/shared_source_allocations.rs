@@ -145,7 +145,6 @@ fn shared_analytic_receiver_handoff_pause_and_live_off_allocate_and_free_nothing
 -> Result<(), Box<dyn Error>> {
     shared_source_callback(true)
 }
-
 #[test]
 fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
