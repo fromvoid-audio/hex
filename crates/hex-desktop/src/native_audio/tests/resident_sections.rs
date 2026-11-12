@@ -514,11 +514,17 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
     let media = std::collections::BTreeMap::from([(asset, audio)]);
     let (first, intro) = add(&mut h, imported.state.revision, "intro", 0, 2);
     (applied, _) = h.applied(applied);
-    let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    let (_, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
     (applied, _) = h.applied(applied);
-    // Reproduce the user's "section launch applied" predecessor, whose loop
-    // exists only in the actual runtime, never in the saved project.
+    // An enabled section launch must match the canonical project loop.
     let loop_region = hex_project::LoopRegion::new(0, 48_000, true).unwrap();
+    let mut event = h.run(Request::Edit(Command::SetLoopRegion {
+        start: loop_region.start(),
+        end: loop_region.end(),
+        enabled: true,
+    }));
+    assert!(event.error.is_none(), "{:?}", event.error);
+    (applied, _) = h.applied(applied);
     let mut intent = h.seek_intent(1, event.state.revision, None, None);
     intent.destination_frame = 0;
     intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -529,7 +535,7 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
     assert!(h.next().error.is_none());
     assert!(h.seek_result().result.is_ok());
     (applied, _) = h.applied(applied);
-    assert!(event.state.project.loop_region().is_none());
+    assert_eq!(event.state.project.loop_region(), Some(loop_region));
     assert!(h.render().iter().all(|f| f[0] != 0.0));
     for command in [
         Command::ReorderSectionAfter {
@@ -682,9 +688,10 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
         status.position.load(Acquire) < loop_region.end(),
         "live section edits must keep the launched loop"
     );
-    assert!(
-        event.state.project.loop_region().is_none(),
-        "the launched loop stays transient"
+    assert_eq!(
+        event.state.project.loop_region(),
+        Some(loop_region),
+        "the canonical launched loop stays intact"
     );
 }
 
@@ -802,6 +809,14 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
             source_period[((start + index as u64) % loop_frames % 64) as usize]
         })
     };
+    // A looped section launch now follows the same canonical loop edit as
+    // the L-held UI gesture; wait for its publication before launching.
+    event = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: loop_frames,
+        enabled: true,
+    }));
+    (applied, _) = h.applied(applied);
     let mut intent = h.seek_intent(2, event.state.revision, None, None);
     intent.destination_frame = 0;
     intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -1103,7 +1118,14 @@ fn empty_section_structural_history_retains_the_launched_loop_while_playing() {
     let (mut applied, _) = h.applied(0);
     let (first, intro) = add(&mut h, initial.state.revision, "intro", 0, 2);
     (applied, _) = h.applied(applied);
-    let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    let (_, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    (applied, _) = h.applied(applied);
+    let mut event = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 48_000,
+        enabled: true,
+    }));
+    assert!(event.error.is_none(), "{:?}", event.error);
     (applied, _) = h.applied(applied);
     let mut intent = h.seek_intent(1, event.state.revision, None, None);
     intent.destination_frame = 0;
@@ -1163,9 +1185,16 @@ fn metadata_loop_fixture() -> MetadataLoop {
     (applied, _) = h.applied(applied);
     let (first, intro) = add(&mut h, track.state.revision, "intro", 0, 2);
     (applied, _) = h.applied(applied);
-    let (event, _) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    add(&mut h, first.state.revision, "chorus", 4, 7);
     (applied, _) = h.applied(applied);
     let region = hex_project::LoopRegion::new(0, 48_000, true).unwrap();
+    let event = h.run(Request::Edit(Command::SetLoopRegion {
+        start: region.start(),
+        end: region.end(),
+        enabled: true,
+    }));
+    assert!(event.error.is_none(), "{:?}", event.error);
+    (applied, _) = h.applied(applied);
     let mut intent = h.seek_intent(1, event.state.revision, None, None);
     intent.destination_frame = 0;
     intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -1251,7 +1280,7 @@ fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
             (applied, _) = h.applied(applied);
             assert_eq!(&event.state.project.snapshot(), expected);
             assert_loop_wraps(&h, region);
-            assert!(event.state.project.loop_region().is_none());
+            assert_eq!(event.state.project.loop_region(), Some(region));
         }
     }
     h.audio
@@ -1444,7 +1473,7 @@ fn submit_pending_launch(h: &mut ResidentHarness, request_id: u64, revision: u64
     let mut intent = h.seek_intent(request_id, revision, None, None);
     intent.destination_frame = 0;
     intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
-        region: hex_project::LoopRegion::new(0, 24_000, true).unwrap(),
+        region: hex_project::LoopRegion::new(0, 48_000, true).unwrap(),
         quantization: hex_engine::LaunchQuantization::Immediate,
     });
     h.service.submit_resident_arrangement_seek(intent).unwrap();
@@ -1521,10 +1550,10 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
         event,
         intro,
         mut applied,
+        region,
         ..
     } = metadata_loop_fixture();
     let before = event.state.project.snapshot();
-    let region = hex_project::LoopRegion::new(0, 24_000, true).unwrap();
     let mut intent = h.seek_intent(2, event.state.revision, None, None);
     intent.destination_frame = 0;
     intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -1564,11 +1593,10 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
     assert_loop_wraps(&h, region);
 
     let mut intent = h.seek_intent(3, renamed.state.revision, None, None);
-    intent.destination_frame = 0;
-    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
-        region: hex_project::LoopRegion::new(0, 20_000, true).unwrap(),
-        quantization: hex_engine::LaunchQuantization::Immediate,
-    });
+    // A distinct ordinary seek can be cancelled while the canonical section
+    // loop remains enabled; a different enabled section loop is no longer a
+    // valid launch unless the project loop changes first.
+    intent.destination_frame = 20_000;
     h.service.submit_resident_arrangement_seek(intent).unwrap();
     assert!(h.next().error.is_none());
     let hex_session::service::ResidentPublicationAcceptance::Submitted {
@@ -1623,7 +1651,7 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
             .position
             .load(Acquire),
         (stopped_position + 400 * 64) % region.end(),
-        "the cancelled20k loop must not replace the actual24k loop"
+        "the cancelled seek must not replace the actual section loop"
     );
 }
 
@@ -1770,7 +1798,7 @@ fn stopped_section_edits_reset_device_tails_at_a_late_cursor_without_replay() {
 #[test]
 fn section_outcomes_report_worker_phases() {
     use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let outcomes = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&outcomes);
@@ -1827,7 +1855,7 @@ fn section_outcomes_report_worker_phases() {
 #[test]
 fn marker_only_edits_and_history_republish_without_preparation() {
     use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let outcomes = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&outcomes);
