@@ -25,9 +25,21 @@ fn playback_value(
 ) -> Option<ParameterValue> {
     let status = view.audio_status()?;
     let source = view.audible_playback.as_ref()?;
+    let applied = status.applied_revision.load(Acquire);
+    // The callback can install a drag preview before its view metadata arrives,
+    // or while the pointer has already moved on to the next sequence. Keep
+    // reading the last acknowledged automation at the live playhead until the
+    // editor observes a successor. Held parameter values still win above.
     if !status.playing.load(Acquire)
         || source.project_generation != view.project_generation
-        || source.audio_revision != status.applied_revision.load(Acquire)
+        || source.audio_revision > applied
+        || status.device_fault.load(Acquire)
+        || status.render_fault.load(Acquire)
+        || status.shutdown_complete.load(Acquire)
+        || (source.audio_revision < applied
+            && status
+                .recording_source()
+                .is_some_and(|active| active.context.project_generation != view.project_generation))
     {
         return None;
     }

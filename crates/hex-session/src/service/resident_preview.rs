@@ -17,6 +17,14 @@ pub(crate) struct Preview {
     pub(super) identity: Identity,
 }
 impl Preview {
+    /// A newer canonical preparation can supersede an overlay before rebase.
+    pub(super) fn follows(&self, canonical: &resident_audio::Snapshot) -> bool {
+        let overlay = self.snapshot.prepared_context;
+        let canonical = canonical.prepared_context;
+        overlay.project_generation == canonical.project_generation
+            && overlay.editor_revision >= canonical.editor_revision
+    }
+
     pub(super) fn device_identity(&self) -> Option<DevicePreviewIdentity> {
         match &self.identity {
             Identity::Device(id) => Some(*id),
@@ -194,17 +202,24 @@ pub(super) fn restore(
     let snapshot = current
         .as_mut()
         .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
-    let selected = snapshot.inputs.clone();
     let admission = with_preview(admission, preview.as_ref());
-    session.publish_resident_runtime_inputs(
-        snapshot,
-        sink,
-        admission,
-        metadata(context, None, &snapshot.prepared),
-        ResidentPublicationPolicy::InheritRuntime,
-        selected,
-        None,
-    )?;
+    if admission.preview.is_some_and(|overlay| {
+        overlay.follows(snapshot) && overlay.snapshot.prepared.has_arrangement_foreign_programs()
+    }) {
+        *snapshot = session
+            .restore_resident_preview_with_foreign_programs(snapshot, sink, admission, context)?;
+    } else {
+        let selected = snapshot.inputs.clone();
+        session.publish_resident_runtime_inputs(
+            snapshot,
+            sink,
+            admission,
+            metadata(context, None, &snapshot.prepared),
+            ResidentPublicationPolicy::InheritRuntime,
+            selected,
+            None,
+        )?;
+    }
     let prepared = Arc::clone(&snapshot.prepared);
     *preview = None;
     Ok(Some((Arc::new(session.project().clone()), prepared)))

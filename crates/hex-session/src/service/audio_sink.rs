@@ -222,9 +222,9 @@ impl<'a> ResidentEffectPreparation<'a> {
     }
 
     /// Whether the authored program can stay on its original native worker.
-    /// A same-bounds effect loop disable uses the old wrap budget for origins
-    /// already in delay compensation. Instrument loop edits use their own
-    /// transport and gate continuity rules.
+    /// Effect loop activation and deactivation use the prepared origin budget
+    /// for delayed audio and partial worker quanta. Instruments also need to
+    /// preserve their transport and MIDI gate continuity.
     pub fn same_authored_plugin_program(
         &self,
         previous: &Self,
@@ -269,12 +269,11 @@ impl<'a> ResidentEffectPreparation<'a> {
                     )
                 })
             } else {
-                previous_loop.zip(next_loop).is_some_and(|(before, after)| {
-                    before.enabled()
-                        && !after.enabled()
-                        && before.start() == after.start()
-                        && before.end() == after.end()
-                })
+                hex_engine::foreign_automation::QuantumProfile::keeps_effect_epoch(
+                    quantum_frames,
+                    previous_loop,
+                    next_loop,
+                )
             }
         };
         self.project.tempo_map() == previous.project.tempo_map()
@@ -921,6 +920,11 @@ pub trait WorkerAudioSink: Send {
     /// A consumer uses its existing reserved builder; this grants no source,
     /// output or callback owner. Offline/default sinks retain model editing.
     fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
+    /// Accept source-bound clip intent on control. This is not graph admission
+    /// or callback acknowledgement; false retains no worker-side delivery claim.
+    fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -1993,7 +1997,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_a_loop_keeps_the_authored_effect_worker() {
+    fn toggling_a_compatible_loop_keeps_the_authored_effect_worker() {
         use hex_project::{
             AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
             DeviceAutomationTarget, Editor,
@@ -2041,26 +2045,33 @@ mod tests {
         let before = editor.project().clone();
 
         editor.execute(Command::ToggleLoopRegion).unwrap();
-        let keeps_worker = |project: &Project| {
-            prepare(project).same_authored_plugin_program(
-                &prepare(&before),
-                device.value(),
-                Some(256),
-            )
+        let keeps_worker = |old: &Project, new: &Project| {
+            prepare(new).same_authored_plugin_program(&prepare(old), device.value(), Some(256))
         };
-        assert!(keeps_worker(editor.project()));
+        let disabled = editor.project().clone();
+        assert!(keeps_worker(&before, &disabled));
+        assert!(keeps_worker(&disabled, &before));
+
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(keeps_worker(&disabled, editor.project()));
 
         editor.execute(automation(0.75)).unwrap();
-        assert!(!keeps_worker(editor.project()));
+        assert!(!keeps_worker(&disabled, editor.project()));
         assert!(editor.undo());
         editor
             .execute(Command::SetLoopRegion {
-                start: 2048,
-                end: 4096,
-                enabled: false,
+                start: 0,
+                end: 1025,
+                enabled: true,
             })
             .unwrap();
-        assert!(!keeps_worker(editor.project()));
+        assert!(!keeps_worker(&disabled, editor.project()));
     }
 
     #[test]

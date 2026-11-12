@@ -539,6 +539,7 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     device_panel::bind_picker_keys(cx);
+    device_panel::bind_source_picker_keys(cx);
     device_panel::bind_keyboard_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
