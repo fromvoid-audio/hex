@@ -407,10 +407,11 @@ pub enum ArrangementEditViewKind {
     LocatorAdd(hex_project::LocatorId),
 }
 
-/// The committed Arrangement edit, available before checkpoint
-/// I/O. Its bounded delivery is best effort. Only the ordinary terminal
-/// can acknowledge the edit, install authoring state or advance repeats.
-/// A missed observation does not keep an old project's media alive.
+/// A committed Arrangement edit, available before checkpoint I/O. Delivery is
+/// bounded and best effort. Only the ordinary terminal acknowledges completion
+/// and recovery or installs canonical authoring state. Consumers may act on a
+/// matched view while retaining terminal custody. A missed observation does not
+/// keep an old project's media alive.
 pub struct ArrangementEditViewObservation {
     pub project_generation: u64,
     /// First predecessor in a contiguous run of coalesced paste revisions.
