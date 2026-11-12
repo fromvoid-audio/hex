@@ -618,6 +618,7 @@ impl Render for ClipTooltip {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+    use hex_widgets::waveform_plot;
 
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
