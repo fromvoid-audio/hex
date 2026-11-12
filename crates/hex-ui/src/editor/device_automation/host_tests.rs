@@ -2272,7 +2272,8 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
 #[gpui::test]
 fn same_grid_line_keeps_both_points_and_either_can_move_again(cx: &mut TestAppContext) {
     let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
-    let target = DeviceAutomationTarget::Parameter(ParameterId::from_static(1));
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
     let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
     let points = [(1, 0.8), (3, 0.2)].map(|(quarters, value)| AutomationPoint {
         beat: beat(quarters),

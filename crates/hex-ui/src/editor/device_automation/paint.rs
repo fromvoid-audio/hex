@@ -126,7 +126,6 @@ pub(in crate::editor) fn rows(
         );
     for (index, entry) in entries {
         let target = entry.target;
-        let points = view.automation_view.devices.points(state, target);
         let live = view.live_device_automation_base(&entry);
         // Readout: the held point, else a single selected point, else the base.
         let lanes = &view.automation_view.devices;
@@ -140,11 +139,17 @@ pub(in crate::editor) fn rows(
                     .selected
                     .as_ref()
                     .filter(|selected| selected.target == target)
-                    .filter(|selected| selected.keys.len() == 1)
                     .and_then(|selected| {
-                        (0..points.len())
-                            .find(|&index| selected.contains(target, PointKey::at(points, index)))
-                            .map(|index| points[index])
+                        let [key] = selected.keys.as_slice() else {
+                            return None;
+                        };
+                        let points = lanes.points_ref(&state.project, target);
+                        let index = points.partition_point(|point| point.beat < key.beat)
+                            + usize::from(key.second);
+                        points
+                            .get(index)
+                            .copied()
+                            .filter(|point| point.beat == key.beat)
                     })
             })
             .map_or(live, |point| point.value.get());
