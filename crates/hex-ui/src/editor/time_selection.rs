@@ -764,8 +764,8 @@ impl EditorView {
     }
 
     /// Duplicate the bounded Arrangement rectangle through the existing atomic
-    /// copy edit. Each repeat starts from the last acknowledged destination
-    /// and receives its own undo step.
+    /// copy edit. Each repeat starts from a committed destination and receives
+    /// its own undo step.
     pub(super) fn duplicate_time_selection(&mut self, window: &Window) -> bool {
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
