@@ -1368,25 +1368,27 @@ impl GestureMachine {
         self.last_key = None;
     }
 
-    /// Reconcile a refused terminal with the resident worker's publication
-    /// record. Only an accepted overlay can keep a mixer gain gesture alive.
-    pub(crate) fn retire_unpublished_mixer_terminal(&mut self, ack: &mut GestureAck) {
+    /// Retire a refused native terminal when the resident worker has no
+    /// matching published overlay. Plugin previews use their own custody.
+    pub(crate) fn retire_unpublished_native_terminal(&mut self, ack: &mut GestureAck) {
         if ack.preview_retained
-            && self
-                .snapshot()
-                .is_some_and(|active| active.key == ack.key && active.target.is_mixer_gain())
+            && self.active.as_ref().is_some_and(|active| {
+                active.snapshot.key == ack.key && !matches!(active.kind, ActiveKind::Plugin { .. })
+            })
         {
             self.active = None;
             ack.preview_retained = false;
         }
     }
 
-    /// An accepted output restart relinquishes its mixer preview. Restore
-    /// from the authored values on the next output and preserve key ordering.
-    pub(crate) fn retire_mixer_gain_on_restart(&mut self) -> Option<GestureAck> {
+    /// An accepted output restart relinquishes native device previews.
+    /// Restore authored values on the next output and preserve key ordering.
+    pub(crate) fn retire_native_on_restart(&mut self) -> Option<GestureAck> {
         let active = self
-            .snapshot()
-            .filter(|active| active.target.is_mixer_gain())?;
+            .active
+            .as_ref()
+            .filter(|active| !matches!(active.kind, ActiveKind::Plugin { .. }))?
+            .snapshot;
         self.active = None;
         Some(GestureAck {
             key: active.key,
@@ -1395,7 +1397,7 @@ impl GestureMachine {
             accepted: false,
             preview_retained: false,
             source_lost: false,
-            reason: Some("volume edit canceled · audio is restarting".into()),
+            reason: Some("device edit canceled · audio is restarting".into()),
         })
     }
 
