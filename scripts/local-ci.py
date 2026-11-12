@@ -1041,6 +1041,49 @@ class FreshTargetReservation:
         except OSError as error:
             raise TargetCacheError(f"cannot revalidate fresh target or lock identity: {error}") from error
 
+    def _materialize_absent(self) -> None:
+        """Pin a private sibling and publish it at the reserved absent path."""
+        self._verify(self._target)
+        if not self._absent:
+            return
+        parent = self._handles[-1]
+        target = Path(self._target).name
+        staging = f".hex-cargo-target-{uuid.uuid4().hex}.tmp"
+        descriptor = None
+        try:
+            os.mkdir(staging, mode=0o700, dir_fd=parent)
+            descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=parent)
+            pinned = os.fstat(descriptor)
+            self._verify(self._target)
+            entry = os.stat(staging, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(entry.st_mode)
+                    or (entry.st_dev, entry.st_ino) != (pinned.st_dev, pinned.st_ino)
+                    or not self._empty(descriptor)):
+                raise TargetCacheError("fresh target staging directory changed")
+            ci_target_storage.rename_new_directory(parent, staging, target)
+            # Closing the reservation now closes this exact published inode.
+            self._handles.append(descriptor)
+            self._absent = False
+            os.fsync(parent)
+            self._verify(self._target)
+        except OSError as error:
+            raise TargetCacheError(f"cannot publish absent fresh target: {error}") from error
+        finally:
+            if descriptor is not None and descriptor not in self._handles:
+                try:
+                    entry = os.stat(staging, dir_fd=parent, follow_symlinks=False)
+                    pinned = os.fstat(descriptor)
+                    if (stat.S_ISDIR(entry.st_mode)
+                            and (entry.st_dev, entry.st_ino) == (pinned.st_dev, pinned.st_ino)):
+                        os.rmdir(staging, dir_fd=parent)
+                except OSError:
+                    # Retain an ambiguous staging entry. The final path is
+                    # never removed, even if publication returned an error.
+                    pass
+                finally:
+                    os.close(descriptor)
+
     def _publish_dev_owner(self, owner_name: str, payload: bytes) -> None:
         """Publish a verified owner while retaining the same cooperative lock."""
         directory = self._state_fd
@@ -1088,10 +1131,7 @@ class FreshTargetReservation:
                 if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
                         or stream.read(len(payload) + 1) != payload):
                     raise TargetCacheError("published dev owner marker identity or bytes changed")
-            self._require_state_entry(directory, owner_name, owner)
-            self._require_state_entry(directory, self._release_marker_name(owner_name), None)
-            self._require_state_entry(directory, pending_name, pending)
-            self._verify_lock_identity()
+            self._verify(self._target, pending=pending, dev_owner=owner)
             # Commit point. The verified owner is already durable. If removal
             # or its sync is interrupted, a crash may restore the sentinel or
             # leave a usable verified owner. The current caller still fails.
@@ -1642,8 +1682,6 @@ class LocalCiRunner:
                 raise TargetCacheError("fresh dev ownership requires reserved Cargo and Git identity")
             selected = self.cargo_identity["target_directory"]
             reservation._verify(selected)
-            if reservation._absent:
-                raise TargetCacheError("fresh dev publication requires an existing empty target")
             if (reservation._root != self.root or self.env.get("CARGO_TARGET_DIR") != selected
                     or self.cargo_identity["workspace_root"] != str(self.root)
                     or self.git_identity["workspace_root"] != str(self.root)):
@@ -1655,6 +1693,8 @@ class LocalCiRunner:
             self._check_target_filesystem(target)
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed before fresh dev publication: " + error)
+            if reservation._absent:
+                reservation._materialize_absent()
             record = self._target_owner_record(self.git_identity)
             pinned = os.fstat(reservation._handles[-1])
             if record["target_identity"] != {"device": pinned.st_dev, "inode": pinned.st_ino}:
