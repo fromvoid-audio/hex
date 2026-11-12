@@ -132,6 +132,111 @@ fn select_sample(
 }
 
 #[gpui::test]
+fn project_sample_drag_places_resident_asset_on_arrangement(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1400.0), px(900.0)));
+    let track = select_sample(&editor, visual);
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    let asset = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .id()
+    });
+    let source = visual.debug_bounds("browser-project-samples").unwrap();
+    visual.simulate_click(source.center(), Modifiers::default());
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-project-sample-0")
+        .unwrap()
+        .center();
+    let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let lane = visual.debug_bounds(selector).unwrap();
+    let target = gpui::point(
+        lane.origin.x + lane.size.width * 0.7,
+        lane.origin.y + lane.size.height / 2.0,
+    );
+    std::fs::remove_file(path).unwrap();
+    visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        gpui::point(source.x + px(12.0), source.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("project sample drag");
+        assert_eq!(drag.project_asset, Some(asset));
+        assert!(drag.preview.get().is_some());
+    });
+    let before = visual
+        .debug_bounds("clip-drop-preview")
+        .expect("held preview");
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = editor.update(&mut *visual, |view, cx| {
+        assert!(view.pending_sample_drop.is_some());
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = view.service.try_event() {
+                if event.request_complete {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    cx.notify();
+                    break event;
+                }
+                view.receive(event);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "project sample terminal"
+            );
+            std::thread::yield_now();
+        }
+    });
+    for _ in 0..2 {
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("clip-drop-preview"), Some(before));
+    }
+    editor.update(&mut *visual, |view, cx| {
+        view.receive(terminal);
+        assert!(view.pending_sample_drop.is_none());
+        cx.notify();
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.assets().count(), 1);
+        let clips = project.track(track).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().all(|clip| clip.asset() == asset));
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips()
+                .len(),
+            1
+        )
+    });
+}
+
+#[gpui::test]
 fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContext) {
     let (handle, editor, _directory, path) = fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
@@ -154,8 +259,11 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
             project_generation: generation,
             revision,
             asset,
-            track,
-            start: 100,
+            destination: hex_session::import_batch::AudioBatchDestination::Track {
+                track,
+                start: 100,
+            },
+            new_track_gain: None,
             warp: hex_project::AudioImportWarp::Off,
             audition_timing: None,
         });

@@ -198,6 +198,9 @@ impl EditorView {
         track: Option<TrackId>,
         cx: &App,
     ) -> Result<&hex_project::Track, &'static str> {
+        if drag.project_asset.is_some() {
+            return Err("project sample cannot be loaded into sampler yet");
+        }
         if !self.browser_sampler_drag_current(drag) {
             return Err("sample drop canceled · project or browser changed");
         }

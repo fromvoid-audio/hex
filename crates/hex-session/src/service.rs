@@ -560,16 +560,16 @@ pub enum DeviceClipboardAction {
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
-    /// Place an exact current-project asset using the Arrangement import law.
+    /// Place an exact current-project asset using the captured import destination.
     /// Generation and revision must still match; offline, device-owned and
-    /// nonresident media are refused. Warp and optional browser audition timing
-    /// are captured by the caller, and successful placement is one undo step.
+    /// nonresident media are refused. Warp, new-track gain and optional browser
+    /// audition timing are captured by the caller. Placement is one undo step.
     InsertProjectSample {
         project_generation: u64,
         revision: u64,
         asset: hex_project::AssetId,
-        track: hex_project::TrackId,
-        start: u64,
+        destination: crate::import_batch::AudioBatchDestination,
+        new_track_gain: Option<f32>,
         warp: hex_project::AudioImportWarp,
         audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
     },
@@ -5878,8 +5878,8 @@ fn run_worker(
                     project_generation: _,
                     revision: _,
                     asset,
-                    track,
-                    start,
+                    destination,
+                    new_track_gain,
                     warp,
                     audition_timing,
                 } => {
@@ -5916,8 +5916,8 @@ fn run_worker(
                         session.place_existing_asset_revision_using(
                             crate::import_batch::ProjectSampleImport {
                                 asset,
-                                track,
-                                start,
+                                destination,
+                                new_track_gain,
                                 warp,
                             },
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
@@ -5932,14 +5932,17 @@ fn run_worker(
                                     sink,
                                     admission,
                                     resident_snapshot.as_ref(),
-                                    audition_timing.map_or(
-                                        resident_audio::ImportPlayback::Normal,
-                                        |timing| resident_audio::ImportPlayback::Browser {
+                                    match (destination, audition_timing) {
+                                        (
+                                            AudioBatchDestination::Track { track, start },
+                                            Some(timing),
+                                        ) => resident_audio::ImportPlayback::Browser {
                                             track,
                                             start,
                                             timing,
                                         },
-                                    ),
+                                        _ => resident_audio::ImportPlayback::Normal,
+                                    },
                                     admit,
                                 )?;
                                 let prepared = Arc::clone(&snapshot.prepared);
@@ -5952,8 +5955,8 @@ fn run_worker(
                             session.place_existing_asset_revision_using(
                                 crate::import_batch::ProjectSampleImport {
                                     asset,
-                                    track,
-                                    start,
+                                    destination,
+                                    new_track_gain,
                                     warp,
                                 },
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
@@ -13683,8 +13686,8 @@ mod service_tests {
             project_generation: generation,
             revision,
             asset,
-            track,
-            start: 256,
+            destination: crate::import_batch::AudioBatchDestination::Track { track, start: 256 },
+            new_track_gain: None,
             warp: hex_project::AudioImportWarp::Off,
             audition_timing: None,
         };
@@ -13707,7 +13710,60 @@ mod service_tests {
         let undone = next_event(&service);
         assert_eq!(undone.state.project.track(track).unwrap().clips().len(), 1);
         service.submit(Request::Redo).unwrap();
-        assert_eq!(next_event(&service).state.project, placed.state.project);
+        let redone = next_event(&service);
+        assert_eq!(redone.state.project, placed.state.project);
+        let insert = |revision, destination| Request::InsertProjectSample {
+            project_generation: 0,
+            revision,
+            asset,
+            destination,
+            new_track_gain: Some(0.5),
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: None,
+        };
+        service
+            .submit(insert(
+                redone.state.revision,
+                AudioBatchDestination::NewTracks {
+                    before_track: None,
+                    start: 128,
+                },
+            ))
+            .unwrap();
+        let new_track = next_event(&service);
+        assert!(new_track.error.is_none(), "{:?}", new_track.error);
+        assert_eq!(new_track.state.project.assets().count(), 1);
+        assert_eq!(new_track.state.project.tracks().len(), 2);
+        assert_eq!(new_track.state.project.tracks()[1].gain(), 0.5);
+        assert_eq!(
+            new_track.state.project.tracks()[1].clips()[0].asset(),
+            asset
+        );
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        assert_eq!(undone.state.project.tracks().len(), 1);
+        service
+            .submit(insert(
+                undone.state.revision,
+                AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::NewTrack {
+                    before_track: None,
+                    scene: hex_project::SessionSceneTarget::Insert { before: None },
+                }),
+            ))
+            .unwrap();
+        let console = next_event(&service);
+        assert!(console.error.is_none(), "{:?}", console.error);
+        assert_eq!(console.state.project.assets().count(), 1);
+        let created_track = console.state.project.tracks()[1].id();
+        assert_eq!(console.state.project.tracks()[1].gain(), 0.5);
+        let scene = console.state.project.scenes()[0].id();
+        assert!(
+            matches!(console.state.project.session_cell(created_track, scene),
+            Some(hex_project::SessionCellContent::Audio(audio)) if audio.asset() == asset)
+        );
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        assert_eq!(undone.state.project.tracks().len(), 1);
     }
 
     #[test]
