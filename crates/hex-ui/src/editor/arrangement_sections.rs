@@ -33,7 +33,7 @@ use gpui::{
     rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
-use hex_session::service::{Event, Request};
+use hex_session::service::{DuplicateViewObservation, Event, Request};
 use hex_widgets::{
     RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
@@ -179,8 +179,8 @@ struct Pending {
     revision: u64,
     command: Command,
     display: Display,
-    // Clip rows for structural edits, built once at submission and retired
-    // with the receipt in the same receive as the canonical installation.
+    // Projected clip rows at submission, superseded by an exact copy view
+    // when available. Retired with the receipt and canonical installation.
     layout: Option<Arc<ViewState>>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
@@ -508,6 +508,70 @@ impl EditorView {
             .or_else(|| self.arrangement_duplicate_view().cloned())
             .or_else(|| Some(Arc::clone(state)))
     }
+
+    /// Replace the projected rows and marker geometry with the exact committed
+    /// copy. The ordinary receipt continues to own input, selection and history.
+    pub(super) fn observe_section_copy_view(
+        &mut self,
+        observation: DuplicateViewObservation,
+        copy: SectionId,
+    ) -> bool {
+        let Some(current) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(pending) = self.sections.pending.as_mut() else {
+            return false;
+        };
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || pending.receipt.is_queued()
+            || pending.generation != self.project_generation
+            || observation.project_generation != pending.generation
+            || observation.previous_revision != pending.revision
+            || current.revision != pending.revision
+            || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
+                || copied_section_source(&pending.command).is_some())
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade().filter(|state| {
+            pending.revision.checked_add(1) == Some(state.revision)
+                && current.project.arrangement_section(copy).is_none()
+                && state.project.arrangement_section(copy).is_some()
+        }) else {
+            return false;
+        };
+        pending.display.markers = state
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|section| {
+                let mut marker = Marker::from(section);
+                // New markers keep their preview presentation and remain
+                // noninteractive until the terminal installs their IDs.
+                if section.id().value() >= current.project.next_identity() {
+                    marker.id = None;
+                }
+                marker
+            })
+            .collect();
+        pending.display.tempo = state.project.tempo_map().clone();
+        pending.layout = Some(state);
+        true
+    }
+
+    pub(super) fn committed_section_copy_view(&self) -> Option<&Arc<ViewState>> {
+        let pending = self.sections.pending.as_ref()?;
+        pending.layout.as_ref().filter(|layout| {
+            pending.generation == self.project_generation
+                && pending.revision.checked_add(1) == Some(layout.revision)
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == pending.revision)
+        })
+    }
+
     pub(super) fn section_install_pending(&self) -> bool {
         self.sections.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -6091,6 +6155,87 @@ pub(super) mod tests {
         }
         visual.run_until_parked();
     }
+    #[gpui::test]
+    fn section_copy_paints_committed_rows_before_the_terminal(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let source = editor.read_with(cx, |view, _| position(view, 2));
+        visual.simulate_click(source, Modifiers::default());
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-d");
+
+        let terminal = editor.read_with(cx, |view, _| next(&view.service));
+        let observed = editor.read_with(cx, |view, _| view.service.try_duplicate_view().unwrap());
+        let Some(Created::ArrangementSection(copy)) = terminal.created else {
+            panic!("section copy");
+        };
+        assert_eq!(observed.created, Created::ArrangementSection(copy));
+        let committed = observed.state.upgrade().unwrap();
+        let marker = committed.project.arrangement_section(copy).unwrap();
+        let midi = committed.project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.start() == marker.start())
+            .unwrap()
+            .id();
+        let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "the old focus cache has no copy"
+        );
+
+        editor.update(cx, |view, cx| {
+            assert!(view.arrangement_focus.projection.enabled);
+            assert_eq!(view.sections.selected, Some(ids[0]));
+            for (generation, revision) in [
+                (observed.project_generation + 1, observed.previous_revision),
+                (observed.project_generation, observed.previous_revision + 1),
+            ] {
+                assert!(!view.observe_duplicate_view(DuplicateViewObservation {
+                    project_generation: generation,
+                    previous_revision: revision,
+                    created: observed.created,
+                    state: Arc::downgrade(&committed),
+                }));
+            }
+            assert!(view.observe_duplicate_view(observed));
+            assert!(view.section_install_pending());
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_section(copy)
+                    .is_none()
+            );
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before_ack = visual
+            .debug_bounds(selector)
+            .expect("committed copy is visible");
+        let marker_bounds = visual.debug_bounds("arrangement-section-1").unwrap();
+        editor.update(cx, |view, cx| {
+            view.receive(terminal);
+            assert!(view.committed_section_copy_view().is_none());
+            assert!(!view.section_install_pending());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before_ack));
+        assert_eq!(
+            visual.debug_bounds("arrangement-section-1"),
+            Some(marker_bounds)
+        );
+    }
+
     #[gpui::test]
     fn section_keys_during_a_pending_edit_queue_one_follow_up_or_refuse_visibly(
         cx: &mut TestAppContext,

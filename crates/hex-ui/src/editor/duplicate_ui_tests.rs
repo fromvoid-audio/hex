@@ -53,6 +53,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert!(!v.observe_duplicate_view(DuplicateViewObservation {
             project_generation: observation.project_generation + 1,
             previous_revision: observation.previous_revision,
+            created: observation.created,
             state: Arc::downgrade(&observed),
         }));
         assert!(v.arrangement_duplicate_view().is_none());
@@ -79,6 +80,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
     };
     editor.update(&mut visual, |v, cx| {
         assert!(Arc::ptr_eq(&terminal.state, &observed));
+        let terminal_created = terminal.created.unwrap();
         v.receive(terminal);
         assert_eq!(v.selected_clip, Some(copied));
         assert!(!v.duplicate_intent.is_pending());
@@ -86,6 +88,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert!(!v.observe_duplicate_view(DuplicateViewObservation {
             project_generation: v.project_generation,
             previous_revision: observed.revision - 1,
+            created: terminal_created,
             state: Arc::downgrade(&observed),
         }));
         cx.notify();
