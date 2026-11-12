@@ -1344,6 +1344,14 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::BindUnassignedNativeSource {
+            project_generation,
+            revision,
+            track,
+            source,
+        } => {
+            describe!("bind_unassigned_native_source"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value()]; omitted="")
+        }
         Request::ReplaceDeviceModulation {
             project_generation,
             revision,

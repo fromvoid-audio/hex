@@ -566,6 +566,17 @@ pub enum Request {
         warp: hex_project::AudioImportWarp,
         audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
     },
+    /// Bind an unassigned track to an existing source only while the captured
+    /// project generation and revision are still current. This never replaces
+    /// an existing instrument; successful edits use normal publication/history.
+    /// Callers must also reject while they own an unsent parameter gesture;
+    /// this request does not finalize one on the caller's behalf.
+    BindUnassignedNativeSource {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+    },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
     /// Replace one device's bank against the displayed canonical revision.
@@ -3410,6 +3421,36 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::BindUnassignedNativeSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("source assignment canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before assigning a source".into())
+                } else if session.project().track(*track).is_none() {
+                    Err("source assignment canceled · track no longer exists".into())
+                } else if session
+                    .project()
+                    .track(*track)
+                    .is_some_and(|track| track.source_id().is_some())
+                {
+                    Err("source assignment canceled · track already has a source".into())
+                } else if session.project().native_source(*source).is_none() {
+                    Err("source assignment canceled · source no longer exists".into())
+                } else {
+                    Ok(Command::BindTrackSource {
+                        track: *track,
+                        source: Some(*source),
+                    })
+                },
+            ),
             Request::StartPluginEditorRecording { request_id, input } => {
                 let result = (|| {
                     let current = hex_engine::AudioSourceContext {
@@ -5314,6 +5355,9 @@ fn run_worker(
                 }
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
+                }
+                Request::BindUnassignedNativeSource { .. } => {
+                    error = Some("source assignment was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
                     error = Some(
@@ -10472,6 +10516,9 @@ mod track_reorder_tests;
 #[cfg(test)]
 #[path = "service/device_clipboard_tests.rs"]
 mod device_clipboard_tests;
+#[cfg(test)]
+#[path = "service/source_assignment_tests.rs"]
+mod source_assignment_tests;
 #[cfg(test)]
 #[path = "service/track_clipboard_tests.rs"]
 mod track_clipboard_tests;
