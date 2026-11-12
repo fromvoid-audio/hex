@@ -2736,6 +2736,58 @@ mod tests {
     }
 
     #[test]
+    fn shared_contributor_unmute_does_not_double_a_releasing_voice() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut muted = playback(&f);
+            muted.try_inherit_state_from(&mut old).unwrap();
+            muted.render(&mut [[0.0; 2]; 20]).unwrap();
+            assert!(f.editor.undo());
+            let mut unmuted = playback(&f);
+            unmuted.try_inherit_state_from(&mut muted).unwrap();
+            let mut output = [[0.0; 2]; 16];
+            unmuted.render(&mut output).unwrap();
+            for (index, frame) in output.iter().enumerate() {
+                for channel in 0..2 {
+                    let bound = PCM[(27 + index) % 4][channel].abs() * 0.5 + 0.000_002;
+                    assert!(
+                        frame[channel].abs() <= bound,
+                        "index={index}, frame={frame:?}, bound={bound}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
     fn shared_contributor_mute_and_solo_preserve_receiver_voice() {
         on_control(|| {
             for solo in [false, true] {
