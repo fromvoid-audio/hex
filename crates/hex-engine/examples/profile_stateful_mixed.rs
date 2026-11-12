@@ -7,6 +7,7 @@
 #[path = "support/operator_feedback_fixture.rs"]
 mod operator_fixture;
 
+use hex_devices::operator_state::OPERATOR_METADATA;
 use hex_devices::{compressor, gate, saturator, utility};
 use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
@@ -51,7 +52,13 @@ fn fixture_with_companion(
     devices: usize,
     profile: CompanionProfile,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
-    let source = operator_fixture::project_with_operators(tracks, 4, 0.24, 0.82, true)?;
+    let state = operator_fixture::state_with_operators(
+        OPERATOR_METADATA.default_state()?,
+        0.24,
+        0.82,
+        true,
+    )?;
+    let source = operator_fixture::project(tracks, 4, &state)?;
     let mut snapshot = source.project.snapshot();
     let asset = snapshot.next_id;
     snapshot.next_id += 1;
