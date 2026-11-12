@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support"]
+ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support", "hex-session/recovery-checkpoint-test-support"]
 # Enables source-local pure tests in separately selected unit targets.
 ui-unit-tier = []
 
