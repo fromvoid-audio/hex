@@ -1,8 +1,8 @@
-//! Exact channel-note messages from the existing byte decoder. This is an input
+//! Exact note and per-key expression messages from the existing byte decoder. This is an input
 //! contract, not a timestamp, scheduler, audio lease or recording authority.
 use crate::HeldNoteFault;
 
-/// Messages retain wire order, pitch, channel and the original MIDI velocity.
+/// Messages retain wire order, pitch, channel and seven-bit velocity or pressure.
 /// Zero-velocity NoteOn has NoteOff semantics; release velocity is preserved.
 /// AllNotesOff also represents MIDI reset and dropped burst input. InputLost
 /// (a held-note fault) requires terminal host
@@ -18,6 +18,12 @@ pub enum NoteEvent {
         channel: u8,
         pitch: u8,
         velocity: u8,
+    },
+    /// Polyphonic key pressure for one channel and pitch.
+    PolyPressure {
+        channel: u8,
+        pitch: u8,
+        value: u8,
     },
     AllNotesOff,
     InputLost(HeldNoteFault),
@@ -41,6 +47,11 @@ impl NoteEvent {
                 channel,
                 pitch,
                 velocity,
+            }),
+            0xa0 => Some(Self::PolyPressure {
+                channel,
+                pitch,
+                value: velocity,
             }),
             0xb0 if matches!(pitch, 120 | 123) => Some(Self::AllNotesOff),
             _ => None,
@@ -103,6 +114,69 @@ mod tests {
         };
         assert_eq!(snapshot.after(0).count(), 0);
         assert_eq!(snapshot.through(), 2);
+    }
+
+    #[test]
+    fn poly_pressure_keeps_wire_order_without_changing_held_notes_or_channel_pressure() {
+        let mut decoder = Decoder::default();
+        let held = HeldNoteInput::default();
+        let events = RefCell::new(Vec::new());
+        let controllers = RefCell::new(Vec::new());
+        let last = deliver_packets_with_notes(
+            &mut decoder,
+            2,
+            Controllers::default(),
+            [
+                &[0x92, 60, 101, 64, 90, 0xa2, 60][..],
+                &[0xf8, 127, 64, 0, 0xa1, 60, 100, 0xd2, 23, 0x82, 60, 11][..],
+            ],
+            &held,
+            &|snapshot| controllers.borrow_mut().push(snapshot),
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(last.pressure, 23);
+        assert_eq!(*controllers.borrow(), vec![last]);
+        assert_eq!(
+            *events.borrow(),
+            [
+                NoteEvent::On {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 101
+                },
+                NoteEvent::On {
+                    channel: 2,
+                    pitch: 64,
+                    velocity: 90
+                },
+                NoteEvent::PolyPressure {
+                    channel: 2,
+                    pitch: 60,
+                    value: 127
+                },
+                NoteEvent::PolyPressure {
+                    channel: 2,
+                    pitch: 64,
+                    value: 0
+                },
+                NoteEvent::Off {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 11
+                },
+            ]
+        );
+        let HeldNotesRead::Snapshot(snapshot) = held.read() else {
+            panic!("expected snapshot");
+        };
+        assert_eq!(snapshot.through(), 2);
+        assert_eq!(
+            snapshot
+                .after(0)
+                .map(|note| (note.pitch, note.velocity))
+                .collect::<Vec<_>>(),
+            [(64, 90)]
+        );
     }
 
     #[test]

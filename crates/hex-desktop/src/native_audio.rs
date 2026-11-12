@@ -265,6 +265,7 @@ impl NativeAudioSink {
             .and_then(|output| output.publication.control())
         {
             self.plugins.retire_parameter_delivery(control);
+            self.plugins.retire_editor_recording(control);
         }
         self.plugins.output_closed();
         // Publication/StreamOwner relinquish before any event can backpressure.
@@ -1076,6 +1077,47 @@ impl WorkerAudioSink for NativeAudioSink {
             .parameter_requires_restore(control, context, origin.device.value())
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        input: hex_session::service::PluginEditorRecordingInput,
+    ) -> Result<hex_session::service::PluginParameterObservation, String> {
+        let clock = self
+            .current_runtime_loop(input.context)?
+            .filter(|actual| self.resident.current_submission == Some(*actual))
+            .ok_or("vst3 editor recording requires ordinary resident playback")?;
+        let output = self.output.as_mut().ok_or("vst3 output is unavailable")?;
+        let control = output
+            .publication
+            .control()
+            .ok_or("vst3 output is unavailable")?;
+        self.plugins.prepare_editor_recording(
+            control,
+            input,
+            output.sample_rate,
+            clock,
+            self.request_cancellation.as_ref(),
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn start_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 output is unavailable")?;
+        self.plugins.start_editor_recording(control, key)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn cancel_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> bool {
+        self.plugins.cancel_editor_recording(key)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn take_plugin_parameter_observation(
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
@@ -1188,16 +1230,23 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins
             .finish_parameter_gesture(context, key, sequence, accepted);
     }
+    fn confirm_source_effect_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.confirm_resident_edit_publication(context, acceptance, "source edit")
+    }
     fn resident_publication_readiness(
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
         NativeAudioSink::resident_publication_readiness(self)
     }
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        input: hex_session::service::PluginStateSaveInput<'_>,
+        input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
-        self.capture_plugin_save(input)
+        self.capture_current_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.request_cancellation = Some(cancellation);
@@ -1211,18 +1260,35 @@ impl WorkerAudioSink for NativeAudioSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        if self.plugins.finish_reopen(context, accepted)
-            && accepted
-            && self
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        if !self.plugins.finish_reopen(context, result.is_ok())
+            || self
                 .document_rebind
                 .as_ref()
-                .is_none_or(|rebind| rebind.context != context || !rebind.restores_plugins)
+                .is_some_and(|rebind| rebind.context == context && rebind.restores_plugins)
         {
-            // The exact replacement graph was admitted with this unpublished
-            // owner still inventoried. Retire it on control only after success.
-            self.resident
-                .discard_obsolete_pending_after_restore(context);
+            return;
+        }
+        match result {
+            Ok(()) => {
+                // The exact replacement graph was admitted with this unpublished
+                // owner still inventoried. Retire it on control only after success.
+                self.resident
+                    .discard_obsolete_pending_after_restore(context);
+            }
+            Err(reason) => {
+                // The Session error alone has no output identity. Report this
+                // refusal on the fresh output so the editor can finish recovery.
+                self.observe(
+                    context,
+                    "vst3 restore refused",
+                    EditorPublicationState::Refused(reason.into()),
+                );
+            }
         }
     }
     fn prepare_stopped_playback_restore(
@@ -1340,8 +1406,14 @@ impl WorkerAudioSink for NativeAudioSink {
     fn prepare_offline_bounce(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
+        control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
-        self.plugins.prepare_offline_bounce(input)
+        let capacity = self
+            .policy
+            .as_ref()
+            .map_or(0, |policy| policy.plugins.capacity);
+        self.plugins
+            .prepare_offline_bounce(input, control, capacity)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         if !self.worker_owned_resident_graphs {
@@ -1419,6 +1491,15 @@ impl WorkerAudioSink for NativeAudioSink {
         match target {
             hex_session::service::DeviceCaptureTarget::Native(native)
                 if self.resident.capture_target != Some(native) =>
+            {
+                return Ok(None);
+            }
+            hex_session::service::DeviceCaptureTarget::Vst3Group(group)
+                if !self.plugins.matches_capture_binding(
+                    context,
+                    group.draft.device().value(),
+                    group.binding,
+                ) =>
             {
                 return Ok(None);
             }
@@ -1719,7 +1800,20 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        NativeAudioSink::begin_section_edit(self, context, allow_playing)
+        NativeAudioSink::begin_section_edit(self, context, allow_playing, false)
+    }
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<(), String> {
+        NativeAudioSink::begin_section_edit(self, context, true, true)
+    }
+    fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        NativeAudioSink::confirm_section_edit_recovery(self, context, acceptance)
     }
     fn section_edit_ready(
         &mut self,
@@ -1834,10 +1928,7 @@ impl WorkerAudioSink for NativeAudioSink {
                     self.plugins
                         .poll_reopen(&mut output, self.desired.as_deref());
                 }
-                self.plugins.poll(
-                    &mut output,
-                    self.desired.as_ref().map(|source| source.context()),
-                );
+                self.plugins.poll(&mut output, self.desired.as_deref());
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 if let Some(desired) = self.desired.as_deref() {
                     self.plugins.close_removed_editor(desired);
@@ -1853,6 +1944,9 @@ impl WorkerAudioSink for NativeAudioSink {
                             Some(EditorAudioEvent::NativeLatencyRestart { source });
                     }
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                self.plugins
+                    .poll_editor_recording(output.publication.control());
                 if self.pending_parameter_event.is_none() {
                     self.pending_parameter_event = self.plugins.take_parameter_touch();
                 }

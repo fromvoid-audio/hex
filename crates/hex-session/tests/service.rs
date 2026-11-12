@@ -293,7 +293,7 @@ fn worker_imports_audio_to_a_session_cell_as_a_one_shot_and_preserves_source_nam
     };
     assert_eq!(clip.name(), "CasePreservedAudio");
     assert_eq!((clip.source_start(), clip.source_end()), (0, 4));
-    assert_eq!(imported.state.waveforms[&clip.asset()].source_frames, 4);
+    assert_eq!(imported.state.waveforms[&clip.asset()].source_frames(), 4);
     let clip_id = clip.id();
     let asset_id = clip.asset();
 
@@ -467,7 +467,7 @@ fn worker_imports_audio_to_a_session_cell_as_a_one_shot_and_preserves_source_nam
         .expect("asset");
     assert_eq!(reopened_asset.path(), source.as_path());
     assert_eq!(
-        reopened.state.waveforms[&reopened_clip.asset()].source_frames,
+        reopened.state.waveforms[&reopened_clip.asset()].source_frames(),
         4
     );
     assert_eq!(reopened_clip.id(), clip_id);
@@ -1354,7 +1354,7 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert_eq!(metadata.source_sample_rate(), 48_000);
     assert_eq!(metadata.source_frames(), 480);
     assert_eq!(metadata.playback_frames(), 441);
-    assert_eq!(imported.state.waveforms[&asset_id].source_frames, 441);
+    assert_eq!(imported.state.waveforms[&asset_id].source_frames(), 441);
     let mut playback = imported.playback.expect("graph");
     playback.apply(PlaybackCommand::Play);
     let mut baseline = vec![[0.0; 2]; 441];

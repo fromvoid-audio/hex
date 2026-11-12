@@ -26,6 +26,8 @@ pub struct PluginParameterRow {
     pub automation_class: Option<[u8; 16]>,
     pub page_first: u16,
     pub metadata_revision: u64,
+    /// Same-source native gesture watermark for value presentation only.
+    pub editor_sequence: u64,
 }
 
 pub struct PluginParameterResult {
@@ -72,6 +74,56 @@ pub fn vst3_automation_class(state: &hex_lattice_contract::NativeDeviceState) ->
 mod tests {
     use super::*;
     use hex_plugin_state::{BinaryIdentity, ClassId, Identity, State, encode};
+
+    #[test]
+    fn query_and_continuation_are_observations_without_canonical_or_status_changes() {
+        use crate::service::{Request, Service, service_tests::next_event};
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        next_event(&service);
+        service
+            .submit(Request::Edit(hex_project::Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            }))
+            .unwrap();
+        let edited = next_event(&service);
+        let hex_project::Created::Device(device) = edited.created.unwrap() else {
+            panic!("device")
+        };
+        assert!(!edited.plugin_parameter_observation);
+        let query = PluginParameterQuery {
+            context: AudioSourceContext {
+                project_generation: 0,
+                editor_revision: edited.state.revision,
+            },
+            device,
+            output_identity: 1,
+            request_id: 1,
+            page_first: Some(0),
+        };
+        service
+            .submit(Request::QueryPluginParameters(query))
+            .unwrap();
+        let result = next_event(&service);
+        assert!(result.plugin_parameter_observation);
+        assert!(result.request_complete);
+        assert!(result.status.is_none() && result.error.is_none());
+        assert_eq!(result.state.revision, edited.state.revision);
+        assert_eq!(result.state.project, edited.state.project);
+        assert!(
+            result.plugin_parameters.unwrap().rows.is_err(),
+            "invalid plugin target stays a scoped read failure"
+        );
+        service.submit(Request::ContinuePluginParameters).unwrap();
+        let continuation = next_event(&service);
+        assert!(continuation.plugin_parameter_observation);
+        assert!(!continuation.request_complete);
+        assert!(continuation.status.is_none() && continuation.error.is_none());
+        assert_eq!(continuation.state.revision, edited.state.revision);
+    }
 
     #[test]
     fn cache_identity_tracks_class_and_binary_but_never_live_values() {

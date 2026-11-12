@@ -70,6 +70,10 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    WaveformDecibels {
+        generation: u64,
+        enabled: bool,
+    },
     InputQuantization {
         generation: u64,
         policy: hex_project::InputQuantization,
@@ -92,7 +96,9 @@ pub(super) enum EditorContextAction {
         before: Option<SceneId>,
     },
     UtilityMode(UtilityModeAction),
+    AddModulator(device_panel::AddModulatorAction),
     DeviceComparison(super::device_comparison::Intent),
+    DevicePreset(super::device_preset::Intent),
     RenameTrackName {
         generation: u64,
         revision: u64,
@@ -214,8 +220,9 @@ impl EditorView {
         };
         if let Some(tracks) = after_track.and_then(|id| self.track_membership(Some(id))) {
             use hex_session::service::TrackClipboardAction as Action;
+            let group_tracks = self.track_group_membership(after_track);
             if let Some(menu) = &mut self.context_menu {
-                menu.items.push(MenuItem {
+                menu.items.extend(group_tracks.map(|tracks| MenuItem {
                     label: "group tracks",
                     swatch: None,
                     checked: false,
@@ -223,11 +230,11 @@ impl EditorView {
                         generation,
                         revision,
                         command: Command::GroupTracks {
-                            tracks: tracks.clone(),
+                            tracks,
                             name: "group".into(),
                         },
                     },
-                });
+                }));
                 if let Some(track) = after_track.filter(|id| {
                     state
                         .project
@@ -493,7 +500,7 @@ impl EditorView {
                 ),
             ];
             if linked {
-                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push(("make unique · shift+i", ClipAliasOperation::MakeUnique));
                 entries.push((
                     "apply settings to aliases",
                     ClipAliasOperation::ApplySettings,
@@ -696,8 +703,23 @@ impl EditorView {
                     cx.notify();
                 }
             }
+            EditorContextAction::WaveformDecibels {
+                generation,
+                enabled,
+            } => {
+                if generation == self.project_generation {
+                    self.waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
+                    );
+                    cx.notify();
+                }
+            }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
+            }
+            EditorContextAction::AddModulator(action) => action.perform(self),
+            EditorContextAction::DevicePreset(target) => {
+                self.perform_device_preset_action(target, cx)
             }
             EditorContextAction::BounceTrack {
                 generation,
@@ -932,6 +954,10 @@ impl EditorView {
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
                 }
+                EditorContextAction::AddModulator(action) => !action.current(self),
+                EditorContextAction::DevicePreset(target) => {
+                    !super::device_preset::current(self, target)
+                }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
                 }
@@ -969,6 +995,7 @@ impl EditorView {
                     *generation != self.project_generation
                 }
                 EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::WaveformDecibels { generation, .. }
                 | EditorContextAction::LaunchQuantization { generation, .. }
                 | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
@@ -1299,6 +1326,7 @@ mod tests {
                     EditorContextAction::ClipFlavor { .. }
                         | EditorContextAction::ClipAlias(_)
                         | EditorContextAction::AdaptiveGrid { .. }
+                        | EditorContextAction::WaveformDecibels { .. }
                 )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
@@ -2093,7 +2121,7 @@ mod tests {
             for label in [
                 "duplicate · d",
                 "duplicate alias · cmd+d",
-                "make unique · i",
+                "make unique · shift+i",
                 "apply settings to aliases",
             ] {
                 assert!(menu.items.iter().any(|item| item.label == label));
@@ -2136,7 +2164,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .find(|item| item.label == "make unique · i")
+                .find(|item| item.label == "make unique · shift+i")
                 .unwrap()
                 .action
                 .clone()

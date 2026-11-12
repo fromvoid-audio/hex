@@ -74,6 +74,10 @@ pub(crate) fn fixture_view(
 
 pub(super) struct PendingPluginEffect {
     pub(super) status: String,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) destination: PluginEffectDestination,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) before: Option<hex_project::DeviceId>,
     control: Arc<PluginEffectControl>,
     trace: Option<crate::diagnostics::PluginLoad>,
 }
@@ -138,6 +142,14 @@ impl EditorView {
             (hex_plugin_catalog::PluginRole::Instrument, PluginEffectDestination::Track(track)) => {
                 (PluginEffectDestination::Instrument(track), None)
             }
+            (
+                hex_plugin_catalog::PluginRole::Instrument,
+                PluginEffectDestination::ReplaceInstrument { .. }
+                | PluginEffectDestination::NewTrack {
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    ..
+                },
+            ) => (destination, None),
             (hex_plugin_catalog::PluginRole::Instrument, _) => {
                 self.error = Some("select a track for the vst3 instrument".into());
                 return;
@@ -166,6 +178,8 @@ impl EditorView {
             },
             destination,
             before,
+            track_device_name: matches!(destination, PluginEffectDestination::NewTrack { .. })
+                .then(|| selection.class_name.clone()),
             control: Arc::clone(&control),
         };
         let trace = crate::diagnostics::PluginLoad::new(
@@ -185,6 +199,10 @@ impl EditorView {
                 control,
                 trace,
                 status,
+                #[cfg(all(test, feature = "ui-test-support"))]
+                destination,
+                #[cfg(all(test, feature = "ui-test-support"))]
+                before,
             });
             self.error = None;
         }

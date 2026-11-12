@@ -8,7 +8,10 @@
 //! retain their own ingress/capture acknowledgements, never another instrument.
 
 pub(crate) mod authored_gate;
+mod automation;
+pub(crate) mod frozen_parameters;
 mod live;
+pub(crate) mod output_trim;
 #[cfg(test)]
 mod steal_tests;
 mod volume;
@@ -237,6 +240,9 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    frozen_parameters: frozen_parameters::FrozenParameters,
+    modulation: Option<Box<hex_lattice::ModulationRuntime>>,
+    output_trim: Option<output_trim::OutputTrim>,
     pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
@@ -288,6 +294,9 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn is_concrete_current_sampler(&self) -> bool {
         self.resources.is_none()
             && self.expression.is_none()
+            && self.frozen_parameters.empty()
+            && self.modulation.is_none()
+            && self.output_trim.is_none()
             && self
                 .pair
                 .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
@@ -299,6 +308,9 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
+            frozen_parameters,
+            modulation,
+            output_trim,
             resources,
             expression_identity: _,
             expression,
@@ -311,12 +323,17 @@ impl MutableInstrumentTrackRuntime {
         if live.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
-        if expression.is_some() || resources.is_some() {
+        if expression.is_some()
+            || resources.is_some()
+            || modulation.is_some()
+            || output_trim.is_some()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         let (first, second) = pair
             .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
             .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        frozen_parameters.visit_empty(ledger)?;
         ledger.vec(primary)?;
         ledger.vec(scratch)?;
         ledger.bytes(
@@ -353,7 +370,11 @@ impl MutableInstrumentTrackRuntime {
         let ledger_bytes = MAX_MUTABLE_OCCURRENCE_PROOFS
             .checked_mul(std::mem::size_of::<MutableOccurrence>())?
             .checked_mul(2)?;
-        pair_bytes.checked_add(ledger_bytes)
+        pair_bytes.checked_add(ledger_bytes)?.checked_add(
+            frozen_parameters::FrozenParameters::quote(
+                prepared.parameter_automation_descriptors().len(),
+            )?,
+        )
     }
 
     pub(crate) fn new(
@@ -362,6 +383,10 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let max_tail_frames =
             max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
+        frozen_parameters::FrozenParameters::quote(
+            prepared.parameter_automation_descriptors().len(),
+        )
+        .ok_or(MutableInstrumentRuntimeError::Budget)?;
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
@@ -378,6 +403,8 @@ impl MutableInstrumentTrackRuntime {
         if pair_bytes > pair.declared_pair_bytes() {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
+        let frozen_parameters =
+            frozen_parameters::FrozenParameters::new(prepared.parameter_automation_descriptors())?;
         let mut primary = Vec::new();
         primary
             .try_reserve_exact(MAX_MUTABLE_OCCURRENCE_PROOFS)
@@ -393,6 +420,9 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            frozen_parameters,
+            modulation: None,
+            output_trim: None,
             resources: None,
             expression_identity: None,
             expression: None,
@@ -420,8 +450,38 @@ impl MutableInstrumentTrackRuntime {
                 .is_ok()
     }
 
+    pub(crate) fn install_modulation(
+        &mut self,
+        declaration: &hex_lattice::PreparedModulationState,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        let quote = declaration
+            .quoted_runtime_heap_bytes()
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        let runtime = declaration
+            .prepare()
+            .map_err(|_| MutableInstrumentRuntimeError::Budget)?;
+        if runtime
+            .heap_storage_bytes()
+            .is_none_or(|actual| actual > quote)
+        {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        self.output_trim = declaration
+            .program()
+            .host_output_gain_base()
+            .map(output_trim::OutputTrim::new);
+        self.modulation = Some(Box::new(runtime));
+        Ok(())
+    }
+
     pub(crate) fn begin_block(&mut self) {
         self.pair.begin_block();
+        if let Some(trim) = &mut self.output_trim {
+            trim.scratch = trim.committed;
+        }
+        if let Some(modulation) = &mut self.modulation {
+            modulation.begin();
+        }
         self.scratch.clear();
         self.scratch.extend_from_slice(&self.primary);
         self.next_id_scratch = self.next_id;
@@ -533,6 +593,7 @@ impl MutableInstrumentTrackRuntime {
         self.pair
             .inherit_from(&previous.pair)
             .map_err(map_runtime_error)?;
+        self.inherit_modulation(previous);
         self.primary.clear();
         self.primary.extend_from_slice(&previous.primary);
         self.scratch.clear();
@@ -591,6 +652,7 @@ impl MutableInstrumentTrackRuntime {
         self.pair
             .retarget_from(&previous.pair, proof)
             .map_err(map_runtime_error)?;
+        self.inherit_modulation(previous);
         self.primary.clear();
         self.primary.extend_from_slice(&previous.primary);
         self.scratch.clear();
@@ -612,6 +674,19 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
+    fn inherit_modulation(&mut self, previous: &Self) {
+        if self.expression_identity.is_some()
+            && self.expression_identity == previous.expression_identity
+            && let (Some(current), Some(old)) = (&mut self.modulation, &previous.modulation)
+        {
+            current.inherit_graph_committed(old);
+            if let (Some(trim), Some(old)) = (&mut self.output_trim, previous.output_trim) {
+                trim.committed = old.committed;
+                trim.scratch = old.committed;
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn ledger_capacity_bytes(&self) -> Option<usize> {
         self.primary
@@ -625,6 +700,14 @@ impl MutableInstrumentTrackRuntime {
         self.pair.fixed_storage_pair_bytes()
     }
 
+    #[cfg(test)]
+    pub(crate) fn proof_auxiliary_storage_bytes(&self) -> Option<(usize, usize)> {
+        Some((
+            self.frozen_parameters.storage_bytes()?,
+            self.modulation_bytes()?,
+        ))
+    }
+
     pub(crate) fn speculative_is_quiescent(&self) -> bool {
         // Logical live origins still owe scoped terminal processing even when
         // a one-shot provider has already become acoustically quiet.
@@ -634,7 +717,15 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn declared_pair_bytes(&self) -> usize {
-        self.pair.declared_pair_bytes()
+        self.pair
+            .declared_pair_bytes()
+            .saturating_add(self.modulation_bytes().unwrap_or(usize::MAX))
+    }
+
+    fn modulation_bytes(&self) -> Option<usize> {
+        self.modulation
+            .as_ref()
+            .map_or(Some(0), |runtime| runtime.storage_bytes())
     }
 
     /// Account this control-owned runtime and both reserved occurrence ledgers.
@@ -649,6 +740,8 @@ impl MutableInstrumentTrackRuntime {
                     .checked_mul(std::mem::size_of::<MutableOccurrence>())?,
             )?
             .checked_add(self.pair.fixed_storage_pair_bytes()?)?
+            .checked_add(self.frozen_parameters.storage_bytes()?)?
+            .checked_add(self.modulation_bytes()?)?
             .checked_add(
                 self.live
                     .as_ref()
@@ -803,6 +896,7 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -817,6 +911,7 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_segment_inner(
             Some(track),
@@ -829,6 +924,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             None,
+            automation,
         )
     }
 
@@ -845,6 +941,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         volume: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_segment_inner(
             None,
@@ -857,6 +954,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             volume,
+            automation,
         )
     }
 
@@ -873,7 +971,9 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         volume: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        automation::validate_width(automation, frames.len())?;
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
         events.clear();
@@ -913,19 +1013,15 @@ impl MutableInstrumentTrackRuntime {
         )?;
 
         events.sort_unstable_by_key(|event| {
-            let (offset, is_on, occurrence_id) = match *event {
-                NativeInstrumentEvent::Expression { frame_offset, .. } => (frame_offset, false, 0),
-                NativeInstrumentEvent::NoteOff {
-                    frame_offset,
-                    occurrence_id,
-                } => (frame_offset, false, occurrence_id),
-                NativeInstrumentEvent::NoteOn {
-                    frame_offset,
-                    occurrence_id,
-                    ..
-                } => (frame_offset, true, occurrence_id),
+            let (rank, occurrence_id) = match *event {
+                NativeInstrumentEvent::Expression { .. } => (0, 0),
+                NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
+                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
+                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
+                    (3, occurrence_id.get())
+                }
             };
-            (offset, is_on, occurrence_id)
+            (event.frame_offset(), rank, occurrence_id)
         });
         let gains = volume::gains_for_segment(
             &self.pair,
@@ -943,17 +1039,75 @@ impl MutableInstrumentTrackRuntime {
             .resources
             .as_ref()
             .map_or(resources, |lease| lease.resources());
-        match gains {
-            Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+        if let Some(modulation) = &mut self.modulation {
+            let mut processed = Ok(());
+            modulation
+                .render_instrument_chunk(frames.len(), automation, clock, events, |values| {
+                    let mut render = |frames: &mut [hex_lattice::StereoFrame]| {
+                        self.pair.process_block_with_clock_and_automation(
+                            events,
+                            frames,
+                            clock,
+                            gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                            values,
+                            resources,
+                        )
+                    };
+                    if let Some(trim) = &mut self.output_trim {
+                        use crate::device_modulation::INSTRUMENT_MODULATION_CHUNK_FRAMES;
+                        use hex_lattice_contract::{DeviceContractError, HostGain};
+                        let mut output_gains = [HostGain::ZERO; INSTRUMENT_MODULATION_CHUNK_FRAMES];
+                        let output_gains = output_gains
+                            .get_mut(..frames.len())
+                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                        for (offset, gain) in output_gains.iter_mut().enumerate() {
+                            *gain = values.instrument_output_gain_at(offset)?;
+                        }
+                        processed = output_trim::render_contribution(
+                            frames,
+                            |offset| output_gains[offset].linear(),
+                            NativeInstrumentRuntimeError::InvalidParameterAutomation,
+                            render,
+                        );
+                        if processed.is_ok()
+                            && let Some(&last) = output_gains.last()
+                        {
+                            trim.scratch = last;
+                        }
+                    } else {
+                        processed = render(frames);
+                    }
+                    Ok(())
+                })
+                .map_err(|_| {
+                    map_runtime_error(NativeInstrumentRuntimeError::InvalidParameterAutomation)
+                })?;
+            if processed.is_err() {
+                modulation.rollback();
+            }
+            processed
+        } else if let Some(values) = automation {
+            self.pair.process_block_with_clock_and_automation(
                 events,
                 frames,
                 clock,
-                gains.as_slice(),
+                gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                values,
                 resources,
-            ),
-            None => self
-                .pair
-                .process_block_with_clock(events, frames, clock, resources),
+            )
+        } else {
+            match gains {
+                Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+                    events,
+                    frames,
+                    clock,
+                    gains.as_slice(),
+                    resources,
+                ),
+                None => self
+                    .pair
+                    .process_block_with_clock(events, frames, clock, resources),
+            }
         }
         .map_err(map_runtime_error)?;
         if let Some(live) = &mut self.live {
@@ -967,6 +1121,12 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn commit_block(&mut self) {
         self.pair.commit_block();
+        if let Some(trim) = &mut self.output_trim {
+            trim.committed = trim.scratch;
+        }
+        if let Some(modulation) = &mut self.modulation {
+            let _ = modulation.commit();
+        }
         std::mem::swap(&mut self.primary, &mut self.scratch);
         self.next_id = self.next_id_scratch;
         if let Some(live) = &mut self.live {
@@ -984,10 +1144,20 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn rollback_block(&mut self) {
         self.pair.rollback_block();
+        if let Some(modulation) = &mut self.modulation {
+            modulation.rollback();
+        }
     }
 
     pub(crate) fn reset(&mut self) {
         self.pair.reset();
+        if let Some(trim) = &mut self.output_trim {
+            *trim = output_trim::OutputTrim::new(trim.base);
+        }
+        if let Some(modulation) = &mut self.modulation {
+            modulation.reset_all();
+        }
+        self.frozen_parameters.reset();
         self.primary.clear();
         self.scratch.clear();
         self.next_id = 0;
@@ -1028,6 +1198,11 @@ pub(crate) fn host_storage_upper_bound(track_count: usize) -> Option<usize> {
         .checked_add(active_ledger_entries)?
         .checked_add(tail_owner_slots)?
         .checked_add(tail_ledger_entries)?
+        .checked_add(track_count.checked_add(tail_slots)?.checked_mul(
+            frozen_parameters::FrozenParameters::quote(
+                hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE,
+            )?,
+        )?)?
         .checked_add(std::mem::size_of::<MutableOnsetBuffer>())?
         .checked_add(events)?
         .checked_add(vector_headers)?
@@ -1237,6 +1412,18 @@ pub(crate) fn validate_prepared_graph_budget(
                         .ok_or(MutableInstrumentRuntimeError::Budget)?,
                 )
                 .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            if let Some(modulation) = session.instrument_modulation(track_id) {
+                mutable_bytes = mutable_bytes
+                    .checked_add(
+                        modulation
+                            .quoted_runtime_heap_bytes()
+                            .ok_or(MutableInstrumentRuntimeError::Budget)?,
+                    )
+                    .and_then(|bytes| {
+                        bytes.checked_add(std::mem::size_of::<hex_lattice::ModulationRuntime>())
+                    })
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            }
         }
     }
 

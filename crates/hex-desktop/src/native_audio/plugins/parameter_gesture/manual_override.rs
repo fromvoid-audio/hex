@@ -155,8 +155,17 @@ impl Plugins {
             live.invalidated |= control.status.native_parameter_source(live.playing)
                 != Some((live.source, live.transport_epoch));
         }
+        if gesture.recording && live.invalidated {
+            // The original recording scope ended even when the output itself
+            // remains open (Stop, seek, source replacement or removal).
+            live.discard = true;
+        }
         let discard = live.discard;
-        let finished = live.invalidated && gesture.poll_override_cleanup(control) && discard;
+        let invalidated = live.invalidated;
+        if gesture.recording && invalidated {
+            gesture.recording_output_closed();
+        }
+        let finished = invalidated && gesture.poll_override_cleanup(control) && discard;
         self.collect_parameter_observations();
         if finished {
             self.parameter_gesture = None;

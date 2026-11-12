@@ -17,10 +17,10 @@ fn insert(starts: &mut Vec<u64>, at: u64, separation: u64) -> Result<(), Error> 
     {
         return Ok(());
     }
-    if starts.len() == MAX_POINTS {
+    if starts.len() == MAX_DETECTED_TRANSIENTS {
         return Err(Error::Invalid("transients exceed bounded source plan"));
     }
-    // The caller reserved MAX_POINTS before any analysis owner was acquired.
+    // The caller reserved the full onset capacity before analysis.
     starts.insert(index, at);
     Ok(())
 }
@@ -197,17 +197,19 @@ pub(super) fn detect(
 mod tests {
     use super::*;
     fn physical(source: &[Frame], rate: u32) -> (Vec<u64>, u64) {
-        let mut starts = Vec::with_capacity(MAX_POINTS);
+        let mut starts = Vec::with_capacity(MAX_DETECTED_TRANSIENTS);
         starts.push(0);
         let mut cancel = || false;
         let mut work = Work {
             cancel: &mut cancel,
             used: 0,
+            limit: MAX_WORK_UNITS,
             scratch: 0,
             base_scratch: 0,
             resampler: Resampler::V1,
         };
-        work.scratch(scratch(rate) + MAX_POINTS * 8).unwrap();
+        work.scratch(scratch(rate) + MAX_DETECTED_TRANSIENTS * 8)
+            .unwrap();
         detect(
             Input {
                 frames: source,

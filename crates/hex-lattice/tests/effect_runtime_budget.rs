@@ -171,6 +171,7 @@ fn owned_pair_cap_is_distinct_from_legacy_and_aggregate_rejects_before_extra_fac
     let instances = |number, bytes| {
         (1..=number)
             .map(|id| PreparedRuntimeInstance {
+                modulation: None,
                 automation: Default::default(),
                 meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),

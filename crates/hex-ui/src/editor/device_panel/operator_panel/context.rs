@@ -49,6 +49,24 @@ impl Owner {
             && view.focused_return.is_none()
             && view.device_panel.owner == Some(DevicePanelOwner::Track(self.track))
     }
+
+    /// Immutable canonical state for this currently selected instrument owner.
+    pub(super) fn state(
+        self,
+        view: &EditorView,
+    ) -> Option<&hex_lattice_contract::NativeDeviceState> {
+        if !self.is_current(view) {
+            return None;
+        }
+        Some(
+            view.state
+                .as_ref()?
+                .project
+                .track(self.track)?
+                .instrument()?
+                .state(),
+        )
+    }
 }
 
 /// Context changes are explicit and cannot abandon a pending invalid draft.
@@ -58,11 +76,7 @@ pub(in crate::editor::device_panel) fn select_oscillator(
     owner: Owner,
     operator: usize,
 ) -> bool {
-    if operator >= 4
-        || !owner.is_current(view)
-        || !super::preview::finalize_controls(view, cx, owner.device)
-        || !super::super::finalize_controls(view, cx)
-    {
+    if operator >= 4 || !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
         return false;
     }
     let current = view
@@ -78,6 +92,7 @@ pub(in crate::editor::device_panel) fn select_oscillator(
         } else {
             OperatorPage::Envelope
         },
+        ..current
     };
     if target != current {
         view.device_panel
@@ -94,10 +109,7 @@ pub(super) fn select_page(
     owner: Owner,
     page: OperatorPage,
 ) -> bool {
-    if !owner.is_current(view)
-        || !super::preview::finalize_controls(view, cx, owner.device)
-        || !super::super::finalize_controls(view, cx)
-    {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
         return false;
     }
     let state = view
@@ -105,6 +117,11 @@ pub(super) fn select_page(
         .operator_pages
         .entry(owner.device)
         .or_default();
+    let page = if page == OperatorPage::Oscillator && state.page == OperatorPage::Oscillator {
+        OperatorPage::Envelope
+    } else {
+        page
+    };
     if state.page != page {
         state.page = page;
         cx.notify();
@@ -186,4 +203,23 @@ pub(super) fn section_listener(
             }
         });
     }
+}
+
+/// View-only expansion. Never hide an unfinished invalid native parameter edit.
+pub(in crate::editor::device_panel) fn toggle_options(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    owner: Owner,
+) -> bool {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
+        return false;
+    }
+    let state = view
+        .device_panel
+        .operator_pages
+        .entry(owner.device)
+        .or_default();
+    state.options_open = !state.options_open;
+    cx.notify();
+    true
 }

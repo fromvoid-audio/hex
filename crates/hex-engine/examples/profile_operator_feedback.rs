@@ -4,8 +4,10 @@
 mod fixture;
 
 use fixture::Fixture;
+use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
 use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice::{InstrumentHistoryRetargetPreparation, PreparedMutableInstrumentRuntime};
+use hex_lattice_contract::{NativeDeviceMetadata, NativeDeviceState, ParameterValue};
 use hex_project::{Command, Editor};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 
@@ -41,7 +43,7 @@ struct Options {
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     println!(
-        "profile={} operator=registered processing_mode=global audible_capacity=32 feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} topology={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
+        "profile={} operator=registered processing_mode=global audible_capacity=32 operator_routing=parallel feedback_operator=1 feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} topology={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
         if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -64,25 +66,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::consts::OS,
     );
 
-    let target_state = fixture::state_with_operators(FEEDBACK_A, LEVEL_A, options.all_operators)?;
+    let target_state = profile_state(FEEDBACK_A, LEVEL_A, options.all_operators)?;
     report_registered_storage(&target_state)?;
 
     let initial = if options.shared_source {
-        fixture::shared_source_project_with_operators(
-            options.tracks,
-            options.notes,
-            FEEDBACK_A,
-            LEVEL_A,
-            options.all_operators,
-        )?
+        fixture::shared_source_project(options.tracks, options.notes, target_state)?
     } else {
-        fixture::project_with_operators(
-            options.tracks,
-            options.notes,
-            FEEDBACK_A,
-            LEVEL_A,
-            options.all_operators,
-        )?
+        fixture::project(options.tracks, options.notes, &target_state)?
     };
     println!(
         "topology_sources={} source_contributors={} authored_notes={} modeled_peak_authored_voices={}",
@@ -179,7 +169,7 @@ fn run_retarget(
         let setup_started = Instant::now();
         editor.execute(Command::ReplaceDeviceState {
             device: initial.instrument_ids[track_index],
-            state: fixture::state_with_operators(feedback, level, options.all_operators)?,
+            state: profile_state(feedback, level, options.all_operators)?,
         })?;
         let prepared = Arc::new(prepare_revision(
             editor.project(),
@@ -249,6 +239,24 @@ fn prepare_revision(
         Arc::clone(table),
         previous_session,
     )?)
+}
+
+fn profile_state(
+    feedback: f32,
+    level: f32,
+    all_operators: bool,
+) -> Result<NativeDeviceState, Box<dyn Error>> {
+    // Algorithm 11 routes the operators in parallel with unit carrier weights.
+    let state = OPERATOR_METADATA.patch_parameter(
+        &OPERATOR_METADATA.default_state()?,
+        parameter::ALGORITHM,
+        ParameterValue::Choice(11),
+    )?;
+    let state = fixture::state_with_operators(state, feedback, level, all_operators)?;
+    if !OPERATOR_METADATA.parameter_enabled(&state, parameter::feedback(1))? {
+        return Err("profile route disables operator 1 feedback".into());
+    }
+    Ok(state)
 }
 
 fn report_registered_storage(
@@ -337,9 +345,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn feedback_changes_registered_pcm_with_default_and_all_operator_routes()
+    -> Result<(), Box<dyn Error>> {
+        fn render(
+            project: &hex_project::Project,
+        ) -> Result<[[f32; 2]; CHECK_FRAMES], Box<dyn Error>> {
+            let table = Arc::new(SineTable::new());
+            let revision = Arc::new(prepare_revision(project, &table, None)?);
+            let mut playback = SessionPlayback::new(revision)?;
+            playback.apply(SessionPlaybackCommand::Play)?;
+            let mut output = [[0.0_f32; 2]; CHECK_FRAMES];
+            for partition in output.chunks_exact_mut(CHECK_PARTITION) {
+                playback.render(partition)?;
+            }
+            ensure_finite_audible_pcm("registered feedback comparison", &output)?;
+            Ok(output)
+        }
+
+        for all_operators in [false, true] {
+            let zero_feedback =
+                fixture::project(1, 1, &profile_state(0.0, LEVEL_A, all_operators)?)?;
+            let nonzero_feedback =
+                fixture::project(1, 1, &profile_state(FEEDBACK_A, LEVEL_A, all_operators)?)?;
+            let zero_pcm = render(&zero_feedback.project)?;
+            let nonzero_pcm = render(&nonzero_feedback.project)?;
+            assert!(
+                zero_pcm != nonzero_pcm,
+                "operator 1 feedback must affect registered PCM; all_operators={all_operators}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn current_global_density_check_uses_occurrence_admission() {
         assert_eq!(
-            registered_factory(&fixture::state(FEEDBACK_A, LEVEL_A).unwrap())
+            registered_factory(&profile_state(FEEDBACK_A, LEVEL_A, false).unwrap())
                 .unwrap()
                 .max_active_occurrences(),
             64
@@ -359,16 +400,10 @@ fn verify_density_refusal(
     table: Arc<SineTable>,
     all_operators: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let state = fixture::state_with_operators(FEEDBACK_A, LEVEL_A, all_operators)?;
+    let state = profile_state(FEEDBACK_A, LEVEL_A, all_operators)?;
     let limit = registered_factory(&state)?.max_active_occurrences();
     let over_limit = limit.checked_add(1).ok_or("occurrence limit overflow")?;
-    let fixture = |notes| {
-        if all_operators {
-            fixture::project_with_operators(1, notes, FEEDBACK_A, LEVEL_A, true)
-        } else {
-            fixture::project(1, notes, FEEDBACK_A, LEVEL_A)
-        }
-    };
+    let fixture = |notes| fixture::project(1, notes, &state);
     let admitted = fixture(limit)?;
     let mut playback =
         SessionPlayback::new(Arc::new(prepare_revision(&admitted.project, &table, None)?))?;

@@ -12,11 +12,37 @@ enum Custody {
     Source(PreparationFailure),
     Pair {
         reaper: Reaper,
-        _callback: Callback,
+        _callback: RetainedCallback,
         // None: the unique source is still inside the actual returned State.
         // Some: it moved exactly once into retained native disposal custody.
         native: Option<PreparationFailure>,
     },
+}
+
+enum RetainedCallback {
+    Ordinary(Callback),
+    Dense(DenseEffectCallback),
+}
+
+impl RetainedCallback {
+    fn matches_control(&self, control: &Control) -> bool {
+        match self {
+            Self::Ordinary(callback) => callback.matches_control(control),
+            Self::Dense(callback) => callback.matches_control(control),
+        }
+    }
+}
+
+impl From<Callback> for RetainedCallback {
+    fn from(callback: Callback) -> Self {
+        Self::Ordinary(callback)
+    }
+}
+
+impl From<DenseEffectCallback> for RetainedCallback {
+    fn from(callback: DenseEffectCallback) -> Self {
+        Self::Dense(callback)
+    }
 }
 
 /// Original startup/epoch refusal and its actual native/endpoint owners. Retain this
@@ -121,10 +147,27 @@ impl NativeWorker {
     /// Stopped graph renewal releases the retired instrument gates in that child.
     #[allow(clippy::result_large_err)]
     pub(crate) fn into_quiescent_on_control(
-        mut self,
+        self,
         callback: Callback,
     ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
-        let mismatch = !self.owns_callback(&callback);
+        self.into_quiescent_retained_on_control(callback.into())
+    }
+
+    /// Retire an exact reserved effect pair after its callback carrier returns.
+    #[allow(clippy::result_large_err)]
+    pub fn into_quiescent_dense_effect_on_control(
+        self,
+        callback: DenseEffectCallback,
+    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+        self.into_quiescent_retained_on_control(callback.into())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn into_quiescent_retained_on_control(
+        mut self,
+        callback: RetainedCallback,
+    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+        let mismatch = !callback.matches_control(&self.reaper.control);
         let joined = self.reaper.join_on_control();
         let mut cause = if mismatch {
             Some(Error::Protocol("native quiescence callback differs"))
@@ -184,12 +227,69 @@ impl NativeWorker {
     }
     #[allow(clippy::result_large_err)] // Same fixed custody return as the public constructor; no late allocation.
     pub(super) fn start_retained_with(
-        mut instance: Prepared,
+        instance: Prepared,
         spawn: impl FnOnce(
             crate::native_callback_owner::Guard<State>,
             Arc<Signal>,
         ) -> std::io::Result<SpawnedTransport>,
     ) -> Result<(Self, Callback), NativeWorkerStartFailure> {
+        Self::start_retained_for(
+            instance,
+            |instance| {
+                let config = instance.configuration();
+                native_pcm_channel_from_completed_prefix(
+                    config.binding,
+                    config.quantum,
+                    instance.completed_blocks_on_control(),
+                )
+            },
+            spawn,
+        )
+    }
+
+    /// Start the original stereo effect with its explicitly reserved dense lane.
+    /// The returned pair still requires source metadata and graph admission.
+    #[allow(clippy::result_large_err)]
+    pub fn start_retained_dense_effect_on_control(
+        instance: Prepared,
+    ) -> Result<(Self, DenseEffectCallback), NativeWorkerStartFailure> {
+        Self::start_retained_dense_with(instance, spawn_transport)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn start_retained_dense_with(
+        instance: Prepared,
+        spawn: impl FnOnce(
+            crate::native_callback_owner::Guard<State>,
+            Arc<Signal>,
+        ) -> std::io::Result<SpawnedTransport>,
+    ) -> Result<(Self, DenseEffectCallback), NativeWorkerStartFailure> {
+        Self::start_retained_for(
+            instance,
+            |instance| {
+                let config = instance.configuration();
+                if config.input_channels != 2 {
+                    return Err(Fault::Configuration);
+                }
+                dense_effect_channel_from_completed_prefix(
+                    config.binding,
+                    config.quantum,
+                    instance.completed_blocks_on_control(),
+                )
+            },
+            spawn,
+        )
+    }
+
+    #[allow(clippy::result_large_err)] // The fixed failure packet retains the actual callback.
+    fn start_retained_for<C: Into<RetainedCallback>>(
+        mut instance: Prepared,
+        channel: impl FnOnce(&Prepared) -> Result<(Control, C, Worker), Fault>,
+        spawn: impl FnOnce(
+            crate::native_callback_owner::Guard<State>,
+            Arc<Signal>,
+        ) -> std::io::Result<SpawnedTransport>,
+    ) -> Result<(Self, C), NativeWorkerStartFailure> {
         if let Err(cause) = instance.validate_worker_transfer_on_control() {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 cause, instance,
@@ -203,13 +303,8 @@ impl NativeWorker {
         };
         let binding = instance.configuration().binding;
         let quantum = instance.configuration().quantum;
-        let prefix = instance.completed_blocks_on_control();
-        let channel = if instance.configuration().input_channels == 0 {
-            instrument_channel_from_completed_prefix(binding, quantum, prefix)
-        } else {
-            channel_from_completed_prefix(binding, quantum, prefix)
-        };
-        let (control, callback, worker) = match channel {
+        let grouped_editor_callbacks = instance.grouped_editor_callbacks_enabled();
+        let (control, callback, worker) = match channel(&instance) {
             Ok(pair) => pair,
             Err(fault) => {
                 return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -231,6 +326,7 @@ impl NativeWorker {
                     binding,
                     quantum,
                     retirement_requested: false,
+                    grouped_editor_callbacks,
                     source_storage: Some(source_storage),
                 },
                 callback,
@@ -242,7 +338,7 @@ impl NativeWorker {
                     binding,
                     custody: Custody::Pair {
                         reaper,
-                        _callback: callback,
+                        _callback: callback.into(),
                         native: None,
                     },
                 })

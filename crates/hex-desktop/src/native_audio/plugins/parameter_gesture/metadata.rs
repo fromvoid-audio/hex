@@ -73,11 +73,12 @@ fn extend_target(
     if metadata.selection().cid != class {
         return Err(lost());
     }
-    let selection = AuthoredSelection::from_targets(
+    let selection = AuthoredSelection::from_targets_and_dense(
         metadata
             .authored_base_values()
             .map(|(old, _)| (old, Some(class)))
             .chain(std::iter::once((id, Some(class)))),
+        metadata.dense_parameter().map(|id| (id, class)),
     )
     .map_err(refused)?
     .ok_or_else(lost)?;

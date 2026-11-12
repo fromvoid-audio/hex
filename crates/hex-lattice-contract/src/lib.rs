@@ -10,15 +10,21 @@
 //! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
 //! Opaque payloads and asset references require provider and host validation before processing.
 mod automation_target;
+mod descriptor_validation;
+pub use descriptor_validation::validate_parameter_descriptors;
 mod device_assets;
 pub use automation_target::DeviceAutomationTarget;
 mod host_gain;
+mod modulation_source_id;
 pub use host_gain::HostGain;
+pub use modulation_source_id::{ModulationOutputId, ModulationSourceId};
 mod foreign_binding;
 mod foreign_parameter;
 mod vst3_state_approval;
 pub use foreign_binding::ForeignProcessorBinding;
-pub use foreign_parameter::ForeignParameterPoint;
+pub use foreign_parameter::{
+    ForeignParameterPoint, MAX_FOREIGN_AUTOMATION_TARGETS, MAX_FOREIGN_PARAMETER_POINTS,
+};
 pub use vst3_state_approval::{Vst3StateAuthority, Vst3StateVerifier};
 #[cfg(test)]
 mod device_assets_tests;
@@ -571,26 +577,6 @@ impl fmt::Display for DeviceContractError {
     }
 }
 impl std::error::Error for DeviceContractError {}
-
-/// Validate a complete device-owned descriptor set, including dynamic overrides.
-/// Host input/output controls are outside this device parameter namespace.
-pub fn validate_parameter_descriptors(
-    descriptors: &[ParameterDescriptor],
-) -> Result<(), DeviceContractError> {
-    if descriptors.len() > MAX_PARAMETERS_PER_DEVICE {
-        return Err(DeviceContractError::InvalidDescriptor);
-    }
-    for (index, descriptor) in descriptors.iter().enumerate() {
-        descriptor.validate_descriptor()?;
-        if descriptors[..index]
-            .iter()
-            .any(|prior| prior.id == descriptor.id)
-        {
-            return Err(DeviceContractError::InvalidDescriptor);
-        }
-    }
-    Ok(())
-}
 
 /// Enumerate and validate state-owned descriptors on the control side. Callers
 /// must use this boundary even when a definition overrides enumeration.

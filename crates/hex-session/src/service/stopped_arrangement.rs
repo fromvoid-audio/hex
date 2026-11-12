@@ -80,7 +80,10 @@ pub(super) struct Fence {
 /// captured revision, which the parked edit has not advanced yet, so it runs
 /// against exactly the state its sender observed.
 pub(super) fn served_during_lease(request: &Request) -> bool {
-    matches!(request, Request::SaveDevicePreset { .. })
+    matches!(
+        request,
+        Request::SaveDevicePreset { .. } | Request::SaveDeviceDefault { .. }
+    )
 }
 
 impl Fence {
@@ -92,6 +95,7 @@ impl Fence {
         sink: Option<&mut dyn WorkerAudioSink>,
         queued: QueuedRequest,
         source: hex_engine::AudioSourceContext,
+        recover: bool,
     ) -> Option<QueuedRequest> {
         // A resolved request re-dispatches through here once; never re-begin.
         if self.state.is_some() {
@@ -102,7 +106,12 @@ impl Fence {
         };
         // A refused begin keeps the former path: the handler begins again and
         // reports the identical refusal.
-        if sink.begin_section_edit(source, true).is_err() {
+        let begun = if recover {
+            sink.begin_recoverable_section_edit(source)
+        } else {
+            sink.begin_section_edit(source, true)
+        };
+        if begun.is_err() {
             return Some(queued);
         }
         let begun = Instant::now();
@@ -405,7 +414,7 @@ mod tests {
         let mut fence = Fence::default();
         assert!(
             fence
-                .defer(Some(&mut sink), queued(Request::Undo, 1), CONTEXT)
+                .defer(Some(&mut sink), queued(Request::Undo, 1), CONTEXT, false)
                 .is_none(),
             "a silent callback parks the request"
         );
@@ -458,7 +467,7 @@ mod tests {
         let mut sink = Immediate::default();
         let mut fence = Fence::default();
         let request = fence
-            .defer(Some(&mut sink), queued(Request::Undo, 0), CONTEXT)
+            .defer(Some(&mut sink), queued(Request::Undo, 0), CONTEXT, false)
             .expect("an immediate answer dispatches at once");
         assert!(matches!(request.request, Request::Undo));
         assert!(

@@ -323,6 +323,9 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
     const INVENTORY: u16 = 2_593;
+    const PRIVATE_MIDI_HELPER: u32 = 0x400;
+    const IS_HIDDEN: u32 = 1 << 4;
+    const IS_READ_ONLY: u32 = 1 << 1;
     let start = |case: &Case, inventory: &'static str, state| {
         let setup = case.setup_restore(37);
         Pending::prepare_with_restore(
@@ -341,7 +344,11 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
     let case = Case::new();
     let mut instance = start(&case, "2593", None).unwrap();
     let first = page(&mut instance, ParameterPageQuery::default());
-    assert_eq!((first.total, first.as_slice()[0].id), (INVENTORY, 1001));
+    let helper = first.as_slice()[0];
+    assert_eq!((first.total, helper.id), (INVENTORY, 1001));
+    assert_eq!((helper.default_normalized, helper.normalized), (0.0, 0.25));
+    assert_eq!(helper.flags, PRIVATE_MIDI_HELPER | IS_HIDDEN | IS_READ_ONLY);
+    assert!(!helper.is_editable() && !helper.supports_authored_automation());
     let last_page = |instance: &mut Prepared, revision| {
         page(
             instance,
@@ -398,6 +405,7 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
     for (malformed, diagnostic) in [
         ("2625", "inventory exceeds the host capacity"),
         ("duplicate", "invalid controller parameter inventory"),
+        ("invalid-default", "invalid controller parameter inventory"),
     ] {
         let case = Case::new();
         let error = start(&case, malformed, None)
@@ -870,4 +878,50 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
                 .success()
         );
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn replacement_editor_commands_report_closed_and_unavailable_without_opening_windows() {
+    use crate::protocol::{ControllerRequest, PluginEditorPosition, PluginEditorState};
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(0),
+    )
+    .unwrap();
+    for (request, expected) in [
+        (ControllerRequest::DetachEditor, PluginEditorState::Closed),
+        (
+            ControllerRequest::ReopenEditor(PluginEditorPosition::new(-204.25, 300.5)),
+            PluginEditorState::Unavailable,
+        ),
+    ] {
+        instance
+            .begin_controller_request_on_worker(request)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Editor(state) => {
+                    assert_eq!(state, expected);
+                    break;
+                }
+                ParameterPageProgress::Pending => {}
+                _ => panic!("expected exact editor state"),
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
 }

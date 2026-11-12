@@ -1,5 +1,5 @@
-//! Direct real-provider allocation scopes for lookahead/routing layouts.
-//! Routing host publication is a later slice.
+//! Direct real-provider allocation scopes for lookahead/routing/mode layouts.
+//! Mode host publication is a later slice.
 //! Construction, expected-output rendering and reclamation stay outside scopes.
 use allocation_counter::{AllocationInfo, measure};
 use hex_devices::limiter::{DEFINITION as D, LimiterDefinition, parameter::*};
@@ -7,7 +7,7 @@ use hex_lattice::{
     EMPTY_DEVICE_RESOURCES as R, NativeParameterAutomation, PreparedOwnedProcessorRuntime,
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
-const IDS: [ParameterId; 11] = [
+const IDS: [ParameterId; 12] = [
     GAIN,
     CEILING,
     RELEASE,
@@ -15,6 +15,7 @@ const IDS: [ParameterId; 11] = [
     LINK,
     LOOKAHEAD,
     ROUTING,
+    MODE,
     MAXIMIZE,
     THRESHOLD,
     OUTPUT,
@@ -32,10 +33,11 @@ impl NativeParameterAutomation for Values {
         let i = self.start + offset;
         Some(match id {
             LOOKAHEAD => ParameterValue::Choice((i / 17 % 3) as u32),
-            ROUTING => ParameterValue::Choice(if self.bad && offset == 17 {
-                2
+            ROUTING => ParameterValue::Choice((i / 29 % 2) as u32),
+            MODE => ParameterValue::Choice(if self.bad && offset == 17 {
+                3
             } else {
-                (i / 29 % 2) as u32
+                (i / 37 % 3) as u32
             }),
             GAIN => ParameterValue::Float(-12.0 + (i % 41) as f32 * 0.6),
             CEILING => ParameterValue::Float(-24.0 + (i % 29) as f32 * 0.8),

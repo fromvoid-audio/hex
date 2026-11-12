@@ -10,7 +10,9 @@
 use hex_engine::{
     BorrowedMediaPage, MediaPages, SessionPlayback, StreamPageExtent, StreamSourceKey,
 };
-use hex_export::{ExportControl, ExportError, ExportReport, PreparedExportPages};
+use hex_export::{
+    ExportControl, ExportError, ExportReport, ForeignBounceRenderer, PreparedExportPages,
+};
 use hex_session::{AudioSourceBinding, VerifiedAudioFile, service::StreamedExportRequest};
 use hex_stream::{
     PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind, StreamRuntime,
@@ -56,13 +58,15 @@ pub(crate) fn render_with_config(
 /// borrowed, so a bounce never waits on or disturbs the playing transport.
 pub(super) fn bounce(
     request: &hex_session::StreamedBounceRequest<'_>,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
 ) -> Result<ExportReport, String> {
-    bounce_with_config(request, StreamConfig::initial()).map_err(|error| error.to_string())
+    bounce_with_config(request, StreamConfig::initial(), foreign).map_err(|error| error.to_string())
 }
 
 pub(crate) fn bounce_with_config(
     request: &hex_session::StreamedBounceRequest<'_>,
     config: StreamConfig,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
 ) -> Result<ExportReport, ExportError> {
     check(request.control())?;
     let mut pages = VerifiedPages::capture_files(
@@ -76,6 +80,19 @@ pub(crate) fn bounce_with_config(
         config,
         request.control(),
     )?;
+    if let Some(foreign) = foreign {
+        return hex_export::render_arrangement_bounce_with_foreign(
+            request.path(),
+            Arc::clone(request.prepared()),
+            request.resources(),
+            request.start(),
+            request.frames(),
+            request.include_tails(),
+            request.control(),
+            Some(&mut pages),
+            foreign,
+        );
+    }
     hex_export::render_arrangement_bounce_with_pages(
         request.path(),
         Arc::clone(request.prepared()),
@@ -724,6 +741,7 @@ fn prepare_file_seek_runtime<'a>(
     let section = match spec.mode {
         hex_session::arrangement_seek::ArrangementSeekMode::SectionLoop(region) => Some(region),
         hex_session::arrangement_seek::ArrangementSeekMode::Interactive
+        | hex_session::arrangement_seek::ArrangementSeekMode::SectionOnce(_)
         | hex_session::arrangement_seek::ArrangementSeekMode::HistoryPreservingInteractive => None,
         _ => {
             return Err(hex_engine::ArrangementPrerollError::MediaPreparation(

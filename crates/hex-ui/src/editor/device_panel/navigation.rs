@@ -137,7 +137,7 @@ pub(in crate::editor) fn bottom_bar(
             Some(DevicePanelOwner::Main) => {
                 cards.extend(state.project.main_devices().iter().map(|device| {
                     (
-                        device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                        device_card_width(view, NativeDeviceClass::Effect, device),
                         device.id(),
                     )
                 }))
@@ -153,10 +153,7 @@ pub(in crate::editor) fn bottom_bar(
                                 (device, NativeDeviceClass::Effect)
                             }
                         };
-                        cards.push((
-                            device_card_width(class, device.state().type_id()),
-                            device.id(),
-                        ));
+                        cards.push((device_card_width(view, class, device), device.id()));
                     }
                 }
             }
@@ -169,7 +166,7 @@ pub(in crate::editor) fn bottom_bar(
                 {
                     cards.extend(track.devices().iter().map(|device| {
                         (
-                            device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                            device_card_width(view, NativeDeviceClass::Effect, device),
                             device.id(),
                         )
                     }));

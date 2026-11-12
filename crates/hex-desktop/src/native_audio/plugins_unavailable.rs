@@ -8,7 +8,7 @@ use hex_audio::prepared::{PublicationControl, PublicationPolicy};
 use hex_engine::PreparedRevision;
 use hex_session::service::{
     PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState, PluginStateCapture,
-    PluginStateSaveInput, RequestCancellation, ResidentEffectPreparation,
+    PluginStateCaptureInput, RequestCancellation, ResidentEffectPreparation,
 };
 
 const UNAVAILABLE: &str = "vst3 hosting requires macos arm64";
@@ -63,7 +63,8 @@ impl Plugins {
         Err(UNAVAILABLE.into())
     }
     pub fn finish(&mut self, _: &Arc<PluginEffectControl>, _: bool) {}
-    pub fn poll(&mut self, _: &mut WorkerPreparedOutput, _: Option<AudioSourceContext>) {}
+    pub fn poll(&mut self, _: &mut WorkerPreparedOutput, _: Option<&CanonicalAudioSourceSnapshot>) {
+    }
     pub fn poll_parameter_edits(
         &mut self,
         _: &mut WorkerPreparedOutput,
@@ -144,9 +145,9 @@ impl Plugins {
 }
 
 impl NativeAudioSink {
-    pub(in crate::native_audio) fn capture_plugin_save(
+    pub(in crate::native_audio) fn capture_current_plugin_states(
         &mut self,
-        _: PluginStateSaveInput<'_>,
+        _: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
         // No hosted source exists. Session's empty-capture contract retains the
         // complete canonical opaque payload; this never claims a fresh capture.

@@ -379,11 +379,12 @@ impl EditorView {
             });
         let controls = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .flex_shrink_0()
             .min_w_0()
-            .child(div().min_w_0().truncate().child(theme::text(
+            .child(div().flex_1().min_w_0().truncate().child(theme::text(
                 hex_session::service::text::verbatim(&wave.name),
             )))
             .child(
@@ -426,7 +427,7 @@ impl EditorView {
                 })),
             )
             .children([true, false].map(|inward| {
-                button(
+                super::super::waveform::button(
                     if inward { "+" } else { "−" },
                     "zoom waveform",
                     ("take-zoom", u64::from(inward)),

@@ -54,6 +54,16 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// Validate PlayFrom without changing the running playback before a fade.
+    pub(crate) fn admits_play_from(&self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export || self.revision.requires_control_sampler_sources() {
+            self.admits_transport(&SessionPlaybackCommand::Seek(frame))?;
+            self.admits_transport(&SessionPlaybackCommand::Play)
+        } else {
+            self.play_from_coordinates(frame).map(|_| ())
+        }
+    }
+
     fn apply_admitted(
         &mut self,
         command: SessionPlaybackCommand,
@@ -93,6 +103,7 @@ impl SessionPlayback {
                     }
                 }
                 self.playing = false;
+                self.browser_audition.voices = Default::default();
             }
             SessionPlaybackCommand::Stop => {
                 self.clear_gain_recording_override();
@@ -152,6 +163,7 @@ impl SessionPlayback {
     }
 
     fn stop_transport(&mut self) -> bool {
+        self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
         self.playing = false;
@@ -169,6 +181,9 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.release_order = 0;
         self.main_chain.reset();
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -291,6 +306,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+        self.browser_audition.voices = Default::default();
         self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
@@ -345,6 +361,9 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.release_order = 0;
         self.main_chain.reset();
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -365,6 +384,14 @@ impl SessionPlayback {
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.runtime.reset();
+        }
+    }
+
+    pub(crate) fn cut_retained_foreign_gates_from(&mut self, previous: &mut Self) {
+        // Exact source identity also proves the prepared generator index order.
+        if Arc::ptr_eq(&self.revision, &previous.revision) {
+            self.foreign_arrangement
+                .cut_retained_gates_from(&mut previous.foreign_arrangement);
         }
     }
 

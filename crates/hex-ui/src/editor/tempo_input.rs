@@ -2,12 +2,15 @@
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
-use hex_project::{BeatTime, Command, Tempo};
+use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
+
+mod value;
+use value::tempo_value;
 
 pub(super) struct Binding {
     generation: u64,
@@ -15,13 +18,6 @@ pub(super) struct Binding {
     entity: Entity<NumericControl>,
     _subscription: Subscription,
     _observation: Subscription,
-}
-
-fn tempo_value(value: f64) -> Option<Tempo> {
-    if !value.is_finite() || !(1.0..=1000.0).contains(&value) {
-        return None;
-    }
-    Tempo::new((value * 1_000_000.0).round() as u32).ok()
 }
 
 impl EditorView {
@@ -144,31 +140,8 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::*;
-    #[test]
-    fn project_tempo_range_and_micro_bpm_precision() {
-        for value in [
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            0.0,
-            -1.0,
-            0.999999,
-            1000.000001,
-        ] {
-            assert!(tempo_value(value).is_none());
-        }
-        for (value, micro) in [
-            (1.0, 1_000_000),
-            (123.456789, 123_456_789),
-            (1000.0, 1_000_000_000),
-        ] {
-            assert_eq!(tempo_value(value).unwrap().micro_bpm(), micro);
-        }
-    }
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only(
         cx: &mut gpui::TestAppContext,

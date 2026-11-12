@@ -948,7 +948,8 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use crate::editor::device_automation::host_tests::{
-        CMD, Slot, TestWave, header_assign, lane_point, lane_points, pump, window_with_gain,
+        CMD, Slot, TestWave, dotted_lane_point, header_assign, lane_points, lane_value_point, pump,
+        window_with_gain,
     };
     use gpui::{Modifiers, MouseButton, TestAppContext, px, size};
     use hex_lattice_contract::DeviceAutomationTarget;
@@ -1052,7 +1053,7 @@ mod tests {
                 "sampler text must be active before the automation press"
             )
         });
-        let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+        let at = dotted_lane_point(&mut visual, device, target, 0.6);
         editor.read_with(&visual, |view, _| {
             assert!(
                 view.sampler_parameter.numeric_draft_active(),
@@ -1080,7 +1081,8 @@ mod tests {
 
         // The reverse order must also preserve the first draft. A press over
         // the sampler while automation owns the pointer cannot start text.
-        let next = lane_point(&mut visual, device, target, [0.3, 0.4]);
+        let first_value = lane_points(&visual, &editor, device, target)[0].value.get();
+        let next = lane_value_point(&mut visual, device, target, 0.3, first_value);
         let sampler_at = visual.debug_bounds(selector).unwrap().center();
         visual.simulate_mouse_down(next, MouseButton::Left, CMD);
         editor.read_with(&visual, |view, _| {

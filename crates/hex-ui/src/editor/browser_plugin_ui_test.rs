@@ -42,6 +42,91 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
+fn browser_result_rows_use_compact_native_text_and_keep_selected_hover(cx: &mut TestAppContext) {
+    use crate::theme;
+    cx.use_native_text_system().expect("native text shaping");
+    cx.update(|cx| {
+        theme::load_fonts(cx).expect("bundled ioskeley mono");
+        crate::editor::bind_editor_keys(cx);
+    });
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.apply_plugin_catalog(
+            original_plugin_catalog(directory.0.join("Original.vst3")),
+            cx,
+        );
+    });
+    let fill = theme::color(theme::PaletteRole::Secondary);
+    let ink = theme::readable_text(fill, theme::color(theme::PaletteRole::Background));
+    for (source, query, row, label, icon) in [
+        (
+            BrowserSection::All,
+            "loop",
+            "browser-entry-0",
+            "browser-entry-label-0",
+            Some("browser-file-icon-0"),
+        ),
+        (
+            BrowserSection::All,
+            "utility",
+            "browser-device-effect-hex.utility",
+            "browser-device-label-effect-hex.utility",
+            None,
+        ),
+        (
+            BrowserSection::Plugins,
+            "",
+            "browser-vst3-row-0",
+            "browser-vst3-name-0",
+            None,
+        ),
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            view.select_browser_source(source.clone(), cx);
+            view.browser
+                .search
+                .update(cx, |input, cx| input.set_text(query, cx));
+            view.sync_browser_query(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds(row).expect("actual projected result");
+        assert_eq!(bounds.size.height, px(18.0));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_background(row),
+            Some(gpui::Background::from(gpui::rgb(fill)))
+        );
+        assert!(
+            visual
+                .rendered_monochrome_colors(label)
+                .contains(&gpui::rgb(ink).into()),
+            "selected text: {label}"
+        );
+        let label_bounds = visual.debug_bounds(label).unwrap();
+        assert!(label_bounds.top() >= bounds.top() && label_bounds.bottom() <= bounds.bottom());
+        if let Some(icon) = icon {
+            assert!(
+                visual
+                    .rendered_monochrome_colors(icon)
+                    .contains(&gpui::rgb(ink).into())
+            );
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(view.pending_audio_commands.is_empty())
+        });
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
 fn vst3_groups_are_visible_without_becoming_keyboard_items(cx: &mut TestAppContext) {
     use crate::editor::browser::BrowserItemKey;
     cx.update(crate::editor::bind_editor_keys);
@@ -1048,6 +1133,167 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
                 assert_eq!(view.browser_history_index(key, cx), Some(index));
             }
             assert!(view.browser_item_at(expected.len(), cx).is_none());
+        });
+    }
+}
+
+#[gpui::test]
+fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    use hex_project::TrackDeviceSlot;
+    use hex_session::service::PluginEffectDestination;
+    for (mode, lane, new_track_slot) in [
+        (crate::editor::EditorMode::Arrangement, false, None),
+        (crate::editor::EditorMode::Session, false, None),
+        (crate::editor::EditorMode::Arrangement, true, None),
+        (
+            crate::editor::EditorMode::Arrangement,
+            true,
+            Some(TrackDeviceSlot::Effect),
+        ),
+        (
+            crate::editor::EditorMode::Arrangement,
+            true,
+            Some(TrackDeviceSlot::Instrument),
+        ),
+    ] {
+        let (handle, editor, tracks, directory, _) =
+            browser_drag_fixture_with_tracks(cx, &["selected", "target"]);
+        let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+        let mut catalog = original_plugin_catalog(module);
+        let class = &mut catalog.entries[0]
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .classes[0];
+        class.class_flags = Some(0);
+        class.subcategories = Some(
+            if new_track_slot == Some(TrackDeviceSlot::Instrument) {
+                "Instrument|Synth"
+            } else {
+                "Fx"
+            }
+            .into(),
+        );
+        class.class_vendor = Some("Original Vendor".into());
+        class.class_version = Some("1".into());
+        class.class_sdk_version = Some("3.8".into());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(tracks[0]);
+            view.mode = mode;
+            view.select_browser_source(BrowserSection::Plugins, cx);
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            visual.run_until_parked();
+            if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.apply_plugin_catalog(catalog, cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let source = visual.debug_bounds("browser-vst3-row-0").unwrap().center();
+        let selector = Box::leak(
+            format!(
+                "{}-{}",
+                if lane {
+                    "arrangement-lane"
+                } else if mode == crate::editor::EditorMode::Arrangement {
+                    "arrangement-track-header"
+                } else {
+                    "session-track"
+                },
+                tracks[1].value()
+            )
+            .into_boxed_str(),
+        );
+        let bounds = visual.debug_bounds(selector).unwrap();
+        let target = match new_track_slot {
+            Some(_) => point(bounds.center().x, bounds.origin.y),
+            None => bounds.center(),
+        };
+        for refusal in 0..2 {
+            visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                point(source.x + px(12.0), source.y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            editor.update(&mut visual, |view, _| {
+                if refusal == 0 {
+                    view.worker_requests_pending = 1;
+                } else {
+                    view.project_generation += 1;
+                }
+            });
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            editor.update(&mut visual, |view, cx| {
+                assert!(view.pending_plugin_effect.is_none());
+                assert!(view.active_native_device_drag.is_none());
+                if refusal == 0 {
+                    view.worker_requests_pending = 0;
+                } else {
+                    view.project_generation -= 1;
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+        }
+        let original_feedback = visual.rendered_background(selector);
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(source.x + px(12.0), source.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        if lane {
+            assert!(
+                visual
+                    .debug_bounds("arrangement-device-drop-preview")
+                    .is_some()
+            );
+        } else {
+            assert_ne!(visual.rendered_background(selector), original_feedback);
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.pending_plugin_effect.is_none(),
+                "hover must not instantiate the plugin"
+            )
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
+                panic!("header drop must reach the plugin worker: {:?}", view.error)
+            });
+            assert_eq!(
+                pending.destination,
+                match new_track_slot {
+                    Some(slot) => PluginEffectDestination::NewTrack {
+                        before_track: Some(tracks[1]),
+                        slot,
+                        gain: 0.251_188_64,
+                        track_identity: view.state.as_ref().unwrap().project.next_identity(),
+                    },
+                    None => PluginEffectDestination::Track(tracks[1]),
+                }
+            );
+            assert_eq!(pending.before, None, "no device-card insertion anchor");
+            assert_eq!(view.selected_track, Some(tracks[0]));
         });
     }
 }

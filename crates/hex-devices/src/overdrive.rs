@@ -136,59 +136,51 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
 
 #[derive(Clone, Copy, PartialEq)]
 struct Settings([f32; 6]);
+// Every admitted control already receives one native value per frame through
+// the original coefficient ramp.
+const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
+    hex_lattice_contract::ParameterSemantics {
+        smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+        ..crate::parameter_binding::SCALAR_ENVELOPE
+    };
 const BINDINGS: [crate::parameter_binding::Binding<Settings>; 6] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[0],
         hex_lattice_contract::ParameterSemantics {
-            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
+            ..MODULATED_SCALAR
         },
         |c| c.0[0],
         |c, v| c.0[0] = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[1],
-        hex_lattice_contract::ParameterSemantics {
-            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
-        },
+        MODULATED_SCALAR,
         |c| c.0[1],
         |c, v| c.0[1] = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[2],
-        hex_lattice_contract::ParameterSemantics {
-            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
-        },
+        MODULATED_SCALAR,
         |c| c.0[2],
         |c, v| c.0[2] = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[3],
-        hex_lattice_contract::ParameterSemantics {
-            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
-        },
+        MODULATED_SCALAR,
         |c| c.0[3],
         |c, v| c.0[3] = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[4],
-        hex_lattice_contract::ParameterSemantics {
-            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
-        },
+        MODULATED_SCALAR,
         |c| c.0[4],
         |c, v| c.0[4] = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[5],
-        hex_lattice_contract::ParameterSemantics {
-            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
-        },
+        MODULATED_SCALAR,
         |c| c.0[5],
         |c, v| c.0[5] = v,
     ),
@@ -384,7 +376,8 @@ impl NativeDeviceDefinition for OverdriveDefinition {
         )?)))
     }
 }
-struct PreparedOverdrive {
+/// Closed asset-free factory with inline settings and oversampling kernel.
+pub struct PreparedOverdrive {
     settings: Settings,
     admitted: [bool; 6],
     targets: [f64; 6],
@@ -401,6 +394,16 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             .filter(|_| self.supports(id))
             .map(|b| b.descriptor)
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        crate::parameter_binding::binding(&BINDINGS, id)
+            .ok()
+            .filter(|_| self.supports(id))
+            .map(|binding| binding.semantics)
+    }
+
     // Keep the exact 11-frame dry delay and ordinary wet processing (including
     // automation, noise/filter/envelope state and finite-tail guards) warm.
     // The host owns the bounded dry history and transactional bypass ramp.
@@ -415,7 +418,7 @@ impl PreparedNativeProcessor for PreparedOverdrive {
         std::mem::size_of::<OverdriveRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(OverdriveRuntime {
+        let runtime = OverdriveRuntime {
             base_targets: self.targets,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             targets: self.targets,
@@ -431,7 +434,9 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             delay: [[0.0; 3]; LATENCY_FRAMES],
             delay_index: 0,
             silent_frames: 0,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(LATENCY_FRAMES as u32)
@@ -474,7 +479,8 @@ impl Channel {
     }
 }
 
-struct OverdriveRuntime {
+/// Fixed-inline Overdrive history audited by the sealed storage owner.
+pub struct OverdriveRuntime {
     base_targets: [f64; 6],
     controls: crate::parameter_binding::Controls<Settings, 6>,
     targets: [f64; 6],

@@ -54,6 +54,7 @@ impl NativeEffectEntry {
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        lane: Option<ForeignModulationSamples<'_>>,
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
             if self.callback.begin_host_callback(extent).is_err() {
@@ -64,7 +65,7 @@ impl NativeEffectEntry {
         }
         match self
             .callback
-            .process_segment_with_notes(node, offset, frames, parameters, notes, clock)
+            .stage_segment(node, offset, frames, parameters, notes, clock, lane)
         {
             // Staging refusal already revoked this epoch and left aligned dry.
             Err(DeviceContractError::ForeignProcessingFailed) => {
@@ -87,6 +88,12 @@ impl NativeEffectEntry {
         }
         Ok(())
     }
+    pub(crate) fn take_accepted_editor_quantum(
+        &mut self,
+    ) -> Option<hex_plugin_host::transport::AcceptedEditorQuantum> {
+        self.callback.take_accepted_editor_quantum()
+    }
+
     pub(crate) fn take_accepted_manual_parameter(
         &mut self,
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
@@ -199,8 +206,8 @@ impl NativeEffectCallbacks {
         self.quantum
     }
     /// Offline only. Wait outside rendering for the exact committed prefixes
-    /// so a later callback sees their replies. A failed source is fatal to
-    /// the file render even though interactive carriers can contain it.
+    /// so a later callback sees their replies. A failed source or concealed
+    /// reply is fatal to the file render.
     pub fn wait_offline_on_control(
         &self,
         workers: &[NativeWorker],
@@ -218,6 +225,9 @@ impl NativeEffectCallbacks {
             for (entry, worker) in self.entries.iter().zip(workers) {
                 if !entry.callback.matches_worker(worker) || !entry.transport_is_live() {
                     return Err(Error::Protocol("offline vst3 worker failed"));
+                }
+                if entry.callback.concealed_output {
+                    return Err(Error::Protocol("offline vst3 output is incomplete"));
                 }
                 ready &= worker.published_blocks_on_control()
                     >= entry.callback.transport.dispatched_blocks_on_control();
@@ -259,6 +269,35 @@ impl NativeEffectCallbacks {
         Ok(())
     }
 }
+impl NativeEffectCallbacks {
+    #[allow(clippy::too_many_arguments)] // Borrowed views share one physical acceptance.
+    fn stage_segment(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        lane: Option<ForeignModulationSamples<'_>>,
+    ) -> Result<(), DeviceContractError> {
+        let selected = node.prepared.binding().and_then(|binding| {
+            self.entries
+                .binary_search_by_key(&binding, NativeEffectEntry::binding)
+                .ok()
+        });
+        let result = match (self.cycle.extent(), selected) {
+            (Some(extent), Some(index)) => self.entries[index]
+                .process(extent, node, offset, frames, parameters, notes, clock, lane),
+            _ => Err(DeviceContractError::ForeignProcessingUnavailable),
+        };
+        if result.is_err() {
+            self.reject_callback();
+            frames.fill([0.0; 2]);
+        }
+        result
+    }
+}
 impl ForeignProcessors for NativeEffectCallbacks {
     fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
         true
@@ -291,22 +330,17 @@ impl ForeignProcessors for NativeEffectCallbacks {
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        let selected = node.prepared.binding().and_then(|binding| {
-            self.entries
-                .binary_search_by_key(&binding, NativeEffectEntry::binding)
-                .ok()
-        });
-        let result = match (self.cycle.extent(), selected) {
-            (Some(extent), Some(index)) => {
-                self.entries[index].process(extent, node, offset, frames, parameters, notes, clock)
-            }
-            _ => Err(DeviceContractError::ForeignProcessingUnavailable),
-        };
-        if result.is_err() {
-            self.reject_callback();
-            frames.fill([0.0; 2]);
-        }
-        result
+        self.stage_segment(node, offset, frames, parameters, notes, clock, None)
+    }
+    fn process_segment_with_modulation(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        lane: ForeignModulationSamples<'_>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.stage_segment(node, offset, frames, &[], &[], clock, Some(lane))
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         !self.cycle.revoked()

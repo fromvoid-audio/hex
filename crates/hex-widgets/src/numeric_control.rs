@@ -103,6 +103,8 @@ pub enum NumericControlPresentation {
     CompactSlider,
     LabeledSlider,
     FilledSlider,
+    /// Textless12×32 strip; scrub/keyboard/accessibility edits, with no text-entry target.
+    FilledVerticalSlider,
     VerticalSlider,
     /// Input-level well with a ceiling triangle and editable numeric readout.
     MeterFader,
@@ -118,7 +120,9 @@ impl NumericControlPresentation {
             | Self::CompactSlider
             | Self::LabeledSlider
             | Self::FilledSlider => NumericControlKind::HorizontalSlider,
-            Self::VerticalSlider | Self::MeterFader => NumericControlKind::VerticalSlider,
+            Self::VerticalSlider | Self::FilledVerticalSlider | Self::MeterFader => {
+                NumericControlKind::VerticalSlider
+            }
         }
     }
     fn appearance(self) -> NumericControlAppearance {
@@ -132,7 +136,9 @@ impl NumericControlPresentation {
             Self::InlineValue => NumericControlAppearance::InlineValue,
             Self::CompactSlider => NumericControlAppearance::CompactSlider,
             Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
-            Self::FilledSlider => NumericControlAppearance::FilledSlider,
+            Self::FilledSlider | Self::FilledVerticalSlider => {
+                NumericControlAppearance::FilledSlider
+            }
             Self::MeterFader => NumericControlAppearance::MeterFader,
         }
     }
@@ -169,6 +175,7 @@ enum NumericControlAppearance {
 
 #[cfg(test)]
 mod compact_slider_tests;
+mod compact_vertical;
 #[cfg(test)]
 mod edit_state_tests;
 mod vertical_fader;
@@ -1924,6 +1931,13 @@ impl gpui::Render for NumericControl {
                         .child(label),
                 )
                 .child(self.slider_element(value, value_text, cx)),
+            (NumericControlKind::VerticalSlider, NumericControlAppearance::FilledSlider) => div()
+                .id(self.id.clone())
+                .w(px(12.0))
+                .h(px(32.0))
+                .track_focus(&self.focus)
+                .key_context(key_context)
+                .child(self.compact_vertical(value, cx)),
             (NumericControlKind::VerticalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()

@@ -422,6 +422,7 @@ fn plugin_bypass_keeps_host_output_trim_on_the_wet_side_only() {
     let identity = endpoints[0].facts.identity;
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: identity.owner(),
@@ -561,6 +562,7 @@ fn actual_chain_receives_post_trim_once_and_untrimmed_aligned_bypass() {
     let identity = endpoints[0].facts.identity;
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: identity.owner(),
@@ -634,6 +636,71 @@ fn revoked_endpoint_passes_aligned_dry_with_current_enabled_trim() {
         .unwrap();
     callbacks.finish_host_callback(true).unwrap();
     assert_eq!(output, source);
+}
+
+#[test]
+fn one_late_native_effect_reply_uses_aligned_dry_and_resumes_wet() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 1,
+        epoch: 1,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    let state =
+        hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+    let (control, transport, mut worker) =
+        hex_plugin_host::transport::native_pcm_channel_from_completed_prefix(binding, 4, 0)
+            .unwrap();
+    let mut endpoint = NativeEffectCallback::for_test(identity, binding, state.clone(), transport);
+    let facts = Facts {
+        identity,
+        state,
+        prepared: endpoint.configuration.prepared,
+    };
+    let mut position = 0;
+    let mut render = |expected: &[f32], concealed| {
+        let mut samples = [[0.0; 2]; QUANTUM];
+        let frames = &mut samples[..expected.len()];
+        for (index, frame) in frames.iter_mut().enumerate() {
+            let value = (position + index + 1) as f32;
+            *frame = [value, -value];
+        }
+        assert_eq!(
+            allocations_during(|| {
+                endpoint.begin_host_callback(frames.len()).unwrap();
+                endpoint
+                    .process_segment(facts.node(), 0, frames, None)
+                    .unwrap();
+                endpoint.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+        for (frame, &value) in frames.iter().zip(expected) {
+            assert_eq!(*frame, [value, -value]);
+        }
+        assert_eq!(endpoint.concealed_output, concealed);
+        position += frames.len();
+    };
+    let respond = |worker: &mut Worker, sequence| {
+        let mut block = worker.receive().unwrap().unwrap();
+        assert_eq!(block.sequence, sequence);
+        for sample in block.pcm.iter_mut().flatten() {
+            *sample *= 2.0;
+        }
+        worker.complete(block).unwrap();
+    };
+
+    render(&[0.0; 4], false);
+    render(&[0.0; 2], false);
+    render(&[0.0, 0.0, 1.0, 2.0], true);
+    respond(&mut worker, 0); // Late reply cannot replace the dry quantum.
+    respond(&mut worker, 1);
+    render(&[3.0, 4.0, 10.0, 12.0], true);
+    respond(&mut worker, 2);
+    render(&[14.0, 16.0, 18.0, 20.0], false);
+    assert!(!control.is_revoked());
+    assert_eq!(control.take_callback_fault(), None);
 }
 
 #[test]

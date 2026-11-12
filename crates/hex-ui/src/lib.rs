@@ -6,6 +6,7 @@
 //! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
 //! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
 //! fastrand supplies transient browser result ranks on the UI thread.
+//! Test-only storage access verifies complete control-side EQ upgrade round trips.
 //!
 //! # Does not own
 //! Does not own a second editable project, construct DSP or access files/audio devices from
@@ -29,7 +30,7 @@ pub use controller_input::install_controller_input;
 pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
-#[cfg(any(test, feature = "ui-test-support"))]
+#[cfg(feature = "ui-test-support")]
 mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
@@ -133,7 +134,7 @@ pub struct PluginEffectTestView {
     pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
     pub pending: bool,
     pub queued_requests: usize,
-    /// Read-only VST3 parameter control identities keyed by device and ID.
+    /// Source-bound VST3 parameter controls keyed by device and parameter ID.
     pub parameter_controls: Vec<(u64, u32, gpui::EntityId)>,
     /// A controller parameter enumeration/page query is awaiting its terminal.
     pub parameter_query_pending: bool,

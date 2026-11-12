@@ -1,5 +1,7 @@
 //! Nine value controls use their existing owned history and latency. Lookahead
 //! or routing eligibility selects the bounded structural factory at fixed latency.
+//! Sample-rate input gain mappings use the same 5 ms gain response as authored
+//! automation, before input enters the delayed limiting stages.
 use super::{
     decode,
     runtime::Factory,
@@ -10,7 +12,7 @@ use hex_lattice::{
     DevicePreparationContext, PreparedProcessorFactory, PreparedRuntimeDevice, StereoMatrix,
 };
 use hex_lattice_contract::{
-    DeviceContractError, NativeDeviceState, ParameterDescriptor, ParameterId,
+    DeviceContractError, NativeDeviceState, ParameterDescriptor, ParameterId, ParameterModulation,
     ParameterNormalization, ParameterSemantics, ParameterSmoothing,
 };
 use std::sync::Arc;
@@ -19,6 +21,7 @@ pub(super) const BINDINGS: [Binding<Settings>; COUNT] = [
     Binding::float(
         state::DESCRIPTORS[0],
         ParameterSemantics {
+            modulation: ParameterModulation::SampleRate,
             smoothing: ParameterSmoothing::DeviceManaged,
             ..SCALAR_ENVELOPE
         },
@@ -90,12 +93,16 @@ pub(super) fn descriptor(id: ParameterId) -> Option<ParameterDescriptor> {
     slot(id).map(|i| BINDINGS[i].descriptor)
 }
 pub(super) fn semantics(id: ParameterId) -> Option<ParameterSemantics> {
-    if matches!(id, LOOKAHEAD | ROUTING) {
+    if matches!(id, LOOKAHEAD | ROUTING | MODE) {
         super::runtime::structural::semantics(id)
     } else {
         slot(id).map(|i| BINDINGS[i].semantics)
     }
 }
+pub(super) fn modulation_semantics(id: ParameterId) -> Option<ParameterSemantics> {
+    semantics(id).filter(|semantics| semantics.modulation == ParameterModulation::SampleRate)
+}
+
 pub(super) fn prepare(
     state: &NativeDeviceState,
     context: &DevicePreparationContext<'_>,
@@ -110,11 +117,14 @@ pub(super) fn prepare(
     }
     if ids
         .iter()
-        .any(|&id| !matches!(id, LOOKAHEAD | ROUTING) && slot(id).is_none())
+        .any(|&id| !matches!(id, LOOKAHEAD | ROUTING | MODE) && slot(id).is_none())
     {
         return Err(DeviceContractError::UnsupportedProcessingClass);
     }
-    if ids.iter().any(|id| matches!(*id, LOOKAHEAD | ROUTING)) {
+    if ids
+        .iter()
+        .any(|id| matches!(*id, LOOKAHEAD | ROUTING | MODE))
+    {
         return Ok(PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(PreparedProcessorFactory::Owned(Arc::new(
@@ -241,7 +251,7 @@ mod tests {
         out
     }
     #[test]
-    fn preparation_admits_only_the_sorted_requested_scalar_union() {
+    fn preparation_admits_only_the_sorted_requested_union() {
         let base = state(&[]);
         let tuning = TuningTable::default();
         let context = DevicePreparationContext {
@@ -253,8 +263,8 @@ mod tests {
             &[][..],
             &[GAIN, GAIN],
             &[CEILING, GAIN],
-            &[MODE],
-            &[LOOKAHEAD, MODE],
+            &[ParameterId::from_static(13)],
+            &[LOOKAHEAD, ParameterId::from_static(13)],
         ] {
             assert!(prepare(&base, &context, ids).is_err());
         }
@@ -266,6 +276,7 @@ mod tests {
             LINK,
             LOOKAHEAD,
             ROUTING,
+            MODE,
             MAXIMIZE,
             THRESHOLD,
             OUTPUT,
@@ -280,6 +291,7 @@ mod tests {
                 LINK,
                 LOOKAHEAD,
                 ROUTING,
+                MODE,
                 MAXIMIZE,
                 THRESHOLD,
                 OUTPUT,
@@ -288,11 +300,11 @@ mod tests {
                 assert_eq!(rt.supports_parameter_automation(candidate), candidate == id);
             }
         }
-        for raw in 1..=12 {
+        for raw in 1..=13 {
             let id = ParameterId::new(raw).unwrap();
             assert_eq!(
                 DEFINITION.supports_parameter_automation(&base, id).unwrap(),
-                raw != 8
+                raw <= 12
             );
         }
         let look = DEFINITION

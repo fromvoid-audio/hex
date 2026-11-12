@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Command, Editor, TrackSelectionIds};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
-fn state() -> NativeDeviceState {
+pub(super) fn state() -> NativeDeviceState {
     NativeDeviceState::new(DeviceTypeId::new("test.automation").unwrap(), 1, vec![1, 2]).unwrap()
 }
 fn point(quarters: u32, value: f32, outgoing: AutomationInterpolation) -> AutomationPoint {
@@ -11,13 +11,13 @@ fn point(quarters: u32, value: f32, outgoing: AutomationInterpolation) -> Automa
         outgoing,
     }
 }
-fn points() -> Vec<AutomationPoint> {
+pub(super) fn points() -> Vec<AutomationPoint> {
     vec![
         point(1, 0.25, AutomationInterpolation::Linear),
         point(3, 0.75, AutomationInterpolation::Step),
     ]
 }
-fn fixture() -> (Editor, crate::TrackId, DeviceId) {
+pub(super) fn fixture() -> (Editor, crate::TrackId, DeviceId) {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = e
         .execute(Command::AddTrack {
@@ -97,6 +97,7 @@ fn edits_are_atomic_target_stable_and_clear_restores_no_override() {
     assert_eq!(authored.device(device).unwrap().state(), &original);
     let mut duplicate = points();
     duplicate[1].beat = duplicate[0].beat;
+    duplicate.push(duplicate[1]);
     assert!(
         e.execute(Command::ReplaceDeviceAutomation {
             device,
@@ -286,6 +287,7 @@ fn provider_replacement_refuses_to_reinterpret_existing_parameter_ids() {
             comparison: None,
         },
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: state(),
             expected_variant: crate::DeviceVariant::A,
@@ -1098,4 +1100,128 @@ fn vst3_touch_splices_require_the_captured_class_and_preserve_history_and_base()
     assert_eq!(editor.project(), &original);
     assert!(editor.redo());
     assert_eq!(editor.project(), &recorded);
+}
+
+#[test]
+fn recorded_native_source_effect_lanes_remain_dormant_without_a_receiver() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "source".into(),
+            before_track: None,
+            slot: crate::TrackDeviceSlot::Instrument,
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver");
+    };
+    let receiver = editor.project().track(track).unwrap();
+    let source = receiver.source_id().unwrap();
+    let instrument = receiver.instrument().unwrap().id();
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    let Created::Device(effect) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: state(),
+        })
+        .unwrap()
+    else {
+        panic!("source effect");
+    };
+    let target = DeviceAutomationTarget::HostOutputGain;
+    let splice = |device| Command::SpliceDeviceAutomationTouch {
+        device,
+        target,
+        vst3_class: None,
+        spans: vec![DeviceAutomationTouchSpan {
+            start: BeatTime::ZERO,
+            end: BeatTime::ONE,
+            steps: vec![DeviceAutomationTouchStep {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5).unwrap(),
+            }],
+        }],
+    };
+    let unbound = editor.project().clone();
+    assert!(editor.execute(splice(effect)).is_err());
+    assert_eq!(editor.project(), &unbound);
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })
+        .unwrap();
+    assert!(
+        editor.execute(splice(instrument)).is_err(),
+        "host trims remain an effect contract"
+    );
+    let before = editor.project().clone();
+    editor.execute(splice(effect)).unwrap();
+    let recorded = editor.project().clone();
+    assert_eq!(
+        recorded
+            .device(effect)
+            .unwrap()
+            .automation_target(target)
+            .unwrap()
+            .touch
+            .len(),
+        1
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &recorded);
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    assert_eq!(
+        reopened.device(effect).unwrap().automation(),
+        recorded.device(effect).unwrap().automation()
+    );
+}
+
+#[test]
+fn shared_beat_ends_the_incoming_ramp_and_owns_the_outgoing_value() {
+    use AutomationInterpolation::Linear;
+    let (mut editor, _, device) = fixture();
+    let parameter = ParameterId::from_static(7);
+    let points = vec![
+        point(0, 0.0, Linear),
+        point(2, 1.0, Linear),
+        point(2, 0.25, Linear),
+        point(4, 0.75, Linear),
+    ];
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter,
+            points: points.clone(),
+        })
+        .unwrap();
+    let lane = editor
+        .project()
+        .device(device)
+        .unwrap()
+        .automation_target(DeviceAutomationTarget::Parameter(parameter))
+        .unwrap();
+    assert_eq!(lane.points, points);
+    for (quarters, expected) in [(1, 0.5), (2, 0.25), (3, 0.5)] {
+        assert_eq!(
+            lane.value_at(BeatTime::from_quarters(quarters).unwrap())
+                .unwrap()
+                .get(),
+            expected
+        );
+    }
 }

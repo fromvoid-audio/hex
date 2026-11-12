@@ -25,6 +25,7 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedDeviceIdentity {
     id: DeviceId,
+    parent: Option<DeviceId>,
     state: hex_lattice_contract::NativeDeviceState,
     bypassed: bool,
 }
@@ -33,6 +34,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
+            parent: device.parent(),
             state: device.state().clone().without_host_gains(),
             bypassed: device.bypassed(),
         }
@@ -161,7 +163,34 @@ impl std::fmt::Debug for PreparedRevision {
     }
 }
 
+/// Prepare the authored and resource-backed graphs independently, then let
+/// the admitted instrument program take sole ownership of its output trim.
+fn assign_prepared_instrument_output_trims(
+    arrangement: &mut PlaybackProject,
+    session: &PreparedSessionInventory,
+) {
+    for (index, track) in arrangement.tracks.iter_mut().enumerate() {
+        if track.instrument_output_gain != 1.0
+            && track
+                .instrument_id
+                .is_some_and(|device| session.has_instrument_output_modulation_at(index, device))
+        {
+            track.instrument_output_gain = 1.0;
+        }
+    }
+}
+
 impl PreparedRevision {
+    #[cfg(test)]
+    pub(crate) fn test_install_source_effect_recipes(
+        &mut self,
+        recipes: Vec<crate::source_effect_stage::PreparedSourceEffects>,
+    ) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.source_effects = recipes;
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
     #[cfg(test)]
     pub(crate) fn test_install_retained_receiver(
         &mut self,
@@ -763,7 +792,7 @@ impl PreparedRevision {
                     "shared instrument context revision budget exceeded",
                 ));
             }
-            let (arrangement, midi_preview) = crate::compile::project_with_source_bank(
+            let (mut arrangement, midi_preview) = crate::compile::project_with_source_bank(
                 project,
                 sources,
                 Some(Arc::clone(&sine_table)),
@@ -783,7 +812,9 @@ impl PreparedRevision {
                 instruments,
                 shared_contexts,
                 samplers,
+                native_input,
             )?;
+            assign_prepared_instrument_output_trims(&mut arrangement, &session);
             session.validate_shared_source_capacity(project, &arrangement)?;
             let source_routing = crate::PreparedSourceRouting::prepare_for_playback(
                 project,
@@ -1087,7 +1118,7 @@ impl PreparedRevision {
                 "shared instrument context revision budget exceeded",
             ));
         }
-        let (arrangement, midi_preview) =
+        let (mut arrangement, midi_preview) =
             crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
                 project,
                 sources,
@@ -1106,6 +1137,7 @@ impl PreparedRevision {
                 &instruments,
                 shared_contexts,
             )?;
+        assign_prepared_instrument_output_trims(&mut arrangement, &session);
         session.validate_shared_source_capacity(project, &arrangement)?;
         let source_routing =
             crate::PreparedSourceRouting::prepare_for_playback(project, &arrangement, &session)?;
@@ -1507,9 +1539,18 @@ impl PreparedRevision {
     /// Preallocation quote for ordinary compilation's complete predecessor evidence. Counts
     /// canonical source/state backing conservatively, including shared duplicates. One additional
     /// same-project descriptor set is reserved for tuning-continuation validation scratch; this
-    /// construction-only allowance does not multiply retained inventory. Actual Vec capacities
-    /// are checked again after construction. Legacy closed compilation is unchanged.
+    /// construction-only allowance does not multiply retained inventory. Native source program
+    /// construction is separately quoted once, including retained/temporary overlap. Actual Vec
+    /// capacities are checked after construction. Legacy closed compilation is unchanged.
     pub fn device_handoff_metadata_construction_bytes(project: &Project) -> Result<usize, Invalid> {
+        Self::device_handoff_metadata_construction_bytes_with_input(project, None)
+    }
+
+    /// Ordinary construction with one optional source-owned automation target.
+    pub fn device_handoff_metadata_construction_bytes_with_input(
+        project: &Project,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<usize, Invalid> {
         let bytes = (|| {
             let mut bytes = project
                 .tracks()
@@ -1539,7 +1580,11 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::construction_bytes(project).ok()?)?
-                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
+                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))?
+                .checked_add(crate::source_effect_stage::metadata::construction_bytes(
+                    project,
+                    native_input,
+                )?)
         })();
         let programs = crate::foreign_automation::candidate::quote_instruments(project)
             .map_err(|_| Invalid("vst3 instrument automation reservation overflow"))?;
@@ -1550,8 +1595,13 @@ impl PreparedRevision {
         // descriptors. It may coexist with the candidate; reserve that finite worst case even
         // when this generic preparation call does not know whether validation will be requested.
         let predecessor_validation_scratch = candidate;
+        let native_programs = PreparedSessionInventory::instrument_automation_construction_bytes(
+            project,
+            native_input,
+        )?;
         candidate
             .checked_add(predecessor_validation_scratch)
+            .and_then(|bytes| bytes.checked_add(native_programs))
             .ok_or(Invalid("device handoff construction byte count overflow"))
     }
 
@@ -1598,7 +1648,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)?
-                .checked_add(self.source_routing.retained_bytes())
+                .checked_add(self.source_routing.retained_bytes())?
+                .checked_add(crate::source_effect_stage::metadata::retained_bytes(
+                    &self.arrangement().source_effects,
+                )?)
         })();
         bytes.ok_or(crate::AudioStorageError::Overflow)
     }
@@ -1951,3 +2004,7 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
 
 #[cfg(test)]
 mod ordinary_streaming_tests;
+
+#[cfg(test)]
+#[path = "prepared_revision/serial_unit_tests.rs"]
+mod serial_unit_tests;

@@ -62,6 +62,7 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning,
             routing,
             audio_feeds,
@@ -86,6 +87,7 @@ impl Project {
             || offline_assets != &target.offline_assets
             || native_sources.len() != target.native_sources.len()
             || arrangement_sections != &target.arrangement_sections
+            || arrangement_locators != &target.arrangement_locators
             || tuning != &target.tuning
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds
@@ -165,6 +167,8 @@ impl Project {
                 return None;
             };
             let Device {
+                modulation,
+                parent,
                 automation,
                 id: device_id,
                 state,
@@ -173,7 +177,9 @@ impl Project {
             } = &**current;
             if current.source_id() != next.source_id()
                 || device_id != &next.id
+                || parent != &next.parent
                 || bypassed != &next.bypassed
+                || modulation != &next.modulation
                 || automation != &next.automation
                 || comparison != &next.comparison
                 || state.type_id() != next.state.type_id()

@@ -79,6 +79,7 @@ fn provider_chain(
         PreparedParameterAutomation::default()
     };
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),

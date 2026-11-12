@@ -15,6 +15,14 @@ pub struct AudioImportOptions {
     /// Captured linear gain for newly created Arrangement or Console tracks.
     pub new_track_gain: Option<f32>,
 }
+
+/// One captured existing-asset Arrangement placement.
+pub(crate) struct ProjectSampleImport {
+    pub asset: hex_project::AssetId,
+    pub track: TrackId,
+    pub start: u64,
+    pub warp: hex_project::AudioImportWarp,
+}
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
@@ -89,6 +97,85 @@ pub(crate) fn prepare_asset_free(
 }
 
 impl Session {
+    /// Place one already-resident asset through the same Arrangement import
+    /// transaction as a decoded batch. Its identity and media owners stay put.
+    pub(crate) fn place_existing_asset_revision_using(
+        &mut self,
+        import: ProjectSampleImport,
+        previous: Option<&hex_engine::PreparedRevision>,
+        mut admit: impl FnMut() -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let ProjectSampleImport {
+            asset,
+            track,
+            start,
+            warp,
+        } = import;
+        admit()?;
+        self.project().existing_import_frames(asset)?;
+        if !self.media.contains_key(&asset) {
+            return Err(SessionError::Invalid("project sample is not resident"));
+        }
+        let command = Command::ImportExistingAudio {
+            asset,
+            placement: ExistingAudioPlacement::Clip {
+                track,
+                start,
+                overwrite: true,
+            },
+        };
+        let media = self.media_bank();
+        let waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
+        let table = self.sine_table();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|resident| [&resident.source_audio, &resident.audio])
+            .collect::<Vec<_>>();
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
+        let (_, (created, revision)) = self.editor.execute_audio_imports_with_warp_prepared(
+            vec![command],
+            warp,
+            |candidate, results| {
+                let [created] = results else {
+                    return Err(SessionError::Invalid(
+                        "project sample import result differs",
+                    ));
+                };
+                if !matches!(created, Created::Imported { asset: actual, .. } if *actual == asset) {
+                    return Err(SessionError::Invalid("project sample identity differs"));
+                }
+                let revision = prepare(
+                    Preparation {
+                        project: candidate,
+                        media: &media,
+                        native,
+                        table,
+                        transforms,
+                        waveforms: &waveforms,
+                        legacy: &legacy,
+                        limits,
+                        max_frames,
+                        shutdown,
+                        previous,
+                    },
+                    &mut admit,
+                )?;
+                Ok::<_, SessionError>((*created, revision))
+            },
+        )?;
+        *self.audio_clip_waveforms.get_mut() = waveforms.into_inner();
+        Ok((created, revision))
+    }
+
     /// Commit one prepared batch, compiling exactly once and making one Undo.
     /// `expected_project` must be the captured project. The caller owns generation
     /// and active-gesture admission; `admit` checks these and cancellation again
@@ -215,7 +302,7 @@ impl Session {
                     "prepared audio sample rate differs from project",
                 ));
             }
-            let frames = u64::try_from(member.waveform.source_frames)
+            let frames = u64::try_from(member.waveform.source_frames())
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
             if let Some(asset) = self.reusable_import_asset(&member) {
                 // An unchanged resident file adds no asset, PCM or waveform.

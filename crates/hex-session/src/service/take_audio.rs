@@ -143,6 +143,7 @@ pub fn prepare_excerpt(
         .path
         .with_file_name(format!("{stem}-{stamp}-{serial}.wav"));
     let mut at = range.start;
+    let mut identical_channels = true;
     hex_export::write_float_wav_new(&path, take.sample_rate, frames, cancel, |output| {
         let got = source
             .read_frames_into(at, output)
@@ -151,6 +152,7 @@ pub fn prepare_excerpt(
             return Err(ExportError::Invalid("the retained take changed"));
         }
         for frame in output.iter() {
+            identical_channels &= frame[0].to_bits() == frame[1].to_bits();
             let index = ((at - range.start) * count / frames) as usize;
             for (peak, sample) in bins[index].iter_mut().zip(frame) {
                 peak.min = peak.min.min(*sample);
@@ -161,7 +163,13 @@ pub fn prepare_excerpt(
         Ok(())
     })
     .map_err(|error| error.to_string())?;
-    let waveform = match Waveform::from_peaks(size, bins) {
+    let waveform = match Waveform::from_peaks(size, bins).and_then(|waveform| {
+        if identical_channels {
+            waveform.with_identical_channels()
+        } else {
+            Ok(waveform)
+        }
+    }) {
         Ok(waveform) => waveform,
         Err(error) => {
             let _ = std::fs::remove_file(&path);
@@ -208,6 +216,7 @@ mod tests {
             hex_media::decode_wav_file(&excerpt.path, hex_media::Limits::new(4096, 16)).unwrap();
         assert_eq!(copied.audio().frames(), audio.frames());
         assert_eq!(excerpt.preview.playback_frames, 3);
+        assert!(excerpt.preview.waveform.has_identical_channels());
         assert_ne!(excerpt.path, path);
         cancel.store(true, Ordering::Relaxed);
         assert!(prepare_excerpt(source, 1..4, 48_000, &cancel).is_err());

@@ -172,7 +172,8 @@ fn prepare_instruments(
         instrument_profile,
         epoch,
     };
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::delay::DelayDefinition];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     PreparedRevision::prepare_with_effect_registry(
         editor.project(),
@@ -370,17 +371,22 @@ struct NoteEndpoint {
     next_offset: usize,
     fail_at: Option<usize>,
     rejected: bool,
+    instrument_sample: f32,
+    effect: Option<Borrowed>,
 }
 
 impl ForeignProcessors for NoteEndpoint {
     fn process_segment(
         &mut self,
-        _: ForeignProcessorNode<'_>,
-        _: usize,
-        _: &mut [Frame],
-        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        panic!("instrument must use the note endpoint");
+        self.effect
+            .as_mut()
+            .expect("only the hosted effect uses this endpoint")
+            .process_segment(node, offset, frames, clock)
     }
 
     fn process_segment_with_notes(
@@ -401,6 +407,7 @@ impl ForeignProcessors for NoteEndpoint {
         if self.fail_at == Some(offset) {
             return Err(DeviceContractError::ForeignProcessingFailed);
         }
+        frames.fill([self.instrument_sample; 2]);
         Ok(())
     }
 
@@ -417,6 +424,9 @@ impl NoteEndpoint {
     ) -> Result<(), SessionPlaybackError> {
         self.next_offset = 0;
         self.notes.clear();
+        if let Some(effect) = &mut self.effect {
+            effect.next_offset = 0;
+        }
         playback.render_with_foreign_processors(frames, None, None, None, self)
     }
 }
@@ -438,6 +448,197 @@ fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
         panic!("expected one authored MIDI note");
     };
     assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+}
+
+#[test]
+fn vst_note_audition_sends_a_finite_exact_velocity_chord_once() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let input = Arc::new(
+        ComputerKeyboardInput::with_output_activation(clock)
+            .unwrap()
+            .with_note_audition(&[(60, 37), (64, 93)], 8)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[0.0; 2]; 8];
+    endpoint.next_offset = 0;
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(endpoint.notes.is_empty());
+    input.trigger_note_audition().unwrap();
+    endpoint.next_offset = 0;
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let onsets = endpoint.notes.clone();
+    assert_eq!(onsets.len(), 2);
+    assert_eq!(
+        (onsets[0].1.pitch, onsets[0].1.velocity, onsets[0].1.on),
+        (60, 37, true)
+    );
+    assert_eq!(
+        (onsets[1].1.pitch, onsets[1].1.velocity, onsets[1].1.on),
+        (64, 93, true)
+    );
+    assert!(input.note_audition_finished());
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert_eq!(endpoint.notes.len(), 2);
+    for (release, onset) in endpoint.notes.iter().zip(&onsets) {
+        assert!(!release.1.on);
+        assert_eq!(release.1.note_id, onset.1.note_id);
+    }
+    let mut replacement = Playback::from_prepared(revision);
+    replacement
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    replacement
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(endpoint.notes.is_empty(), "a completed bank cannot replay");
+}
+
+#[test]
+fn vst_audition_rolls_back_failed_audio_and_keeps_gate_across_handoff() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let input = Arc::new(
+        ComputerKeyboardInput::with_output_activation(clock)
+            .unwrap()
+            .with_note_audition(&[(60, 37)], 8)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    input.trigger_note_audition().unwrap();
+    let mut endpoint = NoteEndpoint {
+        fail_at: Some(1),
+        ..Default::default()
+    };
+    let mut output = [[1.0; 2]; 4];
+    assert!(
+        playback
+            .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+            .is_err()
+    );
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 4]);
+    assert!(!input.note_audition_finished());
+    endpoint.fail_at = None;
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("retry must admit the onset once")
+    };
+    let onset = *onset;
+    assert!(onset.on && onset.pitch == 60 && onset.velocity == 37);
+    assert!(!input.note_audition_finished());
+    let mut replacement = Playback::from_prepared(revision);
+    replacement
+        .prepare_computer_keyboard_for_controller_activation(project, track, Arc::clone(&input))
+        .unwrap();
+    replacement
+        .try_inherit_runtime_in_control_context(&mut playback, Some(1), Some(1))
+        .unwrap();
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    endpoint.fail_at = Some(3);
+    assert!(
+        replacement
+            .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+            .is_err()
+    );
+    assert!(
+        !input.note_audition_finished(),
+        "a rejected render must not consume gate time"
+    );
+    endpoint.fail_at = None;
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    replacement
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(
+        endpoint.notes.is_empty(),
+        "handoff must retain the held note"
+    );
+    assert!(input.note_audition_finished());
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    replacement
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, release)] = endpoint.notes.as_slice() else {
+        panic!("bounded gate must release")
+    };
+    assert!(!release.on && release.note_id == onset.note_id);
+}
+
+#[test]
+fn vst_audition_cancel_releases_the_original_note() {
+    use crate::{computer_keyboard::ComputerKeyboardInput, playback::Playback};
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let input = Arc::new(
+        ComputerKeyboardInput::default()
+            .with_note_audition(&[(61, 41)], 100)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(prepare(&editor, identity, true).unwrap());
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    input.trigger_note_audition().unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[0.0; 2]; 8];
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("audition onset")
+    };
+    let onset = *onset;
+    input.cancel();
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, release)] = endpoint.notes.as_slice() else {
+        panic!("cancellation release")
+    };
+    assert!(!release.on && release.note_id == onset.note_id);
 }
 
 #[test]
@@ -514,6 +715,82 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
         panic!("cancel release")
     };
     assert!(!release.on && release.note_id == fresh.note_id);
+}
+
+#[test]
+fn live_audition_releases_only_its_own_vst_occurrence() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, LiveNoteEvent},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    let mut playback = Playback::from_prepared(revision);
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    let queue = input.live_notes().unwrap();
+    let activation = input.begin_live_notes_activation_on_control().unwrap();
+    queue
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOn {
+                channel: 0,
+                pitch: 60,
+                velocity: 93,
+            },
+        )
+        .unwrap();
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 4)
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut render = || {
+        endpoint.next_offset = 0;
+        endpoint.notes.clear();
+        playback
+            .render_with_foreign_processors(&mut [[0.; 2]; 8], None, None, None, &mut endpoint)
+            .unwrap();
+        endpoint.notes.clone()
+    };
+
+    let [(_, preview), (_, hardware)] = render()[..] else {
+        panic!("preview and live onsets");
+    };
+    assert!(preview.on && preview.velocity == 37);
+    assert!(hardware.on && hardware.velocity == 93 && hardware.note_id != preview.note_id);
+    let [(_, released)] = render()[..] else {
+        panic!("only the preview expires");
+    };
+    assert!(!released.on && released.note_id == preview.note_id);
+
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 32)
+        .unwrap();
+    let [(_, replacement)] = render()[..] else {
+        panic!("fresh preview");
+    };
+    assert!(replacement.on && replacement.note_id != preview.note_id);
+    input.cancel_live_note_audition_on_control();
+    queue
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOff {
+                channel: 0,
+                pitch: 60,
+                velocity: 41,
+            },
+        )
+        .unwrap();
+    let [(_, cancelled), (_, off)] = render()[..] else {
+        panic!("each input releases its own occurrence");
+    };
+    assert!(!cancelled.on && cancelled.note_id == replacement.note_id);
+    assert!(!off.on && off.note_id == hardware.note_id && off.velocity == 41);
+    assert!(queue.same_current_activation(activation));
 }
 
 #[test]
@@ -824,6 +1101,264 @@ fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
             }
         )]
     );
+}
+
+#[test]
+fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
+    let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 128).unwrap());
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::AddTrack {
+            name: "independent track".into(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 1024,
+            enabled: true,
+        })
+        .unwrap();
+    let original = prepare(&editor, identity, true).unwrap();
+    let mut deadline = None;
+    original.arrangement().tracks()[0]
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint
+        .render(&mut playing, &mut [[0.0; 2]; 1024])
+        .unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 32]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one onset after the wrap");
+    };
+    assert!(onset.on);
+    let onset = *onset;
+
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::delay::DelayDefinition.default_state().unwrap(),
+        })
+        .unwrap();
+    let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    edited.try_inherit_state_live_from(&mut playing).unwrap();
+    assert_eq!(edited.performance_frame(), 1056);
+    assert_eq!(edited.arrangement_frame(), 32);
+    assert!(edited.playing());
+    endpoint.render(&mut edited, &mut [[0.0; 2]; 8]).unwrap();
+    assert!(endpoint.notes.is_empty());
+
+    editor.execute(Command::Gain { track, gain: 0.5 }).unwrap();
+    let mut adjusted = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    adjusted.try_inherit_state_live_from(&mut edited).unwrap();
+    let release = usize::try_from(deadline.unwrap() - 40).unwrap();
+    endpoint
+        .render(&mut adjusted, &mut vec![[0.0; 2]; release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
+fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
+    for on_main in [false, true] {
+        let short_note = BeatTime::from_ratio(1, 128).unwrap();
+        let (mut editor, instrument) = fixture_with_duration(short_note);
+        let track = editor.project().tracks()[0].id();
+        let clip = editor.project().tracks()[0].midi_clips()[0].id();
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_ratio(1, 32).unwrap(),
+                duration: short_note,
+                pitch: 67,
+                channel: 2,
+                velocity: 101,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 512,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = prepare(&editor, instrument, true).unwrap();
+        let instrument_latency = revision.arrangement().main_latency_frames() as usize;
+        let (mut onset_frame, mut release_frame) = (0, 0);
+        revision.arrangement().tracks()[0]
+            .for_each_mutable_midi_span(512, 1024, |span| {
+                onset_frame = span.start;
+                release_frame = span.gate_end;
+            })
+            .unwrap();
+        assert!((512..1024).contains(&onset_frame));
+        let mut playing = SessionPlayback::new(revision).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.5,
+            ..Default::default()
+        };
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        endpoint
+            .render(&mut playing, &mut [[0.0; 2]; 1024])
+            .unwrap();
+        let mut dry = vec![[0.0; 2]; (onset_frame - 512 + 8) as usize];
+        endpoint.render(&mut playing, &mut dry).unwrap();
+        let [(_, onset)] = endpoint.notes.as_slice() else {
+            panic!("one onset on the wrapped pass");
+        };
+        let onset = *onset;
+        assert_eq!((onset.on, onset.pitch), (true, 67));
+        let cut = playing.arrangement_frame();
+        let performance = playing.performance_frame();
+        assert_eq!(cut, onset_frame + 8);
+        assert_eq!(performance - cut, 512);
+
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 512,
+                enabled: true,
+            })
+            .unwrap();
+        let mut moved = SessionPlayback::new(prepare(&editor, instrument, true).unwrap()).unwrap();
+        moved.try_inherit_state_live_from(&mut playing).unwrap();
+        assert_eq!(
+            (moved.arrangement_frame(), moved.performance_frame()),
+            (cut, performance)
+        );
+        endpoint.render(&mut moved, &mut [[0.0; 2]; 8]).unwrap();
+        assert_eq!(moved.arrangement_frame(), cut + 8);
+        assert!(endpoint.notes.is_empty());
+
+        let state = state(19).unwrap();
+        let (owner, command) = if on_main {
+            (
+                ProcessorChainOwner::Main,
+                Command::InsertMainDevice {
+                    before: None,
+                    state,
+                },
+            )
+        } else {
+            (
+                ProcessorChainOwner::Track(track.value()),
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+            )
+        };
+        let Created::Device(device) = editor.execute(command).unwrap() else {
+            panic!("one hosted effect");
+        };
+        let effect = BorrowedDefinition {
+            binding_epoch: Some(1),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+                3,
+            )],
+        };
+        let synth = InstrumentDefinition {
+            identity: instrument,
+            second: None,
+            instrument_profile: true,
+            epoch: 1,
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&synth, &effect];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepare_effect_edit = |editor: &Editor| {
+            let candidate = PreparedRevision::prepare_with_effect_registry(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap();
+            SessionPlayback::new(Arc::new(candidate)).unwrap()
+        };
+        let mut inserted = prepare_effect_edit(&editor);
+        inserted.try_inherit_state_live_from(&mut moved).unwrap();
+        assert_eq!(
+            (inserted.arrangement_frame(), inserted.performance_frame()),
+            (cut + 8, performance + 8)
+        );
+        let mut effect = Borrowed::new(owner, device.value());
+        // Track insertion starts a fresh compensation epoch. Main can use
+        // the instrument origins already retained in the old delay bank.
+        if !on_main {
+            effect.initial_unstamped_frames = instrument_latency;
+        }
+        endpoint.effect = Some(effect);
+        let mut wet = [[0.0; 2]; 64];
+        endpoint.render(&mut inserted, &mut wet).unwrap();
+        let dry_sample = *dry.last().unwrap();
+        assert_eq!(wet[63], dry_sample.map(|sample| sample * 0.25));
+        assert_ne!(wet[63], [0.0; 2]);
+        assert!(endpoint.notes.is_empty());
+
+        if !on_main {
+            editor.execute(Command::RemoveDevice(device)).unwrap();
+            let mut without_active_effect = prepare_effect_edit(&editor);
+            assert!(matches!(
+                without_active_effect.try_inherit_state_live_from(&mut inserted),
+                Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+            ));
+            assert!(editor.undo());
+        }
+        editor
+            .execute(Command::ToggleDeviceBypass { device })
+            .unwrap();
+        let mut bypassed = prepare_effect_edit(&editor);
+        bypassed.try_inherit_state_live_from(&mut inserted).unwrap();
+        let mut aligned_dry = [[0.0; 2]; 64];
+        endpoint.render(&mut bypassed, &mut aligned_dry).unwrap();
+        assert_eq!(aligned_dry[63], dry_sample);
+        assert!(endpoint.notes.is_empty());
+        assert_eq!(endpoint.effect.as_ref().unwrap().processed, 128);
+
+        let mut playing = if on_main {
+            bypassed
+        } else {
+            editor.execute(Command::RemoveDevice(device)).unwrap();
+            let mut removed = prepare_effect_edit(&editor);
+            removed.try_inherit_state_live_from(&mut bypassed).unwrap();
+            assert_eq!(removed.performance_frame(), bypassed.performance_frame());
+            assert_eq!(removed.arrangement_frame(), bypassed.arrangement_frame());
+            endpoint.effect = None;
+            removed
+        };
+        let release = (release_frame - playing.arrangement_frame()) as usize;
+        let mut after = vec![[0.0; 2]; release + 1];
+        endpoint.render(&mut playing, &mut after).unwrap();
+        assert_eq!(after.last().unwrap(), &dry_sample);
+        assert_eq!(
+            endpoint.notes,
+            [(
+                release,
+                hex_lattice::ForeignNote {
+                    on: false,
+                    velocity: 0,
+                    ..onset
+                }
+            )]
+        );
+    }
 }
 
 #[test]

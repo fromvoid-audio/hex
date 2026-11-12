@@ -182,7 +182,7 @@ impl NativeOwnedInstrumentRuntimePair {
         if !self.open {
             return Err(NativeInstrumentRuntimeError::BlockNotStarted);
         }
-        crate::instrument_runtime::validate_event_batch(events, frames.len(), self.events)?;
+        crate::instrument_runtime::validate_event_batch(events, frames.len(), self.events, false)?;
         self.runtime.preflight_events(events, frames.len())?;
         self.runtime.preflight_clock(clock, frames.len())?;
         self.runtime.process_block_with_clock(events, frames, clock);

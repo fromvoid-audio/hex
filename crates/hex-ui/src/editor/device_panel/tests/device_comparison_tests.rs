@@ -218,9 +218,9 @@ fn compressor_generic_ab_return_mix_banks_copy_and_persistence(cx: &mut TestAppC
     compressor_banks_roundtrip(cx, true);
 }
 
-struct Directory(std::path::PathBuf);
+pub(super) struct Directory(pub(super) std::path::PathBuf);
 impl Directory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "hex-device-ab-ui-{}-{}",
@@ -231,7 +231,7 @@ impl Directory {
         std::fs::create_dir(path.join("samples")).unwrap();
         Self(path)
     }
-    fn window(
+    pub(super) fn window(
         &self,
         cx: &mut TestAppContext,
         service: Service,
@@ -791,7 +791,7 @@ fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
             format!("eq-response-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    visual.simulate_click(graph.center(), Modifiers::default());
+    eq_ui_tests::eq_double_click(&mut visual, graph.center());
     pump_until(&editor, cx, settled);
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
     visual.simulate_keystrokes("p");

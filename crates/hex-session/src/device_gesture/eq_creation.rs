@@ -70,6 +70,7 @@ impl EqNodeCreationSnapshot {
             .and_then(|state| state.with_host_metadata_from(entry.state()))
             .map_err(|_| SessionError::Invalid("eq creation state is unsupported"))?;
         Ok(Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: entry.state().clone(),
             expected_variant: self.variant,

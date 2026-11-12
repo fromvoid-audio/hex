@@ -57,7 +57,7 @@ fn open_browser(
     location: u8,
     presentation: Option<EffectPresentation>,
 ) -> BrowserFixture {
-    open_browser_metadata(cx, location, presentation, "Fx", 0, false)
+    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false)
 }
 
 pub(super) fn copy_original_module(source: &Path, target: &Path) {
@@ -83,6 +83,7 @@ fn open_browser_metadata(
     subcategories: &str,
     factory_flags: u32,
     seed_anchor: bool,
+    seed_instrument: bool,
 ) -> BrowserFixture {
     let (reached, facts) = mpsc::sync_channel(1);
     let (resume, resumed) = mpsc::sync_channel(1);
@@ -140,13 +141,27 @@ fn open_browser_metadata(
                 before: None,
                 state: utility,
             },
-            PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
             PluginEffectDestination::Main => Command::InsertMainDevice {
                 before: None,
                 state: utility,
             },
+            _ => panic!("effect fixture destination"),
         };
         state = h.run(Request::Edit(command)).state;
+        (applied, _) = h.applied(applied);
+    }
+    if seed_instrument {
+        let instrument = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap();
+        state = h
+            .run(Request::Edit(Command::InsertInstrument {
+                track,
+                state: instrument,
+            }))
+            .state;
         h.applied(applied);
     }
     let mut selected = selection();
@@ -278,6 +293,7 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             "Fx",
             0,
             true,
+            false,
         );
         let owner = fixture.expected_owner;
         let devices = |state: &hex_session::service::ViewState| -> Vec<hex_project::DeviceId> {
@@ -290,8 +306,8 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
                     .find(|bus| bus.id() == id)
                     .unwrap()
                     .devices(),
-                PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
                 PluginEffectDestination::Main => state.project.main_devices(),
+                _ => panic!("effect fixture destination"),
             }
             .iter()
             .map(|device| device.id())
@@ -303,8 +319,8 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             PluginEffectDestination::Return(_) => {
                 format!("return-device-drop-card-{}", anchor.value())
             }
-            PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
             PluginEffectDestination::Main => format!("main-device-drop-card-{}", anchor.value()),
+            _ => panic!("effect fixture destination"),
         };
         let row = fixture.visual.debug_bounds("browser-vst3-row-0").unwrap();
         let start = row.center();
@@ -425,6 +441,7 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             }),
             categories,
             flags,
+            false,
             false,
         );
         // Change the owned source only after the last-good catalog has loaded
@@ -1002,8 +1019,8 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
                 .find(|r| r.id() == id)
                 .unwrap()
                 .devices(),
-            PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
             PluginEffectDestination::Main => accepted.project.main_devices(),
+            _ => panic!("effect fixture destination"),
         };
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].id().value(), state.project.next_identity());
@@ -1188,81 +1205,112 @@ fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_to
     cx: &mut TestAppContext,
 ) {
     let _native = native_fixture();
-    let mut fixture = open_browser_metadata(
-        cx,
-        0,
-        Some(EffectPresentation {
-            input_frames: 0,
-            output_frames: 512,
-        }),
-        "Instrument|Synth",
-        0,
-        true,
-    );
-    let track = fixture.track;
-    let anchor = fixture.state.project.track(track).unwrap().devices()[0].id();
-    let start = fixture
-        .visual
-        .debug_bounds("browser-vst3-row-0")
-        .unwrap()
-        .center();
-    let card = fixture
-        .visual
-        .debug_bounds(Box::leak(
-            format!("device-drop-card-{}", anchor.value()).into_boxed_str(),
-        ))
-        .unwrap()
-        .center();
-    let modifiers = Modifiers::default();
-    fixture
-        .visual
-        .simulate_mouse_down(start, MouseButton::Left, modifiers);
-    fixture.visual.simulate_mouse_move(
-        gpui::point(start.x + gpui::px(12.0), start.y),
-        MouseButton::Left,
-        modifiers,
-    );
-    fixture
-        .visual
-        .simulate_mouse_move(card, MouseButton::Left, modifiers);
-    repaint(cx, &mut fixture.visual);
-    assert!(!fixture.view(cx).pending);
-    fixture
-        .visual
-        .simulate_mouse_up(card, MouseButton::Left, modifiers);
-    until("instrument drop reached native facts", || {
+    for drop in 0..3 {
+        let mut fixture = open_browser_metadata(
+            cx,
+            0,
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+            "Instrument|Synth",
+            0,
+            true,
+            drop == 1,
+        );
+        let track = fixture.track;
+        let anchor = fixture.state.project.track(track).unwrap().devices()[0].id();
+        let start = fixture
+            .visual
+            .debug_bounds("browser-vst3-row-0")
+            .unwrap()
+            .center();
+        let selector = match drop {
+            0 => format!("device-drop-card-{}", anchor.value()),
+            1 => format!("arrangement-track-header-{}", track.value()),
+            _ => format!("arrangement-lane-{}", track.value()),
+        };
+        let bounds = fixture
+            .visual
+            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .unwrap();
+        let target = if drop == 2 {
+            gpui::point(bounds.center().x, bounds.origin.y)
+        } else {
+            bounds.center()
+        };
+        let modifiers = Modifiers::default();
+        fixture
+            .visual
+            .simulate_mouse_down(start, MouseButton::Left, modifiers);
+        fixture.visual.simulate_mouse_move(
+            gpui::point(start.x + gpui::px(12.0), start.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        fixture
+            .visual
+            .simulate_mouse_move(target, MouseButton::Left, modifiers);
         repaint(cx, &mut fixture.visual);
-        let view = fixture.view(cx);
-        assert!(view.error.is_none(), "{:?}", view.error);
-        view.pending && fixture.facts.try_recv().is_ok()
-    });
-    fixture.resume.send(()).unwrap();
-    until("instrument graph applied", || {
-        fixture.step(cx);
-        let view = fixture.view(cx);
-        assert!(view.error.is_none(), "{:?}", view.error);
-        !view.pending
-            && view
-                .applied
-                .is_some_and(|source| source.context.editor_revision == fixture.state.revision + 1)
-    });
-    let accepted = fixture.view(cx).state.unwrap();
-    let track = accepted.project.track(track).unwrap();
-    let instrument = track.instrument().unwrap();
-    assert_eq!(
-        instrument.id().value(),
-        fixture.state.project.next_identity()
-    );
-    assert_eq!(track.devices()[0].id(), anchor);
-    assert_eq!(track.devices().len(), 1);
-    let selector =
-        Box::leak(format!("device-vst3-editor-{}", instrument.id().value()).into_boxed_str());
-    until("instrument editor button rendered", || {
-        repaint(cx, &mut fixture.visual);
-        fixture.visual.debug_bounds(selector).is_some()
-    });
-    fixture.visual.update(|window, _| window.remove_window());
-    fixture.visual.run_until_parked();
+        assert!(!fixture.view(cx).pending);
+        fixture
+            .visual
+            .simulate_mouse_up(target, MouseButton::Left, modifiers);
+        until("instrument drop reached native facts", || {
+            repaint(cx, &mut fixture.visual);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.pending && fixture.facts.try_recv().is_ok()
+        });
+        fixture.resume.send(()).unwrap();
+        until("instrument graph applied", || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            !view.pending
+                && view.applied.is_some_and(|source| {
+                    source.context.editor_revision == fixture.state.revision + 1
+                })
+        });
+        let accepted = fixture.view(cx).state.unwrap();
+        let original = fixture.state.project.track(track).unwrap();
+        let expected_identity = fixture.state.project.next_identity();
+        let instrument_track = if drop == 2 {
+            assert_eq!(accepted.project.tracks().len(), 2);
+            let new_track = &accepted.project.tracks()[0];
+            assert_eq!(new_track.id().value(), expected_identity);
+            assert_eq!(accepted.project.track(track), Some(original));
+            new_track
+        } else {
+            let changed = accepted.project.track(track).unwrap();
+            assert_eq!(changed.devices(), original.devices());
+            assert_eq!(changed.midi_clips(), original.midi_clips());
+            if drop == 1 {
+                assert_eq!(changed.source_id(), original.source_id());
+            }
+            changed
+        };
+        let instrument = instrument_track.instrument().unwrap();
+        assert_eq!(
+            instrument.id().value(),
+            expected_identity + u64::from(drop == 2)
+        );
+        assert_eq!(instrument_track.instrument_position(), Some(0));
+        if drop == 2 {
+            click(
+                &mut fixture.visual,
+                Box::leak(format!("track-name-{}", instrument_track.id().value()).into_boxed_str()),
+            );
+        }
+        let selector =
+            Box::leak(format!("device-vst3-editor-{}", instrument.id().value()).into_boxed_str());
+        until("instrument editor button rendered", || {
+            repaint(cx, &mut fixture.visual);
+            fixture.visual.debug_bounds(selector).is_some()
+        });
+        fixture.visual.update(|window, _| window.remove_window());
+        fixture.visual.run_until_parked();
+    }
 }
 
 #[gpui::test]
@@ -1348,7 +1396,10 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         assert!(view(cx).error.is_none(), "{:?}", view(cx).error);
         visual.debug_bounds(knob).is_some()
     });
-    click(&mut visual, "play or pause · space");
+    click(
+        &mut visual,
+        "play or pause · space · right-click for history playback",
+    );
     for _ in 0..3 {
         render();
     }
@@ -1418,7 +1469,11 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         let ready = view
             .applied
             .is_some_and(|source| source.audio_revision > before_stop)
-            && visual.debug_bounds(knob).is_some();
+            && visual.debug_bounds(knob).is_some()
+            && view
+                .parameter_controls
+                .iter()
+                .any(|&(current, parameter, _)| current == device.value() && parameter == 7);
         assert!(
             ready || Instant::now() < deadline,
             "restore status: {:?}; applied: {:?}; before: {before_stop}; knob: {:?}; restoring: {}; retry: {}; pending: {}; queued: {}",

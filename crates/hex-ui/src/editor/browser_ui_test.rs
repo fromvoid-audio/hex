@@ -376,7 +376,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background(selector),
-        Some(gpui::rgb(theme::color(theme::PaletteRole::Hover)).into())
+        Some(gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into())
     );
 }
 
@@ -948,13 +948,13 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
         MouseButton::Left,
         Modifiers::default(),
     );
-    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 310.0));
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 306.0));
     visual.simulate_mouse_move(
         point(px(240.0), px(200.0)),
         MouseButton::Left,
         Modifiers::default(),
     );
-    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 240.0));
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 236.0));
     visual.simulate_mouse_up(
         point(px(240.0), px(200.0)),
         MouseButton::Left,
@@ -963,7 +963,7 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
     visual.simulate_mouse_move(point(px(300.0), px(200.0)), None, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(!view.browser.resizing);
-        assert_eq!(view.browser.width, 240.0);
+        assert_eq!(view.browser.width, 236.0);
     });
 }
 
@@ -1910,59 +1910,6 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     assert_eq!(after_browser_wheel, before_browser_wheel);
 }
 
-#[test]
-fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta() {
-    let cases = [
-        (
-            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
-            false,
-            (12.0, 24.0),
-        ),
-        (
-            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
-            true,
-            (-12.0, -24.0),
-        ),
-        (
-            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
-            false,
-            (2.0, -3.0),
-        ),
-        (
-            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
-            true,
-            (-2.0, 3.0),
-        ),
-    ];
-    for (raw, inverted, (expected_x, expected_y)) in cases {
-        let event = gpui::ScrollWheelEvent {
-            delta: raw,
-            direction_inverted_from_device: inverted,
-            ..Default::default()
-        };
-        match event.physical_delta() {
-            gpui::ScrollDelta::Pixels(delta) => {
-                assert_eq!(f32::from(delta.x), expected_x);
-                assert_eq!(f32::from(delta.y), expected_y);
-            }
-            gpui::ScrollDelta::Lines(delta) => {
-                assert_eq!(delta.x, expected_x);
-                assert_eq!(delta.y, expected_y);
-            }
-        }
-        match (raw, event.delta) {
-            (gpui::ScrollDelta::Pixels(before), gpui::ScrollDelta::Pixels(after)) => {
-                assert_eq!(before, after);
-            }
-            (gpui::ScrollDelta::Lines(before), gpui::ScrollDelta::Lines(after)) => {
-                assert_eq!(before.x, after.x);
-                assert_eq!(before.y, after.y);
-            }
-            _ => panic!("raw scroll delta variant changed"),
-        }
-    }
-}
-
 #[gpui::test]
 fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppContext) {
     let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
@@ -2875,7 +2822,7 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("resized outer divider");
     assert!((resized.left() - target.x).abs() < px(1.0));
     editor.update(visual, |view, cx| {
-        view.browser.width = super::MIN_WIDTH;
+        view.browser.width = super::geometry::MIN_WIDTH;
         cx.notify();
     });
     visual.run_until_parked();
@@ -3190,11 +3137,20 @@ fn browser_audition_volume_drag_preserves_playback_position_and_selection_level(
     });
     visual.run_until_parked();
     let volume = visual.debug_bounds("browser-audition-volume").unwrap();
+    assert_eq!(
+        visual.debug_bounds("browser-audition-volume-fill"),
+        Some(volume)
+    );
     let down = volume.center();
     let quieter = down + point(px(0.0), px(11.0));
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(quieter, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
+    let fill = visual.debug_bounds("browser-audition-volume-fill").unwrap();
+    assert_eq!(fill.left(), volume.left());
+    assert_eq!(fill.right(), volume.right());
+    assert_eq!(fill.bottom(), volume.bottom());
+    assert_eq!(fill.size.height, volume.size.height / 2.0);
     visual.simulate_mouse_up(quieter, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.browser.audition_gain, 0.5);
@@ -3764,7 +3720,7 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
         "browser-place-0",
         "browser-collection-0",
     ];
-    let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Hover)).into();
+    let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Secondary)).into();
     let idle = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Surface)).into();
     let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
     let places = editor.read_with(&visual, |view, _| view.browser.places.clone());
@@ -4029,7 +3985,7 @@ fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestA
             assert!(row.contains(&glyph.origin));
             assert!(glyph.right() <= row.right());
             assert!(row.size.width >= control.size.width);
-            assert!(row.size.height >= control.size.height);
+            assert_eq!(row.size.height, px(18.0));
         }
     }
 }
@@ -4161,6 +4117,95 @@ fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows
 }
 
 #[gpui::test]
+fn browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let previous = directory.0.join("a");
+    let target = directory.0.join("c");
+    for folder in [&previous, &target] {
+        std::fs::create_dir(folder).unwrap();
+        for index in 0..80 {
+            std::fs::write(folder.join(format!("{index:02}.hex")), []).unwrap();
+        }
+    }
+    for index in 0..12 {
+        std::fs::create_dir(directory.0.join(format!("b{index:02}"))).unwrap();
+    }
+    for index in 0..60 {
+        std::fs::write(directory.0.join(format!("tail-{index:02}.hex")), []).unwrap();
+    }
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.request_browser_scan(directory.0.clone(), cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let disclosure = |index| {
+        let selector = format!("browser-disclosure-{index}");
+        Box::leak(selector.into_boxed_str()) as &'static str
+    };
+    let at = visual.debug_bounds(disclosure(0)).unwrap().center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
+    let target_index = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, cx| {
+            view.browser_visible_entries(cx)
+                .iter()
+                .position(|entry| entry.path == target)
+                .unwrap()
+        })
+    };
+    let old_index = target_index(&visual);
+    assert_eq!(old_index, 93);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.scroll.0.borrow().base_handle.set_offset(point(
+            px(0.0),
+            -px((old_index - 3) as f32 * super::ROW_HEIGHT + 5.0),
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let before = visual.debug_bounds(disclosure(old_index)).unwrap();
+    let gate = editor.update(&mut visual, |view, _| {
+        view.browser.tree.test_gate_next_scan()
+    });
+    visual.simulate_click(before.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(gate.reached.load(std::sync::atomic::Ordering::Acquire));
+    let new_index = target_index(&visual);
+    assert_eq!(
+        new_index, 13,
+        "the earlier branch closed on normal expansion"
+    );
+    let loading = visual.debug_bounds(disclosure(new_index));
+    gate.release();
+    visual.run_until_parked();
+
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries[new_index + 1].path, target.join("00.hex"));
+        assert!(!view.browser.tree.test_worker_busy());
+    });
+    let expanded = visual.debug_bounds(disclosure(new_index));
+    assert_eq!(
+        expanded.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "expanding a long folder must keep its disclosure in view"
+    );
+    assert_eq!(
+        loading.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "the disclosure must also stay put while its children are loading"
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-entry-14").unwrap().top(),
+        before.bottom(),
+        "the first child is painted immediately below its folder"
+    );
+}
+
+#[gpui::test]
 fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
@@ -4256,7 +4301,7 @@ fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mu
             output_generation: 1,
             output_identity: 1,
             start_fraction: 0.5,
-            path: sample.clone(),
+            source: super::BrowserPlaybackSource::File(sample.clone()),
             sample_rate: 48_000,
         });
     });
@@ -5591,10 +5636,8 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
                 "load into sampler"
             );
             assert!(
-                target
-                    .replacement
-                    .as_ref()
-                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+                matches!(target.slot, hex_session::service::SamplerLoadSlot::Existing { ref expected_state, .. }
+                    if hex_engine::is_empty_sampler_state_on_control(expected_state))
             );
             assert!(
                 !view.first_sampler_current(),

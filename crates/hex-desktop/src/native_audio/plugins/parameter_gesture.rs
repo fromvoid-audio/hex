@@ -58,6 +58,7 @@ pub(super) struct Gesture {
     deliveries: Vec<hex_session::service::PluginParameterObservation>,
     retired_delivery: Option<hex_audio::foreign_parameter_delivery::Retired>,
     recording: bool,
+    recording_base: Option<PluginParameterValue>,
     recorded_release: bool,
     recording_context: Option<delivery::Context>,
     recording_closed: bool,
@@ -73,14 +74,15 @@ fn lost() -> Error {
 
 /// Stopped unlaned instruments retain full-state capture. Running instruments
 /// need isolation even before their first lane, to preserve the original MIDI
-/// worker. Saved identity chooses the mode; SDK/Root still admit the target.
+/// worker. Explicitly recorded effects also isolate their live worker.
+/// Saved identity chooses the mode; SDK/Root still admit the target.
 fn isolation_class(
     input: &PluginParameterGestureInput<'_>,
     playing: bool,
 ) -> Result<Option<[u8; 16]>, Error> {
     if let Some(class) = input.isolated_class() {
         Ok(Some(class))
-    } else if input.is_instrument() && playing {
+    } else if (input.is_instrument() || input.records_touch()) && playing {
         Hosting::saved_identity_on_control(input.canonical_state())
             .map(|identity| Some(identity.class.bytes()))
             .map_err(refused)
@@ -104,6 +106,7 @@ fn admit<T>(
                 | "native controller query is already pending"
                 | "native source is busy",
             ) if Instant::now() < deadline => edits::poll_control(control),
+            Err(reason) if source_gone(reason) => return Err(lost()),
             result => return result.map_err(refused),
         }
     }
@@ -229,7 +232,7 @@ impl Plugins {
                         && row.normalized == origin.initial.normalized()
                 })
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
-            let binding = self
+            let source = self
                 .sources
                 .iter()
                 .rev()
@@ -239,8 +242,16 @@ impl Plugins {
                         && source.project_generation == origin.context.project_generation
                         && source.device == origin.device.value()
                 })
-                .ok_or_else(lost)?
-                .binding;
+                .ok_or_else(lost)?;
+            if source
+                .authored
+                .as_ref()
+                .and_then(AuthoredSelection::dense_parameter)
+                == Some(origin.parameter)
+            {
+                return Err(refused("vst3 parameter is owned by its modulation lane"));
+            }
+            let binding = source.binding;
             if !edits::original_state(control, binding, cancellation)
                 .map_err(refused)?
                 .processing_eq(input.canonical_state())
@@ -283,7 +294,7 @@ impl Plugins {
                 });
             let playing = control.status.playing.load(Acquire);
             let isolated_class = isolation_class(&input, playing)?;
-            if input.is_instrument() && playing && !uses_hold {
+            if (input.is_instrument() || input.records_touch()) && playing && !uses_hold {
                 let class = isolated_class
                     .filter(|class| automation_class == Some(*class))
                     .ok_or_else(|| refused("create an automation lane for this parameter before editing during playback"))?;
@@ -352,6 +363,7 @@ impl Plugins {
                 deliveries: Vec::new(),
                 retired_delivery: None,
                 recording: input.records_touch(),
+                recording_base: None,
                 recorded_release: false,
                 recording_context: None,
                 recording_closed: false,
@@ -361,15 +373,23 @@ impl Plugins {
                 return Err(lost());
             }
             if gesture.recording {
-                if input.reading_class().is_none()
-                    || gesture
-                        .live
-                        .as_ref()
-                        .is_none_or(|live| !live.playing || !live.uses_hold)
-                {
-                    return Err(refused(
-                        "recording requires an eligible reading vst3 lane during playback",
-                    ));
+                let live = gesture
+                    .live
+                    .as_ref()
+                    .filter(|live| live.playing && live.uses_hold)
+                    .ok_or_else(|| refused("recording requires the eligible live vst3 target"))?;
+                if !live.reading {
+                    let metadata =
+                        edits::source_metadata(control, binding, cancellation).map_err(refused)?;
+                    if Some(metadata.selection().cid) != automation_class {
+                        return Err(lost());
+                    }
+                    let normalized = metadata
+                        .authored_base_values()
+                        .find_map(|(id, base)| (id == origin.parameter).then_some(base))
+                        .ok_or_else(|| refused("vst3 recording target has no verified base"))?;
+                    gesture.recording_base =
+                        Some(PluginParameterValue::new(normalized).map_err(refused)?);
                 }
                 let capture = delivery::Context::new(&gesture, control, input.context(), clock)?;
                 gesture.recording_context = Some(capture);
@@ -425,6 +445,11 @@ impl Plugins {
                 } else {
                     self.parameter_gesture = None;
                 }
+            } else if gesture.recording && gesture.recorded_release {
+                // An actual recorded restoration already ended the hold.
+                // Failed take publication must not retain a dead controller
+                // gesture or prevent the next Begin on this live source.
+                self.parameter_gesture = None;
             } else {
                 // A retained refusal still owns its acknowledged preview.
                 // Cancel/source loss releases it; rejected publication does not.

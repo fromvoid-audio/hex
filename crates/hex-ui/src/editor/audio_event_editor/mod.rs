@@ -216,6 +216,33 @@ impl EditorView {
         let source = state.project.clip(clip)?;
         Some((clip, source.audio_event_root(), state.revision))
     }
+    pub(super) fn held_audio_play_start_audition(
+        &self,
+    ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
+        use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+        let gesture = self.audio_event_editor.gesture.as_ref()?;
+        let Kind::PlayStart { position } = gesture.kind else {
+            return None;
+        };
+        if position == gesture.anchor {
+            return None;
+        }
+        let clip = self.detail_clip_id()?;
+        let editor_revision = self.state.as_ref()?.revision;
+        if self.audio_event_editor.owner != Some((clip, self.project_generation))
+            || self.audio_event_editor.revision != editor_revision
+        {
+            return None;
+        }
+        Some(ArrangementPlayStartAudition {
+            context: hex_engine::AudioSourceContext {
+                project_generation: self.project_generation,
+                editor_revision,
+            },
+            edit: PlayStartEdit::Audio { clip, position },
+        })
+    }
+
     fn event_context_current(&self) -> bool {
         self.event_context().is_some_and(|(clip, _, revision)| {
             self.audio_event_editor.owner == Some((clip, self.project_generation))
@@ -576,10 +603,14 @@ impl EditorView {
                 if position != gesture.anchor
                     && let Some((clip, _, _)) = self.event_context()
                 {
+                    self.finish_held_play_start_audition();
                     self.commit_audio_clip_loop(
                         clip,
                         hex_project::AudioViewResizeOperation::PlayStart { position },
                     );
+                    self.settle_released_play_start_audition(clip);
+                } else {
+                    self.sync_held_play_start_audition();
                 }
             } else if let Some(operation) = gesture.operation {
                 self.event_commit(operation);
@@ -637,6 +668,7 @@ impl EditorView {
         }
         if !self.event_context_current() || self.edit_pending() {
             self.audio_event_editor.gesture = None;
+            self.sync_held_play_start_audition();
             return;
         }
         let Some(mut gesture) = self.audio_event_editor.gesture.clone() else {
@@ -769,7 +801,11 @@ impl EditorView {
         if gesture.placement.is_some() && self.audio_event_editor.viewport.is_none() {
             self.store_event_camera(self.event_frame_window(&root));
         }
+        let play_start = matches!(gesture.kind, Kind::PlayStart { .. });
         self.audio_event_editor.gesture = Some(gesture);
+        if play_start {
+            self.sync_held_play_start_audition();
+        }
     }
     fn event_nudge(&mut self, right: bool, trim: bool, platform: bool) {
         let Some((clip_id, root, _)) = self.event_context() else {

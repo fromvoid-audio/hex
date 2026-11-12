@@ -20,6 +20,7 @@ enum Intent {
     Hold,
     Update(u64),
     Release(u64),
+    RestoreAndRelease(u64),
 }
 
 #[derive(Clone, Copy)]
@@ -83,8 +84,8 @@ impl NativeWorkerParameterChange {
 /// A live hold command always refers to the exact original worker. The
 /// opening operation token doubles as the hold identity after SDK acceptance.
 /// Begin requires an SDK-armed target, including before any programme contains
-/// that target. Release only unmasks subsequent authored points; when none can
-/// restore the target, Cancel must first Change this hold to its Begin value.
+/// that target. Release unmasks the next authored quantum. A validated base
+/// can instead be applied while ending the hold in the same PCM quantum.
 #[derive(Clone, Copy)]
 pub enum NativeParameterHold<'a> {
     Begin {
@@ -97,6 +98,13 @@ pub enum NativeParameterHold<'a> {
     },
     Release {
         hold: &'a NativeWorkerParameterChange,
+    },
+    /// Restore the exact base of an unprogrammed target on the original worker.
+    /// A refused point leaves the hold intact; only a successful quantum can
+    /// emit Released, and the host still confirms final output separately.
+    RestoreAndRelease {
+        hold: &'a NativeWorkerParameterChange,
+        normalized: f64,
     },
 }
 
@@ -115,8 +123,8 @@ pub enum NativeWorkerParameterProgress {
     Processed(ProcessedParameterChange),
     /// A zero-frame exchange acknowledged by the original processor and controller.
     Flushed,
-    /// The hold ended before this SDK quantum. Any applicable authored points
-    /// for the previously held target can now reach the processor.
+    /// The hold ended at the first sample of this SDK quantum, either by
+    /// unmasking its authored points or applying the requested base.
     Released {
         sequence: u64,
         first_frame: u64,
@@ -328,6 +336,13 @@ impl NativeWorker {
                     .ok_or("native parameter token does not own a hold")?;
                 (id, 0.0, Intent::Release(hold.ordinal))
             }
+            NativeParameterHold::RestoreAndRelease { hold, normalized } => {
+                self.require_parameter_change_source(hold)?;
+                let id = hold
+                    .hold_id
+                    .ok_or("native parameter token does not own a hold")?;
+                (id, normalized, Intent::RestoreAndRelease(hold.ordinal))
+            }
         };
         self.queue_parameter_change_with_before(
             id,
@@ -415,7 +430,11 @@ impl NativeWorker {
             parameter: id,
             pcm_delivery: matches!(
                 intent,
-                Intent::Point | Intent::Hold | Intent::Update(_) | Intent::Release(_)
+                Intent::Point
+                    | Intent::Hold
+                    | Intent::Update(_)
+                    | Intent::Release(_)
+                    | Intent::RestoreAndRelease(_)
             ),
             hold_id: (intent == Intent::Hold).then_some(id),
         };
@@ -602,6 +621,7 @@ impl State {
         parameter_capacity: usize,
         authored: bool,
         manual_origin_available: bool,
+        dense_id: Option<u32>,
     ) -> Result<Option<ParameterPoint>, Fault> {
         let work = &mut self.parameter_change;
         let pending = work.ordinal.is_none() && signal.parameter_change_requested.load(Acquire);
@@ -654,7 +674,7 @@ impl State {
                     id: point.id,
                 })
             }
-            Intent::Update(lease) if holds(lease) => None,
+            Intent::Update(lease) | Intent::RestoreAndRelease(lease) if holds(lease) => None,
             Intent::Release(lease) if holds(lease) => {
                 work.hold = None;
                 work.releasing = Some(point.id);
@@ -668,6 +688,10 @@ impl State {
             }
         };
 
+        if dense_id == Some(point.id) {
+            work.result = Some(Terminal::Refused);
+            return Ok(None);
+        }
         let parameters = match start {
             Some(hold) => without_parameter(&original, hold.id)?,
             None => block.parameters,
@@ -681,6 +705,12 @@ impl State {
         };
         if let Some(hold) = start {
             work.hold = Some(hold);
+        }
+        if matches!(intent, Intent::RestoreAndRelease(_)) {
+            // Do not lose the hold if the restored point could not fit.
+            // The exact reply yields Released, not a recordable point.
+            work.hold = None;
+            work.releasing = Some(point.id);
         }
         block.parameters = merged;
         work.point = point;
@@ -784,10 +814,10 @@ mod tests {
             None
         );
         let mut full = Parameters::default();
-        for id in 1..=64 {
+        for frame in 0..MAX_PARAMETER_POINTS {
             full.push(ParameterPoint {
-                frame: 0,
-                id,
+                frame: u16::try_from(frame).unwrap(),
+                id: 1,
                 normalized: 0.25,
             })
             .unwrap();
@@ -796,27 +826,29 @@ mod tests {
         assert_eq!(merge_parameter_input(&full, host, 64).unwrap(), None);
         assert_eq!(full, before);
         let mut almost_full = Parameters::default();
-        for id in 1..=63 {
+        for frame in 0..MAX_PARAMETER_POINTS - 1 {
             almost_full
                 .push(ParameterPoint {
-                    frame: 0,
-                    id,
+                    frame: u16::try_from(frame).unwrap(),
+                    id: 1,
                     normalized: 0.25,
                 })
                 .unwrap();
         }
+        let before = almost_full;
         assert_eq!(
             merge_parameter_input(&almost_full, host, 0).unwrap(),
             None,
             "completed quantum's free slot does not override an exhausted physical callback"
         );
+        assert_eq!(almost_full, before);
         assert_eq!(
             merge_parameter_input(&almost_full, host, 1)
                 .unwrap()
                 .unwrap()
                 .as_slice()
                 .len(),
-            64
+            MAX_PARAMETER_POINTS
         );
     }
 }
