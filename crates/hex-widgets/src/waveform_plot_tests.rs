@@ -278,3 +278,100 @@ fn translated_local_path_matches_absolute_mesh_inside_the_live_clip(cx: &mut Tes
             .any(|vertex| vertex.x > mask_right)
     );
 }
+
+struct DisjointStereoFixture {
+    grouped: bool,
+}
+impl Render for DisjointStereoFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let geometry = separated_stereo_geometry(self.grouped);
+        let offset = point(px(7.0), px(3.0));
+        let path_bounds = |top, selector: &'static str| {
+            div()
+                .absolute()
+                .left(px(-13.0))
+                .top(px(top))
+                .w(px(100.0))
+                .h(px(12.0))
+                .debug_selector(move || selector.into())
+        };
+        div()
+            .relative()
+            .w(px(60.0))
+            .h(px(50.0))
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .w(px(60.0))
+                    .h(px(50.0))
+                    .child(waveform_plot_with_offset(
+                        move |_| Some((geometry, offset)),
+                        WaveformColors {
+                            waveform: 0x123456,
+                            inactive: 0x789abc,
+                            centerline: 0x555555,
+                        },
+                        WaveformEmphasis::Uniform,
+                    )),
+            )
+            .child(path_bounds(8.0, "stereo-upper-path-bounds"))
+            .child(path_bounds(30.0, "stereo-lower-path-bounds"))
+    }
+}
+
+fn separated_stereo_geometry(grouped: bool) -> Rc<WaveformGeometry> {
+    let build_channel = |top, bottom| {
+        let upper = [point(px(-20.0), px(top)), point(px(80.0), px(top + 4.0))];
+        let lower = [
+            point(px(-20.0), px(bottom)),
+            point(px(80.0), px(bottom + 4.0)),
+        ];
+        let mut channel = channel(&upper, &lower).unwrap();
+        channel.filled_envelope = grouped;
+        channel
+    };
+    Rc::new(WaveformGeometry::stereo([
+        build_channel(5.0, 13.0),
+        build_channel(27.0, 35.0),
+    ]))
+}
+
+#[gpui::test]
+fn disjoint_stereo_pair_matches_individual_paths_with_offset_inside_live_clip(
+    cx: &mut TestAppContext,
+) {
+    let handle = cx.add_window(|_, _| DisjointStereoFixture { grouped: false });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    let observe = |visual: &mut VisualTestContext| {
+        ["stereo-upper-path-bounds", "stereo-lower-path-bounds"].map(|selector| {
+            let triangles = visual.rendered_path_triangles(selector);
+            assert_eq!(triangles.len(), 2, "{selector}");
+            triangles
+        })
+    };
+    visual.run_until_parked();
+    let individual = observe(&mut visual);
+
+    view.update(cx, |view, cx| {
+        view.grouped = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let grouped = observe(&mut visual);
+    for (expected, actual) in individual.iter().flatten().zip(grouped.iter().flatten()) {
+        assert_eq!(actual.color, expected.color);
+        assert_eq!(actual.mask, expected.mask);
+        assert_eq!(actual.vertices, expected.vertices);
+    }
+
+    let mask = individual[0][0].mask;
+    assert!(
+        individual
+            .iter()
+            .flatten()
+            .flat_map(|triangle| triangle.vertices)
+            .any(|vertex| vertex.x < mask.origin.x || vertex.x > mask.right())
+    );
+}

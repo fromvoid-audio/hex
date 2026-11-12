@@ -5704,6 +5704,27 @@ pub fn outline(
 }
 
 impl Window {
+    /// Paint two retained paths at a logical-pixel offset. Visible paths at least
+    /// one device pixel apart vertically may share a scene order.
+    pub fn paint_disjoint_path_pair_with_offset(
+        &mut self,
+        paths: [&Path<Pixels>; 2],
+        offset: Point<Pixels>,
+        color: impl Into<Background>,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask();
+        let color = color.into().opacity(self.element_opacity());
+        let scene_paths = paths.map(|path| {
+            let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
+            scene_path.color = color;
+            scene_path
+        });
+        self.next_frame.scene.insert_disjoint_path_pair(scene_paths);
+    }
+
     /// Paint a retained path at a logical-pixel offset before device scaling.
     ///
     /// This method should only be called as part of the paint phase of element drawing.

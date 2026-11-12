@@ -44,6 +44,7 @@ pub struct WaveformChannel {
     envelope: Path<Pixels>,
     centerline: Option<Path<Pixels>>,
     zero_ranges: Option<Path<Pixels>>,
+    filled_envelope: bool,
 }
 impl WaveformChannel {
     /// Preserve flat/DC portions inside an otherwise filled envelope through
@@ -89,7 +90,7 @@ impl WaveformChannel {
         } else {
             None
         };
-        let path = if mode == WaveformEnvelopeMode::Filled && !upper.is_empty() {
+        let (path, filled_envelope) = if mode == WaveformEnvelopeMode::Filled && !upper.is_empty() {
             filled_band(upper, lower)
         } else if let Some(first) = upper.first().copied() {
             let mut path = PathBuilder::stroke(trace_width);
@@ -97,12 +98,12 @@ impl WaveformChannel {
             for point in upper.iter().skip(1) {
                 path.line_to(*point);
             }
-            path.build().ok()?
+            (path.build().ok()?, false)
         } else {
             if mode != WaveformEnvelopeMode::Trace {
                 return None;
             }
-            Path::new(centerline.as_ref()?.1)
+            (Path::new(centerline.as_ref()?.1), false)
         };
         let mut flat = PathBuilder::stroke(trace_width);
         let mut spans = 0;
@@ -122,6 +123,7 @@ impl WaveformChannel {
             } else {
                 None
             },
+            filled_envelope,
         })
     }
 
@@ -151,7 +153,7 @@ fn band_triangles(
     }
 }
 
-fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Path<Pixels> {
+fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> (Path<Pixels>, bool) {
     let mut path = None;
     let solid = gpui::point(0.0, 1.0);
     band_triangles(upper, lower, |[a, b, c]| {
@@ -160,7 +162,8 @@ fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Path<Pixels>
         path.get_or_insert_with(|| Path::new(a))
             .push_triangle((a, b, c), (solid, solid, solid));
     });
-    path.unwrap_or_else(|| Path::new(Point::default()))
+    let filled = path.is_some();
+    (path.unwrap_or_else(|| Path::new(Point::default())), filled)
 }
 fn valid_point(point: Point<Pixels>) -> bool {
     f32::from(point.x).is_finite() && f32::from(point.y).is_finite()
@@ -270,14 +273,37 @@ fn paint_channels_with_offset(
     centerline: u32,
     window: &mut Window,
 ) {
+    if let Channels::Stereo(channels) = &geometry.channels {
+        let [upper, lower] = channels;
+        if [upper, lower].iter().all(|channel| {
+            channel.filled_envelope && channel.centerline.is_none() && channel.zero_ranges.is_none()
+        }) {
+            window.paint_disjoint_path_pair_with_offset(
+                [&upper.envelope, &lower.envelope],
+                offset,
+                rgb(color),
+            );
+            return;
+        }
+    }
     for channel in geometry.channels() {
-        if let Some(path) = &channel.centerline {
-            window.paint_path_with_offset(path, offset, rgb(centerline));
-        }
-        window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
-        if let Some(path) = &channel.zero_ranges {
-            window.paint_path_with_offset(path, offset, rgb(color));
-        }
+        paint_channel_with_offset(channel, offset, color, centerline, window);
+    }
+}
+
+fn paint_channel_with_offset(
+    channel: &WaveformChannel,
+    offset: Point<Pixels>,
+    color: u32,
+    centerline: u32,
+    window: &mut Window,
+) {
+    if let Some(path) = &channel.centerline {
+        window.paint_path_with_offset(path, offset, rgb(centerline));
+    }
+    window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
+    if let Some(path) = &channel.zero_ranges {
+        window.paint_path_with_offset(path, offset, rgb(color));
     }
 }
 
