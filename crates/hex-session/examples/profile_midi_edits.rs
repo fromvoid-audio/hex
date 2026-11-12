@@ -117,9 +117,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(arg) if arg == "--paste-no-recovery" => return profile_paste_service(false),
         Some(arg) if arg == "--switch-recovery" => return profile_switch_service(true),
         Some(arg) if arg == "--switch-no-recovery" => return profile_switch_service(false),
+        Some(arg) if arg == "--time-copy-recovery" => return profile_time_copy_service(true),
+        Some(arg) if arg == "--time-copy-no-recovery" => return profile_time_copy_service(false),
         Some(_) => {
             return Err(
-                "expected --recovery, --no-recovery, --duplicate-recovery, --duplicate-no-recovery, --paste-recovery, --paste-no-recovery, --switch-recovery, or --switch-no-recovery".into(),
+                "expected --recovery, --no-recovery, --duplicate-recovery, --duplicate-no-recovery, --paste-recovery, --paste-no-recovery, --switch-recovery, --switch-no-recovery, --time-copy-recovery, or --time-copy-no-recovery".into(),
             );
         }
         None => {}
@@ -900,6 +902,130 @@ fn profile_switch_service(recovery: bool) -> Result<(), Box<dyn Error>> {
     }
     println!(
         "switch workload: 100 tracks, 6400 notes, {} document bytes, 48000 hz, 1 warmup and 3 measured pairs; observer enabled; headless view is not native paint or audio",
+        profile.document_bytes
+    );
+    profile.close()
+}
+
+/// Measure queued range copies on the actual control worker; not native UI or audio timing.
+fn profile_time_copy_service(recovery: bool) -> Result<(), Box<dyn Error>> {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    use std::sync::{Arc, Mutex};
+    let project = fixture()?;
+    let (profile, opened) = WorkerProfile::open(&project, recovery)?;
+    let service = &profile.service;
+    let track = opened.state.project.tracks()[0].id();
+    let baseline = opened.state.project.snapshot();
+    let mut revision = opened.state.revision;
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&records);
+    service.set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+        if let Some(request) = event
+            .request
+            .filter(|request| request.operation == Some("copy_time_range_to"))
+            && let Ok(mut records) = sink.lock()
+        {
+            records.push((
+                request.request_id,
+                event.stage,
+                Instant::now(),
+                event.details.clone(),
+                event.details_truncated,
+            ));
+        }
+    })))?;
+    for iteration in 0..4 {
+        records
+            .lock()
+            .map_err(|_| "diagnostic lock poisoned")?
+            .clear();
+        for start in [0, 24_000] {
+            let range = hex_project::TimeRange::new(vec![track], start, start + 24_000)?;
+            submit(
+                service,
+                Request::Edit(Command::CopyTimeRangeTo {
+                    range,
+                    track,
+                    frame: start + 24_000,
+                }),
+            )?;
+        }
+        let first = next_terminal(service)?;
+        let second = next_terminal(service)?;
+        if first.state.revision != revision + 1 || second.state.revision != revision + 2 {
+            return Err("copy revisions or ordering differ".into());
+        }
+        profile.verify_journal(&second.state.project)?;
+        let rows = records.lock().map_err(|_| "diagnostic lock poisoned")?;
+        let ids: Vec<_> = rows
+            .iter()
+            .filter_map(|(id, stage, _, _, _)| {
+                matches!(stage, DiagnosticStage::SubmitAttempt).then_some(*id)
+            })
+            .collect();
+        if ids.len() != 2 {
+            return Err("copy diagnostic submissions differ".into());
+        }
+        for (index, id) in ids.iter().enumerate() {
+            let find = |predicate: fn(&DiagnosticStage) -> bool| {
+                rows.iter()
+                    .find(|(candidate, stage, _, _, _)| candidate == id && predicate(stage))
+            };
+            let submit = find(|stage| matches!(stage, DiagnosticStage::SubmitAttempt))
+                .ok_or("missing submit")?;
+            let begin = find(|stage| matches!(stage, DiagnosticStage::WorkerBegin { .. }))
+                .ok_or("missing worker begin")?;
+            let outcome = find(|stage| {
+                matches!(
+                    stage,
+                    DiagnosticStage::OutcomeReady {
+                        request_complete: true,
+                        error: false,
+                        ..
+                    }
+                )
+            })
+            .ok_or("missing outcome")?;
+            if outcome.4 {
+                return Err("copy diagnostics truncated".into());
+            }
+            let recovery_us = outcome
+                .3
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("duplicate_recovery_us="));
+            if recovery && recovery_us.is_none() {
+                return Err("missing recovery timing".into());
+            }
+            println!(
+                "time-copy recovery={recovery} iteration={iteration} request={} submit_to_worker_us={} worker_to_outcome_us={} duplicate_recovery_us={}",
+                index + 1,
+                begin.2.duration_since(submit.2).as_micros(),
+                outcome.2.duration_since(begin.2).as_micros(),
+                recovery_us.unwrap_or("not-recorded")
+            );
+        }
+        drop(rows);
+        submit(service, Request::Undo)?;
+        let first_undo = next_terminal(service)?;
+        let mut expected_first = first.state.project.snapshot();
+        let first_undo_snapshot = first_undo.state.project.snapshot();
+        expected_first.next_id = first_undo_snapshot.next_id;
+        if expected_first != first_undo_snapshot {
+            return Err("first Undo did not restore first copy".into());
+        }
+        submit(service, Request::Undo)?;
+        let undone = next_terminal(service)?;
+        let mut expected_original = baseline.clone();
+        let restored = undone.state.project.snapshot();
+        expected_original.next_id = restored.next_id;
+        if expected_original != restored {
+            return Err("second Undo did not restore project".into());
+        }
+        revision += 4;
+        profile.verify_journal(&undone.state.project)?;
+    }
+    println!(
+        "time-copy workload: 100 tracks, 6400 notes, {} document bytes, 48000 hz, 1 warmup and 3 measured pairs; headless worker, not native paint or audio",
         profile.document_bytes
     );
     profile.close()
