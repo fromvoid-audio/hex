@@ -133,35 +133,44 @@ pub(super) enum Action {
     Shape(Target, AutomationInterpolation),
 }
 
-/// Selected beats within one lane, sorted, unique and non-empty.
+/// A point's time and its order among the at most two nodes at that time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PointKey {
+    beat: BeatTime,
+    second: bool,
+}
+
+impl PointKey {
+    fn at(points: &[AutomationPoint], index: usize) -> Self {
+        let beat = points[index].beat;
+        let second = index > 0 && points[index - 1].beat == beat;
+        Self { beat, second }
+    }
+}
+
+/// Selected points within one lane, sorted, unique and non-empty.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Selection {
     target: Target,
-    beats: Vec<BeatTime>,
+    keys: Vec<PointKey>,
 }
 
 impl Selection {
-    fn one(target: Target, beat: BeatTime) -> Self {
+    fn one(target: Target, key: PointKey) -> Self {
         Self {
             target,
-            beats: vec![beat],
+            keys: vec![key],
         }
     }
-    /// `None` for an empty set, so an empty marquee clears the selection.
-    fn new(target: Target, mut beats: Vec<BeatTime>) -> Option<Self> {
-        beats.sort_unstable();
-        beats.dedup();
-        (!beats.is_empty()).then_some(Self { target, beats })
+
+    fn new(target: Target, mut keys: Vec<PointKey>) -> Option<Self> {
+        keys.sort_unstable();
+        keys.dedup();
+        (!keys.is_empty()).then_some(Self { target, keys })
     }
-    fn contains(&self, target: Target, beat: BeatTime) -> bool {
-        self.target == target && self.beats.binary_search(&beat).is_ok()
-    }
-    fn beats_in(&self, target: Target) -> &[BeatTime] {
-        if self.target == target {
-            &self.beats
-        } else {
-            &[]
-        }
+
+    fn contains(&self, target: Target, key: PointKey) -> bool {
+        self.target == target && self.keys.binary_search(&key).is_ok()
     }
 }
 
@@ -172,8 +181,10 @@ pub(super) struct Draft {
     target: Target,
     revision: u64,
     points: Vec<AutomationPoint>,
-    group: Vec<AutomationPoint>,
-    rest: Vec<AutomationPoint>,
+    group: Vec<(usize, AutomationPoint)>,
+    rest: Vec<(usize, AutomationPoint)>,
+    grabbed: usize,
+    initial_key: PointKey,
     /// A stationary click on a grouped point collapses the selection to it.
     collapse: bool,
     initial: AutomationPoint,
@@ -197,7 +208,9 @@ impl RangeSelection {
         let last = points.partition_point(|point| point.beat < self.end);
         Selection::new(
             self.target,
-            points[first..last].iter().map(|point| point.beat).collect(),
+            (first..last)
+                .map(|index| PointKey::at(points, index))
+                .collect(),
         )
     }
 }
@@ -1243,9 +1256,9 @@ impl EditorView {
                     return;
                 };
                 let mut points = self.automation_view.devices.points(state, target);
-                for point in &mut points {
-                    if selected.contains(target, point.beat) {
-                        point.outgoing = shape;
+                for index in 0..points.len() {
+                    if selected.contains(target, PointKey::at(&points, index)) {
+                        points[index].outgoing = shape;
                     }
                 }
                 self.commit_device_automation(target, points, cx);
@@ -1325,10 +1338,9 @@ impl EditorView {
                     .map_or(&[][..], |lane| lane.points.as_slice());
                 Selection::new(
                     target,
-                    selected
-                        .beats
-                        .into_iter()
-                        .filter(|beat| canonical.iter().any(|point| point.beat == *beat))
+                    (0..canonical.len())
+                        .map(|index| PointKey::at(canonical, index))
+                        .filter(|key| selected.contains(target, *key))
                         .collect(),
                 )
             };
@@ -1429,8 +1441,17 @@ impl EditorView {
             return false;
         };
         let target = selected.target;
-        let mut points = self.automation_view.devices.points(state, target);
-        points.retain(|point| !selected.contains(target, point.beat));
+        let points = self
+            .automation_view
+            .devices
+            .points_ref(&state.project, target);
+        let points = points
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(index, _)| !selected.contains(target, PointKey::at(points, *index)))
+            .map(|(_, point)| point)
+            .collect();
         self.automation_view.devices.selected = None;
         self.commit_device_automation(target, points, cx);
         true

@@ -43,6 +43,8 @@ pub enum AutomationInterpolation {
     Linear,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// At a shared beat, the first point ends the incoming segment and the
+/// second starts the outgoing segment and owns the value at that beat.
 pub struct AutomationPoint {
     pub beat: BeatTime,
     pub value: AutomationValue,
@@ -142,8 +144,12 @@ fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
     if points.is_empty() || points.len() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
         return Err(Invalid("device automation envelope needs 1..1024 points"));
     }
-    if points.windows(2).any(|pair| pair[0].beat >= pair[1].beat) {
-        return Err(Invalid("device automation beats must strictly increase"));
+    if points.windows(2).any(|pair| pair[0].beat > pair[1].beat)
+        || points.windows(3).any(|run| run[0].beat == run[2].beat)
+    {
+        return Err(Invalid(
+            "device automation beats must be ordered with at most two points per beat",
+        ));
     }
     Ok(())
 }

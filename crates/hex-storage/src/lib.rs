@@ -81,7 +81,9 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = ARRANGEMENT_LOCATOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = COINCIDENT_AUTOMATION_SCHEMA_VERSION;
+/// Adds ordered pairs of device automation points at the same beat.
+pub const COINCIDENT_AUTOMATION_SCHEMA_VERSION: u32 = 115;
 /// Schema114 persists frame-anchored arrangement locators.
 pub const ARRANGEMENT_LOCATOR_SCHEMA_VERSION: u32 = 114;
 /// Schema113 stores the explicit S-curve laws over a complete prior project.
@@ -246,7 +248,12 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free-running Steps uses schema107, or schema108 alongside those touches.
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema115 wraps the appropriate prior document only when an authored device
+/// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
+    if schema::coincident_automation::contains(project) {
+        return COINCIDENT_AUTOMATION_SCHEMA_VERSION;
+    }
     if !project.arrangement_locators().is_empty() {
         return ARRANGEMENT_LOCATOR_SCHEMA_VERSION;
     }
@@ -513,6 +520,9 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if schema::coincident_automation::contains(project) {
+        return schema::coincident_automation::encode(project);
+    }
     if !project.arrangement_locators().is_empty() {
         return schema::arrangement_locators::encode(project);
     }
@@ -845,6 +855,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
+    if header.version == COINCIDENT_AUTOMATION_SCHEMA_VERSION && !inside_envelope {
+        return schema::coincident_automation::decode(bytes);
+    }
     if header.version == ARRANGEMENT_LOCATOR_SCHEMA_VERSION && !inside_envelope {
         return schema::arrangement_locators::decode(bytes);
     }
@@ -958,6 +971,11 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if schema::coincident_automation::contains(&project) {
+        return Err(StorageError::Invalid(
+            "coincident automation points require their current project schema",
+        ));
+    }
     if header.version < SAMPLE_RATE_MODE_SCHEMA_VERSION
         && contains_larger_device_state(&project)
             != (header.version == VST3_STATE_SIZE_SCHEMA_VERSION)
