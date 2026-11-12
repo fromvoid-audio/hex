@@ -1852,6 +1852,8 @@ impl Service {
 
     /// Replace the complete held group target. An invalid target cancels the
     /// held audition; it can never admit only part of a selection.
+    /// Returns true when a valid target was stored, not when audio applied it.
+    /// Passing None cancels held input and returns false.
     pub fn audition_arrangement_move(&self, target: Option<ArrangementMoveAudition>) -> bool {
         match target {
             Some(target) if target.valid() => {

@@ -109,7 +109,75 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
         h.run(Request::Redo).state.project.snapshot(),
         committed.state.project.snapshot()
     );
-    advance(&mut h, undone_audio);
+    let redone_audio = advance(&mut h, undone_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), original);
+    let restored_audio = advance(&mut h, redone_audio);
+    let copy = ArrangementMoveAudition {
+        context: hex_engine::AudioSourceContext {
+            project_generation: target.context.project_generation,
+            editor_revision: undone.state.revision,
+        },
+        position: ClipGroupPosition::Audio(120_000),
+        copy: true,
+        ..target.clone()
+    };
+    assert!(h.service.audition_arrangement_move(Some(copy.clone())));
+    let copied_preview = advance(&mut h, restored_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    // The original ends before the new position, so PCM there proves the copy.
+    for _ in 0..2_000 {
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 121_000
+        {
+            break;
+        }
+        h.render();
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 121_000
+    );
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let copied = h.run(Request::MoveExistingClips {
+        project_generation: copy.context.project_generation,
+        revision: copy.context.editor_revision,
+        command: Command::MoveClipsWithOverwrite {
+            clips: copy.clips.to_vec(),
+            anchor: copy.anchor,
+            track: copy.track,
+            position: copy.position,
+            copy: true,
+        },
+    });
+    assert!(copied.error.is_none());
+    assert_eq!(copied.state.project.tracks()[0].clips().len(), 2);
+    assert_eq!(copied.state.project.tracks()[1].clips().len(), 2);
+    h.service.retire_arrangement_move_audition();
+    let copied_audio = advance(&mut h, copied_preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    let mut expected_after_copy_undo = original.clone();
+    expected_after_copy_undo.next_id = copied.state.project.snapshot().next_id;
+    assert_eq!(
+        h.run(Request::Undo).state.project.snapshot(),
+        expected_after_copy_undo
+    );
+    advance(&mut h, copied_audio);
     assert!(h.render().iter().all(|f| *f == [0.0; 2]));
 }
 
