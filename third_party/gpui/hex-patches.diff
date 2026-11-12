@@ -4777,6 +4777,43 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        Ok(())
 +    }
 +}
+@@ -833,0 +1698,36 @@
++
++impl Path<Pixels> {
++    /// Translate in logical pixels, then scale the retained path into a scene path.
++    pub(crate) fn scale_with_offset(
++        &self,
++        factor: f32,
++        offset: Point<Pixels>,
++        content_mask: &ContentMask<Pixels>,
++    ) -> Path<ScaledPixels> {
++        Path {
++            id: self.id,
++            order: self.order,
++            bounds: Bounds {
++                origin: (self.bounds.origin + offset).scale(factor),
++                size: self.bounds.size.scale(factor),
++            },
++            content_mask: content_mask.scale(factor),
++            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
++                .map(|vertex| vertex.scale_with_offset(factor, offset)).collect())),
++            start: self.start.map(|start| (start + offset).scale(factor)),
++            current: (self.current + offset).scale(factor),
++            contour_count: self.contour_count,
++            color: self.color,
++        }
++    }
++}
++
++impl PathVertex<Pixels> {
++    fn scale_with_offset(&self, factor: f32, offset: Point<Pixels>) -> PathVertex<ScaledPixels> {
++        PathVertex {
++            xy_position: (self.xy_position + offset).scale(factor),
++            st_position: self.st_position,
++            content_mask: self.content_mask.scale(factor),
++        }
++    }
++}
 diff --git a/src/taffy.rs b/src/taffy.rs
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
@@ -5734,6 +5771,28 @@ diff --git a/src/window.rs b/src/window.rs
          let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
  
          // Capture phase, events bubble from back to front. Handlers for this phase are used for
+@@ -5103,0 +5705,21 @@
++
++impl Window {
++    /// Paint a retained path at a logical-pixel offset before device scaling.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    pub fn paint_path_with_offset(
++        &mut self,
++        path: &Path<Pixels>,
++        offset: Point<Pixels>,
++        color: impl Into<Background>,
++    ) {
++        self.invalidator.debug_assert_paint();
++
++        let scale_factor = self.scale_factor();
++        let content_mask = self.content_mask();
++        let opacity = self.element_opacity();
++        let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
++        scene_path.color = color.into().opacity(opacity);
++        self.next_frame.scene.insert_primitive(scene_path);
++    }
++}
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs

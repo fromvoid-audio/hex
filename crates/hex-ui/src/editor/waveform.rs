@@ -2,7 +2,7 @@ use crate::theme;
 use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::Clip;
 use hex_session::CachedWaveform;
-use hex_widgets::{WaveformColors, WaveformEmphasis, waveform_plot};
+use hex_widgets::{WaveformColors, WaveformEmphasis, waveform_plot_with_offset};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
@@ -502,7 +502,7 @@ pub(super) fn waveform_canvas(
         inactive: ink,
         centerline: theme::color(theme::PaletteRole::Border),
     };
-    waveform_plot(
+    waveform_plot_with_offset(
         move |paint| {
             #[cfg(all(test, feature = "ui-test-support"))]
             if grid.is_some() && super::navigation_metrics::waveforms_suppressed() {
@@ -539,14 +539,15 @@ pub(super) fn waveform_canvas(
                 .as_ref()
                 .and_then(|cache| cached_waveform_geometry(cache, &waveform, &request));
             let geometry = geometry.or_else(|| {
-                prepare_waveform_geometry_with_scale(&waveform, &request).map(Arc::new)
+                prepare_waveform_geometry_with_scale(&waveform, &request)
+                    .map(|geometry| (Arc::new(geometry), gpui::Point::default()))
             });
             #[cfg(all(test, feature = "ui-test-support"))]
-            if let Some(geometry) = &geometry
+            if let Some((geometry, offset)) = &geometry
                 && let Some(cache) = &cache
                 && let Ok(mut cache) = cache.try_borrow_mut()
             {
-                cache.record_paint(bounds, paint.mask, geometry, colors);
+                cache.record_paint(bounds, paint.mask, geometry, *offset, colors);
             }
             geometry
         },

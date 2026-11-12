@@ -263,14 +263,20 @@ fn regions(emphasis: WaveformEmphasis, colors: WaveformColors) -> [(f64, f64, u3
         }
     }
 }
-fn paint_channels(geometry: &WaveformGeometry, color: u32, centerline: u32, window: &mut Window) {
+fn paint_channels_with_offset(
+    geometry: &WaveformGeometry,
+    offset: Point<Pixels>,
+    color: u32,
+    centerline: u32,
+    window: &mut Window,
+) {
     for channel in geometry.channels() {
         if let Some(path) = &channel.centerline {
-            window.paint_path(path.clone(), rgb(centerline));
+            window.paint_path_with_offset(path, offset, rgb(centerline));
         }
-        window.paint_path(channel.envelope.clone(), rgb(color));
+        window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
         if let Some(path) = &channel.zero_ranges {
-            window.paint_path(path.clone(), rgb(color));
+            window.paint_path_with_offset(path, offset, rgb(color));
         }
     }
 }
@@ -281,6 +287,28 @@ fn paint_channels(geometry: &WaveformGeometry, color: u32, centerline: u32, wind
 /// Queries must use bounded prepared peak/geometry data, never PCM, decoding or I/O.
 pub fn waveform_plot<D>(
     prepare: impl FnOnce(WaveformViewport) -> Option<D> + 'static,
+    colors: WaveformColors,
+    emphasis: WaveformEmphasis,
+) -> Div
+where
+    D: Deref + 'static,
+    D::Target: AsRef<WaveformGeometry>,
+{
+    waveform_plot_with_offset(
+        move |viewport| prepare(viewport).map(|geometry| (geometry, gpui::point(px(0.0), px(0.0)))),
+        colors,
+        emphasis,
+    )
+}
+
+/// Paint retained waveform geometry translated by a logical-pixel offset.
+///
+/// The offset is applied during scene submission, before scale and clipping,
+/// so cached local paths can be reused at a new location without rebuilding or
+/// cloning their path meshes. The existing [`waveform_plot`] submits a zero
+/// offset and retains its original behavior.
+pub fn waveform_plot_with_offset<D>(
+    prepare: impl FnOnce(WaveformViewport) -> Option<(D, Point<Pixels>)> + 'static,
     colors: WaveformColors,
     emphasis: WaveformEmphasis,
 ) -> Div
@@ -305,18 +333,27 @@ where
                 {
                     return;
                 }
-                let Some(data) = prepare(WaveformViewport {
+                let Some((data, offset)) = prepare(WaveformViewport {
                     bounds,
                     scale,
                     mask: window.content_mask().bounds,
                 }) else {
                     return;
                 };
+                if !valid_point(offset) {
+                    return;
+                }
                 let geometry = data.deref().as_ref();
                 // Timeline geometry deliberately includes neighboring columns. Its
-                // existing ancestor mask, not another canvas-bound mask, crops them.
+                // current ancestor mask, not another canvas-bound mask, crops them.
                 if emphasis == WaveformEmphasis::Uniform {
-                    paint_channels(geometry, colors.waveform, colors.centerline, window);
+                    paint_channels_with_offset(
+                        geometry,
+                        offset,
+                        colors.waveform,
+                        colors.centerline,
+                        window,
+                    );
                     return;
                 }
                 for (left, right, color) in regions(emphasis, colors) {
@@ -328,7 +365,13 @@ where
                         gpui::size(px((right - left) as f32 * width), bounds.size.height),
                     );
                     window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                        paint_channels(geometry, color, colors.centerline, window);
+                        paint_channels_with_offset(
+                            geometry,
+                            offset,
+                            color,
+                            colors.centerline,
+                            window,
+                        );
                     });
                 }
             },

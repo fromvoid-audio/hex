@@ -19,7 +19,8 @@ This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
 explicit grid-literal, bounded accessibility, text decoration storage,
-view-cache epoch, scene replay and macOS Blade layer ownership decisions.
+view-cache epoch, scene replay, retained path placement and macOS Blade layer
+ownership decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -440,3 +441,11 @@ the Metal layer retained by the Blade surface. Its accessor returns a
 a reference on every scale update despite receiving only a borrowed pointer.
 The change stays in the existing external renderer and leaves surface custody,
 display-link behavior, and Hex's workspace unsafe prohibition intact.
+
+12 November retained path translation: add `Window::paint_path_with_offset`,
+which borrows a retained logical-pixel path and applies its logical offset to
+vertices, bounds and contour points before device scaling. The active content
+mask is scaled without translation; current element opacity and scene ordering
+are preserved. Existing `paint_path` and `Path::scale` remain unchanged. The
+translated scene path is built in one vertex pass without cloning the retained
+path or introducing a new public `Path` API.

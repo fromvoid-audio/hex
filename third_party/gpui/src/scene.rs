@@ -1695,3 +1695,39 @@ mod replay_verification {
         Ok(())
     }
 }
+
+impl Path<Pixels> {
+    /// Translate in logical pixels, then scale the retained path into a scene path.
+    pub(crate) fn scale_with_offset(
+        &self,
+        factor: f32,
+        offset: Point<Pixels>,
+        content_mask: &ContentMask<Pixels>,
+    ) -> Path<ScaledPixels> {
+        Path {
+            id: self.id,
+            order: self.order,
+            bounds: Bounds {
+                origin: (self.bounds.origin + offset).scale(factor),
+                size: self.bounds.size.scale(factor),
+            },
+            content_mask: content_mask.scale(factor),
+            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
+                .map(|vertex| vertex.scale_with_offset(factor, offset)).collect())),
+            start: self.start.map(|start| (start + offset).scale(factor)),
+            current: (self.current + offset).scale(factor),
+            contour_count: self.contour_count,
+            color: self.color,
+        }
+    }
+}
+
+impl PathVertex<Pixels> {
+    fn scale_with_offset(&self, factor: f32, offset: Point<Pixels>) -> PathVertex<ScaledPixels> {
+        PathVertex {
+            xy_position: (self.xy_position + offset).scale(factor),
+            st_position: self.st_position,
+            content_mask: self.content_mask.scale(factor),
+        }
+    }
+}

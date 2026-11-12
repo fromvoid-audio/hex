@@ -5702,3 +5702,24 @@ pub fn outline(
         border_style,
     }
 }
+
+impl Window {
+    /// Paint a retained path at a logical-pixel offset before device scaling.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_path_with_offset(
+        &mut self,
+        path: &Path<Pixels>,
+        offset: Point<Pixels>,
+        color: impl Into<Background>,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask();
+        let opacity = self.element_opacity();
+        let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
+        scene_path.color = color.into().opacity(opacity);
+        self.next_frame.scene.insert_primitive(scene_path);
+    }
+}

@@ -184,3 +184,97 @@ fn retained_geometry_fills_its_parent_and_receives_actual_paint_bounds(cx: &mut 
         &view.read_with(cx, |view, _| view.geometry.clone())
     ));
 }
+
+struct OffsetFixture {
+    translated: bool,
+    absolute: Rc<WaveformGeometry>,
+    local: Rc<WaveformGeometry>,
+}
+impl Render for OffsetFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let (geometry, offset) = if self.translated {
+            (Rc::clone(&self.local), gpui::point(px(20.0), px(0.0)))
+        } else {
+            (Rc::clone(&self.absolute), gpui::point(px(0.0), px(0.0)))
+        };
+        div()
+            .relative()
+            .w(px(60.0))
+            .h(px(50.0))
+            .overflow_hidden()
+            .debug_selector(|| "waveform-clip".into())
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-20.0))
+                    .w(px(100.0))
+                    .h(px(50.0))
+                    .child(
+                        waveform_plot_with_offset(
+                            move |_| Some((geometry, offset)),
+                            WaveformColors {
+                                waveform: 0x123456,
+                                inactive: 0x789abc,
+                                centerline: 0x555555,
+                            },
+                            WaveformEmphasis::Range(Some(WaveformRange::new(0.25, 0.75).unwrap())),
+                        )
+                        .debug_selector(|| "waveform-path".into()),
+                    ),
+            )
+    }
+}
+
+fn rectangle_geometry(left: f32, right: f32) -> Rc<WaveformGeometry> {
+    let upper = [point(px(left), px(0.0)), point(px(right), px(0.0))];
+    let lower = [point(px(left), px(50.0)), point(px(right), px(50.0))];
+    Rc::new(WaveformGeometry::mono(
+        channel(&upper, &lower).expect("valid rectangle envelope"),
+    ))
+}
+
+#[gpui::test]
+fn translated_local_path_matches_absolute_mesh_inside_the_live_clip(cx: &mut TestAppContext) {
+    let handle = cx.add_window(|_, _| OffsetFixture {
+        translated: false,
+        absolute: rectangle_geometry(-20.0, 80.0),
+        local: rectangle_geometry(-40.0, 60.0),
+    });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    let absolute = visual.rendered_path_triangles("waveform-path");
+    assert!(absolute.len() >= 2);
+    assert!(absolute.windows(2).any(|pair| pair[0].mask != pair[1].mask));
+    let clip = visual.debug_bounds("waveform-clip").unwrap();
+    assert_eq!(clip.size, size(px(60.0), px(50.0)));
+
+    view.update(cx, |view, cx| {
+        view.translated = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let translated = visual.rendered_path_triangles("waveform-path");
+    assert_eq!(translated.len(), absolute.len());
+    for (expected, actual) in absolute.iter().zip(&translated) {
+        assert_eq!(actual.color, expected.color);
+        assert_eq!(actual.mask, expected.mask);
+        assert_eq!(actual.vertices, expected.vertices);
+    }
+
+    let mask = absolute[0].mask;
+    let mask_left = f32::from(mask.origin.x);
+    let mask_right = mask_left + f32::from(mask.size.width);
+    assert!(
+        absolute
+            .iter()
+            .flat_map(|triangle| triangle.vertices)
+            .any(|vertex| f32::from(vertex.x) < mask_left)
+    );
+    assert!(
+        absolute
+            .iter()
+            .flat_map(|triangle| triangle.vertices)
+            .any(|vertex| f32::from(vertex.x) > mask_right)
+    );
+}
