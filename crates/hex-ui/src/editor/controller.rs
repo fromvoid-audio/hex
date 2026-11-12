@@ -1211,6 +1211,7 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
@@ -2605,12 +2606,13 @@ impl EditorView {
             event.project_replaced,
             resize_owns_viewport,
         );
-        if event.project_replaced {
+        let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
-        } else if !event.gesture_request && !event.tuning_gesture_request {
-            self.move_time_selection_complete(&event);
-        }
+            0
+        } else {
+            self.move_time_selection_complete(&event)
+        };
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -3266,6 +3268,7 @@ impl EditorView {
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
+        self.continue_time_duplicate(time_duplicate_repeats);
         successfully_opened_path
     }
 
@@ -3957,6 +3960,7 @@ impl EditorView {
 
     pub(super) fn cancel_duplicate_chain(&mut self) {
         self.duplicate_intent.cancel_chain();
+        self.cancel_time_duplicate_repeats();
     }
 
     pub(super) fn zoom_timeline(&mut self, inward: bool) {

@@ -493,16 +493,44 @@ mod tests {
             clip = first;
             revision = terminal.state.revision;
         }
+        let before_range = hex_storage::load_journal(&path).unwrap();
+        let clip = before_range.midi_clip(clip).unwrap();
+        let tempo = before_range.tempo_map();
+        let start = tempo.beat_to_frame(clip.start()).unwrap();
+        let end_beat = hex_project::BeatTime::from_raw(clip.start().raw() + clip.length().raw());
+        let end = tempo.beat_to_frame(end_beat).unwrap();
+        let range = hex_project::TimeRange::new(vec![track], start, end).unwrap();
+        service
+            .submit(Request::Edit(Command::CopyTimeRangeTo {
+                range,
+                track,
+                frame: end,
+            }))
+            .unwrap();
+        let range_terminal = next(&service);
+        assert!(range_terminal.request_complete && range_terminal.error.is_none());
+        assert_eq!(range_terminal.state.revision, revision + 1);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *range_terminal.state.project
+        );
+
         service.submit(Request::Undo).unwrap();
         let unrelated = next(&service);
         assert!(unrelated.request_complete && unrelated.error.is_none());
         let rows = diagnostic_rows.lock().unwrap();
-        for kind in ["duplicate_clips", "duplicate_alias_clips"] {
+        let copy_requests = [
+            ("duplicate_clips", None),
+            ("duplicate_alias_clips", None),
+            ("edit", Some("copy_time_range_to")),
+        ];
+        for (kind, operation) in copy_requests {
             let submitted: Vec<_> = rows
                 .iter()
                 .filter_map(|(request, stage, _)| {
                     request.filter(|request| {
                         request.kind == kind
+                            && request.operation == operation
                             && *stage == diagnostics::DiagnosticStage::SubmitAttempt
                     })
                 })
@@ -535,11 +563,11 @@ mod tests {
             assert!(value.parse::<u128>().is_ok());
         }
         assert!(rows.iter().all(|(request, _, details)| {
-            request.is_some_and(|request| {
-                matches!(request.kind, "duplicate_clips" | "duplicate_alias_clips")
-            }) || !details
-                .split_whitespace()
-                .any(|part| part.starts_with("duplicate_recovery_us="))
+            request
+                .is_some_and(|request| copy_requests.contains(&(request.kind, request.operation)))
+                || !details
+                    .split_whitespace()
+                    .any(|part| part.starts_with("duplicate_recovery_us="))
         }));
         drop(rows);
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();

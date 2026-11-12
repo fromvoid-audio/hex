@@ -10,7 +10,7 @@ use hex_project::{ClipId, Created, SceneId, SessionCellContent, TrackId};
 use hex_session::service::{DuplicateViewObservation, Event, Request, ViewState};
 use std::{collections::VecDeque, sync::Arc};
 
-const MAX_QUEUED_REPEATS: u8 = 32;
+pub(super) const MAX_QUEUED_REPEATS: u8 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DuplicateKind {
