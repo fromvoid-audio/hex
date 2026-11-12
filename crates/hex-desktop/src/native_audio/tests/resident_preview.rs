@@ -1747,13 +1747,22 @@ impl WorkerAudioSink for ResidentSink {
                     source.editor_revision += 1;
                 }
             }
-            5 => actual.section_loop = None,
+            5 => {
+                actual.section_loop = if actual.section_loop.is_some() {
+                    None
+                } else {
+                    Some(hex_project::LoopRegion::new(0, 48_000, true).unwrap())
+                };
+            }
             6 => {
                 if let Some(region) = actual.section_loop {
                     actual.section_loop = Some(
                         hex_project::LoopRegion::new(region.start() + 1, region.end(), true)
                             .unwrap(),
                     );
+                } else {
+                    actual.section_loop =
+                        Some(hex_project::LoopRegion::new(1, 48_000, true).unwrap());
                 }
             }
             _ => {}
