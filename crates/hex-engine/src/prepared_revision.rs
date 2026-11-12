@@ -1840,6 +1840,11 @@ impl PreparedRevision {
             })
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_mutable_track_revision(&self, track: TrackId) -> bool {
+        self.mutable_track_revision(track).is_some()
+    }
+
     fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
         self.mutable_track_revisions
             .binary_search_by_key(&track, |revision| revision.id)
