@@ -23,10 +23,9 @@ pub struct ArrangementPlayStartAudition {
     pub edit: PlayStartEdit,
 }
 
-/// A resident-playback group move or ordinary copy. Callers freeze the full
-/// selection and reuse its allocation as the pointer target changes. Alias
-/// copies are not represented. Project validation still owns destination,
-/// duplicate-ID and clip compatibility checks.
+/// A resident-playback clip move or copy. Callers freeze the full selection
+/// and reuse its allocation as the pointer target changes. Project validation
+/// owns destination, duplicate-ID and clip compatibility checks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrangementMoveAudition {
     pub context: hex_engine::AudioSourceContext,
@@ -34,7 +33,14 @@ pub struct ArrangementMoveAudition {
     pub anchor: ClipId,
     pub track: hex_project::TrackId,
     pub position: hex_project::ClipGroupPosition,
-    pub copy: bool,
+    pub mode: ArrangementMoveMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrangementMoveMode {
+    Move,
+    Copy,
+    AliasCopy,
 }
 
 impl ArrangementMoveAudition {
@@ -184,12 +190,48 @@ impl Target {
                 frame: target.frame,
             },
             Self::PlayStart(target) => target.edit.command(),
-            Self::Move(target) => Command::MoveClipsWithOverwrite {
-                clips: target.clips.to_vec(),
-                anchor: target.anchor,
-                track: target.track,
-                position: target.position,
-                copy: target.copy,
+            Self::Move(target) => match (target.clips.len(), target.mode, target.position) {
+                (_, ArrangementMoveMode::AliasCopy, position) => Command::DuplicateAliasClipsAt {
+                    clips: target.clips.to_vec(),
+                    anchor: target.anchor,
+                    track: target.track,
+                    position,
+                },
+                (1, ArrangementMoveMode::Move, hex_project::ClipGroupPosition::Audio(start)) => {
+                    Command::MoveClipWithOverwrite {
+                        clip: target.anchor,
+                        track: target.track,
+                        start,
+                    }
+                }
+                (1, ArrangementMoveMode::Move, hex_project::ClipGroupPosition::Midi(start)) => {
+                    Command::MoveMidiClipWithOverwrite {
+                        clip: target.anchor,
+                        track: target.track,
+                        start,
+                    }
+                }
+                (1, ArrangementMoveMode::Copy, hex_project::ClipGroupPosition::Audio(start)) => {
+                    Command::CopyClipTo {
+                        clip: target.anchor,
+                        track: target.track,
+                        start,
+                    }
+                }
+                (1, ArrangementMoveMode::Copy, hex_project::ClipGroupPosition::Midi(start)) => {
+                    Command::CopyMidiClipTo {
+                        clip: target.anchor,
+                        track: target.track,
+                        start,
+                    }
+                }
+                (_, mode, position) => Command::MoveClipsWithOverwrite {
+                    clips: target.clips.to_vec(),
+                    anchor: target.anchor,
+                    track: target.track,
+                    position,
+                    copy: mode == ArrangementMoveMode::Copy,
+                },
             },
         }
     }
@@ -218,8 +260,19 @@ impl Target {
         {
             return *project_generation == target.context.project_generation
                 && *revision == target.context.editor_revision
-                && matches!(command, Command::MoveClipsWithOverwrite { clips, anchor, .. }
-                    if *anchor == target.anchor && clips.as_slice() == target.clips.as_ref());
+                && match command {
+                    Command::MoveClipsWithOverwrite { clips, anchor, .. }
+                    | Command::DuplicateAliasClipsAt { clips, anchor, .. } => {
+                        *anchor == target.anchor && clips.as_slice() == target.clips.as_ref()
+                    }
+                    Command::MoveClipWithOverwrite { clip, .. }
+                    | Command::MoveMidiClipWithOverwrite { clip, .. }
+                    | Command::CopyClipTo { clip, .. }
+                    | Command::CopyMidiClipTo { clip, .. } => {
+                        target.clips.len() == 1 && *clip == target.anchor
+                    }
+                    _ => false,
+                };
         }
         let Request::Edit(command) = request else {
             return false;
@@ -454,7 +507,7 @@ mod tests {
             clips: clips.into(),
             track,
             position: ClipGroupPosition::Midi(BeatTime::from_quarters(4).unwrap()),
-            copy: false,
+            mode: ArrangementMoveMode::Move,
         }
     }
 
@@ -522,5 +575,82 @@ mod tests {
         assert!(
             matches!(target.command(), Command::MoveClipsWithOverwrite { clips, anchor, .. } if clips.as_slice() == group.clips.as_ref() && anchor == group.anchor)
         );
+    }
+
+    #[test]
+    fn targets_match_single_group_and_alias_commit_commands() {
+        let mut group = target();
+        for mode in [
+            ArrangementMoveMode::Move,
+            ArrangementMoveMode::Copy,
+            ArrangementMoveMode::AliasCopy,
+        ] {
+            group.mode = mode;
+            let target = Target::Move(group.clone());
+            let command = target.command();
+            assert!(matches!(
+                (&mode, &command),
+                (
+                    ArrangementMoveMode::Move,
+                    Command::MoveClipsWithOverwrite { copy: false, .. }
+                ) | (
+                    ArrangementMoveMode::Copy,
+                    Command::MoveClipsWithOverwrite { copy: true, .. }
+                ) | (
+                    ArrangementMoveMode::AliasCopy,
+                    Command::DuplicateAliasClipsAt { .. }
+                )
+            ));
+            assert!(target.matches_release(&Request::MoveExistingClips {
+                project_generation: group.context.project_generation,
+                revision: group.context.editor_revision,
+                command,
+            }));
+        }
+        group.clips = vec![group.anchor].into();
+        for position in [
+            ClipGroupPosition::Audio(100),
+            ClipGroupPosition::Midi(BeatTime::ONE),
+        ] {
+            for mode in [
+                ArrangementMoveMode::Move,
+                ArrangementMoveMode::Copy,
+                ArrangementMoveMode::AliasCopy,
+            ] {
+                group.position = position;
+                group.mode = mode;
+                let target = Target::Move(group.clone());
+                let command = target.command();
+                assert!(matches!(
+                    (position, mode, &command),
+                    (
+                        ClipGroupPosition::Audio(_),
+                        ArrangementMoveMode::Move,
+                        Command::MoveClipWithOverwrite { .. }
+                    ) | (
+                        ClipGroupPosition::Audio(_),
+                        ArrangementMoveMode::Copy,
+                        Command::CopyClipTo { .. }
+                    ) | (
+                        ClipGroupPosition::Midi(_),
+                        ArrangementMoveMode::Move,
+                        Command::MoveMidiClipWithOverwrite { .. }
+                    ) | (
+                        ClipGroupPosition::Midi(_),
+                        ArrangementMoveMode::Copy,
+                        Command::CopyMidiClipTo { .. }
+                    ) | (
+                        _,
+                        ArrangementMoveMode::AliasCopy,
+                        Command::DuplicateAliasClipsAt { .. }
+                    )
+                ));
+                assert!(target.matches_release(&Request::MoveExistingClips {
+                    project_generation: group.context.project_generation,
+                    revision: group.context.editor_revision,
+                    command,
+                }));
+            }
+        }
     }
 }
