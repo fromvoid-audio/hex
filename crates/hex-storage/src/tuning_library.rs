@@ -486,7 +486,7 @@ mod tests {
                 &destination,
                 b"intended preset",
                 false,
-                fs::hard_link,
+                |source, target| fs::hard_link(source, target),
                 || {
                     let entry = fs::read_dir(&d.0).unwrap().next().unwrap().unwrap().path();
                     fs::rename(&entry, &original).unwrap();
