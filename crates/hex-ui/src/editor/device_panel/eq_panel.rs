@@ -710,13 +710,14 @@ fn response_model(
     let (bank, selected, group) = selection;
     let mut authored = state.encode().ok()?;
     for parameter in &device_view.parameters {
-        let effective = effective_parameter_value(
+        let effective = super::eq_automation::effective_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            parameter.value,
+            device_view.type_id,
+            parameter,
         );
         if effective != parameter.value {
             authored = hex_engine::patch_native_device_parameter_for_class(
@@ -1225,9 +1226,9 @@ fn handle_event(
                 p.collapse = None;
             }
             if group.len() > 1 && group.contains(&id) {
-                gestures::group_event(view, device, &group, event);
+                gestures::group_event(view, cx, device, *node, &group, event);
             } else {
-                gestures::paired_event(view, device, *node, event);
+                gestures::paired_event(view, cx, device, *node, event);
             }
         }
         ResponseGraphPhase::Change | ResponseGraphPhase::Commit | ResponseGraphPhase::Cancel => {
@@ -1237,9 +1238,9 @@ fn handle_event(
                 .get(&device)
                 .is_some_and(|p| p.group_drag.is_some())
             {
-                gestures::group_event(view, device, &group, event);
+                gestures::group_event(view, cx, device, *node, &group, event);
             } else {
-                gestures::paired_event(view, device, *node, event);
+                gestures::paired_event(view, cx, device, *node, event);
             }
         }
         _ => {}

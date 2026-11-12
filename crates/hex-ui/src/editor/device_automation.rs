@@ -545,6 +545,11 @@ impl Entry {
 }
 
 impl Lanes {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in crate::editor) fn main_target_for_test(&self) -> Option<Target> {
+        self.main.last().map(|entry| entry.target)
+    }
+
     pub(super) fn display_end(&self, project: &Project) -> Option<u64> {
         self.main
             .iter()
