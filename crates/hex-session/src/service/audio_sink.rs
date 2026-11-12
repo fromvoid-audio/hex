@@ -221,8 +221,10 @@ impl<'a> ResidentEffectPreparation<'a> {
         Ok(selected)
     }
 
-    /// An authored program is immutable for one native worker epoch. An
-    /// instrument loop edit may keep that epoch when the run budget matches.
+    /// Whether the authored program can stay on its original native worker.
+    /// A same-bounds effect loop disable uses the old wrap budget for origins
+    /// already in delay compensation. Instrument loop edits use their own
+    /// transport and gate continuity rules.
     pub fn same_authored_plugin_program(
         &self,
         previous: &Self,
@@ -252,18 +254,29 @@ impl<'a> ResidentEffectPreparation<'a> {
         }
         let next_loop = self.project.loop_region();
         let previous_loop = previous.project.loop_region();
-        let same_loop_budget = next_loop == previous_loop
-            || quantum_frames.is_some_and(|frames| {
-                self.project
-                    .native_sources()
-                    .iter()
-                    .any(|source| source.instrument().id().value() == device)
-                    && hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+        let same_loop_budget = next_loop == previous_loop || {
+            let instrument = self
+                .project
+                .native_sources()
+                .iter()
+                .any(|source| source.instrument().id().value() == device);
+            if instrument {
+                quantum_frames.is_some_and(|frames| {
+                    hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
                         frames,
                         previous_loop,
                         next_loop,
                     )
-            });
+                })
+            } else {
+                previous_loop.zip(next_loop).is_some_and(|(before, after)| {
+                    before.enabled()
+                        && !after.enabled()
+                        && before.start() == after.start()
+                        && before.end() == after.end()
+                })
+            }
+        };
         self.project.tempo_map() == previous.project.tempo_map()
             && same_loop_budget
             && current.eq(old)
@@ -1964,14 +1977,8 @@ mod tests {
             crate::test_wait::pause();
         }
     }
-    #[test]
-    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
-        use hex_project::{
-            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
-        };
-        let class = [1; 16];
-        let state = hex_plugin_state::encode(hex_plugin_state::State {
+    fn saved_effect_state(class: [u8; 16]) -> NativeDeviceState {
+        hex_plugin_state::encode(hex_plugin_state::State {
             identity: hex_plugin_state::Identity {
                 class: hex_plugin_state::ClassId::new(class).unwrap(),
                 binary: hex_plugin_state::BinaryIdentity {
@@ -1982,12 +1989,92 @@ mod tests {
             component: Some(&[4]),
             controller: None,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn disabling_a_loop_keeps_the_authored_effect_worker() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+            DeviceAutomationTarget, Editor,
+        };
+
+        fn prepare(project: &Project) -> ResidentEffectPreparation<'_> {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: true,
+            }
+        }
+
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Device(device) = editor
             .execute(Command::InsertMainDevice {
                 before: None,
-                state,
+                state: saved_effect_state([1; 16]),
+            })
+            .unwrap()
+        else {
+            panic!("plugin fixture");
+        };
+        let automation = |value| Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        };
+        editor.execute(automation(0.5)).unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 1024,
+                end: 4096,
+                enabled: true,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+
+        editor.execute(Command::ToggleLoopRegion).unwrap();
+        let keeps_worker = |project: &Project| {
+            prepare(project).same_authored_plugin_program(
+                &prepare(&before),
+                device.value(),
+                Some(256),
+            )
+        };
+        assert!(keeps_worker(editor.project()));
+
+        editor.execute(automation(0.75)).unwrap();
+        assert!(!keeps_worker(editor.project()));
+        assert!(editor.undo());
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 2048,
+                end: 4096,
+                enabled: false,
+            })
+            .unwrap();
+        assert!(!keeps_worker(editor.project()));
+    }
+
+    #[test]
+    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
+        };
+        let class = [1; 16];
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: saved_effect_state(class),
             })
             .unwrap()
         else {
