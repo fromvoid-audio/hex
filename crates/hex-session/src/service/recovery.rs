@@ -726,6 +726,8 @@ impl PreparedCheckpoint {
             untitled,
             image,
         } = self;
+        #[cfg(test)]
+        checkpoint::wait_at_checkpoint(&path);
         let project = image.materialize()?;
         if journal
             .as_ref()

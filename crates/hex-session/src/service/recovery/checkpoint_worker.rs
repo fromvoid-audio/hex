@@ -2,13 +2,18 @@
 use super::PreparedCheckpoint;
 use std::{
     path::PathBuf,
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
     thread::{self, JoinHandle},
 };
 
 type Publication = (
     Option<hex_storage::Journal>,
     Result<Option<PathBuf>, String>,
+    std::time::Instant,
 );
 
 struct Job {
@@ -22,17 +27,24 @@ pub(super) struct CheckpointWorker {
     sender: Option<SyncSender<Job>>,
     pending: Option<Receiver<Publication>>,
     thread: Option<JoinHandle<()>>,
+    ready: Arc<AtomicBool>,
 }
 
 impl CheckpointWorker {
     pub(super) fn new() -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel::<Job>(1);
+        let ready = Arc::new(AtomicBool::new(false));
+        let worker_ready = Arc::clone(&ready);
         let thread = thread::Builder::new()
             .name("hex-recovery-checkpoint".into())
             .spawn(move || {
                 while let Ok(mut job) = receiver.recv() {
                     let result = job.checkpoint.publish(&mut job.journal);
-                    let _ = job.reply.send((job.journal, result));
+                    let completed = std::time::Instant::now();
+                    // Publish readiness before the one-slot reply. A control
+                    // poll may then wait briefly for the corresponding send.
+                    worker_ready.store(true, Ordering::Release);
+                    let _ = job.reply.send((job.journal, result, completed));
                 }
             })
             .map_err(|error| format!("could not start recovery checkpoint worker: {error}"))?;
@@ -40,6 +52,7 @@ impl CheckpointWorker {
             sender: Some(sender),
             pending: None,
             thread: Some(thread),
+            ready,
         })
     }
 
@@ -58,6 +71,7 @@ impl CheckpointWorker {
             .as_ref()
             .ok_or("recovery checkpoint worker is closed")?;
         let (reply, receiver) = mpsc::sync_channel(1);
+        self.ready.store(false, Ordering::Release);
         let job = Job {
             checkpoint,
             journal: journal.take(),
@@ -79,24 +93,44 @@ impl CheckpointWorker {
         }
     }
 
+    /// A pending result is collectable, or the worker exited before replying.
+    pub(super) fn ready(&self) -> bool {
+        self.pending.is_some()
+            && (self.ready.load(Ordering::Acquire)
+                || self.thread.as_ref().is_some_and(JoinHandle::is_finished))
+    }
+
     /// Wait only on the service control worker; publication itself owns the journal.
     pub(super) fn finish(
         &mut self,
         journal: &mut Option<hex_storage::Journal>,
     ) -> Result<Option<PathBuf>, String> {
+        self.finish_timed(journal).1
+    }
+
+    /// Return the publication time separately from any delay in collecting it.
+    pub(super) fn finish_timed(
+        &mut self,
+        journal: &mut Option<hex_storage::Journal>,
+    ) -> (std::time::Instant, Result<Option<PathBuf>, String>) {
         if journal.is_some() {
-            return Err("cannot replace existing recovery journal custody".into());
+            return (
+                std::time::Instant::now(),
+                Err("cannot replace existing recovery journal custody".into()),
+            );
         }
-        let pending = self
-            .pending
-            .take()
-            .ok_or("no recovery checkpoint is pending")?;
+        let Some(pending) = self.pending.take() else {
+            return (
+                std::time::Instant::now(),
+                Err("no recovery checkpoint is pending".into()),
+            );
+        };
         match pending.recv() {
-            Ok((returned, result)) => {
+            Ok((returned, result, completed)) => {
                 *journal = returned;
-                result
+                (completed, result)
             }
-            Err(_) => Err("recovery checkpoint worker stopped before returning journal custody; check the recovery file before restarting".into()),
+            Err(_) => (std::time::Instant::now(), Err("recovery checkpoint worker stopped before returning journal custody; check the recovery file before restarting".into())),
         }
     }
 }
@@ -210,6 +244,31 @@ mod tests {
             .unwrap();
         drop(worker);
         assert_eq!(hex_storage::load_journal(&target).unwrap(), expected);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publication_time_does_not_include_delayed_collection() {
+        let directory = path();
+        std::fs::create_dir(&directory).unwrap();
+        let target = directory.join("recovery.hex-journal");
+        let session = Session::new(48_000, 8, 1024).unwrap();
+        let mut journal = None;
+        let mut worker = CheckpointWorker::new().unwrap();
+        worker
+            .start(capture(&session, &target), &mut journal)
+            .unwrap();
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+        while !worker.ready() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let observed = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (completed, result) = worker.finish_timed(&mut journal);
+        assert!(result.is_ok());
+        assert!(completed <= observed);
+        drop(worker);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -1075,6 +1075,33 @@ pub(super) struct PendingOutcome {
     section_phases: Option<super::diagnostics::SectionPhases>,
     recovery_timing: Option<(&'static str, Duration)>,
 }
+impl PendingOutcome {
+    pub(super) fn finish_recovery(
+        &mut self,
+        elapsed: Duration,
+        result: Result<Option<PathBuf>, String>,
+        failure: Option<Arc<super::RecoveryFailure>>,
+    ) {
+        if self.diagnostic.is_some() {
+            self.recovery_timing = Some(("paste_recovery_us", elapsed));
+        }
+        match result {
+            Ok(Some(_)) => {
+                self.event.status =
+                    Some("previous recovery journal preserved beside its original slot".into());
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                let message = format!("automatic recovery: {reason}");
+                self.event.error = Some(match self.event.error.take() {
+                    Some(existing) => format!("{existing}; {message}"),
+                    None => message,
+                });
+            }
+        }
+        self.event.recovery_failure = failure;
+    }
+}
 /// One bounded control poll may make a previously admitted gesture ready.
 /// The queued user FIFO retains priority over this copied continuation.
 #[derive(Default)]
@@ -1082,6 +1109,7 @@ pub(super) struct ControlPoll {
     pub pending: bool,
     pub gesture: Option<GestureRequest>,
     pub editor_take: Option<u64>,
+    pub recovery_ready: bool,
 }
 
 impl WorkerEvents {
@@ -1624,6 +1652,12 @@ impl WorkerEvents {
                 Err(mpsc::TryRecvError::Disconnected) => return None,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
+            if control_pending.recovery_ready {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueRecovery,
+                    document_intent,
+                ));
+            }
             if let Some(request_id) = control_pending.editor_take {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginEditorRecording { request_id },
@@ -1855,6 +1889,23 @@ mod tests {
                 second.event.state.revision
             ),
             (2, second_revision)
+        );
+        let sources = observed.sources.lock().unwrap();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(generation, revision, _)| (*generation, *revision))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    first_context.project_generation,
+                    first_context.editor_revision
+                ),
+                (
+                    second_context.project_generation,
+                    second_context.editor_revision
+                ),
+            ]
         );
     }
     #[derive(Default)]
