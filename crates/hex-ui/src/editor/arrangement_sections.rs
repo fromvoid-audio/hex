@@ -507,6 +507,7 @@ impl EditorView {
             .and_then(|p| p.layout.clone())
             .or_else(|| self.arrangement_duplicate_view().cloned())
             .or_else(|| self.arrangement_paste_view().cloned())
+            .or_else(|| self.time_range_copy_view().cloned())
             .or_else(|| Some(Arc::clone(state)))
     }
 

@@ -135,6 +135,26 @@ mod tests {
     }
 
     #[test]
+    fn time_copy_and_paste_preserve_order_and_bounded_fallback() {
+        let (sender, receiver) = channel();
+        sender.send(observation(1, 3, ArrangementEditViewKind::TimeRangeCopy));
+        sender.send(observation(1, 4, ArrangementEditViewKind::Paste));
+        sender.send(observation(1, 5, ArrangementEditViewKind::Paste));
+        sender.send(observation(1, 6, duplicate()));
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            ArrangementEditViewKind::TimeRangeCopy
+        ));
+        let paste = receiver.try_recv().unwrap();
+        assert!(matches!(paste.kind, ArrangementEditViewKind::Paste));
+        assert_eq!(
+            (paste.first_previous_revision, paste.previous_revision),
+            (4, 5)
+        );
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
     fn gaps_full_capacity_and_generation_replacement_are_safe() {
         let (sender, receiver) = channel();
         sender.send(observation(1, 1, ArrangementEditViewKind::Paste));

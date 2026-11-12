@@ -1122,6 +1122,10 @@ impl EditorView {
         }
         let paste_view = match self.service.try_arrangement_edit_view() {
             Ok(view) if matches!(view.kind, ArrangementEditViewKind::Paste) => Some(view),
+            Ok(view) if matches!(view.kind, ArrangementEditViewKind::TimeRangeCopy) => {
+                visible_change |= self.observe_time_range_copy_view(view);
+                None
+            }
             Ok(view) => {
                 visible_change |= self.observe_duplicate_view(view);
                 None
@@ -1221,6 +1225,7 @@ impl EditorView {
                     visible_change |= self.locators.clear_adds();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.committed_paste_view.take().is_some();
+                    visible_change |= self.committed_time_range_copy_view.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_loop();
@@ -2623,6 +2628,7 @@ impl EditorView {
             event.project_replaced,
             resize_owns_viewport,
         );
+        let time_range_was_pending = self.pending_time_range_move.is_some();
         let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -2679,6 +2685,14 @@ impl EditorView {
                 .is_some_and(|view| event.state.revision >= view.revision)
         {
             self.committed_paste_view = None;
+        }
+        if event.project_replaced
+            || (time_range_was_pending
+                && self.pending_time_range_move.is_none()
+                && event.request_complete
+                && !event.plugin_parameter_observation)
+        {
+            self.committed_time_range_copy_view = None;
         }
         self.state = Some(event.state);
         if let Some(selection) = audio_placement_selection {

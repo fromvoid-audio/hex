@@ -251,6 +251,175 @@ fn committed_keyboard_copies_retain_range_despite_recovery_warning(cx: &mut Test
 }
 
 #[gpui::test]
+fn committed_time_copy_paints_exact_rows_until_its_terminal(cx: &mut TestAppContext) {
+    use hex_session::service::{ArrangementEditViewKind, ArrangementEditViewObservation};
+    let (mut visual, editor, _environment, tracks, originals) = fixture_with_audio(cx, true);
+    let source = pointer_range(&mut visual, &editor, &tracks);
+    visual.simulate_keystrokes("d");
+    let deadline = crate::test_wait::hang_deadline();
+    let observation = loop {
+        if let Ok(view) =
+            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+        {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "committed copy view");
+        std::thread::yield_now();
+    };
+    assert!(matches!(
+        observation.kind,
+        ArrangementEditViewKind::TimeRangeCopy
+    ));
+    let committed = observation.state.upgrade().unwrap();
+    let terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "copy terminal");
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_none());
+    let copied_audio = committed
+        .project
+        .track(tracks[0])
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|clip| clip.id() != originals[0] && clip.start() == source.end())
+        .expect("copied audio at destination")
+        .id();
+    let copied_midi = committed
+        .project
+        .track(tracks[1])
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|clip| {
+            clip.id() != originals[1]
+                && committed
+                    .project
+                    .tempo_map()
+                    .beat_to_frame(clip.start())
+                    .unwrap()
+                    == source.end()
+        })
+        .expect("copied MIDI at destination")
+        .id();
+    editor.update(&mut visual, |view, cx| {
+        let invalid = ArrangementEditViewObservation {
+            project_generation: observation.project_generation + 1,
+            first_previous_revision: observation.first_previous_revision,
+            previous_revision: observation.previous_revision,
+            kind: ArrangementEditViewKind::TimeRangeCopy,
+            state: Arc::downgrade(&committed),
+        };
+        assert!(!view.observe_time_range_copy_view(invalid));
+        let wrong_revision = ArrangementEditViewObservation {
+            project_generation: observation.project_generation,
+            first_previous_revision: observation.previous_revision + 1,
+            previous_revision: observation.previous_revision + 1,
+            kind: ArrangementEditViewKind::TimeRangeCopy,
+            state: Arc::downgrade(&committed),
+        };
+        assert!(!view.observe_time_range_copy_view(wrong_revision));
+        assert!(view.observe_time_range_copy_view(observation));
+        assert!(Arc::ptr_eq(
+            &view.arrangement_rows_state().unwrap(),
+            &committed
+        ));
+        assert_eq!(view.normalized_time_selection().as_ref(), Some(&source));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let audio_selector = Box::leak(format!("clip-name-{}", copied_audio.value()).into_boxed_str());
+    let midi_selector = Box::leak(format!("clip-name-{}", copied_midi.value()).into_boxed_str());
+    let audio_before = visual
+        .debug_bounds(audio_selector)
+        .expect("committed audio paints before terminal");
+    let midi_before = visual
+        .debug_bounds(midi_selector)
+        .expect("committed MIDI paints before terminal");
+    let newer = pointer_range(&mut visual, &editor, &tracks[1..]);
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        assert!(view.committed_time_range_copy_view.is_none());
+        assert!(view.pending_time_range_move.is_none());
+        assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
+        assert_eq!(view.normalized_time_selection().as_ref(), Some(&newer));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(audio_selector), Some(audio_before));
+    assert_eq!(visual.debug_bounds(midi_selector), Some(midi_before));
+}
+
+#[gpui::test]
+fn committed_time_copy_view_is_invalidated_by_project_replacement(cx: &mut TestAppContext) {
+    use hex_session::service::{ArrangementEditViewKind, ArrangementEditViewObservation};
+    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    pointer_range(&mut visual, &editor, &tracks[..1]);
+    visual.simulate_keystrokes("d");
+    let deadline = crate::test_wait::hang_deadline();
+    let observation = loop {
+        if let Ok(view) =
+            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+        {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "committed copy view");
+        std::thread::yield_now();
+    };
+    let old_generation = observation.project_generation;
+    let previous_revision = observation.previous_revision;
+    let committed = observation.state.upgrade().unwrap();
+    let _held_terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "copy terminal");
+        std::thread::yield_now();
+    };
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.observe_time_range_copy_view(observation));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        view.service
+            .submit(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap()
+    });
+    let replacement = loop {
+        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "replacement terminal");
+        std::thread::yield_now();
+    };
+    assert!(replacement.project_replaced);
+    editor.update(&mut visual, |view, cx| {
+        view.receive(replacement);
+        assert_ne!(view.project_generation, old_generation);
+        assert!(view.pending_time_range_move.is_none());
+        assert!(view.committed_time_range_copy_view.is_none());
+        assert!(
+            !view.observe_time_range_copy_view(ArrangementEditViewObservation {
+                project_generation: old_generation,
+                first_previous_revision: previous_revision,
+                previous_revision,
+                kind: ArrangementEditViewKind::TimeRangeCopy,
+                state: Arc::downgrade(&committed),
+            })
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
 fn repeated_time_duplicates_queue_before_first_receipt(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, tracks, _) = fixture(cx);
     let source = pointer_range(&mut visual, &editor, &tracks);
