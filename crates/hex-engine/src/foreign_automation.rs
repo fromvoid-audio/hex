@@ -678,7 +678,7 @@ fn prepare_knots(
     knots
         .try_reserve_exact(capacity)
         .map_err(|_| Invalid("could not reserve foreign automation knots"))?;
-    let mut push = |beat, value, linear, coincident| -> Result<(), Invalid> {
+    let mut push = |beat, value, linear, coincident: bool| -> Result<(), Invalid> {
         let frame = tempo
             .beat_to_frame(beat)
             .map_err(|error| Invalid(error.0))?;
