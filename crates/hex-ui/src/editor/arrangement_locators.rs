@@ -1,8 +1,8 @@
 //! Arrangement locator projection, hit targets, and revision-bound pointer input.
 //! Only visible markers are painted. A released move retains its final position
 //! until its own ordered worker terminal replaces it with canonical state.
-//! Accepted adds paint immediately at the requested frame. Each stays visible
-//! until its own terminal supplies the authored identity or refuses the edit.
+//! Accepted adds paint immediately at the requested frame. Matched committed
+//! views supply identities before the ordered terminal installs canonical state.
 use super::{
     EditorMode, EditorView, ViewState, browser_input,
     pending_edit::{Disposition, Receipt},
@@ -31,7 +31,7 @@ impl Source {
     fn current(self, view: &EditorView) -> bool {
         self.generation == view.project_generation
             && view.mode == EditorMode::Arrangement
-            && view.state.as_ref().is_some_and(|state| {
+            && view.locator_state().is_some_and(|state| {
                 self.revision == state.revision
                     && state.project.arrangement_locator(self.id).is_some()
             })
@@ -81,6 +81,7 @@ pub(super) struct Locators {
     drag: Option<Drag>,
     pending: Option<Pending>,
     adds: Vec<PendingAdd>,
+    committed: Option<Arc<ViewState>>,
     name: Option<NameEdit>,
 }
 
@@ -93,6 +94,7 @@ impl Locators {
             drag: None,
             pending: None,
             adds: Vec::new(),
+            committed: None,
             name: None,
         }
     }
@@ -168,31 +170,47 @@ impl Locators {
     }
 
     pub(super) fn clear_adds(&mut self) -> bool {
-        !std::mem::take(&mut self.adds).is_empty()
+        let adds = !std::mem::take(&mut self.adds).is_empty();
+        self.committed.take().is_some() || adds
     }
 
     fn visible_adds(&self, viewport: Viewport) -> impl Iterator<Item = u64> + '_ {
         let end = viewport.end();
-        self.adds
-            .iter()
-            .map(|add| add.frame)
-            .filter(move |frame| *frame >= viewport.start && end.is_some_and(|end| *frame < end))
+        self.adds.iter().map(|add| add.frame).filter(move |frame| {
+            *frame >= viewport.start
+                && end.is_some_and(|end| *frame < end)
+                && self.cache.as_ref().is_none_or(|(_, rows)| {
+                    rows.binary_search_by_key(frame, |locator| locator.frame)
+                        .is_err()
+                })
+        })
     }
 
     pub(super) fn observe(&mut self, generation: u64, event: &Event) {
         if self.pending.as_mut().is_some_and(|pending| {
-            pending
-                .receipt
-                .observe(generation, event.project_replaced, event.request_complete)
-                != Disposition::Waiting
+            pending.receipt.observe(
+                generation,
+                event.project_replaced,
+                event.request_complete && !event.plugin_parameter_observation,
+            ) != Disposition::Waiting
         }) {
             self.pending = None;
         }
         self.adds.retain_mut(|add| {
-            add.receipt
-                .observe(generation, event.project_replaced, event.request_complete)
-                == Disposition::Waiting
+            add.receipt.observe(
+                generation,
+                event.project_replaced,
+                event.request_complete && !event.plugin_parameter_observation,
+            ) == Disposition::Waiting
         });
+        if event.project_replaced
+            || self
+                .committed
+                .as_ref()
+                .is_some_and(|view| event.state.revision >= view.revision)
+        {
+            self.committed = None;
+        }
         if event.project_replaced {
             self.selected = None;
             self.drag = None;
@@ -314,6 +332,58 @@ impl EditorView {
         }
     }
 
+    fn locator_state(&self) -> Option<&Arc<ViewState>> {
+        self.locators.committed.as_ref().or(self.state.as_ref())
+    }
+
+    pub(super) fn locator_display_state(&self) -> Option<Arc<ViewState>> {
+        self.locator_state().cloned()
+    }
+
+    pub(super) fn observe_locator_add_view(
+        &mut self,
+        observation: hex_session::service::ArrangementEditViewObservation,
+    ) -> bool {
+        let hex_session::service::ArrangementEditViewKind::LocatorAdd(id) = observation.kind else {
+            return false;
+        };
+        if self.opening_project
+            || self.close_prompt_open
+            || observation.project_generation != self.project_generation
+            || observation.first_previous_revision != observation.previous_revision
+            || self
+                .locator_state()
+                .is_none_or(|state| state.revision != observation.previous_revision)
+        {
+            return false;
+        }
+        if self
+            .locator_state()
+            .is_some_and(|state| state.project.arrangement_locator(id).is_some())
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if observation.previous_revision.checked_add(1) != Some(state.revision) {
+            return false;
+        }
+        let Some(locator) = state.project.arrangement_locator(id) else {
+            return false;
+        };
+        if !self
+            .locators
+            .adds
+            .iter()
+            .any(|add| !add.receipt.is_queued() && add.frame == locator.frame())
+        {
+            return false;
+        }
+        self.locators.committed = Some(state);
+        true
+    }
+
     pub(super) fn add_locator(&mut self, window: &Window) {
         if self.mode != EditorMode::Arrangement
             || !(self.focus.is_focused(window) || self.locators.focus.is_focused(window))
@@ -376,6 +446,23 @@ impl EditorView {
         !self.edit_pending() && self.locator_controls_available()
     }
 
+    fn locator_naming_available(&self) -> bool {
+        self.locator_edit_available()
+            || (self.locator_add_available()
+                && self.pending_requests.is_empty()
+                && self.device_gesture_barriers.is_empty()
+                && self.locators.committed.as_ref().is_some_and(|state| {
+                    self.locators.adds.iter().all(|add| {
+                        !add.receipt.is_queued()
+                            && state
+                                .project
+                                .arrangement_locators()
+                                .binary_search_by_key(&add.frame, |locator| locator.frame())
+                                .is_ok()
+                    })
+                }))
+    }
+
     fn locator_controls_available(&self) -> bool {
         self.locators.pending.is_none()
             && self.locators.name.is_none()
@@ -423,7 +510,7 @@ impl EditorView {
             return false;
         }
         if let Some((generation, id)) = self.locators.selected
-            && let Some(state) = &self.state
+            && let Some(state) = self.locator_state()
         {
             self.begin_locator_name(
                 Source {
@@ -439,12 +526,11 @@ impl EditorView {
     }
 
     fn begin_locator_name(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
-        if !source.current(self) || !self.locator_edit_available() {
+        if !source.current(self) || !self.locator_naming_available() {
             return;
         }
         let Some(locator) = self
-            .state
-            .as_ref()
+            .locator_state()
             .and_then(|state| state.project.arrangement_locator(source.id))
         else {
             return;
@@ -568,6 +654,10 @@ impl EditorView {
             return;
         };
         if !drag.source.current(self) || self.opening_project || self.close_prompt_open {
+            return;
+        }
+        if self.locators.committed.is_some() {
+            self.status = "locator playback is waiting for the current edit".into();
             return;
         }
         if !drag.moved && !drag.click_disqualified {
@@ -876,6 +966,246 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline, "locator terminal");
             std::thread::yield_now();
+        }
+    }
+
+    #[gpui::test]
+    fn committed_locators_paint_and_accept_naming_before_terminals(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::fixture;
+        use hex_session::service::ArrangementEditViewKind;
+        let (_files, window, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(window, cx);
+        for frame in [48_000, 72_000] {
+            editor.update(&mut visual, |view, _| view.place_locator_play_start(frame));
+            visual.simulate_keystrokes("i");
+        }
+        visual.run_until_parked();
+        let provisional = ["locator-play-pending-48000", "locator-play-pending-72000"]
+            .map(|selector| visual.debug_bounds(selector).expect("provisional locator"));
+        let deadline = crate::test_wait::hang_deadline();
+        let mut views = Vec::new();
+        let mut terminals = Vec::new();
+        while views.len() < 2 || terminals.len() < 2 {
+            editor.read_with(&visual, |view, _| {
+                if views.len() < 2
+                    && let Ok(observation) = view.service.try_arrangement_edit_view()
+                {
+                    views.push(observation);
+                }
+                if terminals.len() < 2
+                    && let Ok(event) = view.service.try_event()
+                {
+                    assert!(event.request_complete && event.error.is_none());
+                    terminals.push(event);
+                }
+            });
+            assert!(
+                std::time::Instant::now() < deadline,
+                "committed locator views and terminals"
+            );
+            std::thread::yield_now();
+        }
+        let ids: Vec<_> = views
+            .iter()
+            .map(|observation| match observation.kind {
+                ArrangementEditViewKind::LocatorAdd(id) => id,
+                _ => panic!("expected locator view"),
+            })
+            .collect();
+        let mut observations = views.into_iter();
+        let first_view = observations.next().unwrap();
+        let second_view = observations.next().unwrap();
+        editor.update(&mut visual, |view, cx| {
+            let gap = hex_session::service::ArrangementEditViewObservation {
+                project_generation: second_view.project_generation,
+                first_previous_revision: second_view.first_previous_revision,
+                previous_revision: second_view.previous_revision,
+                kind: second_view.kind,
+                state: Weak::clone(&second_view.state),
+            };
+            assert!(
+                !view.observe_locator_add_view(gap),
+                "a missing predecessor cannot install a view"
+            );
+            let stale = hex_session::service::ArrangementEditViewObservation {
+                project_generation: first_view.project_generation.wrapping_add(1),
+                first_previous_revision: first_view.first_previous_revision,
+                previous_revision: first_view.previous_revision,
+                kind: first_view.kind,
+                state: Weak::clone(&first_view.state),
+            };
+            assert!(
+                !view.observe_locator_add_view(stale),
+                "wrong generation cannot install a view"
+            );
+            assert!(view.observe_locator_add_view(first_view));
+            assert_eq!(view.worker_requests_pending, 2);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let first_name = bounds(&mut visual, "locator-name", ids[0]).center();
+        visual.simulate_mouse_down(first_name, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(first_name, MouseButton::Left, Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            let selected = view.locators.selected;
+            assert_eq!(selected, Some((view.project_generation, ids[0])));
+            let wrong_identity = hex_session::service::ArrangementEditViewObservation {
+                project_generation: second_view.project_generation,
+                first_previous_revision: second_view.first_previous_revision,
+                previous_revision: second_view.previous_revision,
+                kind: ArrangementEditViewKind::LocatorAdd(ids[0]),
+                state: Weak::clone(&second_view.state),
+            };
+            assert!(
+                !view.observe_locator_add_view(wrong_identity),
+                "an existing locator cannot impersonate the new identity"
+            );
+            assert!(view.observe_locator_add_view(second_view));
+            assert_eq!(
+                view.locators.selected, selected,
+                "a later view cannot steal selection"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let mut read_only = terminals.remove(0);
+        read_only.plugin_parameter_observation = true;
+        editor.update(&mut visual, |view, _| {
+            view.locators.observe(view.project_generation, &read_only);
+            assert_eq!(
+                view.locators.adds.len(),
+                2,
+                "a read-only observation cannot complete an add receipt"
+            );
+        });
+        read_only.plugin_parameter_observation = false;
+        terminals.insert(0, read_only);
+        for (index, id) in ids.iter().copied().enumerate() {
+            assert_eq!(bounds(&mut visual, "locator-play", id), provisional[index]);
+            assert!(
+                visual
+                    .debug_bounds(
+                        ["locator-play-pending-48000", "locator-play-pending-72000"][index]
+                    )
+                    .is_none()
+            );
+        }
+        let marker = bounds(&mut visual, "locator-play", ids[1]).center();
+        let previous_transport = editor.read_with(&visual, |view, _| view.last_transport_command);
+        visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.last_transport_command, previous_transport);
+            assert_eq!(
+                view.status,
+                "locator playback is waiting for the current edit"
+            );
+        });
+        let name = bounds(&mut visual, "locator-name", ids[1]).center();
+        visual.simulate_event(MouseDownEvent {
+            position: name,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        visual.simulate_mouse_up(name, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.locators.name.is_some(),
+                "name edit opens before terminal"
+            )
+        });
+        visual.simulate_input("second locator");
+        for terminal in terminals {
+            editor.update(&mut visual, |view, cx| {
+                view.receive(terminal);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(
+                    view.locators.name.is_some(),
+                    "name edit survives each earlier terminal"
+                )
+            });
+            assert_eq!(bounds(&mut visual, "locator-play", ids[1]), provisional[1]);
+        }
+        visual.simulate_keystrokes("enter");
+        editor.update(&mut visual, |view, cx| {
+            let terminal = next_terminal(view);
+            assert!(terminal.error.is_none());
+            view.receive(terminal);
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_locator(ids[1])
+                    .unwrap()
+                    .name(),
+                Some("second locator")
+            );
+            cx.notify();
+        });
+    }
+
+    #[gpui::test]
+    fn committed_locator_view_retires_on_replacement_or_disconnect(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::fixture;
+        for replace in [true, false] {
+            let (_files, window, editor, _) = fixture(cx);
+            let mut visual = VisualTestContext::from_window(window, cx);
+            editor.update(&mut visual, |view, _| view.place_locator_play_start(48_000));
+            visual.simulate_keystrokes("i");
+            let deadline = crate::test_wait::hang_deadline();
+            let observation = loop {
+                if let Ok(view) =
+                    editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+                {
+                    break view;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "committed locator view"
+                );
+                std::thread::yield_now();
+            };
+            let stale = hex_session::service::ArrangementEditViewObservation {
+                project_generation: observation.project_generation,
+                first_previous_revision: observation.first_previous_revision,
+                previous_revision: observation.previous_revision,
+                kind: observation.kind,
+                state: Weak::clone(&observation.state),
+            };
+            let held = editor.read_with(&visual, |view, _| next_terminal(view));
+            editor.update(&mut visual, |view, cx| {
+                assert!(view.observe_locator_add_view(observation));
+                if replace {
+                    view.service
+                        .submit(Request::NewWithAudioMode {
+                            mode: hex_session::DocumentAudioMode::Resident,
+                            reservation: None,
+                        })
+                        .unwrap();
+                    let replacement = next_terminal(view);
+                    assert!(replacement.project_replaced);
+                    view.receive(replacement);
+                    assert!(!view.observe_locator_add_view(stale));
+                } else {
+                    view.service
+                        .shutdown(std::time::Duration::from_secs(2))
+                        .unwrap();
+                    view.tick(cx);
+                }
+                assert!(view.locators.committed.is_none());
+                assert!(view.locators.adds.is_empty());
+                cx.notify();
+            });
+            drop(held);
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("locator-play-pending-48000").is_none());
         }
     }
 
