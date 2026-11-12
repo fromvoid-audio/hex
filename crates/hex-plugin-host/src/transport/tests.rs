@@ -260,15 +260,149 @@ fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
 }
 
 #[test]
-fn native_instrument_revokes_after_two_consecutive_missed_replies() {
+fn native_instrument_recovers_after_several_late_replies_without_replaying_them() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let counts = allocation_counter::measure(|| {
+        // The worker remains occupied for six deadlines. Every input stays
+        // ordered; only missing output is concealed.
+        for value in 1..=8 {
+            callback
+                .stage(&[[value as f32; 2]; 8], &[], &mut output)
+                .unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+        }
+        for sequence in 37..45 {
+            let reply = worker.receive().unwrap().unwrap();
+            assert_eq!(reply.sequence, sequence);
+            assert_eq!(reply.pcm[0], [(sequence - 36) as f32; 2]);
+            let marker = (sequence == 37).then_some(ManualParameterInput {
+                operation: NonZeroU64::MIN,
+                action: ManualParameterAction::Point(ParameterPoint {
+                    id: 7,
+                    frame: 0,
+                    normalized: 0.5,
+                }),
+            });
+            worker
+                .complete_with_manual_parameter(reply, marker)
+                .unwrap();
+        }
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(output, [[7.0; 2]; 8]);
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn native_concealment_covers_adjacent_gaps_across_a_partial_callback() {
+    let (_control, mut callback, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for _ in 0..2 {
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    for (frames, expected) in [(4, (0, 4)), (8, (0, 8)), (4, (0, 4))] {
+        callback.begin_physical_callback(frames).unwrap();
+        let reply = callback
+            .stage_segment_with_parameters(
+                0,
+                &[[1.0; 2]; 8][..frames],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 8][..frames],
+            )
+            .unwrap();
+        assert_eq!(reply.concealed_output, Some(expected));
+        callback.finish(true).unwrap();
+    }
+}
+
+#[test]
+fn native_worker_can_catch_up_over_multiple_callbacks() {
     let (control, mut callback, mut worker) =
         native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let mut output = [[0.0; 2]; 8];
-    for _ in 0..3 {
+    for value in 1..=4 {
+        callback
+            .stage(&[[value as f32; 2]; 8], &[], &mut output)
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(output, [[0.0; 2]; 8]);
+    }
+    for expected in 0..2 {
+        let reply = worker.receive().unwrap().unwrap();
+        assert_eq!(reply.sequence, expected);
+        worker.complete(reply).unwrap();
+    }
+    callback.stage(&[[5.0; 2]; 8], &[], &mut output).unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(output, [[0.0; 2]; 8]);
+    for expected in 2..4 {
+        let reply = worker.receive().unwrap().unwrap();
+        assert_eq!(reply.sequence, expected);
+        worker.complete(reply).unwrap();
+    }
+    callback.stage(&[[6.0; 2]; 8], &[], &mut output).unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(output, [[4.0; 2]; 8]);
+    assert!(!control.is_revoked());
+}
+
+#[test]
+fn malformed_late_native_reply_is_rejected_before_discarding() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for _ in 0..4 {
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    let mut late = worker.receive().unwrap().unwrap();
+    late.pcm[0][0] = f32::NAN;
+    worker
+        .replies
+        .push(OutputReply {
+            block: late,
+            manual: None,
+            editor: None,
+        })
+        .unwrap();
+    let mut output = [[9.0; 2]; 8];
+    assert_eq!(
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::InvalidSamples)
+    );
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert!(control.is_revoked());
+}
+
+#[test]
+fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..8 {
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
         callback.finish(true).unwrap();
     }
-    // The stale reply does not turn a second missed deadline into a success.
+    // A stale reply does not reset the consecutive-miss limit.
     let late = worker.receive().unwrap().unwrap();
     worker.complete(late).unwrap();
     assert_eq!(
@@ -276,7 +410,7 @@ fn native_instrument_revokes_after_two_consecutive_missed_replies() {
         Some(Fault::MissingOutput)
     );
     assert!(control.is_revoked());
-    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 1);
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 6);
 }
 
 #[test]
