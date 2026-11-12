@@ -7,7 +7,9 @@ use super::{
     pending_edit::{Disposition, Receipt},
 };
 use hex_project::{ClipId, Created, SceneId, SessionCellContent, TrackId};
-use hex_session::service::{DuplicateViewObservation, Event, Request, ViewState};
+use hex_session::service::{
+    ArrangementEditViewKind, ArrangementEditViewObservation, Event, Request, ViewState,
+};
 use std::{collections::VecDeque, sync::Arc};
 
 pub(super) const MAX_QUEUED_REPEATS: u8 = 32;
@@ -304,11 +306,17 @@ impl EditorView {
     }
     /// Retain the worker's exact display for this admitted Arrangement copy.
     /// Selection and edit admission still use the ordered terminal.
-    pub(super) fn observe_duplicate_view(&mut self, observation: DuplicateViewObservation) -> bool {
-        if let Created::ArrangementSection(copy) = observation.created {
+    pub(super) fn observe_duplicate_view(
+        &mut self,
+        observation: ArrangementEditViewObservation,
+    ) -> bool {
+        let ArrangementEditViewKind::Duplicate(created) = observation.kind else {
+            return false;
+        };
+        if let Created::ArrangementSection(copy) = created {
             return self.observe_section_copy_view(observation, copy);
         }
-        if !matches!(observation.created, Created::Clips { .. }) {
+        if !matches!(created, Created::Clips { .. }) {
             return false;
         }
         let Some(pending) = self.duplicate_intent.pending.as_mut() else {
