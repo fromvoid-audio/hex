@@ -22,6 +22,7 @@ pub use hex_storage::project_name;
 /// Verbatim spans keep paths case-sensitive in lowercase status and error text.
 pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
+mod arrangement_edit_views;
 mod arrangement_sections;
 mod clip_paint;
 pub use clip_paint::PaintMidiClip;
@@ -400,11 +401,13 @@ pub enum ArrangementEditViewKind {
 }
 
 /// The committed Arrangement copy or paste, available before checkpoint
-/// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
+/// I/O. Its bounded delivery is best effort. Only the ordinary terminal
 /// can acknowledge the edit, install authoring state or advance repeats.
 /// A missed observation does not keep an old project's media alive.
 pub struct ArrangementEditViewObservation {
     pub project_generation: u64,
+    /// First predecessor in a contiguous run of coalesced paste revisions.
+    pub first_previous_revision: u64,
     pub previous_revision: u64,
     pub kind: ArrangementEditViewKind,
     pub state: std::sync::Weak<ViewState>,
@@ -1298,7 +1301,7 @@ pub struct Service {
     clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
     track_switch_views: Receiver<TrackSwitchViewObservation>,
-    arrangement_edit_views: Receiver<ArrangementEditViewObservation>,
+    arrangement_edit_views: arrangement_edit_views::Receiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1616,7 +1619,7 @@ impl Service {
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (track_switch_view_tx, track_switch_views) = mpsc::sync_channel(1);
-        let (arrangement_edit_view_tx, arrangement_edit_views) = mpsc::sync_channel(1);
+        let (arrangement_edit_view_tx, arrangement_edit_views) = arrangement_edit_views::channel();
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -2533,7 +2536,7 @@ fn run_worker(
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
     track_switch_views: SyncSender<TrackSwitchViewObservation>,
-    arrangement_edit_views: SyncSender<ArrangementEditViewObservation>,
+    arrangement_edit_views: arrangement_edit_views::Sender,
     clip_audition: Arc<clip_audition::Mailbox>,
 ) {
     let mut revision = 0_u64;
@@ -9124,8 +9127,9 @@ fn run_worker(
             committed_arrangement_duplicate.map(ArrangementEditViewKind::Duplicate)
         };
         if let Some(kind) = arrangement_edit_view {
-            let _ = arrangement_edit_views.try_send(ArrangementEditViewObservation {
+            arrangement_edit_views.send(ArrangementEditViewObservation {
                 project_generation,
+                first_previous_revision: revision_before_request,
                 previous_revision: revision_before_request,
                 kind,
                 state: Arc::downgrade(&state),
@@ -13829,7 +13833,7 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let (_track_switch_sender, track_switch_views) = mpsc::sync_channel(1);
-        let (_arrangement_edit_sender, arrangement_edit_views) = mpsc::sync_channel(1);
+        let (_arrangement_edit_sender, arrangement_edit_views) = arrangement_edit_views::channel();
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),

@@ -11,6 +11,91 @@ use hex_session::service::{ArrangementEditViewKind, ArrangementEditViewObservati
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn unread_first_paste_view_coalesces_without_flashing_back(cx: &mut TestAppContext) {
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    visual.simulate_keystrokes("cmd-c");
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let mut outcomes = Vec::new();
+    for frame in [72_000, 120_000] {
+        editor.read_with(&visual, |view, _| {
+            view.service
+                .submit(Request::PasteTimeRange { track, frame })
+                .unwrap()
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let event = loop {
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "paste terminal");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(event.error.is_none());
+        outcomes.push(event);
+    }
+    let second = outcomes.pop().unwrap();
+    let first = outcomes.pop().unwrap();
+    let Created::Clips {
+        first: first_clip, ..
+    } = first.created.unwrap()
+    else {
+        panic!("first clip");
+    };
+    let Created::Clips {
+        first: second_clip, ..
+    } = second.created.unwrap()
+    else {
+        panic!("second clip");
+    };
+    let observation = editor.read_with(&visual, |view, _| {
+        view.service.try_arrangement_edit_view().unwrap()
+    });
+    assert_eq!(
+        observation.first_previous_revision + 1,
+        first.state.revision
+    );
+    assert_eq!(observation.previous_revision, first.state.revision);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.observe_paste_view(observation));
+        assert!(Arc::ptr_eq(
+            view.arrangement_paste_view().unwrap(),
+            &second.state
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let first_selector = Box::leak(format!("clip-name-{}", first_clip.value()).into_boxed_str());
+    let second_selector = Box::leak(format!("clip-name-{}", second_clip.value()).into_boxed_str());
+    let first_bounds = visual
+        .debug_bounds(first_selector)
+        .expect("first paste paints");
+    let second_bounds = visual
+        .debug_bounds(second_selector)
+        .expect("second paste paints");
+    editor.update(&mut visual, |view, cx| {
+        view.receive(first);
+        assert!(Arc::ptr_eq(
+            view.arrangement_paste_view().unwrap(),
+            &second.state
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(first_selector), Some(first_bounds));
+    assert_eq!(visual.debug_bounds(second_selector), Some(second_bounds));
+    editor.update(&mut visual, |view, cx| {
+        view.receive(second);
+        assert!(view.arrangement_paste_view().is_none());
+        cx.notify();
+    });
+}
+
+#[gpui::test]
 fn successive_committed_pastes_remain_visible_through_the_first_terminal(cx: &mut TestAppContext) {
     let (_files, handle, editor, originals) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -89,6 +174,7 @@ fn successive_committed_pastes_remain_visible_through_the_first_terminal(cx: &mu
     editor.update(&mut visual, |view, cx| {
         let invalid = |generation, previous_revision| ArrangementEditViewObservation {
             project_generation: generation,
+            first_previous_revision: previous_revision,
             previous_revision,
             kind: ArrangementEditViewKind::Paste,
             state: Arc::downgrade(&second.state),
@@ -175,6 +261,7 @@ fn successive_committed_pastes_remain_visible_through_the_first_terminal(cx: &mu
         assert!(view.arrangement_paste_view().is_none());
         assert!(!view.observe_paste_view(ArrangementEditViewObservation {
             project_generation: generation,
+            first_previous_revision: second_revision,
             previous_revision: second_revision,
             kind: ArrangementEditViewKind::Paste,
             state: Arc::downgrade(&third.state),

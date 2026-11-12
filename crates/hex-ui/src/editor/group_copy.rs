@@ -221,7 +221,9 @@ impl EditorView {
             .as_ref()
             .map_or(installed, |view| view.revision.max(installed));
         if self.project_generation != observation.project_generation
-            || predecessor != observation.previous_revision
+            || observation.first_previous_revision > observation.previous_revision
+            || predecessor < observation.first_previous_revision
+            || predecessor > observation.previous_revision
         {
             return false;
         }

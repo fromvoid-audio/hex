@@ -6204,6 +6204,7 @@ pub(super) mod tests {
                 assert!(
                     !view.observe_duplicate_view(ArrangementEditViewObservation {
                         project_generation: generation,
+                        first_previous_revision: revision,
                         previous_revision: revision,
                         kind: observed.kind,
                         state: Arc::downgrade(&committed),
