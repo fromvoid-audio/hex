@@ -934,9 +934,9 @@ impl super::EditorView {
 
     /// Submit only changed, valid targets. The worker owns preparation and
     /// publication; this control state never treats submission as application.
-    pub(super) fn sync_held_clip_move_audition(&mut self) {
+    pub(super) fn sync_held_clip_move_audition(&mut self) -> bool {
         let Some(drag) = self.active_clip_drag.as_ref() else {
-            return;
+            return false;
         };
         let eligible = self.mode == super::EditorMode::Arrangement
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
@@ -966,7 +966,7 @@ impl super::EditorView {
             None
         };
         let Some(audition) = self.clip_move_audition.as_mut() else {
-            return;
+            return false;
         };
         if target.is_some_and(|(track, position, mode)| {
             audition.target.as_ref().is_some_and(|last| {
@@ -974,18 +974,18 @@ impl super::EditorView {
             })
         }) || target.is_none() && audition.target.is_none()
         {
-            return;
+            return false;
         }
         let Some((track, position, mode)) = target else {
             audition.target = None;
             self.expected_clip_preview = None;
             self.applied_clip_preview = None;
             self.service.audition_arrangement_move(None);
-            return;
+            return true;
         };
         let Some(sequence) = audition.sequence.checked_add(1) else {
             self.cancel_held_clip_move_audition();
-            return;
+            return true;
         };
         audition.sequence = sequence;
         let target = hex_session::service::ArrangementMoveAudition {
@@ -1005,6 +1005,7 @@ impl super::EditorView {
         self.clip_preview_may_apply = true;
         self.service.audition_arrangement_move(Some(target.clone()));
         audition.target = Some(target);
+        true
     }
 
     pub(super) fn cancel_held_clip_move_audition(&mut self) {
