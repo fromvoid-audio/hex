@@ -1894,6 +1894,27 @@ mod tests {
     fn shared_source_mute_preserves_saturated_unchanged_arrangement() {
         on_control(|| {
             let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
             let receiver_clip = f.editor.project().track(f.receiver).unwrap().midi_clips()[0].id();
             let contributor_clip = f
                 .editor
@@ -1947,6 +1968,18 @@ mod tests {
             candidate
                 .try_inherit_state_from(&mut old)
                 .expect("muting cannot add future source demand");
+            candidate.render(&mut [[0.0; 2]; 64]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let mut reenabled = playback(&f);
+            assert!(matches!(
+                reenabled.try_inherit_state_from(&mut candidate),
+                Err(SessionPlaybackError::SharedSourceVoiceCapacity)
+            ));
             candidate.render(&mut [[0.0; 2]; 64]).unwrap();
         });
     }
@@ -2039,16 +2072,40 @@ mod tests {
             assert_eq!(output, expected, "refusal must preserve existing audio");
             assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
             old.apply(SessionPlaybackCommand::Stop).unwrap();
+            oracle.apply(SessionPlaybackCommand::Stop).unwrap();
             for _ in 0..130 {
                 old.render(&mut output).unwrap();
+                oracle.render(&mut expected).unwrap();
+                assert_eq!(output, expected);
             }
             let mut retry = playback(&f);
-            retry.try_inherit_state_from(&mut old).unwrap();
-            retry.apply(SessionPlaybackCommand::Play).unwrap();
-            for _ in 0..8 {
-                retry.render(&mut output).unwrap();
+            let new_notes: Vec<_> = f
+                .editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .map(|note| note.id())
+                .collect();
+            for note in new_notes {
+                f.editor.execute(Command::RemoveMidiNote(note)).unwrap();
             }
-            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            let mut peer_only = playback(&f);
+            retry.try_inherit_state_from(&mut old).unwrap();
+            peer_only.try_inherit_state_from(&mut oracle).unwrap();
+            retry.apply(SessionPlaybackCommand::Play).unwrap();
+            peer_only.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut heard_new_notes = false;
+            for _ in 0..40 {
+                retry.render(&mut output).unwrap();
+                peer_only.render(&mut expected).unwrap();
+                heard_new_notes |= output != expected;
+            }
+            assert!(
+                heard_new_notes,
+                "retry must render the newly authored notes"
+            );
         });
     }
 
