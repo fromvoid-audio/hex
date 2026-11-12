@@ -4500,6 +4500,11 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
         drag.copy_modifier.set(true);
         view.sync_held_clip_move_audition();
         let copy = view.expected_clip_preview.unwrap();
+        assert_eq!(
+            view.applied_clip_preview.map(|(_, applied)| applied),
+            Some(identity),
+            "the prior callback remains audible while the copy prepares"
+        );
         assert_eq!(copy.gesture, identity.gesture);
         assert!(copy.sequence > identity.sequence);
         assert_eq!(

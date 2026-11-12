@@ -58,6 +58,10 @@ pub struct ClipMovePreviewIdentity {
     pub context: hex_engine::AudioSourceContext,
     pub gesture: u64,
     pub sequence: u64,
+    /// The anchor placement represented by this publication, in project units.
+    pub track: hex_project::TrackId,
+    pub position: hex_project::ClipGroupPosition,
+    pub mode: ArrangementMoveMode,
 }
 
 impl ArrangementMoveAudition {
@@ -66,6 +70,9 @@ impl ArrangementMoveAudition {
             context: self.context,
             gesture: self.gesture,
             sequence: self.sequence,
+            track: self.track,
+            position: self.position,
+            mode: self.mode,
         }
     }
     pub(super) fn valid(&self) -> bool {
@@ -549,6 +556,10 @@ mod tests {
     #[test]
     fn group_custody_cancels_old_work_and_matches_only_its_source() {
         let first = target();
+        let identity = first.identity();
+        assert_eq!(identity.track, first.track);
+        assert_eq!(identity.position, first.position);
+        assert_eq!(identity.mode, first.mode);
         let mailbox = Mailbox::default();
         let a = Target::Move(first.clone());
         mailbox.set(a.clone());
