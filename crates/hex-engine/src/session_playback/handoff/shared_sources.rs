@@ -1900,6 +1900,9 @@ mod tests {
             let swapped_muted = prepare(editor.project());
             assert!(swapped.retained_source_configuration_matches(&swapped_muted, source));
             assert!(swapped.retained_source_identity_matches(&swapped_muted, source));
+            assert!(
+                swapped.retained_source_configuration_matches_on_callback(&swapped_muted, source)
+            );
             let mut playing = SessionPlayback::new(Arc::clone(&swapped)).unwrap();
             playing.apply(SessionPlaybackCommand::Play).unwrap();
             playing.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -1933,6 +1936,12 @@ mod tests {
                 .unwrap();
             let changed_configuration = prepare(editor.project());
             assert!(!swapped.retained_source_configuration_matches(&changed_configuration, source));
+            assert!(
+                !swapped.retained_source_configuration_matches_on_callback(
+                    &changed_configuration,
+                    source
+                )
+            );
             editor
                 .execute(Command::SetNativeSourceReceiver {
                     source,
@@ -1941,6 +1950,9 @@ mod tests {
                 .unwrap();
             let no_receiver = prepare(editor.project());
             assert!(!swapped.retained_source_configuration_matches(&no_receiver, source));
+            assert!(
+                !swapped.retained_source_configuration_matches_on_callback(&no_receiver, source)
+            );
         });
     }
 
