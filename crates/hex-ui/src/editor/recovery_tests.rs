@@ -224,6 +224,11 @@ fn degraded_sample_drop_releases_the_preview_on_failed_or_stale_recovery(
         EditFixture::NewTrackSample,
         EditRecovery::ProjectChanged,
     );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::ExistingTrackSample,
+        EditRecovery::ProjectEditPending,
+    );
     graph_edit_recovery(cx, EditFixture::NewTrackSample, EditRecovery::Failed);
 }
 
@@ -238,6 +243,7 @@ enum EditFixture {
 enum EditRecovery {
     Ready,
     ProjectChanged,
+    ProjectEditPending,
     Failed,
 }
 
@@ -453,6 +459,9 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             !v.finish_audio_recovery_tick(),
             "cursor seek must reach the callback"
         );
+        if outcome == EditRecovery::ProjectEditPending {
+            assert!(v.enqueue(add_track("intervening edit")));
+        }
     });
     fresh_backend.render(&mut [[0.0; 2]; 64]).unwrap();
     editor.update(cx, |v, _| {
@@ -468,6 +477,25 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                     .unwrap()
                     .contains("project changed during audio recovery")
             );
+            return;
+        }
+        if outcome == EditRecovery::ProjectEditPending {
+            assert!(v.pending_sample_drop.is_none());
+            assert_eq!(v.worker_requests_pending, 1, "only the intervening edit");
+            assert!(v.error.as_deref().unwrap().contains("project work pending"));
+            let changed = next(&v.service);
+            assert_eq!(changed.state.revision, revision + 1);
+            assert!(
+                changed
+                    .state
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .clips()
+                    .is_empty()
+            );
+            v.receive(changed);
+            assert!(v.service.try_event().is_err());
             return;
         }
         assert_eq!(v.worker_requests_pending, 1, "{:?}", v.error);

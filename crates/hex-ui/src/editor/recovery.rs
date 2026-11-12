@@ -172,6 +172,12 @@ impl EditorView {
         {
             self.error = Some("edit canceled · project changed during audio recovery".into());
             false
+        } else if sample_drop && self.edit_pending() {
+            // Legacy imports use FIFO destinations. A worker edit without an
+            // installed reply can already have changed the captured revision.
+            self.error =
+                Some("sample drop canceled · project work pending during audio recovery".into());
+            false
         } else if self.has_degraded_vst3_output() {
             self.error = Some("plug-in failed during audio recovery · edit was canceled".into());
             false
