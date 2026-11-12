@@ -2703,13 +2703,13 @@ impl Playback {
         Ok(())
     }
 
-    /// Render one callback as parts split only at a pending fade end. Each
-    /// part is followed by its declick gain and then monitor-only metronome
+    /// Render one callback as parts split at a pending fade or section end.
+    /// Each part is followed by its declick gain and then monitor-only metronome
     /// and tuning audio. A refused first part keeps the renderer's own atomic
     /// refusal (the output is left as the renderer left it). A part refused
     /// after an earlier part rendered silences the whole callback; rendered
     /// parts keep their committed clock, as consecutive callbacks would.
-    /// Without a pending fade this is exactly one part.
+    /// Without either boundary this is exactly one part.
     fn render_declicked(
         &mut self,
         output: &mut [Frame],

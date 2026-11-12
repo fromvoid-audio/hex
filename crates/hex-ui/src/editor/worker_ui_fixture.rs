@@ -198,6 +198,13 @@ mod tests {
         });
         visual.run_until_parked();
         let button = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(button, Modifiers::default());
+        fixture.editor.update(&mut visual, |view, _| {
+            assert!(view.section_launch_waiting());
+            assert!(view.pending_loop_region().is_none());
+            assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+            view.cancel_section_launch_wait();
+        });
         crate::editor::section_launch::test_section_loop_key(&mut visual, true);
         visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
