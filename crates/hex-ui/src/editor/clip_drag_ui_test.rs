@@ -4893,9 +4893,9 @@ fn held_clip_audition_admission_latency(cx: &mut TestAppContext) {
     let mut ordered = samples.clone();
     ordered.sort_by(f64::total_cmp);
     println!(
-        "held_clip_audition_ms samples={samples:?} p50={} p95={} max={} warmups=4 measured=12 sample_rate=48000 block_frames=64 tracks=1 midi_clips=1 notes=1 window=1280x800 backend=headless_pumped",
-        ordered[ordered.len() / 2],
-        ordered[(ordered.len() - 1) * 95 / 100],
+        "held_clip_audition_ms samples={samples:?} median={} p95_nearest_rank={} max={} warmups=4 measured=12 sample_rate=48000 block_frames=64 tracks=1 midi_clips=1 notes=1 window=1280x800 backend=headless_pumped",
+        (ordered[ordered.len() / 2 - 1] + ordered[ordered.len() / 2]) / 2.0,
+        ordered[(ordered.len() * 95).div_ceil(100) - 1],
         ordered[ordered.len() - 1]
     );
     editor.update(&mut visual, |view, _| {
