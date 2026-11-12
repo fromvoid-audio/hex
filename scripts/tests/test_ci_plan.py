@@ -1937,7 +1937,8 @@ class MainHealthTests(unittest.TestCase):
             script.write_text("# change\n")
             git("commit", "-qam", "tool change")
             source = git("rev-parse", "HEAD")
-            with patch.object(plan.python_tests, "available_modules",
+            with patch.dict(os.environ, dict.fromkeys(plan.python_tests.native_acceptance_inputs(os.environ), "")), \
+                 patch.object(plan.python_tests, "available_modules",
                               return_value=sorted(plan.python_tests.REVIEWED_MODULES)):
                 resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
                                         metadata=BaseAdvanceCarryTests.metadata(self, root))

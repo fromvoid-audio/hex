@@ -435,7 +435,7 @@ class NativeInstanceTests(unittest.TestCase):
                                                *BINDING, session.sequence, session.frames,
                                                operation, 0, 0, action, 0, 0))
             reply_magic, reply = session.message()
-            self.assertEqual(reply_magic, b"HXVIMD01")
+            self.assertEqual(reply_magic, b"HXVIMD03")
             self.assertEqual(struct.unpack_from("<H7Q", reply),
                              (1, *BINDING, session.sequence, session.frames, operation))
             return reply[58:]
@@ -667,13 +667,29 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
         self.assertEqual(self.observation()[1], 0, "controller setters stay on main")
 
-    def test_stopped_flush_rejects_live_stale_malformed_and_unknown_before_sdk_entry(self):
-        for mode in ("live", "operation", "prefix", "binding", "offset", "unknown", "duplicate"):
+    def test_idle_flush_applies_parameter_without_advancing_pcm(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+        packet = struct.pack("<4sHHHH4x7QHHId", b"HXVF", 2, 0, 0, 1, *BINDING,
+                             0, 0, 1, 0, 0, 7, .5)
+        session.socket.sendall(packet)
+        magic, body = session.message()
+        self.assertEqual(magic, b"HXVIFL01")
+        self.assertEqual(struct.unpack("<H7QBHId", body), (1, *BINDING, 0, 0, 1, 1, 1, 7, .5))
+        _, inputs, (magic, output) = session.render(8)
+        self.assertEqual(magic, b"HXVB")
+        # The fixture maps 0.5 to gain 2, then applies its first-block scale 0.5.
+        self.assertEqual(struct.unpack_from("<16f", output, 64), inputs)
+        self.terminal(session, 0, message=session.stop())
+        self.assertEqual(self.observation()[10], 1)
+        self.assertEqual(self.observation()[11], 1)
+
+    def test_stopped_flush_rejects_stale_malformed_and_unknown_before_sdk_entry(self):
+        for mode in ("operation", "prefix", "binding", "offset", "unknown", "duplicate"):
             with self.subTest(mode=mode):
                 session=self.session(variant=37);self.ready(session, controller=True)
-                if mode!="live":
-                    session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
-                    self.assertEqual(session.message()[0],b"HXVIQF03")
+                session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
+                self.assertEqual(session.message()[0],b"HXVIQF03")
                 binding=(*BINDING[:3],99) if mode=="binding" else BINDING
                 operation=2 if mode=="operation" else 1
                 prefix=1 if mode=="prefix" else 0
