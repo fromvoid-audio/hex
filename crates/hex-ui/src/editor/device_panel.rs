@@ -1393,7 +1393,7 @@ fn render_track(
     root
 }
 
-fn source_summary_card(summary: &source_summary::SourceSummary) -> Div {
+fn source_summary_card(summary: &source_summary::SourceSummary) -> Stateful<Div> {
     let count = summary.contributors;
     let count_label = if count == 1 {
         "midi track"
@@ -1405,8 +1405,10 @@ fn source_summary_card(summary: &source_summary::SourceSummary) -> Div {
         .as_deref()
         .map(hex_session::service::text::verbatim)
         .unwrap_or_else(|| "none".into());
+    let tooltip: gpui::SharedString = source_summary_tooltip(summary).into();
     let background = theme::color(theme::PaletteRole::Border);
     div()
+        .id("device-source-summary")
         .debug_selector(|| "device-source-summary".into())
         .w(px(SOURCE_SUMMARY_WIDTH))
         .flex_shrink_0()
@@ -1419,6 +1421,14 @@ fn source_summary_card(summary: &source_summary::SourceSummary) -> Div {
             background,
             theme::color(theme::PaletteRole::SecondaryText),
         )))
+        .tooltip(move |_, cx| {
+            let description = tooltip.clone();
+            cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description,
+            })
+            .into()
+        })
         .child(theme::text("source"))
         .child(
             div()
@@ -1438,6 +1448,18 @@ fn source_summary_card(summary: &source_summary::SourceSummary) -> Div {
                 .truncate()
                 .child(theme::text(format!("receiver · {receiver}"))),
         )
+}
+
+fn source_summary_tooltip(summary: &source_summary::SourceSummary) -> String {
+    let receiver = summary
+        .receiver
+        .as_deref()
+        .map(hex_session::service::text::verbatim)
+        .unwrap_or_else(|| "none".into());
+    format!(
+        "source · {}\nreceiver · {receiver}",
+        hex_session::service::text::verbatim(&summary.name),
+    )
 }
 
 // The panel appends at the tail or replaces the existing instrument in place.
@@ -3612,6 +3634,20 @@ mod header_style_unit_tests {
             }
         };
         0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    #[test]
+    fn source_tooltip_preserves_full_authored_names() {
+        let summary = source_summary::SourceSummary {
+            name: "A Very Long Bright Bass Name".into(),
+            receiver: Some("MIDI Receiver A".into()),
+            contributors: 2,
+            role: "midi contributor",
+        };
+        assert_eq!(
+            theme::text(source_summary_tooltip(&summary)).as_ref(),
+            "source · A Very Long Bright Bass Name\nreceiver · MIDI Receiver A"
+        );
     }
 
     #[test]
