@@ -38,10 +38,12 @@ impl VerifiedClipControl {
                 }
                 let identity = preview.identity();
                 if self.watermark.is_some_and(|(old, closed)| {
-                    identity.context != old.context
-                        || identity.gesture < old.gesture
-                        || (identity.gesture == old.gesture
-                            && (closed || identity.sequence <= old.sequence))
+                    identity.context.project_generation != old.context.project_generation
+                        || identity.context.editor_revision < old.context.editor_revision
+                        || (identity.context == old.context
+                            && (identity.gesture < old.gesture
+                                || (identity.gesture == old.gesture
+                                    && (closed || identity.sequence <= old.sequence))))
                 }) {
                     return false;
                 }
