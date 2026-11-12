@@ -129,13 +129,8 @@ impl RecoveryTracker {
                 // unsupported slot for every successful edit cannot repair it.
                 return Ok(None);
             }
-            checkpoint_project(
-                context.session,
-                context.base,
-                context.document,
-                context.untitled,
-                context.journal,
-            )
+            PreparedCheckpoint::capture(&context)
+                .and_then(|checkpoint| checkpoint.publish(context.journal))
         } else {
             return Ok(None);
         };
