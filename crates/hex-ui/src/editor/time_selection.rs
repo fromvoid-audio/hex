@@ -283,6 +283,7 @@ impl EditorView {
         });
         let generation = self.project_generation;
         let revision = state.revision;
+        self.clear_automation_range();
         let selection = TimeSelection {
             anchor_track: first_track,
             end_track: last_track,
@@ -451,6 +452,7 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = state.revision;
         let anchor_track = anchor.and_then(|cursor| cursor.track).unwrap_or(track);
+        self.clear_automation_range();
         let selection = TimeSelection {
             anchor_track: Some(anchor_track),
             end_track: Some(track),

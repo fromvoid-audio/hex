@@ -197,6 +197,7 @@ impl EditorView {
         let Some(frame) = self.cursor_frame_at(pointer_x, lane, free) else {
             return;
         };
+        self.clear_automation_range();
         self.set_point_cursor(Some(track), frame);
         self.time_selection = Some(TimeSelection {
             anchor_track: Some(track),
@@ -347,6 +348,7 @@ impl EditorView {
         else {
             return;
         };
+        self.clear_automation_range();
         self.set_point_cursor(None, frame);
         self.edit_cursor_in_selected_clip = None;
         self.time_selection = None;
