@@ -1375,6 +1375,8 @@ impl SessionPlayback {
             &self.mutable_instruments,
             &self.routes,
             self.midi_admission.as_ref(),
+            &self.source_voice_envelopes,
+            self.loop_region().is_some(),
             previous,
             timing_changed,
             arrangement_tempo_remap,

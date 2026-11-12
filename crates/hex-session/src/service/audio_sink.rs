@@ -496,13 +496,23 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// Reason category for a refused resident publication. The unavailable
+/// category describes source custody only; it does not imply a deadline fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationFailure {
+    NativeSourceUnavailable,
+    Other,
+}
+
 pub struct ResidentPublicationRefusal {
+    pub kind: ResidentPublicationFailure,
     pub playback: Playback,
     pub error: String,
 }
 impl std::fmt::Debug for ResidentPublicationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResidentPublicationRefusal")
+            .field("kind", &self.kind)
             .field("error", &self.error)
             .finish_non_exhaustive()
     }
@@ -849,6 +859,7 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         Err(ResidentPublicationRefusal {
+            kind: crate::service::ResidentPublicationFailure::Other,
             playback,
             error: "ordinary worker publication is unavailable".into(),
         })
@@ -872,6 +883,7 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         if playback.contains_streamed_sources() {
             return Err(ResidentPublicationRefusal {
+                kind: crate::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "ordinary file-backed publication is unavailable for this output".into(),
             });
@@ -1350,7 +1362,7 @@ impl WorkerEvents {
             .ok_or_else(|| "audio adapter unavailable".to_owned())?
             .restart_audio(project_generation, request_id)
     }
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
             audio.poll();
         }

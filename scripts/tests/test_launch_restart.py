@@ -329,6 +329,7 @@ class FixturePathTests(unittest.TestCase):
                 self.assertEqual(second.summary['target_cache']['cleanup_status'], 'not_needed')
                 self.assertEqual(retained.read_bytes(), b'preserve')
             finally:
+                fixture.doCleanups()
                 owned.cleanup()
 
 

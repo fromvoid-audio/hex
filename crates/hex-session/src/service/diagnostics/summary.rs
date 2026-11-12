@@ -1410,12 +1410,12 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             asset,
-            track,
-            start,
+            destination,
+            new_track_gain,
             warp,
             audition_timing,
         } => {
-            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "destination" => format!("{destination:?}"), "new_track_gain" => new_track_gain, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
         }
         Request::ReorderTracks {
             project_generation,
