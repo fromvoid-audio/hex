@@ -533,6 +533,16 @@ pub enum DeviceClipboardAction {
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Place an exact current-project asset using the Arrangement import law.
+    InsertProjectSample {
+        project_generation: u64,
+        revision: u64,
+        asset: hex_project::AssetId,
+        track: hex_project::TrackId,
+        start: u64,
+        warp: hex_project::AudioImportWarp,
+        audition_timing: Option<hex_engine::playback::BrowserAuditionTiming>,
+    },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
     /// Replace one device's bank against the displayed canonical revision.
@@ -1102,6 +1112,7 @@ impl Request {
         matches!(
             self,
             Request::CommitMidiTake { .. }
+                | Request::InsertProjectSample { .. }
                 | Request::ChangeProjectSampleRate { .. }
                 | Request::Undo
                 | Request::ReorderTracks { .. }
@@ -4053,6 +4064,22 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = resolution_failure.or_else(|| match &request {
+            Request::InsertProjectSample {
+                project_generation: captured,
+                revision: captured_revision,
+                ..
+            } => {
+                if *captured != project_generation || *captured_revision != revision {
+                    Some("sample insertion canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before inserting a sample".into())
+                } else {
+                    None
+                }
+            }
             Request::BounceArrangement {
                 project_generation: captured,
                 revision: captured_revision,
@@ -4360,6 +4387,7 @@ fn run_worker(
             && matches!(
                 &request,
                 Request::AssignSampler { .. }
+                    | Request::InsertProjectSample { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::CommitMidiTake { .. }
@@ -5407,6 +5435,107 @@ fn run_worker(
                             }
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::InsertProjectSample {
+                    project_generation: _,
+                    revision: _,
+                    asset,
+                    track,
+                    start,
+                    warp,
+                    audition_timing,
+                } => {
+                    let cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        queued.document_intent,
+                    );
+                    let mut admit = || {
+                        if cancellation.is_cancelled() {
+                            Err(SessionError::Invalid(
+                                "sample insertion canceled · project changed",
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    let mut imported_resident = None;
+                    let result = if session.audio_mode() != DocumentAudioMode::Resident {
+                        Err(SessionError::Invalid(
+                            "project sample placement requires resident audio",
+                        ))
+                    } else if let Some(sink) = events.resident_audio() {
+                        session.place_existing_asset_revision_using(
+                            asset,
+                            track,
+                            start,
+                            warp,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            &mut admit,
+                            |input, admit| {
+                                let snapshot = resident_audio::prepare_import_playback(
+                                    input,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    },
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                    audition_timing.map_or(
+                                        resident_audio::ImportPlayback::Normal,
+                                        |timing| resident_audio::ImportPlayback::Browser {
+                                            track,
+                                            start,
+                                            timing,
+                                        },
+                                    ),
+                                    admit,
+                                )?;
+                                let prepared = Arc::clone(&snapshot.prepared);
+                                imported_resident = Some(snapshot);
+                                Ok(prepared)
+                            },
+                        )
+                    } else {
+                        admission.check_legacy_stage(&session, &[]).and_then(|()| {
+                            session.place_existing_asset_revision_using(
+                                asset,
+                                track,
+                                start,
+                                warp,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                &mut admit,
+                                crate::import_batch::prepare_asset_free,
+                            )
+                        })
+                    };
+                    match result {
+                        Ok((result, prepared)) => {
+                            if let Some(snapshot) = imported_resident {
+                                resident_snapshot = Some(snapshot);
+                            }
+                            unsaved = true;
+                            created = Some(result);
+                            replacement_revision = Some(prepared);
+                            status = Some("project sample inserted".into());
+                        }
+                        Err(reason) => {
+                            error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                &reason.to_string(),
+                            ))
+                        }
                     }
                 }
                 Request::ImportAudioBatch {
@@ -12918,6 +13047,50 @@ mod service_tests {
         assert!(reopened.error.is_none(), "{:?}", reopened.error);
         assert!(reopened.project_replaced);
         assert_eq!(reopened.state.project, duplicated.state.project);
+    }
+
+    #[test]
+    fn project_sample_request_reuses_resident_identity_and_refuses_stale_source() {
+        let directory = TestDir::new();
+        let wav = directory.0.join("project-sample.wav");
+        fs::write(&wav, wav_mono(&[16_384; 128])).unwrap();
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(wav.clone())).unwrap();
+        let initial = next_event(&service);
+        assert!(initial.error.is_none(), "{:?}", initial.error);
+        let track = initial.state.project.tracks()[0].id();
+        let asset = initial.state.project.assets().next().unwrap().id();
+        fs::remove_file(wav).unwrap();
+        let request = |generation, revision| Request::InsertProjectSample {
+            project_generation: generation,
+            revision,
+            asset,
+            track,
+            start: 256,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: None,
+        };
+        service.submit(request(0, initial.state.revision)).unwrap();
+        let placed = next_event(&service);
+        assert!(placed.error.is_none(), "{:?}", placed.error);
+        assert!(
+            matches!(placed.created, Some(Created::Imported { asset: actual, .. }) if actual == asset)
+        );
+        assert_eq!(placed.state.project.assets().count(), 1);
+        assert_eq!(placed.state.project.track(track).unwrap().clips().len(), 2);
+        for (generation, revision) in [(1, placed.state.revision), (0, initial.state.revision)] {
+            service.submit(request(generation, revision)).unwrap();
+            let refused = next_event(&service);
+            assert!(refused.error.is_some());
+            assert_eq!(refused.state.revision, placed.state.revision);
+            assert_eq!(refused.state.project, placed.state.project);
+        }
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        assert_eq!(undone.state.project.track(track).unwrap().clips().len(), 1);
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(next_event(&service).state.project, placed.state.project);
     }
 
     #[test]

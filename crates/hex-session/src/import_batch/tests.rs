@@ -92,6 +92,149 @@ fn assert_unchanged(
 }
 
 #[test]
+fn existing_asset_placement_uses_batch_warp_overwrite_and_one_undo() {
+    for warp in [
+        hex_project::AudioImportWarp::Off,
+        hex_project::AudioImportWarp::Beats,
+    ] {
+        let mut s = session();
+        let id = track(&mut s);
+        let result = import(
+            &mut s,
+            vec![media(48_000, 24_000, 8192)],
+            AudioBatchDestination::Track {
+                track: id,
+                start: 0,
+            },
+        );
+        let Created::Imported { asset, .. } = result[0] else {
+            panic!("expected import")
+        };
+        let frames = s.resident_frames();
+        let before = s.project().track(id).unwrap().clips().to_vec();
+        let (created, _) = s
+            .place_existing_asset_revision_using(
+                asset,
+                id,
+                12_000,
+                warp,
+                None,
+                || Ok(()),
+                prepare_asset_free,
+            )
+            .unwrap();
+        let Created::Imported {
+            asset: actual,
+            clip,
+            ..
+        } = created
+        else {
+            panic!("expected placement")
+        };
+        assert_eq!(actual, asset);
+        assert_eq!(s.project().assets().count(), 1);
+        assert_eq!(s.resident_frames(), frames);
+        let inserted = s.project().clip(clip).unwrap();
+        assert_eq!(
+            inserted
+                .audio_edit()
+                .is_some_and(|edit| edit.domain.warp_enabled),
+            warp == hex_project::AudioImportWarp::Beats
+        );
+        assert!(
+            s.project()
+                .track(id)
+                .unwrap()
+                .clips()
+                .iter()
+                .any(|clip| clip.start() == 0 && clip.duration() == 12_000)
+        );
+        assert!(s.undo());
+        assert_eq!(s.project().track(id).unwrap().clips(), before);
+        assert!(s.redo());
+        assert_eq!(s.project().clip(clip).unwrap().asset(), asset);
+    }
+}
+
+#[test]
+fn existing_asset_placement_refusal_preserves_project_and_history() {
+    let mut s = session();
+    let id = track(&mut s);
+    let result = import(
+        &mut s,
+        vec![media(48_000, 24_000, 8192)],
+        AudioBatchDestination::Track {
+            track: id,
+            start: 0,
+        },
+    );
+    let Created::Imported { asset, .. } = result[0] else {
+        panic!("expected import")
+    };
+    let before = s.project().clone();
+    let frames = s.resident_frames();
+    let mut calls = 0;
+    let result = s.place_existing_asset_revision_using(
+        asset,
+        id,
+        12_000,
+        hex_project::AudioImportWarp::Beats,
+        None,
+        || {
+            calls += 1;
+            if calls == 2 {
+                Err(SessionError::Invalid("injected refusal"))
+            } else {
+                Ok(())
+            }
+        },
+        prepare_asset_free,
+    );
+    assert!(result.is_err());
+    assert_eq!(calls, 2);
+    assert_eq!(s.project(), &before);
+    assert_eq!(s.resident_frames(), frames);
+    assert_eq!(s.project().assets().count(), 1);
+    assert!(s.undo());
+    assert_eq!(s.project().track(id).unwrap().clips().len(), 0);
+}
+
+#[test]
+fn existing_asset_placement_refuses_unavailable_resident_without_editing() {
+    let mut s = session();
+    let id = track(&mut s);
+    let result = import(
+        &mut s,
+        vec![media(48_000, 128, 8192)],
+        AudioBatchDestination::Track {
+            track: id,
+            start: 0,
+        },
+    );
+    let Created::Imported { asset, .. } = result[0] else {
+        panic!("expected import")
+    };
+    s.media.remove(&asset);
+    let before = s.project().clone();
+    let result = s.place_existing_asset_revision_using(
+        asset,
+        id,
+        256,
+        hex_project::AudioImportWarp::Off,
+        None,
+        || Ok(()),
+        prepare_asset_free,
+    );
+    assert!(matches!(
+        result,
+        Err(SessionError::Invalid("project sample is not resident"))
+    ));
+    assert_eq!(s.project(), &before);
+    assert!(s.undo());
+    assert!(s.project().track(id).unwrap().clips().is_empty());
+}
+
+#[test]
 fn ordered_tracks_pcm_paths_and_whole_batch_undo_redo_without_files() {
     let mut s = session();
     let anchor = track(&mut s);
