@@ -77,7 +77,7 @@ class SelectionTests(unittest.TestCase):
             with patch.object(shards.sys, "platform", "darwin"), \
                     patch.object(shards.shutil, "which", return_value="/usr/bin/git") as which, \
                     patch.object(shards.subprocess, "check_output", return_value=str(executable) + "\n") as lookup:
-                with shards.discovery_environment() as env:
+                with shards.shard_environment() as env:
                     first, original = env["PATH"].split(os.pathsep, 1)
                     self.assertEqual(original, os.environ.get("PATH", os.defpath))
                     self.assertEqual(list(Path(first).iterdir()), [Path(first) / "git"])
@@ -85,23 +85,30 @@ class SelectionTests(unittest.TestCase):
                 self.assertFalse(Path(first).exists())
                 lookup.assert_called_once()
                 which.return_value = str(executable)
-                with shards.discovery_environment() as env:
+                with shards.shard_environment() as env:
                     self.assertIsNone(env)
                 lookup.assert_called_once()
 
-    def test_shard_discovery_retains_bounded_marker_and_deduplicates(self):
+    def test_shard_selection_retains_fixture_markers_and_deduplicates(self):
         class Cases(unittest.TestCase):
             def test_plain(self):
                 pass
             def test_bounded(self):
                 pass
+
+        class EarlyCases(unittest.TestCase):
+            __hex_shard_early__ = True
+
+            def test_early(self):
+                pass
+
         Cases.test_bounded.__hex_shard_bounded__ = True
-        plain, bounded = Cases("test_plain"), Cases("test_bounded")
-        suite = unittest.TestSuite([plain, bounded, plain])
+        plain, bounded, early = Cases("test_plain"), Cases("test_bounded"), EarlyCases("test_early")
+        suite = unittest.TestSuite([plain, bounded, early, plain])
         with patch.object(unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite):
             selected = shards.test_cases(["fixture"])
         self.assertEqual({name: (is_bounded, early) for name, is_bounded, early in selected},
-                         {plain.id(): (False, False), bounded.id(): (True, False)})
+                         {plain.id(): (False, False), bounded.id(): (True, False), early.id(): (False, True)})
 
     def test_shard_scheduler_preserves_fast_parallelism_and_bounds_tagged_cases(self):
         lock = threading.Lock()
@@ -143,7 +150,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual([item[0] for item in results], ["a", "b"])
         self.assertEqual(maximum, 1)
 
-    def test_discovery_queues_bounded_cases_after_the_first_ordinary_wave(self):
+    def test_scheduler_queues_bounded_cases_after_the_first_ordinary_wave(self):
         started = threading.Event()
         bounded_started = threading.Event()
 
@@ -159,7 +166,7 @@ class SelectionTests(unittest.TestCase):
             return name
 
         cases = [("tail", False), ("quick", False), ("later", False), ("bounded", True)]
-        self.assertEqual(list(shards.run_cases(cases, 2, run, overlap_bounded=True)),
+        self.assertEqual(list(shards.run_cases(cases, 2, run)),
                          ["tail", "quick", "later", "bounded"])
 
     def test_shard_cli_refuses_empty_or_missing_selection(self):
@@ -171,12 +178,6 @@ class SelectionTests(unittest.TestCase):
         with redirect_stderr(output):
             self.assertEqual(shards.main(["--", "missing_shard_fixture.no_case"]), 1)
         self.assertIn("exit 1", output.getvalue())
-
-    def test_owner_selection_overlaps_bounded_cases_with_ordinary_work(self):
-        with patch.object(shards, "test_cases", return_value=[("fixture", True, False)]), \
-                patch.object(shards, "run_cases", return_value=[]) as schedule:
-            self.assertEqual(shards.main(["--workers", "3", "--", "fixture"]), 0)
-        self.assertTrue(schedule.call_args.kwargs["overlap_bounded"])
 
     def test_shard_cli_runs_both_groups_and_propagates_failure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -219,6 +220,17 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(all(1 <= len(batch) <= 4 for batch, _ in groups))
         self.assertTrue(all(len({name.split(".")[0] for name in batch}) == 1 for batch, _ in groups))
         self.assertTrue(all(len(batch) == 1 for batch, _ in shards.batches(cases, size=1)))
+
+    def test_batches_keep_nested_modules_separate(self):
+        cases = [
+            ("nested.one.test_cases.Cases.test_first", False, False),
+            ("nested.one.test_cases.Cases.test_second", False, False),
+            ("nested.two.test_cases.Cases.test_third", False, False),
+        ]
+        self.assertEqual(
+            shards.batches(cases, size=8),
+            [((cases[0][0], cases[1][0]), False), ((cases[2][0],), False)],
+        )
 
     def test_shard_discovery_runs_nested_cases_and_refuses_import_errors(self):
         with tempfile.TemporaryDirectory() as directory:

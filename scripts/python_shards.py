@@ -4,9 +4,9 @@ Usage: python3 scripts/python_shards.py [--workers N] [--discover | -- SELECTOR 
 
 Selectors are unittest names (modules, classes or test IDs) under scripts/tests.
 Owner selections and discovery batch small sets of ordinary cases to keep
-process startup from dominating. Every case runs
-once and every process reports a unittest result. Tests cannot rely on sharing
-state with other cases in the same process.
+process startup from dominating. Every case runs once and every process
+reports a unittest result. Tests cannot rely on sharing state with other
+cases in the same process.
 
 Methods marked `__hex_shard_bounded__ = True` use at most two workers. Both
 owner selections and discovery queue those lanes after the first ordinary wave
@@ -15,7 +15,7 @@ and share the same worker limit.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from itertools import groupby
 import os
 from pathlib import Path
@@ -46,7 +46,7 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool, bool]]:
                 bounded = getattr(method, "__hex_shard_bounded__", False) is True
                 name = item.id()
                 found[name] = found.get(name, False) or bounded
-                if selectors is None and getattr(item, "__hex_shard_early__", False) is True:
+                if getattr(item, "__hex_shard_early__", False) is True:
                     early.add(name)
 
     if selectors is None:
@@ -60,23 +60,20 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool, bool]]:
     return [(name, bounded, name in early) for name, bounded in sorted(found.items())]
 
 
-def run_cases(cases, workers, run, *, overlap_bounded=False):
+def run_cases(cases, workers, run):
     """Give marked cases at most two lanes within the overall worker limit."""
     ordinary = [name for name, marked in cases if not marked]
     bounded = [name for name, marked in cases if marked]
     lanes = min(2, workers, len(bounded))
-    split = workers if overlap_bounded and workers > 1 else len(ordinary)
+    split = workers if workers > 1 else len(ordinary)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         first = pool.map(run, ordinary[:split])
-        if not overlap_bounded:
-            yield from first
-        # Each lane runs one fixture at a time. In discovery these jobs enter
-        # the same queue between the first wave and the remaining batches.
+        # Each lane runs one fixture at a time. Queue the lanes between the
+        # first wave of ordinary work and the remaining batches.
         bounded_jobs = [pool.submit(lambda names: list(map(run, names)), bounded[index::lanes])
                         for index in range(lanes)]
         remaining = pool.map(run, ordinary[split:])
-        if overlap_bounded:
-            yield from first
+        yield from first
         yield from remaining
         results = [job.result() for job in bounded_jobs]
         for index in range(len(bounded)):
@@ -87,7 +84,7 @@ def batches(cases: list[tuple[str, bool, bool]], size: int) -> list[tuple[tuple[
     """Reuse module imports and class setup while isolating marked fixtures."""
     jobs = [((name,), False) for name, bounded, early in cases if early and not bounded]
     ordinary = (name for name, bounded, early in cases if not bounded and not early)
-    for _, group in groupby(ordinary, key=lambda name: name.split(".", 1)[0]):
+    for _, group in groupby(ordinary, key=lambda name: name.rsplit(".", 2)[0]):
         names = list(group)
         jobs.extend((tuple(names[index:index + size]), False) for index in range(0, len(names), size))
     jobs.extend(((name,), True) for name, bounded, _ in cases if bounded)
@@ -95,8 +92,8 @@ def batches(cases: list[tuple[str, bool, bool]], size: int) -> list[tuple[tuple[
 
 
 @contextmanager
-def discovery_environment():
-    """Resolve Apple's Git launcher once for subprocess-heavy discovery fixtures."""
+def shard_environment():
+    """Resolve Apple's Git launcher once for subprocess-heavy test fixtures."""
     if sys.platform != "darwin" or shutil.which("git") != "/usr/bin/git":
         yield None
         return
@@ -111,7 +108,7 @@ def discovery_environment():
             or not selected.is_file() or not os.access(selected, os.X_OK)):
         yield None
         return
-    with tempfile.TemporaryDirectory(prefix="hex-discovery-tools-") as directory:
+    with tempfile.TemporaryDirectory(prefix="hex-shard-tools-") as directory:
         (Path(directory) / "git").symlink_to(selected)
         yield {**os.environ, "PATH": directory + os.pathsep + os.environ.get("PATH", os.defpath)}
 
@@ -147,9 +144,8 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = False
     jobs = batches(cases, size=8)
-    environment = discovery_environment() if arguments.discover else nullcontext(None)
-    with environment as env:
-        for test, code, output in run_cases(jobs, workers, run, overlap_bounded=True):
+    with shard_environment() as env:
+        for test, code, output in run_cases(jobs, workers, run):
             # unittest reports on stderr; keep that stream for callers and logs.
             print(f"===== {test} (exit {code}) =====\n{output}", file=sys.stderr, flush=True)
             failed |= code != 0
