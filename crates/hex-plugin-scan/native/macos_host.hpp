@@ -153,9 +153,6 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     std::array<bool,HOST_EDIT_COUNT> active_grouped{};
     size_t first=0, count=0, restart_count=0, active_count=0;
     uint64 sequence=0;
-    // Main publishes accepted editor edits; the worker samples this frontier
-    // before a host-authored SDK exchange. No controller pointer crosses lanes.
-    std::atomic<uint64> editor_frontier{0};
     const bool advertises_editor_groups;
     uint64 cohort=0;
     bool refused_cohort=false;
@@ -468,7 +465,6 @@ private:
         requests[(first+count++)%requests.size()]={gesture+2,gesture,0,id,End,false,cohort};
         sequence=gesture+2;
         info.editor_sequence=gesture+1;
-        editor_frontier.store(info.editor_sequence,std::memory_order_release);
         if(has_room) pending_edits.fetch_add(records,std::memory_order_release);
         return kResultOk;
     }
@@ -511,7 +507,6 @@ private:
         if(kind==Perform && (!available || !cohort_room(1))) {
             if(replace_queued_perform(event)) {
                 info->editor_sequence=next;
-                editor_frontier.store(next,std::memory_order_release);
                 sequence=next;
                 return kResultOk;
             }
@@ -519,10 +514,7 @@ private:
         }
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
-        if(kind==Perform) {
-            info->editor_sequence=next;
-            editor_frontier.store(next,std::memory_order_release);
-        }
+        if(kind==Perform) info->editor_sequence=next;
         if(kind==Begin) {
             active_ids[vacant]=id;active_tokens[vacant]=gesture;active_grouped[vacant]=grouped;++active_count;
         }
@@ -790,7 +782,6 @@ public:
     // Main-only monotonic admission revision also detects an edit that the
     // worker has already completed during a foreign state-read callback.
     uint64 callback_revision_on_control() const { return sequence; }
-    uint64 editor_frontier_on_worker() const { return editor_frontier.load(std::memory_order_acquire); }
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }

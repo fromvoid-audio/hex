@@ -1171,6 +1171,52 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn queued_editor_values_are_not_overwritten_by_host_feedback() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(135),
+    )
+    .unwrap();
+    fs::write(case.release(), b"queue a long drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        if edits.pending > 8 {
+            break;
+        }
+        assert!(Instant::now() < until, "editor backlog did not arrive");
+        thread::yield_now();
+    }
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(ParameterPoint {
+            frame: 7,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance.exchange_on_worker(input).unwrap();
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "a newer queued editor move must not be replaced by host feedback"
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
     assert_saturated_editor_drags(87, 1);
 }

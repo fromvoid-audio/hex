@@ -43,7 +43,7 @@ int main() { @autoreleasepool {
     assert(host.synchronize_parameter_feedback(&controller));
     assert(controller.value==0.75); // An older DSP base remains stale after admission.
 
-    const auto frontier=host.editor_frontier_on_worker();
+    const auto frontier=host.callback_revision_on_control(); // Simulate a processed edit.
     assert(frontier>0);
     assert(pending.put(7,0.5,frontier) && host.publish_parameter_feedback(pending));
     assert(host.synchronize_parameter_feedback(&controller));
