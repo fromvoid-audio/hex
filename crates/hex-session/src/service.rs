@@ -3204,6 +3204,15 @@ fn run_worker(
         let (request, mut import_decode) = truncated_import::admit(queued.request);
         let request_recovery_kind = deferred_recovery_kind(&request);
         let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
+        let midi_note_update = matches!(
+            &request,
+            Request::Edit(
+                Command::UpdateMidiNote { .. }
+                    | Command::UpdateMidiNotes { .. }
+                    | Command::UpdateMidiNotesWithSourceExtent { .. }
+                    | Command::UpdateMidiNotesWithSourcePrefix { .. }
+            )
+        );
         let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
         let locator_add = matches!(
             &request,
@@ -9369,6 +9378,10 @@ fn run_worker(
                     events.measure_recovery("track_switch_recovery_us", maintain_recovery)
                 } else if locator_add && canonical_changed && error.is_none() {
                     events.measure_recovery("locator_recovery_us", maintain_recovery)
+                } else if midi_note_update && canonical_changed && error.is_none() {
+                    // Worker-side journal maintenance only; excludes audio publication
+                    // and client receipt. Refused or unchanged edits have no sample.
+                    events.measure_recovery("midi_note_recovery_us", maintain_recovery)
                 } else {
                     maintain_recovery()
                 }
