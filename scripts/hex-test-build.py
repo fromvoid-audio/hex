@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Build, verify and safely activate the configured optimized native test app."""
+"""Build, verify and safely activate the configured optimized native test app.
+
+Direct execution and the release and launch loaders bind the delivery script's
+compiled bytes to candidate source. Other Python importers lack this witness.
+Source checks detect drift at qualification and publication boundaries. Keep the
+candidate checkout stable throughout delivery.
+"""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +27,34 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 IDENTITY = "org.portalsurfer.hex.dev"
+
+
+def _read_regular_source(path: Path, owner: str) -> bytes:
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError(f"{owner} source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                return stream.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
+# Python has already parsed the direct entry script. Before loading any build
+# tooling, execute the delivery implementation from the same buffer we hash.
+if __name__ == "__main__" and "_EXECUTED_DELIVERY_SOURCE_SHA256" not in globals():
+    _direct_path = ROOT / "scripts/hex-test-build.py"
+    _direct_source = _read_regular_source(_direct_path, "delivery")
+    _EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(_direct_source).hexdigest()
+    exec(compile(_direct_source, str(_direct_path), "exec", dont_inherit=True), globals())
+    raise SystemExit("delivery entry point did not exit")
+
+
 # The sealed update helper imports this same verifier/publication owner under a
 # fixed runtime-only name. Quit-time publication must not load the CI runner,
 # changelog tooling, or a source checkout. Normal build callers retain them.
@@ -32,19 +66,7 @@ if __name__ != "hex_update_runtime":
     sys.modules[SPEC.name] = ci
     # Bind execution to a regular source file, without following a symlink or
     # blocking on a substituted FIFO, and do not trust timestamp-valid pyc.
-    directory = os.open(ROOT / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        descriptor = os.open("local-ci.py", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                             dir_fd=directory)
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise RuntimeError("local CI source is not a regular file")
-            with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                source = stream.read()
-        finally:
-            os.close(descriptor)
-    finally:
-        os.close(directory)
+    source = _read_regular_source(Path(SPEC.origin), "local CI")
     ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
     exec(compile(source, SPEC.origin, "exec", dont_inherit=True), ci.__dict__)
 
@@ -65,6 +87,19 @@ class PublicationUncertain(DeliveryError):
 
 class PublicationFollowupFailed(DeliveryError):
     """The new target verified, but its post-publication reporting failed."""
+
+
+def require_delivery_source(root: Path) -> None:
+    """Require the candidate's delivery script to match the bytes we executed."""
+    witness = globals().get("_EXECUTED_DELIVERY_SOURCE_SHA256")
+    if not isinstance(witness, str) or re.fullmatch(r"[0-9a-f]{64}", witness) is None:
+        raise DeliveryError("executed delivery source witness is unavailable")
+    try:
+        source = _read_regular_source(root / "scripts/hex-test-build.py", "delivery")
+    except (OSError, RuntimeError) as error:
+        raise DeliveryError(f"candidate delivery source is unavailable: {error}") from error
+    if hashlib.sha256(source).hexdigest() != witness:
+        raise DeliveryError("delivery source mismatch: executed delivery differs from candidate source")
 
 
 def run(argv: list[str], root: Path = ROOT) -> str:
@@ -935,6 +970,7 @@ def apply_after_approved_parent_exit(parent_pid: int, approval_fd: int, ready_fd
 
 def _require_delivery_sources(runner) -> None:
     """Check both policy consumers without looking up mutable module names."""
+    require_delivery_source(runner.root)
     error = ci.delivery_source_error(runner.root)
     if error is not None:
         raise DeliveryError("delivery CI source mismatch: " + error)
@@ -1065,6 +1101,7 @@ def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
 
 
 def build(args) -> dict:
+    require_delivery_source(ROOT)
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
     common = Path(run(["git", "rev-parse", "--git-common-dir"]))

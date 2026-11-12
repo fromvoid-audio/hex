@@ -2083,16 +2083,31 @@ impl EditorView {
 
     fn observe_track_switch_view(
         &mut self,
-        view: hex_session::service::TrackSwitchViewObservation,
+        mut view: hex_session::service::TrackSwitchViewObservation,
     ) -> bool {
+        let Some(installed) = self.state.as_ref().map(|state| state.revision) else {
+            return false;
+        };
+        let predecessor = self
+            .track_switch_observation
+            .as_ref()
+            .filter(|old| old.project_generation == self.project_generation)
+            .map_or(installed, |old| old.revision.max(installed));
         if view.project_generation != self.project_generation
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|state| state.revision != view.previous_revision)
-            || view.revision != view.previous_revision.saturating_add(1)
+            || view.first_previous_revision > view.previous_revision
+            || predecessor < view.first_previous_revision
+            || predecessor > view.previous_revision
+            || view.previous_revision.checked_add(1) != Some(view.revision)
         {
             return false;
+        }
+        if installed < view.first_previous_revision
+            && let Some(previous) = self
+                .track_switch_observation
+                .as_ref()
+                .filter(|old| old.project_generation == self.project_generation)
+        {
+            view.first_previous_revision = previous.first_previous_revision;
         }
         self.track_switch_observation = Some(view);
         true
@@ -2103,10 +2118,10 @@ impl EditorView {
             .as_ref()
             .filter(|view| {
                 view.project_generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == view.previous_revision)
+                    && self.state.as_ref().is_some_and(|state| {
+                        state.revision >= view.first_previous_revision
+                            && state.revision < view.revision
+                    })
             })
             .and_then(|view| {
                 view.tracks
