@@ -1668,6 +1668,68 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             render_completed_block(&harness);
         }
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+
+        // Return to the authored Arrangement, then seek out of a held note.
+        // The worker's copied output must release it after its bridge latency.
+        send(
+            &mut harness,
+            SessionPlaybackCommand::BackToArrangement {
+                quantization: Immediate,
+            },
+        );
+        render_completed_block(&harness);
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let held_peak = (0..8)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            held_peak > 0.001,
+            "the authored note must be held before seeking"
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Seek(48_000))
+            .unwrap();
+        for _ in 0..6 {
+            render_completed_block(&harness);
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                render_completed_block(&harness),
+                [[0.0; 2]; 256],
+                "seek must release the held SDK gate"
+            );
+        }
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.position.load(Acquire) >= 48_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let fresh_peak = (0..8)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            fresh_peak > 0.001,
+            "a fresh authored note must sound after seek"
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
     }
 }
 
