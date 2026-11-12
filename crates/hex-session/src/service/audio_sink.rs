@@ -932,6 +932,11 @@ pub trait WorkerAudioSink: Send {
     /// A consumer uses its existing reserved builder; this grants no source,
     /// output or callback owner. Offline/default sinks retain model editing.
     fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
+    /// Accept source-bound clip intent on control. This is not graph admission
+    /// or callback acknowledgement; false retains no worker-side delivery claim.
+    fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
