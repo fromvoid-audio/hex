@@ -200,6 +200,33 @@ fn captured_rebinding_preserves_shared_receiver_and_history() {
         "unchanged",
     );
 
+    // Moving the receiver is an explicit edit. The former receiver can then
+    // leave without silencing the contributor that now owns the output.
+    let chosen = run(
+        &service,
+        Request::Edit(Command::SetNativeSourceReceiver {
+            source: old,
+            track: Some(contributor),
+        }),
+    );
+    let moved = run(
+        &service,
+        rebind(chosen.state.revision, 0, receiver, Some(old), Some(new)),
+    );
+    assert_eq!(
+        moved.state.project.native_source(old).unwrap().receiver(),
+        Some(contributor)
+    );
+    assert_eq!(
+        moved.state.project.native_source(new).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(moved.state.project.source_contributors(old).count(), 1);
+    let undone_move = run(&service, Request::Undo);
+    assert_eq!(undone_move.state.project, chosen.state.project);
+    let undone_receiver = run(&service, Request::Undo);
+    assert_eq!(undone_receiver.state.project, assigned.state.project);
+
     let temp = run(
         &service,
         Request::Edit(Command::AddMidiTrack {
