@@ -263,18 +263,18 @@ fn translated_local_path_matches_absolute_mesh_inside_the_live_clip(cx: &mut Tes
     }
 
     let mask = absolute[0].mask;
-    let mask_left = f32::from(mask.origin.x);
-    let mask_right = mask_left + f32::from(mask.size.width);
+    let mask_left = mask.origin.x;
+    let mask_right = mask.right();
     assert!(
         absolute
             .iter()
             .flat_map(|triangle| triangle.vertices)
-            .any(|vertex| f32::from(vertex.x) < mask_left)
+            .any(|vertex| vertex.x < mask_left)
     );
     assert!(
         absolute
             .iter()
             .flat_map(|triangle| triangle.vertices)
-            .any(|vertex| f32::from(vertex.x) > mask_right)
+            .any(|vertex| vertex.x > mask_right)
     );
 }
