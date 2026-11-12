@@ -4594,8 +4594,7 @@ fn run_worker(
                     } else {
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
-                                if let Some(retired) = device_gesture.retire_mixer_gain_on_restart()
-                                {
+                                if let Some(retired) = device_gesture.retire_native_on_restart() {
                                     if resident_preview
                                         .as_ref()
                                         .and_then(resident_preview::Preview::device_identity)
@@ -4762,7 +4761,7 @@ fn run_worker(
                                 .and_then(resident_preview::Preview::device_identity)
                                 .is_none_or(|preview| preview.key != outcome.ack.key)
                         {
-                            device_gesture.retire_unpublished_mixer_terminal(&mut outcome.ack);
+                            device_gesture.retire_unpublished_native_terminal(&mut outcome.ack);
                         }
                         outcome
                     } else {
