@@ -538,6 +538,8 @@ fn moved_host_target_refusal_retires_only_its_own_receipt_without_new_history(
             revision,
             points: points.clone(),
             receipt: Receipt::new(view.project_generation),
+            select_range: None,
+            cut_clipboard: None,
         });
         assert!(view.enqueue(Request::Edit(Command::MoveDevice {
             device,
@@ -2124,4 +2126,145 @@ fn utility_toggle_and_choice_offer_their_exact_recording_targets(cx: &mut TestAp
             ));
         }
     });
+}
+
+#[gpui::test]
+fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, original) = three_point_lane(cx);
+    let sample = TestWave::new();
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::ImportToTrack {
+            path: sample.0.clone(),
+            track,
+            start: 0
+        }));
+    });
+    pump(&mut visual, &editor);
+    let background_range = crate::editor::time_selection::TimeSelection {
+        anchor_track: Some(track),
+        end_track: Some(track),
+        anchor_frame: 0,
+        end_frame: 2,
+    };
+    let clips = editor.update(&mut visual, |view, _| {
+        let clips = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .to_vec();
+        assert_eq!(clips.len(), 1, "{:?}", view.error);
+        view.selected_clip = Some(clips[0].id());
+        view.time_selection = Some(background_range);
+        view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
+            track: Some(track),
+            frame: background_range.anchor_frame,
+            generation: view.project_generation,
+            pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+            pulse_started: Instant::now(),
+        });
+        clips
+    });
+    let from = lane_point(&mut visual, device, target, [0.1, 0.78]);
+    let to = lane_point(&mut visual, device, target, [0.44, 0.78]);
+    lane_drag(&mut visual, from, to, CMD);
+    assert_eq!(
+        selected_beats(&visual, &editor),
+        [original[0].beat, original[1].beat]
+    );
+    let range = editor.read_with(&visual, |view, _| {
+        view.automation_view.devices.range.unwrap()
+    });
+    let width = range.end.raw() - range.start.raw();
+
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(lane_points(&visual, &editor, device, target), original);
+    visual.simulate_click(to, CMD);
+    visual.simulate_keystrokes("cmd-v");
+    pump(&mut visual, &editor);
+    let pasted = lane_points(&visual, &editor, device, target);
+    assert_eq!(pasted.len(), 5);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), original);
+
+    lane_drag(&mut visual, from, to, CMD);
+    visual.simulate_keystrokes("d");
+    pump(&mut visual, &editor);
+    let duplicate = lane_points(&visual, &editor, device, target);
+    assert_eq!(duplicate, pasted);
+    for point in &original[..2] {
+        assert!(duplicate.contains(&AutomationPoint {
+            beat: BeatTime::from_raw(point.beat.raw() + width),
+            ..*point
+        }));
+    }
+    visual.simulate_keystrokes("cmd-x");
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.automation_view.devices.pending.is_some());
+        let mut terminal = event(&view.service);
+        assert!(terminal.request_complete && terminal.error.is_none());
+        terminal.error = Some("automatic recovery: fixture checkpoint warning".into());
+        view.receive(terminal);
+        cx.notify();
+    });
+    assert_eq!(lane_points(&visual, &editor, device, target), original);
+    visual.simulate_keystrokes("cmd-v");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), duplicate);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), original);
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), duplicate);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_clip_ids(), [clips[0].id()]);
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips(),
+            clips
+        );
+        assert_eq!(view.time_selection, Some(background_range));
+    });
+
+    let other = DeviceAutomationTarget::HostInputGain;
+    header_assign(&mut visual, &editor, Owner::Track(track), other);
+    let selector = Box::leak(
+        format!(
+            "automation-plot-{}-{}-true",
+            device.value(),
+            TargetKey(other)
+        )
+        .into_boxed_str(),
+    );
+    let main = visual
+        .debug_bounds(selector)
+        .expect("foreground host input lane");
+    let blank = point(
+        main.left() + main.size.width * 0.3,
+        main.top() + main.size.height * 0.78,
+    );
+    visual.simulate_click(blank, CMD);
+    visual.simulate_keystrokes("cmd-v");
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("different lane"))
+        );
+    });
+    assert!(lane_points(&visual, &editor, device, other).is_empty());
+    assert_eq!(lane_points(&visual, &editor, device, target), duplicate);
 }

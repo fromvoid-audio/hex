@@ -21,6 +21,7 @@ impl EditorView {
         }
         if self.automation_view.enabled {
             self.automation_view.enabled = false;
+            self.clear_automation_range();
             self.automation_view.gain_preview = self.gain_lane.track;
             if !self.automation_view.gain_panel_was_open {
                 self.gain_lane.track = None;
