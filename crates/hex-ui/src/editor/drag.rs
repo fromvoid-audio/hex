@@ -1002,7 +1002,6 @@ impl super::EditorView {
             mode,
         };
         self.expected_clip_preview = Some(target.identity());
-        self.applied_clip_preview = None;
         self.clip_preview_may_apply = true;
         self.service.audition_arrangement_move(Some(target.clone()));
         audition.target = Some(target);

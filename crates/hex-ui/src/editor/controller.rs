@@ -1774,7 +1774,9 @@ impl EditorView {
                     .seek_request_id
                     .map(|request| (request, candidate.audio_revision))
         });
-        if let Some(candidate) = audible {
+        if let Some(candidate) = audible.filter(|candidate| {
+            candidate.clip_preview_identity.is_none() || candidate.audio_revision == applied
+        }) {
             if candidate.clip_preview_identity.is_some() {
                 self.applied_project_revision = None;
                 visible_change |= self
@@ -5314,7 +5316,11 @@ fn applied_clip_candidate_source(
         && candidate.project_generation == generation
         && identity.context.editor_revision == candidate.state.revision
         && revision == Some(candidate.state.revision)
-        && expected == Some(identity)
+        && expected.is_some_and(|current| {
+            current.context == identity.context
+                && current.gesture == identity.gesture
+                && (identity.sequence < current.sequence || identity == current)
+        })
     {
         AppliedCandidateSource::Current
     } else {
@@ -6158,6 +6164,9 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 gesture: 13,
                 sequence: 2,
+                track: canonical.project.tracks()[0].id(),
+                position: hex_project::ClipGroupPosition::Audio(1_000),
+                mode: hex_session::service::ArrangementMoveMode::Move,
             };
             let canonical_project = super::super::audio_admission::ProjectRevision {
                 generation: context.project_generation,
@@ -6222,10 +6231,17 @@ mod sampler_native_ui_protocol_tests {
             );
 
             let stale_revision = publish(&mut output);
-            view.expected_clip_preview = Some(hex_session::service::ClipMovePreviewIdentity {
+            let next_identity = hex_session::service::ClipMovePreviewIdentity {
                 sequence: clip_identity.sequence + 1,
+                position: hex_project::ClipGroupPosition::Midi(hex_project::BeatTime::ONE),
+                mode: hex_session::service::ArrangementMoveMode::Copy,
                 ..clip_identity
-            });
+            };
+            view.expected_clip_preview = Some(next_identity);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((clip_revision, clip_identity))
+            );
             for _ in 0..128 {
                 backend.render(&mut [[0.0; 2]; 64]).unwrap();
                 view.tick(cx);
@@ -6242,6 +6258,7 @@ mod sampler_native_ui_protocol_tests {
             assert!(view.audible_playback.is_none());
             assert!(view.applied_clip_preview.is_none());
             assert!(view.applied_project_revision.is_none());
+            metadata.clip_preview = Some(next_identity);
             view.retain_publication_observation(
                 context,
                 output_identity,
@@ -6252,7 +6269,25 @@ mod sampler_native_ui_protocol_tests {
                 },
             );
             view.tick(cx);
-            assert!(view.applied_clip_preview.is_none());
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((stale_revision, next_identity))
+            );
+            metadata.clip_preview = Some(clip_identity);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((stale_revision, next_identity))
+            );
             view.expected_clip_preview = None;
             metadata.clip_preview = None;
             let restored_revision = publish(&mut output);
@@ -6271,6 +6306,7 @@ mod sampler_native_ui_protocol_tests {
                 view.audible_playback.as_ref().unwrap().audio_revision,
                 restored_revision
             );
+            assert!(view.applied_clip_preview.is_none());
             if loaded_sampler {
                 view.audio = None;
                 return;
