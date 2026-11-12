@@ -2453,13 +2453,16 @@ impl SessionPlayback {
                 }
             };
             route.pending = old_route.pending;
-            // A fading outgoing clip continues only while the new revision
-            // keeps that clip on this track; otherwise it ends with its source.
+            // Never render the candidate's different source as the outgoing
+            // clip. Both revisions must retain the same prepared source facts.
             route.audio_release = old_route.audio_release.filter(|release| {
                 self.revision
                     .session()
                     .audio_clip(release.clip)
-                    .is_some_and(|prepared| prepared.track == old_route.id)
+                    .zip(previous.revision.session().audio_clip(release.clip))
+                    .is_some_and(|(next, old)| {
+                        next.track == old_route.id && next.source_matches(old)
+                    })
             });
             if let Some(mut pending) = route.pending {
                 let valid = match pending.target {
