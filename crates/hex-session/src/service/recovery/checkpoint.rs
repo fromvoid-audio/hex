@@ -262,60 +262,114 @@ mod tests {
     }
 
     #[test]
-    fn solo_view_precedes_recovery_terminal_without_claiming_durability() {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let directory = std::env::temp_dir().join(format!(
-            "hex-solo-recovery-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+    fn track_switch_view_precedes_recovery_terminal_without_claiming_durability() {
+        let directory =
+            std::env::temp_dir().join(format!("hex-track-switch-recovery-{}", std::process::id()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("untitled.hex-journal");
         let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&diagnostics);
+        service
+            .set_diagnostic_observer(Arc::new(
+                super::super::diagnostics::DiagnosticObserver::new(move |event| {
+                    if matches!(
+                        event.stage,
+                        super::super::diagnostics::DiagnosticStage::OutcomeReady {
+                            request_complete: true,
+                            ..
+                        }
+                    ) {
+                        recorded.lock().unwrap().push((
+                            event.request.and_then(|request| request.operation),
+                            event.details.clone(),
+                        ));
+                    }
+                }),
+            ))
+            .unwrap();
         next(&service);
-        service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "first".into(),
-            }))
-            .unwrap();
-        let added = next(&service);
-        let track = added.state.project.tracks()[0].id();
-        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
-        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
-        CHECKPOINT_GATE
-            .lock()
-            .unwrap()
-            .push((path.clone(), entered_tx, release_rx));
-        service
-            .submit(Request::Edit(Command::ToggleSolo {
-                track,
-                exclusive: true,
-            }))
-            .unwrap();
-        entered
-            .recv_timeout(std::time::Duration::from_millis(500))
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        let visible = loop {
-            if let Ok(view) = service.try_solo_view() {
-                break view;
-            }
-            assert!(std::time::Instant::now() < deadline, "no solo observation");
-            std::thread::yield_now();
-        };
-        assert!(visible.tracks.contains(&(track, true)));
-        assert!(matches!(
-            service.try_event(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        release.send(()).unwrap();
-        let complete = next(&service);
-        assert!(complete.request_complete && complete.error.is_none());
-        assert_eq!(visible.revision, complete.state.revision);
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *complete.state.project
-        );
+        for name in ["first", "second"] {
+            service
+                .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .unwrap();
+            next(&service);
+        }
+        let original = hex_storage::load_journal(&path).unwrap();
+        let first = original.tracks()[0].id();
+        let second = original.tracks()[1].id();
+        let both = hex_project::TrackSelectionIds::new(&[first, second]).unwrap();
+        let mut preceding = original;
+        for (command, expected) in [
+            (
+                Command::ToggleSolo {
+                    track: first,
+                    exclusive: true,
+                },
+                [(false, true), (false, false)],
+            ),
+            (Command::ToggleMute(first), [(true, true), (false, false)]),
+            (
+                Command::ToggleTracksMute(both),
+                [(true, true), (true, false)],
+            ),
+        ] {
+            let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+            let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+            CHECKPOINT_GATE
+                .lock()
+                .unwrap()
+                .push((path.clone(), entered_tx, release_rx));
+            service.submit(Request::Edit(command)).unwrap();
+            entered
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .unwrap();
+            let visible = service
+                .try_track_switch_view()
+                .expect("committed track switches");
+            assert_eq!(visible.revision, visible.previous_revision + 1);
+            assert_eq!(
+                visible
+                    .tracks
+                    .iter()
+                    .map(|track| (track.muted, track.soloed))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(hex_storage::load_journal(&path).unwrap(), preceding);
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            release.send(()).unwrap();
+            let complete = next(&service);
+            assert!(complete.request_complete && complete.error.is_none());
+            assert_eq!(visible.revision, complete.state.revision);
+            preceding = hex_storage::load_journal(&path).unwrap();
+            assert_eq!(preceding, *complete.state.project);
+        }
+        service.submit(Request::Undo).unwrap();
+        let undone = next(&service);
+        assert!(undone.error.is_none());
+        assert!(undone.state.project.track(first).unwrap().muted());
+        assert!(!undone.state.project.track(second).unwrap().muted());
+        service.submit(Request::Redo).unwrap();
+        let redone = next(&service);
+        assert!(redone.error.is_none());
+        assert_eq!(*redone.state.project, preceding);
+        let rows = diagnostics.lock().unwrap();
+        let timed: Vec<_> = rows
+            .iter()
+            .filter_map(|(operation, details)| {
+                let value = details
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix("track_switch_recovery_us="))?;
+                assert!(value.parse::<u128>().is_ok());
+                *operation
+            })
+            .collect();
+        assert_eq!(timed, ["toggle_solo", "toggle_mute", "toggle_tracks_mute"]);
+        drop(rows);
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();
         drop(service);
         std::fs::remove_dir_all(directory).unwrap();
@@ -354,7 +408,7 @@ mod tests {
         };
         service.submit(duplicate(initial.state.revision)).unwrap();
         assert!(next(&service).error.is_some());
-        assert!(service.try_duplicate_view().is_err());
+        assert!(service.try_arrangement_edit_view().is_err());
 
         let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
         let (release, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -367,7 +421,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_millis(500))
             .unwrap();
         let display = service
-            .try_duplicate_view()
+            .try_arrangement_edit_view()
             .expect("committed section before checkpoint");
         assert_eq!(display.project_generation, 0);
         assert_eq!(display.previous_revision, before.state.revision);
@@ -397,8 +451,164 @@ mod tests {
         assert_eq!(undone, before);
         service.submit(Request::Redo).unwrap();
         assert_eq!(next(&service).state.project, committed.state.project);
-        assert!(service.try_duplicate_view().is_err());
+        assert!(service.try_arrangement_edit_view().is_err());
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
+        use hex_project::BeatTime;
+        use std::sync::mpsc::{self, TryRecvError};
+        use std::time::Duration;
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-paste-checkpoint-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&diagnostics);
+        service
+            .set_diagnostic_observer(Arc::new(diagnostics::DiagnosticObserver::new(
+                move |event| {
+                    if let Some(timing) = event
+                        .details
+                        .split_whitespace()
+                        .find_map(|field| field.strip_prefix("paste_recovery_us="))
+                    {
+                        sink.lock()
+                            .unwrap()
+                            .push((event.stage, timing.parse::<u128>().unwrap()));
+                    }
+                },
+            )))
+            .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let track = next(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::PasteTimeRange { track, frame: 0 })
+            .unwrap();
+        let refused = next(&service);
+        assert!(refused.request_complete && refused.error.is_some());
+        assert!(matches!(
+            service.try_arrangement_edit_view(),
+            Err(TryRecvError::Empty)
+        ));
+
+        let mut originals = Vec::new();
+        let mut before = refused.state;
+        for start in [BeatTime::ZERO, BeatTime::ONE] {
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start,
+                    length: BeatTime::ONE,
+                }))
+                .unwrap();
+            let placed = next(&service);
+            let Some(Created::Clip(id)) = placed.created else {
+                panic!("placed MIDI clip");
+            };
+            originals.push(id);
+            before = placed.state;
+        }
+        let beat_frames = before
+            .project
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        for (sources, request, count) in [
+            (
+                originals[..1].to_vec(),
+                Request::PasteTimeRange {
+                    track,
+                    frame: 2 * beat_frames,
+                },
+                3,
+            ),
+            (
+                originals.clone(),
+                Request::InsertTimeRange { track, frame: 0 },
+                5,
+            ),
+        ] {
+            service.submit(Request::CopyClips(sources)).unwrap();
+            assert!(next(&service).error.is_none());
+            let (entered_tx, entered) = mpsc::sync_channel(1);
+            let (release, release_rx) = mpsc::sync_channel(1);
+            CHECKPOINT_GATE
+                .lock()
+                .unwrap()
+                .push((path.clone(), entered_tx, release_rx));
+            service.submit(request).unwrap();
+            entered.recv_timeout(Duration::from_millis(500)).unwrap();
+
+            let display = service.try_arrangement_edit_view().unwrap();
+            assert!(matches!(display.kind, ArrangementEditViewKind::Paste));
+            assert_eq!(display.project_generation, 0);
+            assert_eq!(display.previous_revision, before.revision);
+            let committed = display.state.upgrade().unwrap();
+            assert_eq!(committed.revision, before.revision + 1);
+            let clips = committed.project.track(track).unwrap().midi_clips();
+            assert_eq!(clips.len(), count);
+            assert_eq!(
+                clips
+                    .iter()
+                    .find(|clip| clip.id() == originals[0])
+                    .unwrap()
+                    .start(),
+                if count == 5 {
+                    BeatTime::from_quarters(2).unwrap()
+                } else {
+                    BeatTime::ZERO
+                }
+            );
+            assert_eq!(hex_storage::load_journal(&path).unwrap(), *before.project);
+            assert!(matches!(service.try_event(), Err(TryRecvError::Empty)));
+            release.send(()).unwrap();
+
+            let terminal = next(&service);
+            assert!(terminal.request_complete && terminal.error.is_none());
+            assert!(Arc::ptr_eq(&committed, &terminal.state));
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *committed.project
+            );
+            service.submit(Request::Undo).unwrap();
+            let undone = next(&service);
+            assert!(undone.error.is_none());
+            assert_eq!(
+                undone.state.project.track(track).unwrap().midi_clips(),
+                before.project.track(track).unwrap().midi_clips()
+            );
+            service.submit(Request::Redo).unwrap();
+            let redone = next(&service);
+            assert!(redone.error.is_none());
+            assert_eq!(
+                redone.state.project.track(track).unwrap().midi_clips(),
+                clips
+            );
+            before = redone.state;
+        }
+        let rows = diagnostics.lock().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(stage, _)| matches!(
+            stage,
+            diagnostics::DiagnosticStage::OutcomeReady {
+                request_complete: true,
+                error: false,
+                ..
+            }
+        )));
+        drop(rows);
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -463,7 +673,7 @@ mod tests {
             entered
                 .recv_timeout(std::time::Duration::from_millis(500))
                 .unwrap();
-            let display = service.try_duplicate_view().unwrap();
+            let display = service.try_arrangement_edit_view().unwrap();
             assert_eq!(display.project_generation, 0);
             assert_eq!(display.previous_revision, revision);
             let observed = display.state.upgrade().unwrap();
@@ -576,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn solo_observation_does_not_hide_a_recovery_conflict() {
+    fn track_switch_observation_does_not_hide_a_recovery_conflict() {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
             "hex-solo-conflict-{}-{}",
@@ -609,8 +819,12 @@ mod tests {
         entered
             .recv_timeout(std::time::Duration::from_millis(500))
             .unwrap();
-        let view = service.try_solo_view().unwrap();
-        assert!(view.tracks.contains(&(track, true)));
+        let view = service.try_track_switch_view().unwrap();
+        assert!(
+            view.tracks
+                .iter()
+                .any(|switch| switch.track == track && switch.soloed)
+        );
         std::fs::write(&path, b"other writer").unwrap();
         release.send(()).unwrap();
         let terminal = next(&service);
@@ -624,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn unread_solo_observation_never_blocks_later_terminals() {
+    fn unread_track_switch_observation_never_blocks_later_terminals() {
         let mut service = Service::new(48_000, 16, 8_000_000).unwrap();
         next(&service);
         service
@@ -648,8 +862,13 @@ mod tests {
                 expected
             );
         }
-        let retained = service.try_solo_view().unwrap();
-        assert!(retained.tracks.contains(&(track, true)));
+        let retained = service.try_track_switch_view().unwrap();
+        assert!(
+            retained
+                .tracks
+                .iter()
+                .any(|switch| switch.track == track && switch.soloed)
+        );
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();
     }
 

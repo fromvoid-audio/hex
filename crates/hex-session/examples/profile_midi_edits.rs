@@ -8,7 +8,7 @@ use hex_project::{
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
 use hex_session::Session;
-use hex_session::service::{Event, Request, Service};
+use hex_session::service::{ArrangementEditViewKind, Event, Request, Service};
 use std::{
     error::Error,
     hint::black_box,
@@ -427,7 +427,7 @@ fn next_duplicate_terminal(
     let until = started + Duration::from_secs(5);
     let mut observed = None;
     let receive_view = || -> Result<bool, Box<dyn Error>> {
-        let observation = match service.try_duplicate_view() {
+        let observation = match service.try_arrangement_edit_view() {
             Ok(observation) => observation,
             Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
             Err(error) => return Err(error.into()),
@@ -436,7 +436,10 @@ fn next_duplicate_terminal(
             .state
             .upgrade()
             .ok_or("duplicate display observation state expired")?;
-        if observation.project_generation != project_generation
+        if !matches!(
+            observation.kind,
+            ArrangementEditViewKind::Duplicate(Created::Clips { .. })
+        ) || observation.project_generation != project_generation
             || observation.previous_revision != previous_revision
             || state.revision != expected_revision
             || state

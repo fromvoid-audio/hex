@@ -1051,7 +1051,7 @@ pub(super) struct WorkerEvents {
     // Observed-request timing only; absent without an installed observer.
     diagnostic_started: Option<std::time::Instant>,
     section_phases: Option<super::diagnostics::SectionPhases>,
-    duplicate_recovery: Option<Duration>,
+    recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -1092,7 +1092,7 @@ impl WorkerEvents {
         self.diagnostic = request;
         self.diagnostic_started = request.map(|_| std::time::Instant::now());
         self.section_phases = None;
-        self.duplicate_recovery = None;
+        self.recovery_timing = None;
         self.diagnostics.emit(
             request,
             super::diagnostics::DiagnosticStage::WorkerBegin {
@@ -1121,15 +1121,18 @@ impl WorkerEvents {
         }
         result
     }
-    /// Time only the supplied duplicate checkpoint call and only when its
-    /// request has an installed diagnostic observer.
-    pub(super) fn measure_duplicate_recovery<T>(&mut self, maintain: impl FnOnce() -> T) -> T {
+    /// Time recovery maintenance only for observed requests with a named phase.
+    pub(super) fn measure_recovery<T>(
+        &mut self,
+        field: &'static str,
+        maintain: impl FnOnce() -> T,
+    ) -> T {
         let Some(_) = self.diagnostic else {
             return maintain();
         };
         let started = std::time::Instant::now();
         let result = maintain();
-        self.duplicate_recovery = Some(started.elapsed());
+        self.recovery_timing = Some((field, started.elapsed()));
         result
     }
     pub(super) fn begin_request(
@@ -1200,7 +1203,7 @@ impl WorkerEvents {
             diagnostic: None,
             diagnostic_started: None,
             section_phases: None,
-            duplicate_recovery: None,
+            recovery_timing: None,
             shutdown,
             audio,
             last_context: None,
@@ -1355,15 +1358,9 @@ impl WorkerEvents {
         let diagnostic = self.diagnostic.take();
         let worker = self.diagnostic_started.take().map(|start| start.elapsed());
         let section = self.section_phases.take();
-        let duplicate_recovery = self.duplicate_recovery.take();
-        self.diagnostics.outcome(
-            diagnostic,
-            &event,
-            false,
-            worker,
-            section,
-            duplicate_recovery,
-        );
+        let recovery_timing = self.recovery_timing.take();
+        self.diagnostics
+            .outcome(diagnostic, &event, false, worker, section, recovery_timing);
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
