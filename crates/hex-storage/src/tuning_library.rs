@@ -133,7 +133,17 @@ fn save_with_hook(
     };
     publish_slot(&path, text.as_bytes(), expected.as_deref(), before_check)
 }
-fn lock_slot(path: &Path) -> Result<File, String> {
+// Explicitly unlock before closing: a descriptor duplicated by a concurrent
+// subprocess can otherwise keep the advisory lock alive past this operation.
+struct SlotLock(File);
+
+impl Drop for SlotLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn lock_slot(path: &Path) -> Result<SlotLock, String> {
     let lock_path = path.with_extension("freqs.lock");
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -160,6 +170,7 @@ fn lock_slot(path: &Path) -> Result<File, String> {
             format!("cannot lock tuning slot · {e}")
         }
     })?;
+    let lock = SlotLock(file);
     let current = fs::symlink_metadata(&lock_path)
         .map_err(|e| format!("cannot inspect tuning slot lock · {e}"))?;
     if current.file_type().is_symlink() || !current.is_file() || current.len() != 0 {
@@ -172,7 +183,7 @@ fn lock_slot(path: &Path) -> Result<File, String> {
             return Err("tuning slot lock changed · try again".into());
         }
     }
-    Ok(file)
+    Ok(lock)
 }
 fn rename_with_hook(
     directory: &Path,
@@ -463,6 +474,19 @@ mod tests {
         ));
         fs::create_dir(&p).unwrap();
         Directory(p)
+    }
+    #[cfg(unix)]
+    #[test]
+    fn slot_lock_releases_when_an_inherited_descriptor_remains_open() {
+        let d = directory();
+        let path = d.0.join("slot-1.freqs");
+        let lock = lock_slot(&path).unwrap();
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(lock_slot(&path).is_err(), "another writer must be excluded");
+        drop(lock);
+        let next = lock_slot(&path).expect("operation must release the slot lock");
+        drop(next);
+        drop(inherited);
     }
     #[test]
     fn save_preserves_a_slot_created_during_preparation() {
