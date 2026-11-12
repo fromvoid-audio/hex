@@ -173,6 +173,34 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
     let (preview, preview_metadata) = h.applied(applied);
     assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
     assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    // A refused newer move must leave the previously admitted preview and the
+    // canonical project untouched; the FIFO request remains serviceable.
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    assert!(
+        h.service
+            .audition_arrangement_move(Some(ArrangementMoveAudition {
+                sequence: 2,
+                position: ClipGroupPosition::Audio(24_000),
+                ..target.clone()
+            }))
+    );
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.project.snapshot(), original);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        preview
+    );
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
     assert!(!h.service.audition_arrangement_move(None));
     let (restored, restored_metadata) = h.applied(preview);
     assert!(restored_metadata.clip_preview.is_none());

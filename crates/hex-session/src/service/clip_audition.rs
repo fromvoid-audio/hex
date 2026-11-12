@@ -424,6 +424,20 @@ impl Mailbox {
     }
 }
 
+// Successful move preparation is capped at one attempt per 16 ms (at most
+// 63 starts per second). Refusal, restoration and other clip auditions retain
+// the original slower interval to avoid repeated expensive failures.
+const MOVE_PREVIEW_INTERVAL: Duration = Duration::from_millis(16);
+const RETRY_INTERVAL: Duration = Duration::from_millis(32);
+
+fn attempt_interval(kind: Kind, failed: bool, cancelled: bool) -> Duration {
+    if kind == Kind::Move && (!failed || cancelled) {
+        MOVE_PREVIEW_INTERVAL
+    } else {
+        RETRY_INTERVAL
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Lane {
     attempted: Option<Target>,
@@ -491,17 +505,21 @@ impl Lane {
         ) {
             return true;
         }
-        self.next_attempt = Some(Instant::now() + Duration::from_millis(32));
         if restore {
+            self.next_attempt = Some(Instant::now() + RETRY_INTERVAL);
             let _ = resident_preview::restore(session, context, current, preview, sink, admission);
         } else if let Some(target) = prepare
             && let Some(cancel) = mailbox.claim(target.clone())
         {
+            let started = Instant::now();
+            let kind = target.kind();
             self.attempted = Some(target.clone());
-            let _ = resident_preview::clip_audition(
+            let result = resident_preview::clip_audition(
                 session, target, current, preview, sink, admission, &cancel,
             );
-            if cancel.load(Ordering::Acquire) {
+            let cancelled = cancel.load(Ordering::Acquire);
+            self.next_attempt = Some(started + attempt_interval(kind, result.is_err(), cancelled));
+            if cancelled {
                 self.attempted = None;
             }
         }
@@ -551,6 +569,38 @@ mod tests {
             position: ClipGroupPosition::Midi(BeatTime::from_quarters(4).unwrap()),
             mode: ArrangementMoveMode::Move,
         }
+    }
+
+    #[test]
+    fn move_cadence_bounds_work_and_keeps_failure_backoff() {
+        let movement = Target::Move(target());
+        let stretch = Target::Stretch(ArrangementStretchAudition {
+            context: movement.context(),
+            clip: target().anchor,
+            edge: hex_project::TrimEdge::Right,
+            frame: 1,
+        });
+        assert_eq!(
+            attempt_interval(movement.kind(), false, false),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            attempt_interval(movement.kind(), true, true),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            attempt_interval(movement.kind(), true, false),
+            Duration::from_millis(32)
+        );
+        assert_eq!(
+            attempt_interval(stretch.kind(), false, false),
+            Duration::from_millis(32)
+        );
+        // Count possible starts over a half-open one-second interval.
+        assert_eq!(
+            (1000_u64 - 1) / attempt_interval(movement.kind(), false, false).as_millis() as u64 + 1,
+            63
+        );
     }
 
     #[test]
