@@ -2015,10 +2015,8 @@ fn middle_drag_pans_source_and_releases_on_view_change(cx: &mut TestAppContext) 
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
     visual.run_until_parked();
-    visual.simulate_click(
-        visual.debug_bounds("audio-source-tab").unwrap().center(),
-        Modifiers::default(),
-    );
+    let source_tab = visual.debug_bounds("audio-source-tab").unwrap().center();
+    visual.simulate_click(source_tab, Modifiers::default());
     visual.run_until_parked();
     let bounds = visual.debug_bounds("arrangement-audio-waveform").unwrap();
     let start = bounds.center();
