@@ -1774,12 +1774,29 @@ mod tests {
             .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap();
         service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        let first_context = first
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let second_context = second
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
 
         let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let observed = Arc::new(Observation::default());
         let mut events = WorkerEvents::new_with_diagnostics(
             sender,
             Arc::new(AtomicBool::new(false)),
-            None,
+            Some(Box::new(Sink {
+                observed: Arc::clone(&observed),
+                fail: false,
+                idle: true,
+            })),
             Arc::new(Hooks::default()),
         );
         let intent = AtomicU64::new(0);
@@ -1815,6 +1832,23 @@ mod tests {
                 second.event.state.revision
             ),
             (2, second_revision)
+        );
+        let sources = observed.sources.lock().unwrap();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(generation, revision, _)| (*generation, *revision))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    first_context.project_generation,
+                    first_context.editor_revision
+                ),
+                (
+                    second_context.project_generation,
+                    second_context.editor_revision
+                ),
+            ]
         );
     }
     #[derive(Default)]
