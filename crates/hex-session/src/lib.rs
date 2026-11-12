@@ -71,6 +71,8 @@ pub enum SessionError {
     Engine(hex_engine::Invalid),
     Allocation,
     NativeAudio(String),
+    /// Resident publication refused before committing because a native source was unavailable.
+    NativeSourceUnavailable(String),
     /// Exact hosted source loss, never a retained preview or restoration ACK.
     PluginSourceLost(String),
     /// A recorded terminal failed after its original SDK/final-output release
@@ -86,7 +88,9 @@ impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(message) => f.write_str(message),
-            Self::NativeAudio(message) => f.write_str(message),
+            Self::NativeAudio(message) | Self::NativeSourceUnavailable(message) => {
+                f.write_str(message)
+            }
             Self::PluginSourceLost(message) => f.write_str(message),
             Self::PluginRecordingReleased(message) => f.write_str(message),
             Self::Project(error) => write!(f, "project edit failed: {error}"),
@@ -113,6 +117,7 @@ impl Error for SessionError {
             Self::Engine(error) => Some(error),
             Self::Invalid(_)
             | Self::NativeAudio(_)
+            | Self::NativeSourceUnavailable(_)
             | Self::PluginSourceLost(_)
             | Self::PluginRecordingReleased(_)
             | Self::Allocation
