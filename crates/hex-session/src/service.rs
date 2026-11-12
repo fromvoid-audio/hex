@@ -25,6 +25,7 @@ use hex_tuning::ProjectTuning;
 mod arrangement_edit_views;
 mod arrangement_sections;
 mod clip_paint;
+mod track_switch_views;
 pub use clip_paint::PaintMidiClip;
 mod browser_preview;
 pub mod take_audio;
@@ -374,13 +375,15 @@ pub struct Event {
 }
 
 /// Best-effort display observation after a track mute or solo edit commits and before its
-/// ordinary terminal. The one-slot channel can drop observations under
-/// backpressure; only the ordered Event terminal acknowledges the request.
+/// ordinary terminal. The bounded mailbox coalesces contiguous revisions and
+/// may drop incompatible observations; only the ordered Event acknowledges the request.
 /// Consumers must match the generation and previous revision before painting,
 /// and retire the observation on the terminal or project replacement. It
 /// never acknowledges recovery, transfers project custody or proves audio application.
 pub struct TrackSwitchViewObservation {
     pub project_generation: u64,
+    /// First predecessor in a contiguous run of coalesced observations.
+    pub first_previous_revision: u64,
     pub previous_revision: u64,
     pub revision: u64,
     pub tracks: Vec<TrackSwitchState>,
@@ -1302,7 +1305,7 @@ pub struct Service {
     requests: Option<request_cancellation::Sender>,
     clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
-    track_switch_views: Receiver<TrackSwitchViewObservation>,
+    track_switch_views: track_switch_views::Receiver,
     arrangement_edit_views: arrangement_edit_views::Receiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
@@ -1620,7 +1623,7 @@ impl Service {
         let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
-        let (track_switch_view_tx, track_switch_views) = mpsc::sync_channel(1);
+        let (track_switch_view_tx, track_switch_views) = track_switch_views::channel();
         let (arrangement_edit_view_tx, arrangement_edit_views) = arrangement_edit_views::channel();
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
@@ -2537,7 +2540,7 @@ fn run_worker(
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
-    track_switch_views: SyncSender<TrackSwitchViewObservation>,
+    track_switch_views: track_switch_views::Sender,
     arrangement_edit_views: arrangement_edit_views::Sender,
     clip_audition: Arc<clip_audition::Mailbox>,
 ) {
@@ -9207,8 +9210,9 @@ fn run_worker(
                     muted: track.muted(),
                     soloed: track.soloed(),
                 }));
-                let _ = track_switch_views.try_send(TrackSwitchViewObservation {
+                track_switch_views.send(TrackSwitchViewObservation {
                     project_generation,
+                    first_previous_revision: revision_before_request,
                     previous_revision: revision_before_request,
                     revision,
                     tracks,
@@ -13948,7 +13952,7 @@ mod service_tests {
         let (requests, _request_receiver) = mpsc::sync_channel(0);
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
-        let (_track_switch_sender, track_switch_views) = mpsc::sync_channel(1);
+        let (_track_switch_sender, track_switch_views) = track_switch_views::channel();
         let (_arrangement_edit_sender, arrangement_edit_views) = arrangement_edit_views::channel();
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),

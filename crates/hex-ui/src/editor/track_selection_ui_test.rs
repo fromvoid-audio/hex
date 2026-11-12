@@ -22,6 +22,7 @@ fn track_switch_observation_paints_without_installing_project_and_rejects_stale_
     editor.update(&mut visual, |view, cx| {
         assert!(view.observe_track_switch_view(TrackSwitchViewObservation {
             project_generation: generation,
+            first_previous_revision: revision,
             previous_revision: revision,
             revision: revision + 1,
             tracks: vec![TrackSwitchState {
@@ -50,6 +51,7 @@ fn track_switch_observation_paints_without_installing_project_and_rejects_stale_
         assert_eq!(view.displayed_track_switches(track), (false, true));
         assert!(!view.observe_track_switch_view(TrackSwitchViewObservation {
             project_generation: generation + 1,
+            first_previous_revision: revision,
             previous_revision: revision,
             revision: revision + 1,
             tracks: vec![TrackSwitchState {
@@ -66,6 +68,135 @@ fn track_switch_observation_paints_without_installing_project_and_rejects_stale_
     });
     visual.run_until_parked();
     assert_eq!(visual.rendered_background(selector), before);
+}
+
+#[gpui::test]
+fn coalesced_track_switch_view_requires_a_valid_contiguous_span(cx: &mut TestAppContext) {
+    use hex_session::service::{TrackSwitchState, TrackSwitchViewObservation};
+    let (project, track, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        let make = |generation, first, previous| TrackSwitchViewObservation {
+            project_generation: generation,
+            first_previous_revision: first,
+            previous_revision: previous,
+            revision: previous + 1,
+            tracks: vec![TrackSwitchState {
+                track,
+                muted: true,
+                soloed: false,
+            }],
+        };
+        let generation = view.project_generation;
+        assert!(!view.observe_track_switch_view(make(generation, revision + 1, revision + 1)));
+        assert!(!view.observe_track_switch_view(make(generation, revision + 2, revision + 1)));
+        assert!(view.observe_track_switch_view(make(generation, revision, revision + 1)));
+        let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(view.displayed_track_switches(canonical).0);
+        view.project_generation += 1;
+        assert!(!view.observe_track_switch_view(make(
+            view.project_generation,
+            revision + 2,
+            revision + 2
+        )));
+        let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(!view.displayed_track_switches(canonical).0);
+    });
+}
+
+#[gpui::test]
+fn consecutive_switch_views_stay_visible_through_earlier_terminal(cx: &mut TestAppContext) {
+    use gpui::AppContext;
+    use hex_session::service::{Request, Service};
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let next = |service: &Service| {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial service event"
+            );
+            std::thread::yield_now();
+        }
+    };
+    next(&service);
+    service
+        .submit(Request::Edit(hex_project::Command::AddTrack {
+            name: "track".into(),
+        }))
+        .unwrap();
+    let state = next(&service).state;
+    let track = state.project.tracks()[0].id();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                super::EditorView::new(window, cx, service, Err("offline ui test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(state);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("track-mute-{}", track.value()).into_boxed_str());
+    let original = visual.rendered_background(selector);
+    let mut events = Vec::new();
+    for expected in [true, false] {
+        editor.read_with(&visual, |view, _| {
+            view.service
+                .submit(Request::Edit(hex_project::Command::ToggleMute(track)))
+                .unwrap()
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let event = loop {
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(std::time::Instant::now() < deadline, "switch terminal");
+            std::thread::yield_now();
+        };
+        let observation = editor.read_with(&visual, |view, _| {
+            view.service.try_track_switch_view().unwrap()
+        });
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_track_switch_view(observation));
+            let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+            assert_eq!(view.displayed_track_switches(canonical).0, expected);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        if expected {
+            assert_ne!(visual.rendered_background(selector), original);
+        } else {
+            assert_eq!(visual.rendered_background(selector), original);
+        }
+        events.push(event);
+    }
+    let second = events.pop().unwrap();
+    let first = events.pop().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.receive(first);
+        let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(!view.displayed_track_switches(canonical).0);
+        assert!(view.track_switch_observation.is_some());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), original);
+    editor.update(&mut visual, |view, cx| {
+        view.receive(second);
+        assert!(view.track_switch_observation.is_none());
+        cx.notify();
+    });
 }
 
 #[gpui::test]
