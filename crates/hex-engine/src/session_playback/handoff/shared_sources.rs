@@ -1632,6 +1632,71 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_arrangement_peak_increase_with_held_live_keys_is_safe() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            let mut output = [[0.0; 2]; 64];
+            old.render(&mut output).unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            old.render(&mut output).unwrap();
+            assert!(
+                input.rejected(),
+                "the original source must reach live capacity"
+            );
+            assert!(
+                old.session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "at least one live key must be admitted"
+            );
+            let clip = f.editor.project().track(f.receiver).unwrap().midi_clips()[0].id();
+            for pitch in 40..50 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_ratio(1, 16).unwrap(),
+                        duration: BeatTime::from_ratio(1, 2).unwrap(),
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            if candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .is_err()
+            {
+                old.render(&mut output)
+                    .expect("rejected handoff must preserve old audio");
+            } else {
+                for _ in 0..6 {
+                    candidate.render(&mut output).expect(
+                        "accepted handoff must render the increased future peak without fault",
+                    );
+                }
+            }
+            assert!(
+                !input.is_cancelled(),
+                "neither safe refusal nor acceptance cancels live input"
+            );
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+        });
+    }
+
+    #[test]
     fn shared_source_session_launch_with_live_keys_respects_reserved_capacity() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
