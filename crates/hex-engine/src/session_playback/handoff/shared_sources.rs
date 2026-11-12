@@ -4351,55 +4351,61 @@ mod tests {
     #[test]
     fn muting_shared_contributor_fades_its_live_key_with_authored_voice() {
         for solo in [false, true] {
-            on_control(move || {
-                use crate::playback::PlaybackCommand;
-                let mut f = fixture();
-                let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
-                input.set_key(0, Some((60, 127, 1))).unwrap();
-                let (mut old, _) = live_playback(&f, &input);
-                old.apply(PlaybackCommand::Play);
-                old.render(&mut [[0.0; 2]; 7]).unwrap();
-                f.editor
-                    .execute(if solo {
-                        Command::ToggleSolo {
-                            track: f.receiver,
-                            exclusive: true,
+            for rate in [8_000_u32, 44_100, 96_000] {
+                for partition in [1, 7, 256] {
+                    on_control(move || {
+                        use crate::playback::PlaybackCommand;
+                        let mut f = fixture_at(rate);
+                        let input =
+                            Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+                        input.set_key(0, Some((60, 127, 1))).unwrap();
+                        let (mut old, _) = live_playback(&f, &input);
+                        old.apply(PlaybackCommand::Play);
+                        old.render(&mut [[0.0; 2]; 7]).unwrap();
+                        f.editor
+                            .execute(if solo {
+                                Command::ToggleSolo {
+                                    track: f.receiver,
+                                    exclusive: true,
+                                }
+                            } else {
+                                Command::Mute {
+                                    track: f.contributor,
+                                    muted: true,
+                                }
+                            })
+                            .unwrap();
+                        let (mut candidate, _) = live_playback(&f, &input);
+                        candidate
+                            .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                            .unwrap();
+                        let fade_frames = rate.div_ceil(200) as usize;
+                        let mut output = vec![[0.0; 2]; fade_frames + 16];
+                        for chunk in output.chunks_mut(partition) {
+                            candidate.render(chunk).unwrap();
                         }
-                    } else {
-                        Command::Mute {
-                            track: f.contributor,
-                            muted: true,
+                        for (index, frame) in output.iter().enumerate().take(fade_frames) {
+                            let gain = 0.25 + 0.5 * (1.0 - index as f32 / fade_frames as f32);
+                            for channel in 0..2 {
+                                let expected = PCM[(7 + index) % 4][channel] * gain;
+                                assert!(
+                                    (frame[channel] - expected).abs() < 0.000_002,
+                                    "solo={solo} rate={rate} partition={partition} index={index} frame={frame:?} expected={expected}"
+                                );
+                            }
                         }
-                    })
-                    .unwrap();
-                let (mut candidate, _) = live_playback(&f, &input);
-                candidate
-                    .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
-                    .unwrap();
-                let mut output = [[0.0; 2]; 160];
-                for chunk in output.chunks_mut(7) {
-                    candidate.render(chunk).unwrap();
+                        for (index, frame) in output.iter().enumerate().skip(fade_frames) {
+                            for channel in 0..2 {
+                                assert!(
+                                    (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs()
+                                        < 0.000_002,
+                                    "index={index} frame={frame:?}"
+                                );
+                            }
+                        }
+                    });
                 }
-                for (index, frame) in output.iter().enumerate().take(40) {
-                    let gain = 0.25 + 0.5 * (1.0 - index as f32 / 40.0);
-                    for channel in 0..2 {
-                        let expected = PCM[(7 + index) % 4][channel] * gain;
-                        assert!(
-                            (frame[channel] - expected).abs() < 0.000_002,
-                            "index={index} frame={frame:?} expected={expected}"
-                        );
-                    }
-                }
-                for (index, frame) in output.iter().enumerate().skip(128) {
-                    for channel in 0..2 {
-                        assert!(
-                            (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs()
-                                < 0.000_002,
-                            "index={index} frame={frame:?}"
-                        );
-                    }
-                }
-            });
+            }
         }
     }
     #[test]
