@@ -2995,6 +2995,166 @@ mod tests {
     }
 
     #[test]
+    fn midi_note_update_reports_only_its_recovery_maintenance() {
+        use hex_project::{BeatTime, MidiNoteUpdate};
+        use std::time::Duration;
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-midi-timing-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let rows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&rows);
+        service
+            .set_diagnostic_observer(Arc::new(diagnostics::DiagnosticObserver::new(
+                move |event| {
+                    sink.lock()
+                        .unwrap()
+                        .push((event.request, event.stage, event.details.clone()));
+                },
+            )))
+            .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let Some(Created::Track(track)) = next(&service).created else {
+            panic!("track")
+        };
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            }))
+            .unwrap();
+        let Some(Created::Clip(clip)) = next(&service).created else {
+            panic!("clip")
+        };
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let Some(Created::Note(note)) = next(&service).created else {
+            panic!("note")
+        };
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 64,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let Some(Created::Note(other)) = next(&service).created else {
+            panic!("second note")
+        };
+        let update = |start| MidiNoteUpdate {
+            note,
+            start,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        };
+        let first = update(BeatTime::ONE);
+        let second = update(BeatTime::from_quarters(2).unwrap());
+        for command in [
+            Command::UpdateMidiNote {
+                note,
+                start: first.start,
+                duration: first.duration,
+                pitch: first.pitch,
+                channel: first.channel,
+                velocity: first.velocity,
+            },
+            Command::UpdateMidiNotes {
+                clip,
+                notes: vec![
+                    second,
+                    MidiNoteUpdate {
+                        note: other,
+                        pitch: 64,
+                        ..second
+                    },
+                ],
+            },
+        ] {
+            let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+            let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+            CHECKPOINT_GATE
+                .lock()
+                .unwrap()
+                .push((path.clone(), entered_tx, release_rx));
+            service.submit(Request::Edit(command)).unwrap();
+            entered.recv_timeout(Duration::from_millis(500)).unwrap();
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            release.send(()).unwrap();
+            let terminal = next(&service);
+            assert!(terminal.request_complete && terminal.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *terminal.state.project
+            );
+        }
+        service
+            .submit(Request::Edit(Command::UpdateMidiNote {
+                note,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 255,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        assert!(next(&service).error.is_some());
+        service.submit(Request::Undo).unwrap();
+        next(&service);
+        let rows = rows.lock().unwrap();
+        let timed: Vec<_> = rows
+            .iter()
+            .filter_map(|(request, stage, details)| {
+                details
+                    .split_whitespace()
+                    .find_map(|part| part.strip_prefix("midi_note_recovery_us="))
+                    .map(|value| (request, stage, value))
+            })
+            .collect();
+        assert_eq!(timed.len(), 2);
+        for (request, stage, value) in timed {
+            assert!(
+                matches!(request, Some(request) if matches!(request.operation, Some("update_midi_note" | "update_midi_notes")))
+            );
+            assert!(matches!(
+                stage,
+                diagnostics::DiagnosticStage::OutcomeReady {
+                    request_complete: true,
+                    ..
+                }
+            ));
+            assert!(value.parse::<u128>().is_ok());
+        }
+        drop(rows);
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() {
         let directory =
             std::env::temp_dir().join(format!("hex-duplicate-checkpoint-{}", std::process::id()));
