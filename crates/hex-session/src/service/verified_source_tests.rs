@@ -495,8 +495,8 @@ fn project_sample_request_refuses_verified_streaming_without_history_change() {
         project_generation: snapshot.context().project_generation,
         revision: imported.state.revision,
         asset,
-        track,
-        start: 64,
+        destination: crate::import_batch::AudioBatchDestination::Track { track, start: 64 },
+        new_track_gain: None,
         warp: hex_project::AudioImportWarp::Off,
         audition_timing: None,
     };

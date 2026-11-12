@@ -3310,8 +3310,8 @@ pub(super) mod tests {
             project_generation: 0,
             revision,
             asset,
-            track,
-            start: 32,
+            destination: crate::import_batch::AudioBatchDestination::Track { track, start: 32 },
+            new_track_gain: None,
             warp: hex_project::AudioImportWarp::Off,
             audition_timing: Some(hex_engine::playback::BrowserAuditionTiming {
                 grid: hex_project::ResolvedInputGrid::off(),

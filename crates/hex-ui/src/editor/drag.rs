@@ -105,7 +105,7 @@ impl ClipDrag {
     }
 }
 
-/// In-window drag payload for a WAV from the library or retained take.
+/// In-window drag payload for library audio, a retained take, or a project asset.
 #[derive(Clone)]
 pub(super) struct BrowserAudioDrag {
     pub(super) project_generation: u64,
@@ -113,6 +113,7 @@ pub(super) struct BrowserAudioDrag {
     pub(super) browser_generation: Option<u64>,
     pub(super) sample_rate: u32,
     pub(super) path: std::path::PathBuf,
+    pub(super) project_asset: Option<hex_project::AssetId>,
     pub(super) label: String,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
@@ -1183,6 +1184,7 @@ impl super::EditorView {
             browser_generation,
             sample_rate: state.project.sample_rate(),
             path,
+            project_asset: None,
             label,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
@@ -1319,6 +1321,10 @@ impl super::EditorView {
             let viewport = self.visible_viewport(state.timeline_frames);
             self.project_generation == drag.project_generation
                 && state.revision == drag.revision
+                && drag.project_asset.is_none_or(|asset| {
+                    self.browser.section == super::browser::BrowserSection::ProjectSamples
+                        && state.project.existing_import_frames(asset).is_ok()
+                })
                 && state.project.sample_rate() == drag.sample_rate
                 && viewport.start == drag.viewport().start
                 && viewport.length == drag.viewport().length
@@ -1587,28 +1593,56 @@ impl super::EditorView {
             cx.notify();
             return;
         };
-        let request = match destination {
-            BrowserDropDestination::Console(_) => {
-                self.clear_browser_audio_drag(drag);
-                self.error = Some("sample drop canceled · choose a console cell".into());
-                cx.notify();
-                return;
-            }
-            BrowserDropDestination::ExistingTrack { track, start } => {
-                Request::ImportToTrackWithOverwrite {
-                    path: drag.path.clone(),
-                    track,
-                    start,
+        let request = if let Some(asset) = drag.project_asset {
+            let destination = match destination {
+                BrowserDropDestination::ExistingTrack { track, start } => {
+                    hex_session::import_batch::AudioBatchDestination::Track { track, start }
                 }
+                BrowserDropDestination::NewTrack {
+                    before_track,
+                    start,
+                } => hex_session::import_batch::AudioBatchDestination::NewTracks {
+                    before_track,
+                    start,
+                },
+                BrowserDropDestination::Console(_) => {
+                    self.clear_browser_audio_drag(drag);
+                    return;
+                }
+            };
+            Request::InsertProjectSample {
+                project_generation: drag.project_generation,
+                revision: drag.revision,
+                asset,
+                destination,
+                new_track_gain: None,
+                warp: hex_project::AudioImportWarp::Off,
+                audition_timing: None,
             }
-            BrowserDropDestination::NewTrack {
-                before_track,
-                start,
-            } => Request::ImportToNewTrack {
-                path: drag.path.clone(),
-                before_track,
-                start,
-            },
+        } else {
+            match destination {
+                BrowserDropDestination::Console(_) => {
+                    self.clear_browser_audio_drag(drag);
+                    self.error = Some("sample drop canceled · choose a console cell".into());
+                    cx.notify();
+                    return;
+                }
+                BrowserDropDestination::ExistingTrack { track, start } => {
+                    Request::ImportToTrackWithOverwrite {
+                        path: drag.path.clone(),
+                        track,
+                        start,
+                    }
+                }
+                BrowserDropDestination::NewTrack {
+                    before_track,
+                    start,
+                } => Request::ImportToNewTrack {
+                    path: drag.path.clone(),
+                    before_track,
+                    start,
+                },
+            }
         };
         if self.enqueue_sample_drop(request, drag, destination) {
             self.stop_browser_preview_for_drop();
