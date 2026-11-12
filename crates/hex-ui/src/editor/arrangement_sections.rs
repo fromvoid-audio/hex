@@ -529,6 +529,7 @@ impl EditorView {
             || pending.receipt.is_queued()
             || pending.generation != self.project_generation
             || observation.project_generation != pending.generation
+            || observation.first_previous_revision != observation.previous_revision
             || observation.previous_revision != pending.revision
             || current.revision != pending.revision
             || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
@@ -572,6 +573,77 @@ impl EditorView {
                     .as_ref()
                     .is_some_and(|state| state.revision == pending.revision)
         })
+    }
+
+    /// An early keyboard-copy start is safe only for the exact installed graph
+    /// and its own non-preroll metadata. The ordinary receipt still owns the view.
+    pub(super) fn section_copy_play_source(
+        &self,
+    ) -> Option<hex_audio::prepared::AppliedAudioSource> {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let pending = self.sections.pending.as_ref()?;
+        let Command::DuplicateArrangementSection(section) = &pending.command else {
+            return None;
+        };
+        let section = *section;
+        let current = self.state.as_ref()?;
+        let committed = self.committed_section_copy_view()?;
+        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.selected_clip.is_some()
+            || self.sections.selected_ids() != [section]
+            || pending.selection_intent_epoch != self.selection_intent_epoch
+            || current.project.tempo_map() != committed.project.tempo_map()
+            || current.project.loop_region() != committed.project.loop_region()
+            || current
+                .project
+                .arrangement_section(section)
+                .map(|s| s.start())
+                != committed
+                    .project
+                    .arrangement_section(section)
+                    .map(|s| s.start())
+        {
+            return None;
+        }
+        let audio = self.audio.as_ref()?;
+        let status = audio.control.status()?;
+        if status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+            || status.stopped_edit_pending()
+        {
+            return None;
+        }
+        let observation = self.pending_publication_observation.as_ref()?;
+        let crate::EditorPublicationState::ResidentSubmitted {
+            audio_revision,
+            metadata,
+            ..
+        } = &observation.state
+        else {
+            return None;
+        };
+        let source = status.recording_source()?;
+        if observation.output_identity != source.output_identity
+            || audio.control.output_identity() != Some(source.output_identity)
+            || observation.context != source.context
+            || metadata.context != source.context
+            || committed.audio_authoring_revision(source.context) != Some(committed.revision)
+            || *audio_revision != source.audio_revision
+            || metadata.requires_preroll
+            || metadata.clip_preview.is_some()
+            || metadata.device_preview.is_some()
+            || metadata.tuning_preview.is_some()
+            || metadata.seek_request.is_some()
+            || metadata.stopped_restore
+            || metadata.computer_keyboard_request.is_some()
+            || metadata.gain_recording_track.is_some()
+            || status.recording_source() != Some(source)
+        {
+            return None;
+        }
+        Some(source)
     }
 
     pub(super) fn section_install_pending(&self) -> bool {
@@ -6224,6 +6296,195 @@ pub(super) mod tests {
             visual.debug_bounds("arrangement-section-1"),
             Some(marker_bounds)
         );
+    }
+
+    #[gpui::test]
+    fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppContext) {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        let mut fixture =
+            super::super::worker_ui_fixture::open_with_section_support(cx, commands, false, true);
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let (source_revision, expected) = editor.update(&mut visual, |view, cx| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let expected = view.playback_start_frame();
+            let revision = view.state.as_ref().unwrap().revision;
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            view.toggle_play();
+            assert!(
+                view.last_transport_command.is_none(),
+                "unapplied source cannot start"
+            );
+            cx.notify();
+            (revision, expected)
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let observation = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(observation) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break observation;
+            }
+            assert!(Instant::now() < deadline, "committed section view");
+            std::thread::yield_now();
+        };
+        let terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "section terminal");
+            std::thread::yield_now();
+        };
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let committed = observation.state.upgrade().unwrap();
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(observation));
+            assert_eq!(view.state.as_ref().unwrap().revision, source_revision);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.section_copy_play_source().is_some()
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "exact applied source and released fence"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(view.state.as_ref().unwrap().revision, source_revision);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            let pending = view.pending_publication_observation.as_mut().unwrap();
+            pending.output_identity += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong output must not start"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity -= 1;
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .project_generation += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong generation must not start"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .project_generation -= 1;
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .editor_revision += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong revision must not start"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .editor_revision -= 1;
+            let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
+                &mut view.pending_publication_observation.as_mut().unwrap().state
+            else {
+                panic!("resident metadata")
+            };
+            metadata.requires_preroll = true;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "preroll must not be bypassed"
+            );
+            let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
+                &mut view.pending_publication_observation.as_mut().unwrap().state
+            else {
+                panic!("resident metadata")
+            };
+            metadata.requires_preroll = false;
+            view.audio_status()
+                .unwrap()
+                .device_fault
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "faulted output must not start"
+            );
+            view.audio_status()
+                .unwrap()
+                .device_fault
+                .store(false, std::sync::atomic::Ordering::Release);
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.audio_status().unwrap().playing.load(Acquire))
+        });
+        editor.update(&mut visual, |view, _| {
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity += 1;
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::Pause)
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity -= 1;
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 512]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.audio_status().unwrap().playing.load(Acquire))
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        fixture.finish(cx);
     }
 
     #[gpui::test]

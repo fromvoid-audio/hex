@@ -2019,16 +2019,31 @@ impl EditorView {
 
     pub(super) fn toggle_play(&mut self) {
         self.escape_stop_armed = false;
-        if self.section_install_pending() {
-            self.error = Some("applying edit · wait for audio".into());
-            return;
-        }
         if self.opening_project || self.close_prompt_open {
             self.error = Some("project change pending · playback is paused".into());
             return;
         }
         if self.recovery.generation().is_some() {
             self.defer_play_until_audio_recovers();
+            return;
+        }
+        if self.section_install_pending() {
+            let playing = self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.status())
+                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
+            if self.desired_playing(playing) {
+                #[cfg(test)]
+                {
+                    self.last_transport_command = Some(PlaybackCommand::Pause);
+                }
+                self.queue_audio_command(PlaybackCommand::Pause);
+            } else if let Some(source) = self.section_copy_play_source() {
+                self.queue_section_copy_play(self.playback_start_frame(), source);
+            } else {
+                self.error = Some("applying edit · wait for audio".into());
+            }
             return;
         }
         let device_playing = self.audio.as_ref().is_some_and(|audio| {
