@@ -581,6 +581,14 @@ pub enum Request {
         revision: u64,
         action: DeviceClipboardAction,
     },
+    /// Append the exact captured track selection in one prepared history edit.
+    MoveTrackDevices {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::TrackId,
+        selected: hex_project::DeviceSelectionIds,
+        destination: hex_project::TrackId,
+    },
     TrackClipboard {
         project_generation: u64,
         revision: u64,
@@ -1145,6 +1153,7 @@ impl Request {
                 | Request::Undo
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
+                | Request::MoveTrackDevices { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::PaintMidiClip(_)
                 | Request::EditArrangementSection { .. }
@@ -3803,6 +3812,28 @@ fn run_worker(
                 Some(reason) => Err(reason.into()),
                 None => device_automation_control::command(&session, edit),
             }),
+            Request::MoveTrackDevices {
+                project_generation: generation,
+                revision: source_revision,
+                source,
+                selected,
+                destination,
+            } => Some(
+                if *generation != project_generation || *source_revision != revision {
+                    Err("device move canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before moving devices".into())
+                } else {
+                    Ok(Command::MoveTrackDevices {
+                        source: *source,
+                        selected: selected.clone(),
+                        destination: *destination,
+                    })
+                },
+            ),
             Request::DeviceClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -4618,6 +4649,7 @@ fn run_worker(
                     }
                     | Request::ReorderTracks { .. }
                     | Request::ReparentTracks { .. }
+                    | Request::MoveTrackDevices { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
@@ -4651,6 +4683,7 @@ fn run_worker(
                     | Request::DeviceClipboard { .. }
                     | Request::ReorderTracks { .. }
                     | Request::ReparentTracks { .. }
+                    | Request::MoveTrackDevices { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
@@ -5239,6 +5272,9 @@ fn run_worker(
                 }
                 Request::ReorderTracks { .. } | Request::ReparentTracks { .. } => {
                     error = Some("track reorder target was not resolved".into());
+                }
+                Request::MoveTrackDevices { .. } => {
+                    error = Some("device move was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
                     error = Some(
@@ -12831,6 +12867,71 @@ mod service_tests {
             .unwrap(),
             hex_lattice_contract::ParameterValue::Float(1.0)
         );
+    }
+
+    #[test]
+    fn move_track_devices_refuses_stale_requests_and_commits_once() {
+        let service = Service::new(48_000, 16, 0).unwrap();
+        next_event(&service);
+        let run = |request| {
+            service.submit(request).unwrap();
+            next_event(&service)
+        };
+        let add_track = |name: &str| {
+            let Created::Track(track) = run(Request::Edit(Command::AddTrack { name: name.into() }))
+                .created
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            track
+        };
+        let source = add_track("source");
+        let destination = add_track("destination");
+        let add_effect = || {
+            run(Request::AddNativeDevice {
+                track: source,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                    "hex.utility",
+                )),
+                before: None,
+            })
+        };
+        let first = add_effect();
+        let original = add_effect().state;
+        let source_devices = original.project.track(source).unwrap().devices();
+        let selected =
+            hex_project::DeviceSelectionIds::new(&[source_devices[1].id(), source_devices[0].id()])
+                .unwrap();
+        let request = |project_generation, revision| Request::MoveTrackDevices {
+            project_generation,
+            revision,
+            source,
+            selected: selected.clone(),
+            destination,
+        };
+        for stale in [
+            request(0, first.state.revision),
+            request(1, original.revision),
+        ] {
+            let refused = run(stale);
+            assert_eq!(
+                refused.error.as_deref(),
+                Some("device move canceled · project changed")
+            );
+            assert_eq!(refused.state.revision, original.revision);
+            assert_eq!(refused.state.project, original.project);
+        }
+        let moved = run(request(0, original.revision));
+        assert!(moved.error.is_none(), "{:?}", moved.error);
+        assert_eq!(moved.state.revision, original.revision + 1);
+        assert_eq!(
+            moved.state.project.track(destination).unwrap().devices(),
+            source_devices
+        );
+        assert_eq!(run(Request::Undo).state.project, original.project);
+        assert_eq!(run(Request::Redo).state.project, moved.state.project);
     }
 
     #[test]

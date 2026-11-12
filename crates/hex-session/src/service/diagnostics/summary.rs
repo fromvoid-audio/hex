@@ -687,6 +687,13 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("paste_time_range"; ["track" => track.value(), "frame" => frame]; omitted="clipboard")
         }
         Command::RemoveDevices { .. } => describe!("remove_devices"; []; omitted="owner,selected"),
+        Command::MoveTrackDevices {
+            source,
+            selected,
+            destination,
+        } => {
+            describe!("move_track_devices"; ["source" => source.value(), "destination" => destination.value(), "devices" => selected.ids().len()]; omitted="device ids")
+        }
         Command::PasteDevices { .. } => {
             describe!("paste_devices"; []; omitted="clipboard,owner,before")
         }
@@ -1349,6 +1356,15 @@ pub(super) fn request(value: &Request) -> Description {
             ..
         } => {
             describe!("device_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="action")
+        }
+        Request::MoveTrackDevices {
+            project_generation,
+            revision,
+            source,
+            selected,
+            destination,
+        } => {
+            describe!("move_track_devices"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "destination" => destination.value(), "devices" => selected.ids().len()]; omitted="device ids")
         }
         Request::TrackClipboard {
             project_generation,
