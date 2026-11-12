@@ -2437,31 +2437,55 @@ mod tests {
                 })
                 .unwrap();
             let (mut unmuted, _) = live_playback_on(&f, &input, f.receiver);
-            unmuted
-                .try_inherit_runtime_in_control_context(&mut candidate, Some(19), Some(19))
-                .unwrap();
-            unmuted.render(&mut output).unwrap();
+            let (mut active, refused) = match unmuted.try_inherit_runtime_in_control_context(
+                &mut candidate,
+                Some(19),
+                Some(19),
+            ) {
+                Ok(()) => (unmuted, false),
+                Err(error) => {
+                    assert!(matches!(
+                        error,
+                        crate::playback::PlaybackHandoffError::Session(
+                            SessionPlaybackError::SharedSourceVoiceCapacity
+                        )
+                    ));
+                    (candidate, true)
+                }
+            };
+            active.render(&mut output).unwrap();
             assert_eq!(
-                unmuted
+                active
                     .session_runtime_mut_for_stream_action()
                     .unwrap()
                     .owner(f.receiver),
                 Some(SessionPlaybackOwner::Session { clip })
             );
             assert!(
-                unmuted
+                active
                     .session_runtime_mut_for_stream_action()
                     .unwrap()
                     .mutable_instruments
                     .iter()
                     .flatten()
                     .any(|source| source.has_committed_live_occurrences()),
-                "unmute must retain live voices"
+                "unmute or its refusal must retain live voices"
             );
+            assert!(!input.is_cancelled());
             assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
-            unmuted.apply(PlaybackCommand::Stop);
-            unmuted.render(&mut output).unwrap();
+            active.apply(PlaybackCommand::Stop);
+            active.render(&mut output).unwrap();
             assert!(input.is_cancelled());
+            if refused {
+                let retry_input = Arc::new(ComputerKeyboardInput::default());
+                let (mut retry, _) = live_playback_on(&f, &retry_input, f.receiver);
+                retry
+                    .try_inherit_runtime_in_control_context(&mut active, Some(19), Some(19))
+                    .expect("unmute must retry after Stop clears source pressure");
+                retry.apply(PlaybackCommand::Play);
+                retry.render(&mut output).unwrap();
+                assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            }
         });
     }
 
