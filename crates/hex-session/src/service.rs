@@ -427,6 +427,8 @@ pub struct ArrangementEditViewObservation {
 
 mod verified_device_preview;
 pub use verified_device_preview::VerifiedDeviceParameterSource;
+mod verified_clip_move;
+pub use verified_clip_move::VerifiedClipMoveSource;
 mod verified_gain;
 pub use verified_gain::VerifiedTrackGainSource;
 
