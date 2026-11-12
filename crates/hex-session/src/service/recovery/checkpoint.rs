@@ -584,6 +584,86 @@ mod tests {
     }
 
     #[test]
+    fn unread_paste_views_coalesce_while_first_checkpoint_is_held() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let directory = std::env::temp_dir().join(format!(
+            "hex-unread-paste-checkpoint-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        let initial_source_count = sources.lock().unwrap().len();
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let until = Instant::now() + Duration::from_millis(500);
+        while sources.lock().unwrap().len() == initial_source_count {
+            assert!(
+                Instant::now() < until,
+                "first paste did not update the audio source"
+            );
+            std::thread::yield_now();
+        }
+        let first_source_count = sources.lock().unwrap().len();
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(500);
+        while sources.lock().unwrap().len() == first_source_count {
+            assert!(
+                Instant::now() < until,
+                "second paste did not update the audio source"
+            );
+            std::thread::yield_now();
+        }
+        let observation = service.try_arrangement_edit_view().unwrap();
+        let state = observation.state.upgrade().unwrap();
+        assert_eq!(
+            observation.first_previous_revision + 1,
+            observation.previous_revision
+        );
+        assert_eq!(state.revision, observation.previous_revision + 1);
+        assert_eq!(state.project.track(track).unwrap().midi_clips().len(), 3);
+        assert!(service.try_arrangement_edit_view().is_err());
+        release.send(()).unwrap();
+        let first = next(&service);
+        let second = next(&service);
+        assert!(first.error.is_none() && second.error.is_none());
+        assert_eq!(first.state.revision, observation.previous_revision);
+        assert_eq!(second.state.revision, state.revision);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second.state.project
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn consecutive_clip_pastes_preserve_a_conflicting_recovery_file() {
         consecutive_pastes_with_checkpoint_conflict(true);
     }
