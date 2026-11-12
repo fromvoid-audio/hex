@@ -1531,6 +1531,107 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_peak_increase_with_held_live_keys_is_safe() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::{PlaybackAction, PlaybackActionError, PlaybackCommand};
+            let mut f = fixture();
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            let mut output = [[0.0; 2]; 64];
+            old.render(&mut output).unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            old.render(&mut output).unwrap();
+            assert!(input.rejected());
+            assert!(
+                old.session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences())
+            );
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "higher peak".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "higher peak".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            for pitch in 40..50 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let launch = PlaybackAction::Session(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            });
+            assert!(matches!(
+                candidate.try_apply_action(launch),
+                Err(PlaybackActionError::Session(
+                    SessionPlaybackError::SharedSourceVoiceCapacity
+                ))
+            ));
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Arrangement)
+            );
+            candidate.render(&mut output).unwrap();
+            assert!(!input.is_cancelled());
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            for key in 0..16 {
+                input.set_key(key, None).unwrap();
+            }
+            candidate.render(&mut output).unwrap();
+            candidate.render(&mut output).unwrap();
+            candidate.render(&mut output).unwrap();
+            candidate.try_apply_action(launch).unwrap();
+            candidate.render(&mut output).unwrap();
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+        });
+    }
+
+    #[test]
     fn shared_source_session_launch_with_live_keys_respects_reserved_capacity() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
@@ -1760,12 +1861,7 @@ mod tests {
                 quantization: crate::LaunchQuantization::Immediate,
             });
             assert!(
-                matches!(
-                    result,
-                    Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                        "shared source launch exceeds retained voice capacity"
-                    ))
-                ),
+                matches!(result, Err(SessionPlaybackError::SharedSourceVoiceCapacity)),
                 "{result:?}"
             );
             let mut actual = [[0.0; 2]; 64];

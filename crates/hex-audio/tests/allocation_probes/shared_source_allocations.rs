@@ -216,6 +216,29 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
             })?;
         }
     }
+    let Created::Scene(scene) = editor.execute(Command::AddScene {
+        name: "pressure".into(),
+    })?
+    else {
+        return Err("scene missing".into());
+    };
+    let Created::SessionClip(session_clip) = editor.execute(Command::CreateSessionMidiClip {
+        track: receiver,
+        scene,
+        name: "pressure".into(),
+        source_length: BeatTime::ONE,
+    })?
+    else {
+        return Err("session clip missing".into());
+    };
+    editor.execute(Command::AddMidiNote {
+        clip: session_clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        velocity: 100,
+        channel: 0,
+    })?;
     let input = Arc::new(ComputerKeyboardInput::default());
     let initial = playback(
         editor.project(),
@@ -293,6 +316,27 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
     assert!(input.rejected(), "live press must report capacity refusal");
     assert!(!input.is_cancelled());
     assert!(control.status.rejected_revision().is_none());
+    assert!(control.status.render_fault_snapshot().is_none());
+    let ticket = control
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip: session_clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .map_err(|_| "session command queue full")?;
+    render(&mut callback, &mut output)?;
+    assert_eq!(
+        control.status.rejected_action(),
+        Some((
+            ticket,
+            hex_engine::playback::PlaybackActionRejection::SharedSourceVoiceCapacity
+        ))
+    );
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001)
+    );
     assert!(control.status.render_fault_snapshot().is_none());
     let mut queue_full = false;
     for _ in 0..1024 {
