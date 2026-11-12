@@ -623,7 +623,8 @@ impl EditorView {
         .tooltip(|_, cx| {
             cx.new(|_| MiniTooltip {
                 kind: crate::tooltips::Kind::control("global launch quantization"),
-                description: "global launch quantization · sections and console clips".into(),
+                description: "global launch quantization · locators, sections and console clips"
+                    .into(),
             })
             .into()
         })
