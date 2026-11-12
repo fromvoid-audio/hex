@@ -1068,8 +1068,8 @@ pub(super) struct WorkerEvents {
 }
 /// One request's unsent event and diagnostic identity stay together if the
 /// control worker has to retain an outcome before delivering it.
-struct PendingOutcome {
-    event: Event,
+pub(super) struct PendingOutcome {
+    pub(super) event: Event,
     diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     diagnostic_started: Option<std::time::Instant>,
     section_phases: Option<super::diagnostics::SectionPhases>,
@@ -1318,7 +1318,7 @@ impl WorkerEvents {
         self.send_pending_with_control_poll(pending, control_poll)
     }
 
-    fn capture_outcome(&mut self, event: Event) -> PendingOutcome {
+    pub(super) fn capture_outcome(&mut self, event: Event) -> PendingOutcome {
         PendingOutcome {
             event,
             diagnostic: self.diagnostic.take(),
@@ -1328,7 +1328,7 @@ impl WorkerEvents {
         }
     }
 
-    fn send_pending_with_control_poll<R>(
+    pub(super) fn send_pending_with_control_poll<R>(
         &mut self,
         pending: PendingOutcome,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
