@@ -707,7 +707,7 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
             Terminal::StaleRevision => {
                 click(&mut fixture.visual, "main-track-header");
                 let before = fixture.view(cx).queued_requests;
-                fixture.visual.simulate_keystrokes("cmd-t");
+                fixture.visual.simulate_keystrokes("t");
                 assert_eq!(
                     fixture.view(cx).queued_requests,
                     before + 1,
