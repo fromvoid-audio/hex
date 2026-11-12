@@ -40,6 +40,7 @@ if SPEC is None or SPEC.loader is None:
 delivery = importlib.util.module_from_spec(SPEC)
 # Delivery authority must reflect source bytes, not a timestamp-valid pyc.
 _SOURCE = _delivery_source(Path(SPEC.origin))
+delivery._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(_SOURCE).hexdigest()
 exec(compile(_SOURCE, SPEC.origin, "exec", dont_inherit=True), delivery.__dict__)
 
 
@@ -109,6 +110,7 @@ def build_native(builder, sdk: Path, instance: bool, staging: Path) -> Path:
 
 
 def prepare(instance: bool) -> Path:
+    delivery.require_delivery_source(ROOT)
     common = Path(delivery.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]))
     artifacts = common.parent / "artifacts"
     sdk = Path(os.environ.get("HEX_VST3_SDK") or artifacts / "vst3-sdk")
@@ -140,7 +142,9 @@ def prepare(instance: bool) -> Path:
             with tempfile.TemporaryDirectory(prefix="stage-", dir=cache) as staging:
                 staging = Path(staging)
                 if not native.exists():
-                    build_native(builder, sdk, instance, staging).rename(native)
+                    built = build_native(builder, sdk, instance, staging)
+                    delivery.require_delivery_source(ROOT)
+                    built.rename(native)
                 receipt = native / "controlled-macos.json"
                 delivery.assert_plain_path(receipt)
                 source = json.loads(receipt.read_bytes()).get("source_commit", "")
@@ -159,6 +163,7 @@ def prepare(instance: bool) -> Path:
                     "files": delivery.inventory(tools),
                 })
                 verify_tools(tools, signing, instance)
+                delivery.require_delivery_source(ROOT)
                 tools.parent.rename(generation)
         else:
             verify_tools(app, signing, instance)
