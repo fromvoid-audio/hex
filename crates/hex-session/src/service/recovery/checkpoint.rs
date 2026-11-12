@@ -1,20 +1,22 @@
 //! Worker-owned recovery availability and explicitly confirmed slot replacement.
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 type CheckpointGate = (
     PathBuf,
     std::sync::mpsc::SyncSender<()>,
     std::sync::mpsc::Receiver<()>,
 );
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 pub(super) static CHECKPOINT_GATE: std::sync::Mutex<Vec<CheckpointGate>> =
     std::sync::Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 pub(super) fn wait_at_checkpoint(path: &Path) {
     let gate = {
-        let mut gates = CHECKPOINT_GATE.lock().unwrap();
+        let mut gates = CHECKPOINT_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         gates
             .iter()
             .position(|(target, _, _)| target == path)
@@ -22,7 +24,12 @@ pub(super) fn wait_at_checkpoint(path: &Path) {
     };
     if let Some((_, entered, release)) = gate {
         let _ = entered.send(());
-        let _ = release.recv_timeout(std::time::Duration::from_millis(500));
+        let timeout = if cfg!(feature = "recovery-checkpoint-test-support") {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        let _ = release.recv_timeout(timeout);
     }
 }
 
@@ -116,6 +123,11 @@ impl RecoveryTracker {
 
     pub fn async_ready(&self) -> bool {
         self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| worker.ready())
+    }
+
+    /// Whether an admitted publication still needs its control owner to wait.
+    pub fn async_waiting(&self) -> bool {
+        self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| !worker.ready())
     }
 
     /// Collect the sole pending publication on control and update the same
@@ -298,6 +310,96 @@ mod tests {
         }
         fn poll(&mut self) {}
         fn close(&mut self) {}
+    }
+
+    struct PollSink {
+        requested: Arc<std::sync::atomic::AtomicBool>,
+        revision: Arc<AtomicU64>,
+        polled: std::sync::mpsc::SyncSender<()>,
+    }
+    impl WorkerAudioSink for PollSink {
+        fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+            self.revision
+                .store(source.context().editor_revision, Ordering::Release);
+        }
+        fn poll(&mut self) {
+            if self
+                .requested
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                let _ = self.polled.try_send(());
+            }
+        }
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn staged_edit_keeps_audio_control_polling_during_checkpoint() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-recovery-poll-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let requested = Arc::new(AtomicBool::new(false));
+        let revision = Arc::new(AtomicU64::new(0));
+        let (polled_tx, polled) = std::sync::mpsc::sync_channel(1);
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(PollSink {
+                requested: Arc::clone(&requested),
+                revision: Arc::clone(&revision),
+                polled: polled_tx,
+            }),
+        )
+        .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let before = next(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        let locator = |frame| Request::Edit(Command::AddArrangementLocator { frame });
+        service.submit(locator(24_000)).unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service.submit(locator(48_000)).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(180);
+        loop {
+            if revision.load(Ordering::Acquire) == before.state.revision + 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "second edit did not commit");
+            std::thread::yield_now();
+        }
+        requested.store(true, Ordering::Release);
+        let result = polled.recv_timeout(Duration::from_millis(150));
+        assert!(
+            service.try_event().is_err(),
+            "terminal preceded checkpoint release"
+        );
+        release.send(()).unwrap();
+        assert!(
+            result.is_ok(),
+            "audio control was not polled while checkpoint was held"
+        );
+        assert_eq!(next(&service).state.revision, before.state.revision + 1);
+        assert_eq!(next(&service).state.revision, before.state.revision + 2);
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     struct Fixture {
         directory: PathBuf,
