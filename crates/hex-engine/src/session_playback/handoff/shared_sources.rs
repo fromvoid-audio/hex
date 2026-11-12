@@ -227,6 +227,8 @@ impl SharedSourceHandoff {
         runtimes: &[Option<MutableInstrumentTrackRuntime>],
         routes: &[TrackRoute],
         admission: Option<&crate::session_inventory::PreparedSessionMidiAdmission>,
+        source_voice_envelopes: &[u16; MAX_TRACKS],
+        looping: bool,
         previous: &SessionPlayback,
         timing_changed: bool,
         arrangement_tempo_remap: bool,
@@ -331,6 +333,65 @@ impl SharedSourceHandoff {
                 return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                     "shared source runtime or original resources are incompatible",
                 ));
+            }
+            let live = old_runtime.transition_live_count(false);
+            if shared && live != 0 {
+                let authored_envelope = new_routing.contributors(new_index).iter().try_fold(
+                    0usize,
+                    |sum, &index| {
+                        let index = usize::from(index);
+                        let combined = source_voice_envelopes
+                            .get(index)
+                            .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                        let owner = effective_midi_route(revision, routes, index)?.owner;
+                        let envelope = if !looping && matches!(owner, RouteOwner::Arrangement) {
+                            new_routing.arrangement_voice_envelope(index)
+                        } else {
+                            usize::from(*combined)
+                        };
+                        sum.checked_add(envelope)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                    },
+                )?;
+                if live
+                    > new_runtime.live_voice_capacity_for_proofs(
+                        old_runtime.transition_proofs(false).len(),
+                        authored_envelope,
+                    )
+                {
+                    // An unchanged Arrangement has already admitted these
+                    // voices. Prove that case with a bounded number of
+                    // copy-on-write source identities rather than double
+                    // charging its currently sounding notes as future notes.
+                    const MAX_UNCHANGED_CONTRIBUTORS: usize = 16;
+                    const MAX_UNCHANGED_CLIPS: usize = 16;
+                    let old_contributors = old_routing.contributors(old_index);
+                    let new_contributors = new_routing.contributors(new_index);
+                    let unchanged = exact
+                        && !timing_changed
+                        && !looping
+                        && previous.loop_region().is_none()
+                        && new_contributors.len() <= MAX_UNCHANGED_CONTRIBUTORS
+                        && old_contributors.len() == new_contributors.len()
+                        && new_contributors.iter().all(|&contributor| {
+                            let index = usize::from(contributor);
+                            let Some(track) = revision.arrangement().tracks().get(index) else { return false };
+                            let Some(id) = track.canonical_track_id() else { return false };
+                            let Some(old_index) = previous.routes.iter().position(|route| route.id == id) else { return false };
+                            let Some(old_track) = previous.revision.arrangement().tracks().get(old_index) else { return false };
+                            let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index);
+                            let new_route = effective_midi_route(revision, routes, index);
+                            old_routing.source(old_index) == Some(source)
+                                && old_routing.contributes(old_index)
+                                && track.source_input_enabled() == old_track.source_input_enabled()
+                                && matches!(old_route, Ok(route) if route.owner == RouteOwner::Arrangement && route.pending.is_none())
+                                && matches!(new_route, Ok(route) if route.owner == RouteOwner::Arrangement && route.pending.is_none())
+                                && previous.revision.bounded_mutable_arrangement_sources_match(revision, id, MAX_UNCHANGED_CLIPS)
+                        });
+                    if !unchanged {
+                        return Err(SessionPlaybackError::SharedSourceVoiceCapacity);
+                    }
+                }
             }
             // Authored content is validated occurrence by occurrence by the
             // common handoff planner, including canonical new-note/prefix
@@ -1478,6 +1539,14 @@ mod tests {
         f: &Fixture,
         input: &Arc<crate::computer_keyboard::ComputerKeyboardInput>,
     ) -> (crate::playback::Playback, Arc<PreparedRevision>) {
+        live_playback_on(f, input, f.contributor)
+    }
+
+    fn live_playback_on(
+        f: &Fixture,
+        input: &Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        track: TrackId,
+    ) -> (crate::playback::Playback, Arc<PreparedRevision>) {
         let cancel = AtomicBool::new(false);
         let resources = PreparedDeviceResources::prepare_on_control(
             &f.store,
@@ -1509,17 +1578,278 @@ mod tests {
         if !f
             .editor
             .project()
-            .track(f.contributor)
+            .track(track)
             .unwrap()
             .instrument()
             .unwrap()
             .bypassed()
         {
             result
-                .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
+                .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(input))
                 .unwrap();
         }
         (result, revision)
+    }
+
+    #[test]
+    fn shared_source_unchanged_peak_keeps_gain_edit_with_held_live_keys() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            let clip = f.editor.project().track(f.receiver).unwrap().midi_clips()[0].id();
+            for pitch in 40..50 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_ratio(1, 16).unwrap(),
+                        duration: BeatTime::from_ratio(1, 2).unwrap(),
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            let mut output = [[0.0; 2]; 64];
+            old.render(&mut output).unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            old.render(&mut output).unwrap();
+            assert!(input.rejected());
+            assert!(
+                old.session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences())
+            );
+            for _ in 0..4 {
+                old.render(&mut output).unwrap();
+            }
+            f.editor
+                .execute(Command::Gain {
+                    track: f.receiver,
+                    gain: 0.5,
+                })
+                .unwrap();
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .expect("unchanged source peak must preserve a gain edit");
+            candidate.render(&mut output).unwrap();
+            assert!(!input.is_cancelled());
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+        });
+    }
+
+    #[test]
+    fn shared_source_arrangement_peak_increase_with_held_live_keys_is_safe() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::{
+                PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection,
+            };
+            let mut f = fixture();
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let oracle_input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            let (mut oracle, _) = live_playback_on(&f, &oracle_input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            oracle.apply(PlaybackCommand::Play);
+            let mut output = [[0.0; 2]; 64];
+            let mut expected = output;
+            old.render(&mut output).unwrap();
+            oracle.render(&mut expected).unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+                oracle_input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            old.render(&mut output).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(output, expected);
+            assert!(
+                input.rejected(),
+                "the original source must reach live capacity"
+            );
+            assert!(
+                old.session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "at least one live key must be admitted"
+            );
+            let clip = f.editor.project().track(f.receiver).unwrap().midi_clips()[0].id();
+            for pitch in 40..50 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_ratio(1, 4).unwrap(),
+                        duration: BeatTime::from_ratio(1, 2).unwrap(),
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            let error = candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                PlaybackHandoffError::Session(SessionPlaybackError::SharedSourceVoiceCapacity)
+            ));
+            assert_eq!(
+                error.rejection(),
+                Some(PlaybackHandoffRejection::SharedSourceVoiceCapacity)
+            );
+            old.render(&mut output)
+                .expect("rejected handoff must preserve old audio");
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(output, expected, "refusal must leave playback unchanged");
+            assert!(
+                !input.is_cancelled(),
+                "safe refusal must not cancel live input"
+            );
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            for key in 0..16 {
+                input.set_key(key, None).unwrap();
+                oracle_input.set_key(key, None).unwrap();
+            }
+            for _ in 0..3 {
+                old.render(&mut output).unwrap();
+                oracle.render(&mut expected).unwrap();
+                assert_eq!(output, expected);
+            }
+            let (mut retry, _) = live_playback_on(&f, &input, f.receiver);
+            retry
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let mut heard_new_notes = false;
+            for _ in 0..12 {
+                retry.render(&mut output).unwrap();
+                oracle.render(&mut expected).unwrap();
+                heard_new_notes |= output != expected;
+            }
+            assert!(
+                heard_new_notes,
+                "retry must render the newly authored notes"
+            );
+        });
+    }
+
+    #[test]
+    fn shared_source_peak_increase_with_held_live_keys_is_safe() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::{PlaybackAction, PlaybackActionError, PlaybackCommand};
+            let mut f = fixture();
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            let mut output = [[0.0; 2]; 64];
+            old.render(&mut output).unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            old.render(&mut output).unwrap();
+            assert!(input.rejected());
+            assert!(
+                old.session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences())
+            );
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "higher peak".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "higher peak".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            for pitch in 40..50 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let launch = PlaybackAction::Session(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            });
+            assert!(matches!(
+                candidate.try_apply_action(launch),
+                Err(PlaybackActionError::Session(
+                    SessionPlaybackError::SharedSourceVoiceCapacity
+                ))
+            ));
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Arrangement)
+            );
+            candidate.render(&mut output).unwrap();
+            assert!(!input.is_cancelled());
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            for key in 0..16 {
+                input.set_key(key, None).unwrap();
+            }
+            candidate.render(&mut output).unwrap();
+            candidate.render(&mut output).unwrap();
+            candidate.render(&mut output).unwrap();
+            candidate.try_apply_action(launch).unwrap();
+            candidate.render(&mut output).unwrap();
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+        });
     }
 
     #[test]

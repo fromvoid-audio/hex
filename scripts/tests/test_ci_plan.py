@@ -678,9 +678,10 @@ class ScopeTests(unittest.TestCase):
                         manifest_path=str(root / "Cargo.toml"), features={}, targets=[], dependencies=[])]}
             with self.assertRaisesRegex(ValueError, "symlink"):
                 plan.resolve(root, profile="merge", base=base, source="HEAD", metadata=metadata)
-            runner = ci.LocalCiRunner(root, mode="full", min_free_bytes=0,
-                                      steps=(ci.Step("must-not-run", (sys.executable, "-c", "raise AssertionError()")),))
-            self.assertEqual(runner.run(), 2)
+            runner = ci.LocalCiRunner(root, mode="full", min_free_bytes=0)
+            with patch.object(runner, "_run_step") as execute:
+                self.assertEqual(runner.run(), 2)
+            execute.assert_not_called()
             self.assertIn("symlink", runner.summary["repository_error"])
             self.assertTrue(all(s["status"] == "not_run" for s in runner.summary["steps"]))
 
@@ -1122,9 +1123,10 @@ class ScopeTests(unittest.TestCase):
             changed = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
             with self.assertRaises(ValueError):
                 ci.reusable_plan(root, changed, report)
-            runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0,
-                                      steps=(ci.Step("must-not-run", (sys.executable, "-c", "raise AssertionError()")),))
-            self.assertEqual(runner.run(), 2)
+            runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0)
+            with patch.object(runner, "_run_step") as execute:
+                self.assertEqual(runner.run(), 2)
+            execute.assert_not_called()
             self.assertTrue(runner.summary["start_tree"]["dirty"])
             self.assertTrue(all(s["status"] == "not_run" for s in runner.summary["steps"]))
 

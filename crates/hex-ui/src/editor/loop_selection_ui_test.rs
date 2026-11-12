@@ -980,6 +980,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
             } else {
                 let viewport = v.visible_viewport(state.timeline_frames);
                 let payload = BrowserAudioDrag {
+                    project_asset: None,
                     project_generation: v.project_generation,
                     revision: state.revision,
                     browser_generation: Some(v.browser.scan_generation()),
