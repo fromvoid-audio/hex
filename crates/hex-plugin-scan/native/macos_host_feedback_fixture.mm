@@ -43,17 +43,25 @@ int main() { @autoreleasepool {
     assert(host.synchronize_parameter_feedback(&controller));
     assert(controller.value==0.75); // An older DSP base remains stale after admission.
 
-    const auto frontier=host.callback_revision_on_control(); // Simulate a processed edit.
-    assert(frontier>0);
-    assert(pending.put(7,0.5,frontier) && host.publish_parameter_feedback(pending));
+    const auto during=host.editor_frontier_on_worker();
+    assert(during>0);
+    assert(pending.put(7,0.5,during) && host.publish_parameter_feedback(pending));
     assert(host.synchronize_parameter_feedback(&controller));
-    assert(controller.value==0.5); // Deliberate host input still updates the controller.
-
-    assert(pending.put(7,0.4,frontier) && host.publish_parameter_feedback(pending));
+    assert(controller.value==0.75); // Host feedback cannot move an active editor gesture.
+    assert(pending.put(7,0.4,during) && host.publish_parameter_feedback(pending));
+    assert(host.endEdit(7)==kResultOk);
+    assert(host.synchronize_parameter_feedback(&controller));
+    assert(controller.value==0.75); // Feedback sampled before End stays stale after it.
+    const auto after=host.editor_frontier_on_worker();
+    assert(after>during);
+    assert(pending.put(7,0.5,after) && host.publish_parameter_feedback(pending));
+    assert(host.synchronize_parameter_feedback(&controller));
+    assert(controller.value==0.5); // Deliberate host input after End remains effective.
     controller.value=0.875;
-    assert(host.performEdit(7,0.875)==kResultOk);
+    assert(host.beginEdit(7)==kResultOk && host.performEdit(7,0.875)==kResultOk);
+    assert(pending.put(7,0.4,after) && host.publish_parameter_feedback(pending));
     assert(host.synchronize_parameter_feedback(&controller));
-    assert(controller.value==0.875); // A newer native edit beats older host feedback.
+    assert(controller.value==0.875);
     assert(host.endEdit(7)==kResultOk);
     return 0;
 }}

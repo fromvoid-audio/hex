@@ -1171,21 +1171,27 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn queued_editor_values_are_not_overwritten_by_host_feedback() {
+fn active_native_editor_gesture_is_not_overwritten_by_host_feedback() {
     let case = Case::new();
+    let end = case.root.join("editor-end");
+    let end_gate = end.clone();
+    let setup = case.setup_restore(150);
     let mut instance = Prepared::prepare(
         &build(),
         source(),
         options(),
         PreparationCancellation::new_on_control().unwrap(),
-        case.setup_restore(135),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+        },
     )
     .unwrap();
-    fs::write(case.release(), b"queue a long drag").unwrap();
+    fs::write(case.release(), b"begin and hold the editor drag").unwrap();
     let until = Instant::now() + Duration::from_secs(2);
     loop {
         let edits = instance.poll_parameter_edits_on_worker().unwrap();
-        if edits.pending > 8 {
+        if edits.pending >= 2 {
             break;
         }
         assert!(Instant::now() < until, "editor backlog did not arrive");
@@ -1203,9 +1209,10 @@ fn queued_editor_values_are_not_overwritten_by_host_feedback() {
     instance.exchange_on_worker(input).unwrap();
     assert_eq!(
         first_controller_parameter(&mut instance).normalized,
-        0.875,
-        "a newer queued editor move must not be replaced by host feedback"
+        0.75,
+        "host feedback must not overwrite an active native editor gesture"
     );
+    fs::write(end, b"release the editor drag").unwrap();
     assert!(
         instance
             .stop_and_reap_on_control()
