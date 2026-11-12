@@ -3448,6 +3448,7 @@ impl EditorView {
                 | Request::ReparentTracks { .. }
                 | Request::DropNativeDevice { .. }
                 | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
@@ -3782,6 +3783,7 @@ impl EditorView {
             Request::DeviceGesture(_)
                 | Request::DropNativeDevice { .. }
                 | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }

@@ -586,6 +586,14 @@ pub enum Request {
         selected: hex_project::DeviceSelectionIds,
         destination: hex_project::TrackId,
     },
+    /// Reorder the exact captured selection within its chain in one edit.
+    ReorderDevices {
+        project_generation: u64,
+        revision: u64,
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+        before: Option<hex_project::DeviceId>,
+    },
     TrackClipboard {
         project_generation: u64,
         revision: u64,
@@ -1151,6 +1159,7 @@ impl Request {
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
                 | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::PaintMidiClip(_)
                 | Request::EditArrangementSection { .. }
@@ -3804,6 +3813,28 @@ fn run_worker(
                     })
                 },
             ),
+            Request::ReorderDevices {
+                project_generation: generation,
+                revision: source_revision,
+                owner,
+                selected,
+                before,
+            } => Some(
+                if *generation != project_generation || *source_revision != revision {
+                    Err("device reorder canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before reordering devices".into())
+                } else {
+                    Ok(Command::ReorderDevices {
+                        owner: *owner,
+                        selected: selected.clone(),
+                        before: *before,
+                    })
+                },
+            ),
             Request::DeviceClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -4620,6 +4651,7 @@ fn run_worker(
                     | Request::ReorderTracks { .. }
                     | Request::ReparentTracks { .. }
                     | Request::MoveTrackDevices { .. }
+                    | Request::ReorderDevices { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
@@ -4654,6 +4686,7 @@ fn run_worker(
                     | Request::ReorderTracks { .. }
                     | Request::ReparentTracks { .. }
                     | Request::MoveTrackDevices { .. }
+                    | Request::ReorderDevices { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
@@ -5245,6 +5278,9 @@ fn run_worker(
                 }
                 Request::MoveTrackDevices { .. } => {
                     error = Some("device move was not resolved".into());
+                }
+                Request::ReorderDevices { .. } => {
+                    error = Some("device reorder was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
                     error = Some(
@@ -12881,6 +12917,29 @@ mod service_tests {
             selected: selected.clone(),
             destination,
         };
+        let reorder = |project_generation, revision| Request::ReorderDevices {
+            project_generation,
+            revision,
+            owner: hex_project::DeviceChainOwner::Track(source),
+            selected: selected.clone(),
+            before: Some(source_devices[1].id()),
+        };
+        for stale in [
+            reorder(0, first.state.revision),
+            reorder(1, original.revision),
+        ] {
+            let refused = run(stale);
+            assert_eq!(
+                refused.error.as_deref(),
+                Some("device reorder canceled · project changed")
+            );
+            assert_eq!(refused.state.revision, original.revision);
+            assert_eq!(refused.state.project, original.project);
+        }
+        let unchanged = run(reorder(0, original.revision));
+        assert!(unchanged.error.is_none(), "{:?}", unchanged.error);
+        assert_eq!(unchanged.state.revision, original.revision);
+        assert_eq!(unchanged.state.project, original.project);
         for stale in [
             request(0, first.state.revision),
             request(1, original.revision),
