@@ -1220,12 +1220,11 @@ impl EditorView {
         if self.pending_time_range_move.is_none()
             && let Some(mut ahead) = self.ahead_time_range_move.take()
         {
-            if event.error.is_some()
-                || self.selection_intent_epoch != Some(ahead.selection_intent_epoch)
+            if (event.error.is_some()
+                || self.selection_intent_epoch != Some(ahead.selection_intent_epoch))
+                && let Some(keyboard) = &mut ahead.keyboard
             {
-                if let Some(keyboard) = &mut ahead.keyboard {
-                    keyboard.repeats = None;
-                }
+                keyboard.repeats = None;
             }
             self.pending_time_range_move = Some(ahead);
         }
