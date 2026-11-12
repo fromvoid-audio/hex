@@ -821,7 +821,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
-    solo_observation: Option<hex_session::service::SoloViewObservation>,
+    track_switch_observation: Option<hex_session::service::TrackSwitchViewObservation>,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
@@ -1625,7 +1625,7 @@ impl EditorView {
         let mut view = Self {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
-            solo_observation: None,
+            track_switch_observation: None,
             audio,
             retired_action_outcomes: None,
             retired_action_message: None,
@@ -2078,7 +2078,10 @@ impl EditorView {
             .map_or(0, |region| region.start())
     }
 
-    fn observe_solo_view(&mut self, view: hex_session::service::SoloViewObservation) -> bool {
+    fn observe_track_switch_view(
+        &mut self,
+        view: hex_session::service::TrackSwitchViewObservation,
+    ) -> bool {
         if view.project_generation != self.project_generation
             || self
                 .state
@@ -2088,12 +2091,12 @@ impl EditorView {
         {
             return false;
         }
-        self.solo_observation = Some(view);
+        self.track_switch_observation = Some(view);
         true
     }
 
-    fn displayed_solo(&self, track: TrackId, canonical: bool) -> bool {
-        self.solo_observation
+    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+        self.track_switch_observation
             .as_ref()
             .filter(|view| {
                 view.project_generation == self.project_generation
@@ -2105,10 +2108,10 @@ impl EditorView {
             .and_then(|view| {
                 view.tracks
                     .iter()
-                    .find(|(id, _)| *id == track)
-                    .map(|(_, soloed)| *soloed)
+                    .find(|switches| switches.track == track.id())
+                    .map(|switches| (switches.muted, switches.soloed))
             })
-            .unwrap_or(canonical)
+            .unwrap_or_else(|| (track.muted(), track.soloed()))
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {
