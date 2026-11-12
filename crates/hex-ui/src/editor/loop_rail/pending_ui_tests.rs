@@ -68,6 +68,18 @@ fn fixture(
     pump(&editor, &mut visual);
     (environment, editor, visual)
 }
+fn toggle_fixture(
+    cx: &mut TestAppContext,
+    old: LoopRegion,
+) -> (Arc<Environment>, Entity<EditorView>, VisualTestContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system().expect("native text shaping");
+        cx.update(|cx| theme::load_fonts(cx).expect("bundled ioskeley mono"));
+    }
+    fixture(cx, old)
+}
+
 fn rail_point(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
     let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
     point(rail.left() + rail.size.width * fraction, rail.center().y)
@@ -123,17 +135,19 @@ fn assert_loop_paint(visual: &mut VisualTestContext, enabled: Option<bool>, mess
         );
         assert!(visual.debug_bounds("loop-guide-end").is_none(), "{message}");
     }
-    let button_role = if enabled == Some(true) {
-        theme::PaletteRole::Primary
-    } else {
-        theme::PaletteRole::Muted
-    };
-    assert!(
-        visual
-            .rendered_monochrome_colors("transport-loop-toggle")
-            .contains(&rgb(theme::color(button_role)).into()),
-        "{message}"
-    );
+    #[cfg(target_os = "macos")]
+    {
+        let button_role = if enabled == Some(true) {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        };
+        let button_colors = visual.rendered_monochrome_colors("transport-loop-toggle");
+        assert!(
+            button_colors.contains(&rgb(theme::color(button_role)).into()),
+            "{message}: toolbar glyph colors {button_colors:?}"
+        );
+    }
 }
 fn painted_guides(visual: &mut VisualTestContext) -> [Bounds<gpui::Pixels>; 2] {
     ["loop-guide-start", "loop-guide-end"].map(|name| {
@@ -146,7 +160,7 @@ fn painted_guides(visual: &mut VisualTestContext) -> [Bounds<gpui::Pixels>; 2] {
 #[gpui::test]
 fn toggles_display_the_requested_state_while_the_real_response_is_held(cx: &mut TestAppContext) {
     let old = LoopRegion::new(24_000, 48_000, false).unwrap();
-    let (_environment, editor, mut visual) = fixture(cx, old);
+    let (_environment, editor, mut visual) = toggle_fixture(cx, old);
     let bounds = painted_range(&mut visual);
     for (index, enabled) in [true, false, true, false, true].into_iter().enumerate() {
         match index {
@@ -211,7 +225,7 @@ fn toggles_display_the_requested_state_while_the_real_response_is_held(cx: &mut 
 #[gpui::test]
 fn stale_toolbar_toggle_refusal_preserves_clear_history_and_repaints(cx: &mut TestAppContext) {
     let old = LoopRegion::new(24_000, 48_000, false).unwrap();
-    let (_environment, editor, mut visual) = fixture(cx, old);
+    let (_environment, editor, mut visual) = toggle_fixture(cx, old);
     let original_range = painted_range(&mut visual);
     let old_snapshot =
         editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
