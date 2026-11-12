@@ -33,6 +33,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         playback: Some(Playback::try_from_prepared_with_session(prepared).expect("playback")),
         status: None,
         error: None,
+        range_copy_source_unavailable: None,
         recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,

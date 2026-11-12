@@ -72,7 +72,7 @@ mod clip_audition;
 pub use clip_audition::{
     ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
     ArrangementPlayStartAudition, ArrangementStretchAudition, ClipMovePreviewDestination,
-    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit,
+    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit, VerifiedClipMoveUpdate,
 };
 mod publication_wait;
 mod resident_audio;
@@ -94,9 +94,9 @@ pub use audio_sink::{
     PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
     PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationFailure,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -313,6 +313,10 @@ pub struct Event {
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
+    /// This exact range-copy request was refused before canonical commit because
+    /// native source custody was unavailable. Ordered request completion and
+    /// source context correlate the receipt; it does not establish the cause.
+    pub range_copy_source_unavailable: Option<hex_engine::AudioSourceContext>,
     /// Persistent automatic-recovery failure; successful edits need not clear it.
     pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.
@@ -579,6 +583,16 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
         source: hex_project::SourceId,
+    },
+    /// Explicitly change a captured track binding, including unlinking. A shared
+    /// source's receiver must first be moved when other contributors remain.
+    /// Callers must reject unsent gestures; this request never finalizes them.
+    RebindNativeSource {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        expected_source: Option<hex_project::SourceId>,
+        source: Option<hex_project::SourceId>,
     },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
@@ -2696,6 +2710,7 @@ fn run_worker(
     let mut resident_snapshot: Option<resident_audio::Snapshot> = None;
     let mut resident_preview: Option<resident_preview::Preview> = None;
     let mut clip_audition_lane = clip_audition::Lane::default();
+    let mut verified_clip_audition_lane = clip_audition::VerifiedLane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -2753,6 +2768,7 @@ fn run_worker(
                     .then(|| native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
+                range_copy_source_unavailable: None,
                 recovery_failure: None,
                 audio_batch_failure: None,
                 import_truncation: None,
@@ -2796,6 +2812,7 @@ fn run_worker(
             playback: None,
             status: None,
             error: Some(error),
+            range_copy_source_unavailable: None,
             recovery_failure: None,
             audio_batch_failure: None,
             import_truncation: None,
@@ -3015,7 +3032,28 @@ fn run_worker(
         },
         |mut audio, audition| {
             if audition {
+                let available = !resident_seek
+                    .as_ref()
+                    .is_some_and(resident_seek::Lane::pending)
+                    && device_gesture.snapshot().is_none()
+                    && tuning_gesture.snapshot().is_none()
+                    && pending_plugin_effect.is_none()
+                    && pending_sampler_parameter.is_none()
+                    && pending_stopped_restore.is_none()
+                    && !plugin_recording.editor_active()
+                    && !plugin_recording.pending();
                 let pending = audio.is_some_and(|sink| {
+                    let verified_pending = verified_clip_audition_lane.drive(
+                        &clip_audition,
+                        &state,
+                        session.project(),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        sink,
+                        available && session.audio_mode() == DocumentAudioMode::VerifiedStreaming,
+                    );
                     clip_audition_lane.drive(
                         &clip_audition,
                         &session,
@@ -3036,17 +3074,8 @@ fn run_worker(
                             resident_seek.as_ref(),
                             None,
                         ),
-                        !resident_seek
-                            .as_ref()
-                            .is_some_and(resident_seek::Lane::pending)
-                            && device_gesture.snapshot().is_none()
-                            && tuning_gesture.snapshot().is_none()
-                            && pending_plugin_effect.is_none()
-                            && pending_sampler_parameter.is_none()
-                            && pending_stopped_restore.is_none()
-                            && !plugin_recording.editor_active()
-                            && !plugin_recording.pending(),
-                    )
+                        available,
+                    ) || verified_pending
                 });
                 // Cancelling a preview can prepare a new canonical audio owner.
                 if let Some(snapshot) = resident_snapshot.as_ref()
@@ -3385,6 +3414,7 @@ fn run_worker(
         let mut restore_prepared = None;
         let mut status = None;
         let mut error = None;
+        let mut range_copy_source_unavailable = None;
         let mut export_completion = None;
         let mut export_job = None;
         let mut gesture_ack = None;
@@ -3432,6 +3462,55 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::RebindNativeSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                expected_source,
+                source,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source assignment canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before assigning a source".into(),
+                    );
+                }
+                let project = session.project();
+                let target = project
+                    .track(*track)
+                    .ok_or("source assignment canceled · track no longer exists")?;
+                if target.is_group() {
+                    return Err("group tracks cannot have an instrument source".into());
+                }
+                if target.source_id() != *expected_source {
+                    return Err("source assignment canceled · track binding changed".into());
+                }
+                if *expected_source == *source {
+                    return Err("source assignment is unchanged".into());
+                }
+                if source.is_some_and(|id| project.native_source(id).is_none()) {
+                    return Err("source assignment canceled · source no longer exists".into());
+                }
+                if expected_source.is_some_and(|id| {
+                    project
+                        .native_source(id)
+                        .is_some_and(|old| old.receiver() == Some(*track))
+                        && project
+                            .source_contributors(id)
+                            .any(|contributor| contributor.id() != *track)
+                }) {
+                    return Err("choose another receiver before unlinking a shared source".into());
+                }
+                Ok(Command::BindTrackSource {
+                    track: *track,
+                    source: *source,
+                })
+            })()),
             Request::BindUnassignedNativeSource {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5371,7 +5450,7 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::BindUnassignedNativeSource { .. } => {
+                Request::BindUnassignedNativeSource { .. } | Request::RebindNativeSource { .. } => {
                     error = Some("source assignment was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
@@ -6288,7 +6367,18 @@ fn run_worker(
                             }
                             resident_snapshot = Some(snapshot);
                         }
-                        Err(reason) => error = Some(reason.to_string()),
+                        Err(reason) => {
+                            if time_range_copy
+                                && matches!(reason, SessionError::NativeSourceUnavailable(_))
+                            {
+                                range_copy_source_unavailable =
+                                    Some(hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    });
+                            }
+                            error = Some(reason.to_string());
+                        }
                     }
                 }
                 Request::Edit(command)
@@ -9846,6 +9936,7 @@ fn run_worker(
             playback,
             status,
             error,
+            range_copy_source_unavailable,
             recovery_failure: recovery_tracker.failure(),
             request_complete,
             sampler_load_complete,

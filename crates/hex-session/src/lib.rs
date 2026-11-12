@@ -71,6 +71,8 @@ pub enum SessionError {
     Engine(hex_engine::Invalid),
     Allocation,
     NativeAudio(String),
+    /// Resident publication refused before committing because a native source was unavailable.
+    NativeSourceUnavailable(String),
     /// Exact hosted source loss, never a retained preview or restoration ACK.
     PluginSourceLost(String),
     /// A recorded terminal failed after its original SDK/final-output release
@@ -86,7 +88,9 @@ impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(message) => f.write_str(message),
-            Self::NativeAudio(message) => f.write_str(message),
+            Self::NativeAudio(message) | Self::NativeSourceUnavailable(message) => {
+                f.write_str(message)
+            }
             Self::PluginSourceLost(message) => f.write_str(message),
             Self::PluginRecordingReleased(message) => f.write_str(message),
             Self::Project(error) => write!(f, "project edit failed: {error}"),
@@ -113,6 +117,7 @@ impl Error for SessionError {
             Self::Engine(error) => Some(error),
             Self::Invalid(_)
             | Self::NativeAudio(_)
+            | Self::NativeSourceUnavailable(_)
             | Self::PluginSourceLost(_)
             | Self::PluginRecordingReleased(_)
             | Self::Allocation
@@ -509,6 +514,7 @@ impl Session {
             native,
             originals,
             None,
+            DocumentAudioMode::Resident,
         )
     }
 
@@ -524,6 +530,7 @@ impl Session {
         native: Option<ResidentNativeReservation>,
         originals: native_assets::ReconstructedOriginalSources<'_>,
         files: Option<audio_sources::ReconstructedFileSources>,
+        mode: DocumentAudioMode,
     ) -> Result<Self, SessionError> {
         let native_assets::ReconstructedOriginalSources {
             assets: native_assets,
@@ -534,6 +541,13 @@ impl Session {
             Some(files) => (Some(files.reservation.validate()?), files.files),
             None => (None, BTreeMap::new()),
         };
+        if mode == DocumentAudioMode::VerifiedStreaming
+            && (source_reservation.is_none() || !prepared_assets.is_empty())
+        {
+            return Err(SessionError::Invalid(
+                "verified recovery requires file-backed clip sources",
+            ));
+        }
         for (id, file) in &verified_sources {
             let asset = project
                 .asset(*id)
@@ -722,7 +736,7 @@ impl Session {
             } else {
                 0
             },
-            audio_mode: DocumentAudioMode::Resident,
+            audio_mode: mode,
             source_reservation,
             resident_frames,
             max_resident_frames,

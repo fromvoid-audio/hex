@@ -243,7 +243,11 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+        super::recovery::clear_recovery(
+            &mut self.recovery,
+            &mut self.pending_sample_drop,
+            &mut self.pending_time_range_move,
+        );
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -1928,7 +1932,11 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2512,7 +2520,11 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;
@@ -2744,6 +2756,7 @@ impl EditorView {
             resize_owns_viewport,
         );
         let time_range_was_pending = self.pending_time_range_move.is_some();
+        let recovery_before_time_completion = self.recovery.generation();
         let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -2752,6 +2765,11 @@ impl EditorView {
         } else {
             self.complete_time_duplicate_pair(&event)
         };
+        let recovering_refused_time_copy = event.range_copy_source_unavailable.is_some()
+            && recovery_before_time_completion.is_none()
+            && self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
+                edit.kind == super::recovery_state::DeferredEditKind::TimeDuplicate
+            });
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -3383,7 +3401,10 @@ impl EditorView {
             self.status = status;
             self.error = None;
         }
-        if let Some(error) = event.error {
+        if recovering_refused_time_copy {
+            self.status = "restarting audio · time will be duplicated when ready".into();
+        }
+        if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
             self.error = Some(
                 event
                     .audio_batch_failure
