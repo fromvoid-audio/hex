@@ -977,6 +977,14 @@ fn h_enabled_keyboard_owns_note_69_and_release_while_pending_edits_block_overvie
     pump(&editor, &mut visual);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("m");
+    let before = editor.read_with(&visual, |view, _| view.worker_requests_pending);
+    visual.simulate_keystrokes("t");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.worker_requests_pending, before,
+            "MIDI note must not add a track"
+        );
+    });
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("h").unwrap(),
         is_held: false,
