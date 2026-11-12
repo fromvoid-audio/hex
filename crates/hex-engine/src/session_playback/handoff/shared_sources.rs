@@ -1478,6 +1478,14 @@ mod tests {
         f: &Fixture,
         input: &Arc<crate::computer_keyboard::ComputerKeyboardInput>,
     ) -> (crate::playback::Playback, Arc<PreparedRevision>) {
+        live_playback_on(f, input, f.contributor)
+    }
+
+    fn live_playback_on(
+        f: &Fixture,
+        input: &Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        track: TrackId,
+    ) -> (crate::playback::Playback, Arc<PreparedRevision>) {
         let cancel = AtomicBool::new(false);
         let resources = PreparedDeviceResources::prepare_on_control(
             &f.store,
@@ -1509,17 +1517,224 @@ mod tests {
         if !f
             .editor
             .project()
-            .track(f.contributor)
+            .track(track)
             .unwrap()
             .instrument()
             .unwrap()
             .bypassed()
         {
             result
-                .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
+                .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(input))
                 .unwrap();
         }
         (result, revision)
+    }
+
+    #[test]
+    fn shared_source_refuses_session_launch_at_retained_voice_capacity_atomically() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..14 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "capacity".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(session_clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "next".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            f.editor
+                .execute(Command::AddMidiNote {
+                    clip: session_clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 64,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            let mut old = playback(&f);
+            let mut twin = playback(&f);
+            for runtime in [&mut old, &mut twin] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 7]).unwrap();
+            }
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            let mut oracle = playback(&f);
+            candidate.try_inherit_state_from(&mut old).unwrap();
+            oracle.try_inherit_state_from(&mut twin).unwrap();
+            let result = candidate.apply(SessionPlaybackCommand::LaunchClip {
+                clip: session_clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            });
+            assert!(
+                matches!(
+                    result,
+                    Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                        "shared source launch exceeds retained voice capacity"
+                    ))
+                ),
+                "{result:?}"
+            );
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = actual;
+            candidate.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(
+                actual, expected,
+                "refused launch must not alter the running source"
+            );
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+            candidate.render(&mut [[0.0; 2]; 64]).unwrap();
+        });
+    }
+
+    #[test]
+    fn shared_source_rejects_live_key_at_capacity_without_fault_or_stuck_input() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..12 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut muted, _) = live_playback_on(&f, &input, f.receiver);
+            muted
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            muted.render(&mut output).unwrap();
+            assert!(
+                input.rejected(),
+                "a full source must report the refused press"
+            );
+            assert!(
+                !input.is_cancelled(),
+                "capacity refusal must not cancel the input"
+            );
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "the existing peer must continue"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            muted.apply(PlaybackCommand::Stop);
+            for _ in 0..130 {
+                muted.render(&mut output).unwrap();
+            }
+            assert_eq!(
+                output, [[0.0; 2]; 64],
+                "stop and release must drain the source"
+            );
+        });
     }
 
     #[test]
