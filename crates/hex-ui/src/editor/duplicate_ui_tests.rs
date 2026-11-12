@@ -52,6 +52,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
     editor.update(&mut visual, |v, cx| {
         assert!(!v.observe_duplicate_view(ArrangementEditViewObservation {
             project_generation: observation.project_generation + 1,
+            first_previous_revision: observation.first_previous_revision,
             previous_revision: observation.previous_revision,
             kind: observation.kind,
             state: Arc::downgrade(&observed),
@@ -87,6 +88,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert!(v.arrangement_duplicate_view().is_none());
         assert!(!v.observe_duplicate_view(ArrangementEditViewObservation {
             project_generation: v.project_generation,
+            first_previous_revision: observed.revision - 1,
             previous_revision: observed.revision - 1,
             kind: ArrangementEditViewKind::Duplicate(terminal_created),
             state: Arc::downgrade(&observed),

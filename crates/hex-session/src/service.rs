@@ -22,6 +22,7 @@ pub use hex_storage::project_name;
 /// Verbatim spans keep paths case-sensitive in lowercase status and error text.
 pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
+mod arrangement_edit_views;
 mod arrangement_sections;
 mod clip_paint;
 pub use clip_paint::PaintMidiClip;
@@ -400,11 +401,13 @@ pub enum ArrangementEditViewKind {
 }
 
 /// The committed Arrangement copy or paste, available before checkpoint
-/// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
+/// I/O. Its bounded delivery is best effort. Only the ordinary terminal
 /// can acknowledge the edit, install authoring state or advance repeats.
 /// A missed observation does not keep an old project's media alive.
 pub struct ArrangementEditViewObservation {
     pub project_generation: u64,
+    /// First predecessor in a contiguous run of coalesced paste revisions.
+    pub first_previous_revision: u64,
     pub previous_revision: u64,
     pub kind: ArrangementEditViewKind,
     pub state: std::sync::Weak<ViewState>,
@@ -707,6 +710,8 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    /// Worker-internal wakeup for a completed recovery publication.
+    ContinueRecovery,
     TogglePluginEditor {
         project_generation: u64,
         device: hex_project::DeviceId,
@@ -1298,7 +1303,7 @@ pub struct Service {
     clip_audition: Arc<clip_audition::Mailbox>,
     events: diagnostics::EventReceiver,
     track_switch_views: Receiver<TrackSwitchViewObservation>,
-    arrangement_edit_views: Receiver<ArrangementEditViewObservation>,
+    arrangement_edit_views: arrangement_edit_views::Receiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1616,7 +1621,7 @@ impl Service {
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (track_switch_view_tx, track_switch_views) = mpsc::sync_channel(1);
-        let (arrangement_edit_view_tx, arrangement_edit_views) = mpsc::sync_channel(1);
+        let (arrangement_edit_view_tx, arrangement_edit_views) = arrangement_edit_views::channel();
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -2533,7 +2538,7 @@ fn run_worker(
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
     track_switch_views: SyncSender<TrackSwitchViewObservation>,
-    arrangement_edit_views: SyncSender<ArrangementEditViewObservation>,
+    arrangement_edit_views: arrangement_edit_views::Sender,
     clip_audition: Arc<clip_audition::Mailbox>,
 ) {
     let mut revision = 0_u64;
@@ -2789,11 +2794,105 @@ fn run_worker(
     let mut native_automation_take = native_automation_recording::Lane::default();
     let mut plugin_recording = plugin_recording::State::default();
     let mut recording_barrier = recording_barrier::State::default();
+    let mut pending_recovery_outcome: Option<audio_sink::PendingOutcome> = None;
+    // Both ordinary and recovery-delayed terminals use the same bounded
+    // backpressure/control polling path.
+    macro_rules! deliver_outcome {
+        ($outcome:expr) => {
+            events.send_pending_with_control_poll($outcome, |mut audio| {
+                if let Some(seek) = resident_seek.as_mut() {
+                    seek.drive(
+                        &session,
+                        resident_snapshot.as_mut(),
+                        audio.as_deref_mut(),
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, p)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(p),
+                                }
+                            }),
+                            None,
+                            resident_preview.as_ref(),
+                        ),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                    );
+                    if let (Some(overlay), Some(current)) =
+                        (resident_preview.as_mut(), resident_snapshot.as_ref())
+                    {
+                        overlay.snapshot.inputs = current.inputs.clone();
+                    }
+                }
+                resident_audio::poll_pending(
+                    &session,
+                    resident_snapshot.as_ref(),
+                    audio.as_deref_mut(),
+                    export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    ),
+                );
+                if let Some(sink) = audio.as_deref_mut() {
+                    plugin_recording::Preparation {
+                        state: &mut plugin_recording,
+                        lane: &mut native_automation_take,
+                        document_base: media_base.as_deref(),
+                        recovery: recovery.as_deref(),
+                        may_defer: false,
+                        deferred: false,
+                    }
+                    .drive(
+                        &session,
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        sink,
+                    );
+                }
+                audio_sink::native_sampler::drive(
+                    audio,
+                    &session,
+                    hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    },
+                    &mut export_lane,
+                    compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    }),
+                )
+            })
+        };
+    }
+    macro_rules! finish_pending_recovery {
+        () => {
+            if let Some(mut outcome) = pending_recovery_outcome.take() {
+                let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
+                outcome.finish_recovery(elapsed, result, recovery_tracker.failure());
+                if !deliver_outcome!(outcome) {
+                    return;
+                }
+            }
+        };
+    }
     while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
         &mut recording_barrier,
-        session.native_reservation.is_some(),
+        session.native_reservation.is_some() || pending_recovery_outcome.is_some(),
         pending_plugin_effect
             .as_ref()
             .map(|pending| &pending.insertion),
@@ -2918,12 +3017,27 @@ fn run_worker(
             );
             audio_sink::ControlPoll {
                 pending: control_lanes_pending(resident_seek.as_ref(), &export_lane)
-                    || plugin_recording.pending(),
+                    || plugin_recording.pending()
+                    || pending_recovery_outcome.is_some(),
                 gesture: plugin_recording.ready(),
                 editor_take: plugin_recording.editor_ready(),
+                recovery_ready: recovery_tracker.async_ready(),
             }
         },
     ) {
+        // Only one later paste may commit while a checkpoint owns the journal.
+        // Every other request, including lifecycle operations, fences it first.
+        if pending_recovery_outcome.is_some()
+            && !matches!(
+                &queued.request,
+                Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. }
+            )
+        {
+            finish_pending_recovery!();
+        }
+        if matches!(&queued.request, Request::ContinueRecovery) {
+            continue;
+        }
         let mut queued = queued;
         if plugin_recording.editor_active()
             && matches!(
@@ -4560,6 +4674,7 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                Request::ContinueRecovery => {}
                 Request::ChangeProjectSampleRate {
                     project_generation: captured,
                     revision: captured_revision,
@@ -9124,39 +9239,67 @@ fn run_worker(
             committed_arrangement_duplicate.map(ArrangementEditViewKind::Duplicate)
         };
         if let Some(kind) = arrangement_edit_view {
-            let _ = arrangement_edit_views.try_send(ArrangementEditViewObservation {
+            arrangement_edit_views.send(ArrangementEditViewObservation {
                 project_generation,
+                first_previous_revision: revision_before_request,
                 previous_revision: revision_before_request,
                 kind,
                 state: Arc::downgrade(&state),
             });
         }
-        if let Some(untitled_path) = recovery.as_deref() {
-            let mut maintain_recovery = || {
-                recovery_tracker.maintain(
-                    recovery::RecoveryContext {
-                        session: &session,
-                        base: media_base.as_deref(),
-                        document: document.as_ref(),
-                        untitled: untitled_path,
-                        journal: &mut journal,
-                        generation: project_generation,
-                    },
-                    unsaved,
-                    revision != revision_before_request,
-                )
-            };
-            let journal_result = if committed_arrangement_duplicate.is_some()
-                || (time_range_copy && canonical_changed && error.is_none())
-            {
-                events.measure_recovery("duplicate_recovery_us", maintain_recovery)
-            } else if committed_arrangement_paste {
-                events.measure_recovery("paste_recovery_us", maintain_recovery)
-            } else if committed_track_switch {
-                events.measure_recovery("track_switch_recovery_us", maintain_recovery)
-            } else {
-                maintain_recovery()
-            };
+        let mut defer_recovery = false;
+        let stage_recovery = pending_recovery_outcome.is_some()
+            && committed_arrangement_paste
+            && unsaved
+            && revision != revision_before_request;
+        if pending_recovery_outcome.is_some() && !stage_recovery {
+            finish_pending_recovery!();
+        }
+        if !stage_recovery && let Some(untitled_path) = recovery.as_deref() {
+            let journal_result =
+                if committed_arrangement_paste && unsaved && revision != revision_before_request {
+                    events.measure_recovery("paste_recovery_us", || {
+                        recovery_tracker
+                            .start_async(recovery::RecoveryContext {
+                                session: &session,
+                                base: media_base.as_deref(),
+                                document: document.as_ref(),
+                                untitled: untitled_path,
+                                journal: &mut journal,
+                                generation: project_generation,
+                            })
+                            .map(|started| {
+                                defer_recovery = started;
+                                None
+                            })
+                    })
+                } else {
+                    let mut maintain_recovery = || {
+                        recovery_tracker.maintain(
+                            recovery::RecoveryContext {
+                                session: &session,
+                                base: media_base.as_deref(),
+                                document: document.as_ref(),
+                                untitled: untitled_path,
+                                journal: &mut journal,
+                                generation: project_generation,
+                            },
+                            unsaved,
+                            revision != revision_before_request,
+                        )
+                    };
+                    if committed_arrangement_duplicate.is_some()
+                        || (time_range_copy && canonical_changed && error.is_none())
+                    {
+                        events.measure_recovery("duplicate_recovery_us", maintain_recovery)
+                    } else if committed_arrangement_paste {
+                        events.measure_recovery("paste_recovery_us", maintain_recovery)
+                    } else if committed_track_switch {
+                        events.measure_recovery("track_switch_recovery_us", maintain_recovery)
+                    } else {
+                        maintain_recovery()
+                    }
+                };
             match journal_result {
                 Ok(Some(_)) => {
                     status =
@@ -9443,132 +9586,109 @@ fn run_worker(
                 },
             );
         }
-        if !events.send_with_control_poll(
-            Event {
-                state: Arc::clone(&state),
-                playback,
-                status,
-                error,
-                recovery_failure: recovery_tracker.failure(),
-                request_complete,
-                sampler_load_complete,
-                sampler_edit_complete,
-                plugin_effect_complete,
-                plugin_parameter_observation,
-                plugin_parameters,
-                computer_keyboard_complete,
-                midi_take_complete,
-                device_automation_take_complete,
-                tuning_audition_complete,
-                live_expression_complete,
-                bounce_complete,
-                audio_batch_complete,
-                audio_batch_failure,
-                import_truncation,
-                save_complete,
-                save_correlation: if save_complete {
-                    save_correlation
-                } else {
-                    None
-                },
-                save_confirmation_required,
-                document_format_upgrade_required: document
-                    .as_ref()
-                    .is_some_and(|handle| handle.token.requires_format_upgrade()),
-                open_complete,
-                project_replaced,
-                stopped_playback_restore_complete,
-                created,
-                duplicate_complete,
-                restore_complete,
-                device_preview,
-                gesture_ack,
-                gesture_protocol_ack,
-                gesture_request,
-                active_device_gesture: device_gesture.snapshot(),
-                tuning_preview,
-                tuning_gesture_ack,
-                tuning_gesture_request,
-                active_tuning_gesture: tuning_gesture.snapshot(),
-                tuning_library,
+        let mut outcome = events.capture_outcome(Event {
+            state: Arc::clone(&state),
+            playback,
+            status,
+            error,
+            recovery_failure: recovery_tracker.failure(),
+            request_complete,
+            sampler_load_complete,
+            sampler_edit_complete,
+            plugin_effect_complete,
+            plugin_parameter_observation,
+            plugin_parameters,
+            computer_keyboard_complete,
+            midi_take_complete,
+            device_automation_take_complete,
+            tuning_audition_complete,
+            live_expression_complete,
+            bounce_complete,
+            audio_batch_complete,
+            audio_batch_failure,
+            import_truncation,
+            save_complete,
+            save_correlation: if save_complete {
+                save_correlation
+            } else {
+                None
             },
-            |mut audio| {
-                if let Some(seek) = resident_seek.as_mut() {
-                    seek.drive(
-                        &session,
-                        resident_snapshot.as_mut(),
-                        audio.as_deref_mut(),
-                        export_lane.admission_with_resident_owners(
-                            compiled.as_ref().map(|(_, p)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(p),
-                                }
-                            }),
-                            None,
-                            resident_preview.as_ref(),
-                        ),
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision,
-                        },
+            save_confirmation_required,
+            document_format_upgrade_required: document
+                .as_ref()
+                .is_some_and(|handle| handle.token.requires_format_upgrade()),
+            open_complete,
+            project_replaced,
+            stopped_playback_restore_complete,
+            created,
+            duplicate_complete,
+            restore_complete,
+            device_preview,
+            gesture_ack,
+            gesture_protocol_ack,
+            gesture_request,
+            active_device_gesture: device_gesture.snapshot(),
+            tuning_preview,
+            tuning_gesture_ack,
+            tuning_gesture_request,
+            active_tuning_gesture: tuning_gesture.snapshot(),
+            tuning_library,
+        });
+        if stage_recovery {
+            // Acknowledge this committed source before waiting for the older
+            // checkpoint, while retaining both ordered terminals on control.
+            let previous = pending_recovery_outcome.take().map(|mut previous| {
+                let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
+                previous.finish_recovery(elapsed, result, recovery_tracker.failure());
+                previous
+            });
+            let started = std::time::Instant::now();
+            let result = if let Some(untitled_path) = recovery.as_deref() {
+                recovery_tracker.start_async(recovery::RecoveryContext {
+                    session: &session,
+                    base: media_base.as_deref(),
+                    document: document.as_ref(),
+                    untitled: untitled_path,
+                    journal: &mut journal,
+                    generation: project_generation,
+                })
+            } else {
+                Err("automatic recovery path is unavailable".into())
+            };
+            // Admit this already committed edit before delivering the older
+            // terminal. If its consumer has closed, dropping the tracker joins
+            // the admitted checkpoint instead of abandoning this edit.
+            if let Some(previous) = previous
+                && !deliver_outcome!(previous)
+            {
+                return;
+            }
+            match result {
+                Ok(true) => pending_recovery_outcome = Some(outcome),
+                Ok(false) => {
+                    outcome.finish_recovery(
+                        started.elapsed(),
+                        Ok(None),
+                        recovery_tracker.failure(),
                     );
-                    if let (Some(overlay), Some(current)) =
-                        (resident_preview.as_mut(), resident_snapshot.as_ref())
-                    {
-                        overlay.snapshot.inputs = current.inputs.clone();
+                    if !deliver_outcome!(outcome) {
+                        return;
                     }
                 }
-                resident_audio::poll_pending(
-                    &session,
-                    resident_snapshot.as_ref(),
-                    audio.as_deref_mut(),
-                    export_lane.admission_with_resident_owners(
-                        compiled.as_ref().map(|(_, p)| {
-                            hex_engine::native_device_resources::ControlSamplerSelection {
-                                sources: current_sources.as_ref(),
-                                prepared: Some(p),
-                            }
-                        }),
-                        resident_seek.as_ref(),
-                        resident_preview.as_ref(),
-                    ),
-                );
-                if let Some(sink) = audio.as_deref_mut() {
-                    plugin_recording::Preparation {
-                        state: &mut plugin_recording,
-                        lane: &mut native_automation_take,
-                        document_base: media_base.as_deref(),
-                        recovery: recovery.as_deref(),
-                        may_defer: false,
-                        deferred: false,
-                    }
-                    .drive(
-                        &session,
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision,
-                        },
-                        sink,
+                Err(reason) => {
+                    outcome.finish_recovery(
+                        started.elapsed(),
+                        Err(reason),
+                        recovery_tracker.failure(),
                     );
+                    if !deliver_outcome!(outcome) {
+                        return;
+                    }
                 }
-                audio_sink::native_sampler::drive(
-                    audio,
-                    &session,
-                    hex_engine::AudioSourceContext {
-                        project_generation,
-                        editor_revision: revision,
-                    },
-                    &mut export_lane,
-                    compiled.as_ref().map(|(_, p)| {
-                        hex_engine::native_device_resources::ControlSamplerSelection {
-                            sources: current_sources.as_ref(),
-                            prepared: Some(p),
-                        }
-                    }),
-                )
-            },
-        ) {
+            }
+        } else if defer_recovery {
+            pending_recovery_outcome = Some(outcome);
+        } else if !deliver_outcome!(outcome) {
             return;
         }
         if let Some(job) = export_job
@@ -13829,7 +13949,7 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let (_track_switch_sender, track_switch_views) = mpsc::sync_channel(1);
-        let (_arrangement_edit_sender, arrangement_edit_views) = mpsc::sync_channel(1);
+        let (_arrangement_edit_sender, arrangement_edit_views) = arrangement_edit_views::channel();
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
