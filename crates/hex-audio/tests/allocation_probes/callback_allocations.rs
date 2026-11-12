@@ -6,6 +6,8 @@ mod cold_track;
 mod compressor;
 #[path = "callback_allocations/cursor_loop.rs"]
 mod cursor_loop;
+#[path = "callback_allocations/device_track.rs"]
+mod device_track;
 #[path = "callback_allocations/finite_bounce.rs"]
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
