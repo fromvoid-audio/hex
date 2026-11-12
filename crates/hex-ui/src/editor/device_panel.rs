@@ -1431,8 +1431,10 @@ fn source_summary_tooltip(summary: &source_summary::SourceSummary) -> String {
         .map(hex_session::service::text::verbatim)
         .unwrap_or_else(|| "none".into());
     format!(
-        "source · {}\nreceiver · {receiver}",
+        "source · {}\nrole · {}\nreceiver · {receiver}\nmidi tracks · {}",
         hex_session::service::text::verbatim(&summary.name),
+        summary.role,
+        summary.contributors,
     )
 }
 
@@ -3620,7 +3622,7 @@ mod header_style_unit_tests {
         };
         assert_eq!(
             theme::text(source_summary_tooltip(&summary)).as_ref(),
-            "source · A Very Long Bright Bass Name\nreceiver · MIDI Receiver A"
+            "source · A Very Long Bright Bass Name\nrole · midi contributor\nreceiver · MIDI Receiver A\nmidi tracks · 2"
         );
     }
 
