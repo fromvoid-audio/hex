@@ -21,6 +21,45 @@ fn instrument_loop_edits_share_a_worker_only_with_a_bounded_wrap_distance() {
     assert!(!QuantumProfile::keeps_instrument_epoch(256, first, short));
 }
 
+#[test]
+fn effect_loop_activation_reuses_only_compatible_marker_budgets() {
+    let region =
+        |start, end, enabled| Some(hex_project::LoopRegion::new(start, end, enabled).unwrap());
+    let later = region(1024, 2048, false);
+    let earlier = region(0, 1024, true);
+    let short = region(0, 128, true);
+    let same_short = region(0, 128, false);
+    let overlapping = region(0, 1025, true);
+    let later_short = region(1024, 1152, false);
+    let different_enabled = region(1024, 2048, true);
+
+    for (before, after) in [
+        (None, earlier),
+        (later, earlier),
+        (later, different_enabled),
+        (different_enabled, later),
+        (same_short, short),
+        (short, same_short),
+    ] {
+        assert!(QuantumProfile::keeps_effect_epoch(Some(256), before, after));
+    }
+    for (before, after) in [
+        (None, short),
+        (later, short),
+        (later, overlapping),
+        (different_enabled, earlier),
+        (later_short, earlier),
+        (earlier, None),
+    ] {
+        assert!(!QuantumProfile::keeps_effect_epoch(
+            Some(256),
+            before,
+            after
+        ));
+    }
+    assert!(!QuantumProfile::keeps_effect_epoch(None, later, earlier));
+}
+
 fn point(beat: BeatTime, value: f32, outgoing: AutomationInterpolation) -> AutomationPoint {
     AutomationPoint {
         beat,
@@ -58,7 +97,7 @@ fn render(program: &Program, origins: &[Option<u64>], cuts: &[u16]) -> Vec<Forei
 }
 
 #[test]
-fn disabled_effect_loop_admits_delayed_wraps_and_preserves_linear_only_projects() {
+fn linear_effect_programs_admit_in_flight_loop_wraps_when_the_budget_allows() {
     let tempo = tempo();
     let enabled = hex_project::LoopRegion::new(1024, 1536, true).unwrap();
     let disabled = hex_project::LoopRegion::new(1024, 1536, false).unwrap();
@@ -98,14 +137,13 @@ fn disabled_effect_loop_admits_delayed_wraps_and_preserves_linear_only_projects(
                 ..source
             },
             &tempo,
-            Some(region),
+            region,
             false,
         )
     };
-    let old = prepare(1, enabled).unwrap().unwrap();
-    let next = prepare(1, disabled).unwrap().unwrap();
-    // An effect downstream of a delay can get this old wrap even after
-    // playback starts generating origins for the disabled loop.
+    let old = prepare(1, Some(enabled)).unwrap().unwrap();
+    // Disabling can leave a wrap in delayed audio. Enabling can introduce a
+    // wrap while an old linear program still owns the partial worker quantum.
     let origins = std::array::from_fn::<_, 256, _>(|frame| {
         Some(if frame < 64 {
             1472 + frame as u64
@@ -114,15 +152,21 @@ fn disabled_effect_loop_admits_delayed_wraps_and_preserves_linear_only_projects(
         })
     });
     let cuts = [16, 32, 48, 80, 96, 112, 128];
-    let points = render(&next, &origins, &cuts);
+    let points = render(&old, &origins, &cuts);
     assert_eq!(points.len(), 18);
-    assert_eq!(points, render(&old, &origins, &cuts));
     assert!(points[8].normalized < points[7].normalized);
 
-    assert!(matches!(prepare(7, enabled), Err(AUTOMATION_POINT_LIMIT)));
-    let dense_disabled = prepare(7, disabled).unwrap().unwrap();
+    assert!(matches!(
+        prepare(7, Some(enabled)),
+        Err(AUTOMATION_POINT_LIMIT)
+    ));
     let linear = std::array::from_fn::<_, 256, _>(|frame| Some(1472 + frame as u64));
-    assert_eq!(render(&dense_disabled, &linear, &cuts).len(), 112);
+    for region in [None, Some(disabled)] {
+        let linear_program = prepare(1, region).unwrap().unwrap();
+        assert_eq!(render(&linear_program, &origins, &cuts), points);
+        let dense_linear = prepare(7, region).unwrap().unwrap();
+        assert_eq!(render(&dense_linear, &linear, &cuts).len(), 112);
+    }
 }
 
 #[test]
