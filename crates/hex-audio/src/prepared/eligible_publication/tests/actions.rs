@@ -954,9 +954,19 @@ fn seek_pause_stop_case(grouped: bool) {
             c.render(&mut output).unwrap();
         })
     }));
-    assert_eq!(output, [[0.0; 2]; 8]);
-    assert_eq!(control.status.position.load(Acquire), 8);
-    assert_eq!(control.status.performance_frame.load(Acquire), 8);
+    // A pending seek must fade the old protected audio instead of cutting
+    // immediately to silence while the destination pages are being fetched.
+    let old_level = if grouped { 0.125 } else { 0.25 };
+    for (index, frame) in output.iter().enumerate() {
+        let expected = old_level * (127 - index) as f32 / 128.0;
+        assert!(
+            (frame[0] - expected).abs() < 1e-6,
+            "old seek fade at frame {index}"
+        );
+        assert_eq!(frame[0], frame[1]);
+    }
+    assert_eq!(control.status.position.load(Acquire), 16);
+    assert_eq!(control.status.performance_frame.load(Acquire), 16);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         play
