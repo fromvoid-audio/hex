@@ -371,10 +371,14 @@ fn adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle(cx: &m
     visual.simulate_mouse_up(body.center(), MouseButton::Right, Modifiers::default());
     editor.read_with(cx, |view, _| {
         let menu = view.context_menu.as_ref().unwrap();
-        assert_eq!(menu.items.len(), 6);
+        assert_eq!(menu.items.len(), 7);
         assert_eq!(menu.items[0].label, "insert track");
+        assert!(matches!(
+            menu.items.last().map(|item| &item.action),
+            Some(EditorContextAction::WaveformDecibels { enabled: true, .. })
+        ));
     });
-    visual.simulate_keystrokes("up enter");
+    visual.simulate_keystrokes("up up enter");
     assert_eq!(
         editor.read_with(cx, |view, _| view.snap_grid.density()),
         AdaptiveGridDensity::Coarse
