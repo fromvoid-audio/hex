@@ -35,6 +35,7 @@ fn native_intent_refuses_mislabeled_or_stale_worker_results() {
         start_playing: false,
         history: ResidentSeekHistory::Preserve,
         section: None,
+        locator_quantization: None,
         fence: ResidentFreshRuntimeFence {
             output_identity: 1,
             active_audio_revision: 1,
