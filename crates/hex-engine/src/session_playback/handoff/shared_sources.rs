@@ -1896,7 +1896,9 @@ mod tests {
                     })
                     .unwrap();
             }
-            let mut old = started(&f);
+            let mut old = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
             let notes: Vec<_> = f
                 .editor
                 .project()
