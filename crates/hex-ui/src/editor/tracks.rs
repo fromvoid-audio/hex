@@ -2156,14 +2156,15 @@ impl EditorView {
             })
         };
         // Section focus shows every clip in each visible row. The canonical
-        // ID cache cannot yet contain the committed duplicate's new IDs.
-        let is_duplicate_view = self
+        // ID cache cannot yet contain new IDs from a committed copy or paste.
+        let is_committed_edit_view = self
             .arrangement_duplicate_view()
             .or_else(|| self.committed_section_copy_view())
+            .or_else(|| self.arrangement_paste_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
             if hides_group_member(clip.id())
-                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
@@ -2263,7 +2264,7 @@ impl EditorView {
         }
         for clip in track.midi_clips() {
             if hides_group_member(clip.id())
-                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
