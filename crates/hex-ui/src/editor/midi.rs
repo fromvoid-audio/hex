@@ -470,10 +470,10 @@ impl EditorView {
                 notes: updates,
             }
         };
-        if prefix > 0 {
+        if prefix > 0 || self.midi_audition.enabled {
             self.submit_midi_drag_preview(
                 clip_id,
-                super::midi_pending_drag::Frozen::OriginNudge,
+                super::midi_pending_drag::Frozen::Nudge,
                 command,
             );
         } else {
@@ -710,7 +710,15 @@ impl EditorView {
                 velocity,
             }
         };
-        self.enqueue(Request::Edit(command));
+        if self.midi_audition.enabled && (start != old_start || pitch != old_pitch) {
+            self.submit_midi_drag_preview(
+                clip_id,
+                super::midi_pending_drag::Frozen::Nudge,
+                command,
+            );
+        } else {
+            self.enqueue(Request::Edit(command));
+        }
     }
 }
 
