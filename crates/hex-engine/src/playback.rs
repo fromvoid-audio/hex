@@ -1579,8 +1579,8 @@ impl Playback {
     }
 
     /// Apply with the transport declick described in `transport_fade`: a
-    /// Pause/Stop or transport Seek while playing is admitted now and applied
-    /// after its fade, a Seek then ramping in at its target; Play from a
+    /// Pause/Stop, Seek or PlayFrom while playing is admitted now and applied
+    /// after its fade, a Seek or PlayFrom then ramping in at its target; Play from a
     /// paused, nonzero position ramps in. Static refusals are
     /// reported here. A deferred action that fails at its fade end falls back
     /// to Stop and is reported once by `take_transport_fade_failure`.
@@ -1633,6 +1633,14 @@ impl Playback {
     }
 
     fn admit_declicked_stop(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action {
+            return match self.session_runtime.as_deref() {
+                Some(runtime) => runtime
+                    .admits_play_from(frame)
+                    .map_err(PlaybackActionError::Session),
+                None => Ok(()),
+            };
+        }
         let command = match action {
             PlaybackAction::Transport(PlaybackCommand::Pause) => {
                 crate::SessionPlaybackCommand::Pause

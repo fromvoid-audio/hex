@@ -54,6 +54,16 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// Validate PlayFrom without changing the running playback before a fade.
+    pub(crate) fn admits_play_from(&self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export || self.revision.requires_control_sampler_sources() {
+            self.admits_transport(&SessionPlaybackCommand::Seek(frame))?;
+            self.admits_transport(&SessionPlaybackCommand::Play)
+        } else {
+            self.play_from_coordinates(frame).map(|_| ())
+        }
+    }
+
     fn apply_admitted(
         &mut self,
         command: SessionPlaybackCommand,
