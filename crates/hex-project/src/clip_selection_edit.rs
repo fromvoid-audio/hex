@@ -639,6 +639,7 @@ impl Command {
             | Self::PasteDevices { .. }
             | Self::RemoveDevices { .. }
             | Self::MoveTrackDevices { .. }
+            | Self::ReorderDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
