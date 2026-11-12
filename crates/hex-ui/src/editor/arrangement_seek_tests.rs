@@ -355,7 +355,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     let candidate_revision = control
         .publish_with_policy(
             playback,
-            PublicationPolicy::InstallSectionWhenReady {
+            PublicationPolicy::InstallQuantizedSeekWhenReady {
                 fence,
                 quantization: hex_engine::LaunchQuantization::Quarter,
             },
@@ -451,7 +451,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     let latest_revision = control
         .publish_with_policy(
             latest_playback,
-            PublicationPolicy::InstallSectionWhenReady {
+            PublicationPolicy::InstallQuantizedSeekWhenReady {
                 fence: next_fence,
                 quantization: latest.kind.section().unwrap().quantization,
             },
