@@ -257,6 +257,7 @@ pub enum PlaybackHandoffRejection {
     LatencyLayoutChanged = 10,
     SourceHistoryUnavailable = 11,
     StreamSourceChanged = 12,
+    SharedSourceVoiceCapacity = 13,
 }
 
 impl PlaybackHandoffRejection {
@@ -265,6 +266,9 @@ impl PlaybackHandoffRejection {
             PlaybackHandoffError::Session(crate::SessionPlaybackError::LatencyLayoutChanged) => {
                 Self::LatencyLayoutChanged
             }
+            PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::SharedSourceVoiceCapacity,
+            ) => Self::SharedSourceVoiceCapacity,
             PlaybackHandoffError::Session(
                 crate::SessionPlaybackError::SourceHistoryUnavailable
                 | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
@@ -302,6 +306,7 @@ impl PlaybackHandoffRejection {
             10 => Some(Self::LatencyLayoutChanged),
             11 => Some(Self::SourceHistoryUnavailable),
             12 => Some(Self::StreamSourceChanged),
+            13 => Some(Self::SharedSourceVoiceCapacity),
             _ => None,
         }
     }
@@ -330,6 +335,9 @@ impl PlaybackHandoffRejection {
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::SharedSourceVoiceCapacity => {
+                "shared source voice capacity is full · release notes or wait for tails, then retry"
+            }
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
             }
