@@ -979,6 +979,9 @@ mod tests {
             editor.update(&mut visual, |view, _| view.place_locator_play_start(frame));
             visual.simulate_keystrokes("i");
         }
+        visual.run_until_parked();
+        let provisional = ["locator-play-pending-48000", "locator-play-pending-72000"]
+            .map(|selector| visual.debug_bounds(selector).expect("provisional locator"));
         let deadline = crate::test_wait::hang_deadline();
         let mut views = Vec::new();
         let mut terminals = Vec::new();
@@ -1078,13 +1081,7 @@ mod tests {
         read_only.plugin_parameter_observation = false;
         terminals.insert(0, read_only);
         for (index, id) in ids.iter().copied().enumerate() {
-            assert!(
-                visual
-                    .debug_bounds(Box::leak(
-                        format!("locator-play-{}", id.value()).into_boxed_str()
-                    ))
-                    .is_some()
-            );
+            assert_eq!(bounds(&mut visual, "locator-play", id), provisional[index]);
             assert!(
                 visual
                     .debug_bounds(
@@ -1133,13 +1130,7 @@ mod tests {
                     "name edit survives each earlier terminal"
                 )
             });
-            assert!(
-                visual
-                    .debug_bounds(Box::leak(
-                        format!("locator-play-{}", ids[1].value()).into_boxed_str()
-                    ))
-                    .is_some()
-            );
+            assert_eq!(bounds(&mut visual, "locator-play", ids[1]), provisional[1]);
         }
         visual.simulate_keystrokes("enter");
         editor.update(&mut visual, |view, cx| {
