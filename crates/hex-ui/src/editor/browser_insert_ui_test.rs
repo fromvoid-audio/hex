@@ -169,6 +169,7 @@ fn project_sample_drag_places_resident_asset_on_arrangement(cx: &mut TestAppCont
         MouseButton::Left,
         Modifiers::default(),
     );
+    visual.run_until_parked();
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
