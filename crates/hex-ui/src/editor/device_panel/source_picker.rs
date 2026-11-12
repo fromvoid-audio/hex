@@ -2,6 +2,7 @@
 use super::*;
 use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
+use crate::editor::mode::EditorMode;
 use gpui::{FocusHandle, Point, SharedString, canvas, point};
 use hex_project::SourceId;
 use std::{cell::Cell, rc::Rc};
@@ -27,6 +28,7 @@ pub(in crate::editor) struct Choice {
     revision: u64,
     track: TrackId,
     source: SourceId,
+    destination: Option<TrackId>,
     pub(in crate::editor) label: SharedString,
 }
 
@@ -44,17 +46,32 @@ impl Choice {
                 .is_some_and(|state| state.revision == self.revision)
     }
 
-    pub(in crate::editor) fn perform(self, view: &mut EditorView, cx: &mut Context<EditorView>) {
+    pub(in crate::editor) fn perform(
+        self,
+        view: &mut EditorView,
+        window: &mut Window,
+        cx: &mut Context<EditorView>,
+    ) {
         if !self.current(view)
             || !view.state.as_ref().is_some_and(|state| {
                 state.project.native_source(self.source).is_some()
+                    && self.destination.is_none_or(|target| {
+                        state
+                            .project
+                            .track(target)
+                            .is_some_and(|linked| linked.source_id() == Some(self.source))
+                    })
                     && state
                         .project
                         .track(self.track)
                         .is_some_and(|track| !track.is_group() && track.source_id().is_none())
             })
         {
-            view.error = Some("source assignment canceled · selection changed".into());
+            view.error = Some(if self.destination.is_some() {
+                "source navigation canceled · selection changed".into()
+            } else {
+                "source assignment canceled · selection changed".into()
+            });
             cx.notify();
             return;
         }
@@ -63,6 +80,46 @@ impl Choice {
             || view.tuning.client.has_pending_requests()
         {
             view.error = Some("source assignment canceled · finish the current edit".into());
+            cx.notify();
+            return;
+        }
+        if let Some(track) = self.destination {
+            view.select_track(track, window);
+            view.focus.focus(window);
+            if view.mode == EditorMode::Arrangement {
+                let row = view.state.as_ref().and_then(|state| {
+                    state
+                        .project
+                        .tracks()
+                        .iter()
+                        .position(|item| item.id() == track)
+                        .and_then(|index| view.arrangement_row_index(index))
+                });
+                if let Some(row) = row {
+                    view.track_scroll
+                        .scroll_to_item(row, gpui::ScrollStrategy::Top);
+                } else {
+                    view.status = "track selected · hidden by the current view".into();
+                }
+            } else {
+                let visible = view.state.as_ref().is_some_and(|state| {
+                    view.arrangement_focus
+                        .projection
+                        .console_indices
+                        .iter()
+                        .any(|index| {
+                            state
+                                .project
+                                .tracks()
+                                .get(*index)
+                                .is_some_and(|item| item.id() == track)
+                        })
+                });
+                view.reveal_session_position(Some(track), None);
+                if !visible {
+                    view.status = "track selected · hidden by the current view".into();
+                }
+            }
             cx.notify();
             return;
         }
@@ -126,11 +183,12 @@ fn open(
     {
         return;
     }
+    let generation = view.project_generation;
     let items = state
         .project
         .native_sources()
         .iter()
-        .map(|source| {
+        .flat_map(|source| {
             let count = state.project.source_contributors(source.id()).count();
             let receiver = source
                 .receiver()
@@ -141,18 +199,46 @@ fn open(
                 "{count} midi · {} · receiver {receiver}",
                 hex_session::service::text::verbatim(source.name())
             );
-            MenuItem {
+            let assignment = MenuItem {
                 label: "source",
                 swatch: None,
                 checked: false,
                 action: EditorContextAction::SourcePicker(Choice {
-                    generation: view.project_generation,
+                    generation,
                     revision: state.revision,
                     track,
                     source: source.id(),
+                    destination: None,
                     label: label.into(),
                 }),
-            }
+            };
+            let tracks = state.project.tracks().iter().filter_map(move |linked| {
+                (linked.source_id() == Some(source.id())).then(|| {
+                    let role = if source.receiver() == Some(linked.id()) {
+                        "receiver"
+                    } else {
+                        "midi"
+                    };
+                    MenuItem {
+                        label: "source track",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::SourcePicker(Choice {
+                            generation,
+                            revision: state.revision,
+                            track,
+                            source: source.id(),
+                            destination: Some(linked.id()),
+                            label: format!(
+                                "  go to · {role} · {}",
+                                hex_session::service::text::verbatim(linked.name())
+                            )
+                            .into(),
+                        }),
+                    }
+                })
+            });
+            std::iter::once(assignment).chain(tracks)
         })
         .collect::<Vec<_>>();
     if items.is_empty() {
