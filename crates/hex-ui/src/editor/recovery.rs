@@ -385,7 +385,8 @@ impl EditorView {
                         .as_ref()
                         .is_some_and(|state| candidate.state.revision == state.revision)
                     && candidate.device_preview_identity.is_none()
-                    && candidate.tuning_preview_identity.is_none())
+                    && candidate.tuning_preview_identity.is_none()
+                    && candidate.clip_preview_identity.is_none())
                 .then_some(
                     candidate
                         .seek_request_id

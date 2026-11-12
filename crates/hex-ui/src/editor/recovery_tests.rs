@@ -129,6 +129,7 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
         view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         view.applied_project_revision = Some(revision);
         view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: None,
             audio_revision: 0,

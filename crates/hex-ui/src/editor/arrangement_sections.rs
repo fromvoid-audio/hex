@@ -4356,6 +4356,7 @@ pub(super) mod tests {
             let state = Arc::clone(view.state.as_ref().unwrap());
             view.applied_project_revision = Some(state.revision);
             view.audible_playback = Some(super::super::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: Some(false),
                 observation: None,
                 audio_revision,

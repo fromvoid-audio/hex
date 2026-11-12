@@ -26,6 +26,7 @@ fn canonical_metadata(
     context: hex_engine::AudioSourceContext,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
+        clip_preview: None,
         context,
         device_preview: None,
         tuning_preview: None,
@@ -449,6 +450,7 @@ impl Inputs<'_> {
             playback,
             sink,
             ResidentPublicationMetadata {
+                clip_preview: None,
                 context,
                 device_preview: None,
                 tuning_preview: None,
@@ -530,6 +532,7 @@ impl Inputs<'_> {
             project,
             sink,
             ResidentPublicationMetadata {
+                clip_preview: None,
                 context,
                 device_preview: None,
                 tuning_preview: None,
@@ -1756,6 +1759,7 @@ impl Session {
             context,
         )?;
         let metadata = ResidentPublicationMetadata {
+            clip_preview: None,
             context,
             device_preview: None,
             tuning_preview: None,
@@ -1865,6 +1869,7 @@ impl Session {
             context,
         )?;
         let metadata = ResidentPublicationMetadata {
+            clip_preview: None,
             context,
             device_preview: None,
             tuning_preview: None,
@@ -1921,6 +1926,10 @@ impl Session {
                 return Err(SessionError::Invalid("clip audition cancelled"));
             }
             let metadata = ResidentPublicationMetadata {
+                clip_preview: match &identity {
+                    resident_preview::Identity::Clip(target) => target.move_identity(),
+                    _ => None,
+                },
                 context,
                 device_preview: match identity {
                     resident_preview::Identity::Device(id) => Some(id),
@@ -2510,6 +2519,7 @@ impl Session {
                     project,
                     sink,
                     ResidentPublicationMetadata {
+                        clip_preview: None,
                         context,
                         device_preview: None,
                         tuning_preview: None,
@@ -3987,6 +3997,7 @@ pub(super) mod tests {
                         &mut sink,
                         sampler_export::Admission::default(),
                         ResidentPublicationMetadata {
+                            clip_preview: None,
                             context,
                             device_preview: None,
                             tuning_preview: None,
@@ -4109,6 +4120,7 @@ pub(super) mod tests {
         let mut selected = current.inputs.clone();
         selected.keyboard = Some((track, Arc::clone(&input)));
         let metadata = ResidentPublicationMetadata {
+            clip_preview: None,
             context,
             device_preview: None,
             tuning_preview: None,

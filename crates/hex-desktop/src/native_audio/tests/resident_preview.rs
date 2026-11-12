@@ -72,6 +72,8 @@ fn held_single_midi_move_reschedules_the_note_before_commit() {
     let original = before.state.project.snapshot();
     let target = ArrangementMoveAudition {
         context: metadata.context,
+        gesture: 11,
+        sequence: 1,
         clips: vec![clip].into(),
         anchor: clip,
         track,
@@ -85,7 +87,8 @@ fn held_single_midi_move_reschedules_the_note_before_commit() {
         .command(PlaybackCommand::Play)
         .unwrap();
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
-    let (preview, _) = h.applied(applied);
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
     let position = |h: &ResidentHarness| {
         h.audio
             .as_ref()
@@ -151,6 +154,8 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
     let original = looped.state.project.snapshot();
     let target = ArrangementMoveAudition {
         context: metadata.context,
+        gesture: 11,
+        sequence: 1,
         clips: vec![clip].into(),
         anchor: clip,
         track,
@@ -165,10 +170,12 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
         .unwrap();
     assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
-    let (preview, _) = h.applied(applied);
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
     assert!(h.render().iter().all(|f| *f == [0.0; 2]));
     assert!(!h.service.audition_arrangement_move(None));
-    let (restored, _) = h.applied(preview);
+    let (restored, restored_metadata) = h.applied(preview);
+    assert!(restored_metadata.clip_preview.is_none());
     assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
     let (preview, _) = h.applied(restored);
@@ -184,7 +191,8 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
     });
     assert!(committed.error.is_none());
     h.service.retire_arrangement_move_audition();
-    let (committed_audio, _) = h.applied(preview);
+    let (committed_audio, committed_metadata) = h.applied(preview);
+    assert!(committed_metadata.clip_preview.is_none());
     assert!(h.render().iter().all(|f| *f == [0.0; 2]));
     assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
     h.applied(committed_audio);
@@ -211,6 +219,8 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
     let original = second.state.project.snapshot();
     let target = ArrangementMoveAudition {
         context: metadata.context,
+        gesture: 11,
+        sequence: 1,
         clips: vec![a, b].into(),
         anchor: a,
         track: second.state.project.tracks()[0].id(),
