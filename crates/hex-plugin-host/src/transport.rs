@@ -594,6 +594,13 @@ impl Control {
         })
     }
 
+    /// This live pair has published no worker pickup yet. A failed coherent
+    /// read of a nonzero prefix is a different observation. The callback may
+    /// still be assembling or sending a quantum.
+    pub fn has_no_pcm_pickup(&self) -> bool {
+        self.revoked.received_prefix.load(Acquire) == 0 && !self.is_revoked()
+    }
+
     /// Retained observation for the terminal MissingOutput of this exact pair.
     pub fn deadline_miss(&self) -> Option<DeadlineMiss> {
         let worker_phase = match self.revoked.missed_phase.load(Acquire) {

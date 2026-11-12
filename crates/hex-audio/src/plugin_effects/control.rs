@@ -381,6 +381,12 @@ impl NativeEffectReference<'_> {
             Self::Loaned(control) => control.worker.received_program_on_control(),
         }
     }
+    pub(crate) fn program_frontier_on_control(&self) -> hex_engine::ForeignProgramFrontier {
+        match self {
+            Self::Unsplit(effect) => effect.worker.program_frontier_on_control(),
+            Self::Loaned(control) => control.worker.program_frontier_on_control(),
+        }
+    }
     pub(crate) fn committed_quantum_on_control(
         &self,
     ) -> Option<crate::plugin_worker::CommittedQuantum> {
