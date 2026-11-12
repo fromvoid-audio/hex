@@ -87,6 +87,7 @@ pub(super) fn gains_for_segment(
     live: &[Option<super::live::LiveOccurrence>],
     events: &[NativeInstrumentEvent],
     start: u64,
+    source_age: Option<u64>,
     frames: usize,
     mut lookup: Option<&mut VolumeLookup<'_>>,
 ) -> Result<Option<GainBatch>, MutableInstrumentRuntimeError> {
@@ -94,7 +95,7 @@ pub(super) fn gains_for_segment(
         || (lookup.is_none()
             && proofs
                 .iter()
-                .all(|p| p.gain_at_end_bits == 1.0_f64.to_bits()))
+                .all(|p| p.gain_at_end_bits == 1.0_f64.to_bits() && p.contributor_fade.is_none()))
     {
         return Ok(None);
     }
@@ -153,7 +154,7 @@ pub(super) fn gains_for_segment(
                 None => None,
             }
         };
-        let gain = if let Some(slice) = slice {
+        let mut gain = if let Some(slice) = slice {
             let (gain, last, terminal) = slice.gain(proof.id, frames)?;
             proof.gain_at_end_bits = last;
             proof.gain_frozen |= terminal;
@@ -164,6 +165,31 @@ pub(super) fn gains_for_segment(
             NativeInstrumentOccurrenceGain::new(proof.id, last, last, frames as u64, 0)
                 .map_err(map_runtime_error)?
         };
+        if let Some(fade) = proof.contributor_fade {
+            let age = source_age.ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+            let offset = age
+                .checked_sub(fade.start_age)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+            if offset < fade.frames {
+                gain = gain
+                    .with_attenuation(
+                        f64::from_bits(fade.start_bits),
+                        if fade.muted { 0.0 } else { 1.0 },
+                        fade.frames,
+                        offset,
+                    )
+                    .map_err(map_runtime_error)?;
+                if !fade.muted && offset.saturating_add(frames as u64) >= fade.frames {
+                    proof.contributor_fade = None;
+                }
+            } else if fade.muted {
+                gain = gain
+                    .with_attenuation(0.0, 0.0, frames as u64, 0)
+                    .map_err(map_runtime_error)?;
+            } else {
+                proof.contributor_fade = None;
+            }
+        }
         result.values[result.len] = gain;
         result.len += 1;
     }
@@ -208,7 +234,7 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn has_volume_gain(&self) -> bool {
         self.scratch
             .iter()
-            .any(|p| p.gain_at_end_bits != 1.0_f64.to_bits())
+            .any(|p| p.gain_at_end_bits != 1.0_f64.to_bits() || p.contributor_fade.is_some())
     }
 
     #[allow(clippy::too_many_arguments)] // Existing segment plus borrowed checked volume owner.
@@ -293,6 +319,21 @@ impl MutableInstrumentTrackRuntime {
                 .checked_add(offset as u64)
                 .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
             let mut count = frames.len() - offset;
+            if let Some(age) = self.live.as_ref().map(|live| live.scratch_age) {
+                for fade in self
+                    .scratch
+                    .iter()
+                    .filter_map(|proof| proof.contributor_fade)
+                {
+                    let elapsed = age
+                        .checked_sub(fade.start_age)
+                        .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                    if elapsed < fade.frames {
+                        count =
+                            count.min(usize::try_from(fade.frames - elapsed).unwrap_or(usize::MAX));
+                    }
+                }
+            }
             if automation.is_some() {
                 count = count.min(hex_lattice::MAX_INSTRUMENT_AUTOMATION_FRAMES);
             }

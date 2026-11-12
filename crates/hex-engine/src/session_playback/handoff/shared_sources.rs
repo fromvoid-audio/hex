@@ -532,16 +532,55 @@ pub(super) fn disconnected_contributors(
 pub(super) fn release_disconnected_contributors(
     runtime: &mut MutableInstrumentTrackRuntime,
     disconnected: &[Option<TrackId>; MAX_TRACKS],
+    retained: &[Option<TrackId>; MAX_TRACKS],
     frame: u64,
 ) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
-        disconnected
-            .contains(&Some(signature.key().track))
-            .then_some(frame)
+        (disconnected.contains(&Some(signature.key().track))
+            && !retained.contains(&Some(signature.key().track)))
+        .then_some(frame)
     });
     for &track in disconnected.iter().flatten() {
         runtime.release_live_contributor(track);
     }
+}
+
+/// Shared bindings whose contributor input was muted or restored in place.
+pub(super) fn contributor_mute_changes(
+    previous: &PreparedRevision,
+    candidate: &PreparedRevision,
+) -> [Option<(TrackId, bool)>; MAX_TRACKS] {
+    if !previous.source_routing().has_shared_sources()
+        || !candidate.source_routing().has_shared_sources()
+    {
+        return [None; MAX_TRACKS];
+    }
+    std::array::from_fn(|index| {
+        let old = previous.arrangement().tracks().get(index)?;
+        let track = old.canonical_track_id()?;
+        let source = previous.source_routing().source(index)?;
+        let tracks = candidate.arrangement().tracks();
+        let next = if tracks
+            .get(index)
+            .is_some_and(|row| row.canonical_track_id() == Some(track))
+        {
+            index
+        } else {
+            tracks
+                .iter()
+                .position(|row| row.canonical_track_id() == Some(track))?
+        };
+        if !previous.source_routing().is_shared(index)
+            || !candidate.source_routing().is_shared(next)
+            || candidate.source_routing().source(next) != Some(source)
+            || previous.source_routing().receiver_index(index).is_none()
+            || candidate.source_routing().receiver_index(next).is_none()
+        {
+            return None;
+        }
+        let enabled = candidate.arrangement().tracks()[next].source_input_enabled();
+        (old.source_input_enabled() != enabled).then_some((track, !enabled))
+    })
 }
 
 pub(super) fn track_has_analytic_source(revision: &PreparedRevision, index: usize) -> bool {
@@ -2810,9 +2849,22 @@ mod tests {
                     .unwrap();
                 let mut candidate = playback(&f);
                 candidate.try_inherit_state_from(&mut old).unwrap();
-                // One held voice continues unchanged while the other gets its
-                // existing sampler note-off envelope, before shared summing.
-                check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
+                // One held voice continues unchanged while the other follows
+                // the source-owned 5 ms contributor attenuation before summing.
+                let mut transition = [[0.0; 2]; 19];
+                for chunk in transition.chunks_mut(3) {
+                    candidate.render(chunk).unwrap();
+                }
+                for (index, frame) in transition.iter().enumerate() {
+                    let gain = 0.25 + 0.25 * (1.0 - index as f32 / 40.0);
+                    for channel in 0..2 {
+                        assert!(
+                            (frame[channel] - PCM[(7 + index) % 4][channel] * gain).abs()
+                                < 0.000_002,
+                            "solo={solo} frame={index} output={frame:?}"
+                        );
+                    }
+                }
                 candidate.render(&mut [[0.0; 2]; 128]).unwrap();
                 check_pcm(&mut candidate, 154, 8, 0.25);
                 assert!(f.editor.undo());
