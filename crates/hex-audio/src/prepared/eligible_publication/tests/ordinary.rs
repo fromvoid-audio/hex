@@ -193,10 +193,10 @@ fn streamed_retained_restart_under_live_fence_keeps_audio_and_cursor() {
             |_| Ok::<_, ()>(()),
         )
         .unwrap();
-    while !control
+    while control
         .status
         .rejected_revision()
-        .is_some_and(|(id, _)| id == refused)
+        .is_none_or(|(id, _)| id != refused)
     {
         measured_render(&mut data, &mut output);
         assert!(std::time::Instant::now() < deadline, "unfenced refusal");
@@ -256,10 +256,10 @@ fn streamed_retained_restart_under_live_fence_keeps_audio_and_cursor() {
         let before = control.status.position.load(Acquire);
         measured_render(&mut data, &mut output);
         assert!(
-            !control
+            control
                 .status
                 .rejected_revision()
-                .is_some_and(|(id, _)| id == next),
+                .is_none_or(|(id, _)| id != next),
             "fenced streamed restart refused: {:?}",
             control.status.rejected_revision()
         );
@@ -326,10 +326,10 @@ fn streamed_retained_restart_under_live_fence_keeps_audio_and_cursor() {
     {
         measured_render(&mut data, &mut output);
         assert!(
-            !control
+            control
                 .status
                 .rejected_revision()
-                .is_some_and(|(id, _)| id == stop_revision)
+                .is_none_or(|(id, _)| id != stop_revision)
         );
         assert!(
             std::time::Instant::now() < deadline,
