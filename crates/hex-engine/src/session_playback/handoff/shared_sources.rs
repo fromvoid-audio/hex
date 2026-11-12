@@ -1599,6 +1599,138 @@ mod tests {
     }
 
     #[test]
+    fn operator_mute_retains_prepared_arrangement_identity() {
+        on_control(|| {
+            use hex_lattice_contract::ParameterValue;
+            let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 32).unwrap();
+            let registry = hex_devices::native_instrument_registry().unwrap();
+            let state = registry
+                .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
+                .unwrap();
+            let state = registry
+                .patch_parameter(
+                    &state,
+                    hex_devices::operator_state::parameter::GLOBAL_MODE,
+                    ParameterValue::Choice(1),
+                )
+                .unwrap();
+            let Created::Track(receiver) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            let source = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .source_id()
+                .unwrap();
+            let Created::Track(contributor) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "contributor".into(),
+                })
+                .unwrap()
+            else {
+                panic!("contributor")
+            };
+            editor
+                .execute(Command::BindTrackSource {
+                    track: contributor,
+                    source: Some(source),
+                })
+                .unwrap();
+            for (track, count) in [(receiver, 2), (contributor, 45)] {
+                let Created::Clip(clip) = editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::ONE,
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                for pitch in 0..count {
+                    editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::ZERO,
+                            duration: BeatTime::ONE,
+                            pitch,
+                            channel: 0,
+                            velocity: 100,
+                        })
+                        .unwrap();
+                }
+            }
+            let prepare = |project: &hex_project::Project| {
+                Arc::new(
+                    PreparedRevision::prepare(
+                        project,
+                        &BTreeMap::new(),
+                        Arc::new(crate::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let old = prepare(editor.project());
+            editor
+                .execute(Command::Mute {
+                    track: contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let candidate = prepare(editor.project());
+            assert!(
+                old.retained_source_configuration_matches(&candidate, source),
+                "operator source configuration changed"
+            );
+            for track in [receiver, contributor] {
+                assert!(
+                    old.has_source_track_revision(track),
+                    "old descriptor missing for {track:?}"
+                );
+                assert!(
+                    candidate.has_source_track_revision(track),
+                    "candidate descriptor missing for {track:?}"
+                );
+                assert!(
+                    old.bounded_mutable_arrangement_sources_match(&candidate, track, 16),
+                    "operator arrangement identity changed for {track:?}"
+                );
+            }
+            assert!(
+                !old.has_mutable_track_revision(contributor),
+                "supplemental evidence must not change the existing mutable-owner query"
+            );
+            assert!(!candidate.has_mutable_track_revision(contributor));
+            let clip = editor.project().track(contributor).unwrap().midi_clips()[0].id();
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 90,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+            let changed = prepare(editor.project());
+            assert!(
+                !old.bounded_mutable_arrangement_sources_match(&changed, contributor, 16),
+                "changed source must not acquire continuity proof"
+            );
+        });
+    }
+
+    #[test]
     fn shared_source_unchanged_peak_keeps_gain_edit_with_held_live_keys() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
