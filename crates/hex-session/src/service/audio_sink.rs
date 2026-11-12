@@ -496,13 +496,23 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// Reason category for a refused resident publication. The unavailable
+/// category describes source custody only; it does not imply a deadline fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationFailure {
+    NativeSourceUnavailable,
+    Other,
+}
+
 pub struct ResidentPublicationRefusal {
+    pub kind: ResidentPublicationFailure,
     pub playback: Playback,
     pub error: String,
 }
 impl std::fmt::Debug for ResidentPublicationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResidentPublicationRefusal")
+            .field("kind", &self.kind)
             .field("error", &self.error)
             .finish_non_exhaustive()
     }
@@ -849,6 +859,7 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         Err(ResidentPublicationRefusal {
+            kind: crate::service::ResidentPublicationFailure::Other,
             playback,
             error: "ordinary worker publication is unavailable".into(),
         })
@@ -872,6 +883,7 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         if playback.contains_streamed_sources() {
             return Err(ResidentPublicationRefusal {
+                kind: crate::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "ordinary file-backed publication is unavailable for this output".into(),
             });
@@ -920,6 +932,11 @@ pub trait WorkerAudioSink: Send {
     /// A consumer uses its existing reserved builder; this grants no source,
     /// output or callback owner. Offline/default sinks retain model editing.
     fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
+    /// Accept source-bound clip intent on control. This is not graph admission
+    /// or callback acknowledgement; false retains no worker-side delivery claim.
+    fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and

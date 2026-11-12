@@ -727,10 +727,101 @@ impl EditorView {
                 );
             }
         }
+        if matches!(
+            self.audible_clip_move_position(),
+            Some((
+                hex_session::service::ClipMovePreviewDestination::NewTrack { .. },
+                _
+            ))
+        ) {
+            let entity = cx.entity();
+            body = body.child(
+                div()
+                    .debug_selector(|| "new-track-audition-audible-marker".into())
+                    .absolute()
+                    .inset_0()
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, _, window, cx| {
+                                let Some((x, y)) = entity.read(cx).new_track_audible_marker()
+                                else {
+                                    return;
+                                };
+                                let top = entity
+                                    .read(cx)
+                                    .arrangement_bounds
+                                    .map_or(y, |bounds| bounds.top);
+                                let marker_top = (y - 12.0).max(top);
+                                let text = theme::text("audible");
+                                let text_run = gpui::TextRun {
+                                    len: text.len(),
+                                    font: gpui::font(theme::FONT_FAMILY),
+                                    color: rgb(theme::color(theme::PaletteRole::Background)).into(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let shaped = window.text_system().shape_line(
+                                    text,
+                                    px(10.0),
+                                    &[text_run],
+                                    None,
+                                );
+                                window.paint_quad(gpui::fill(
+                                    gpui::Bounds::new(
+                                        point(px(x), px(marker_top)),
+                                        gpui::size(px(1.0), px(12.0)),
+                                    ),
+                                    rgb(theme::color(theme::PaletteRole::Primary)),
+                                ));
+                                window.paint_quad(gpui::fill(
+                                    gpui::Bounds::new(
+                                        point(px(x + 2.0), px(marker_top)),
+                                        gpui::size(shaped.width + px(4.0), px(12.0)),
+                                    ),
+                                    rgb(theme::color(theme::PaletteRole::Primary)),
+                                ));
+                                let _ = shaped.paint(
+                                    point(px(x + 4.0), px(marker_top)),
+                                    px(10.0),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
+            );
+        }
         body.children(
             self.time_selection_cursor_layer()
                 .map(|layer| layer.right(px(header_width))),
         )
+    }
+
+    /// Resolve the applied insertion in the current painted layout, never the pointer target.
+    pub(super) fn new_track_audible_marker(&self) -> Option<(f32, f32)> {
+        if self.arrangement_bounds_epoch != self.drag_layout_generation {
+            return None;
+        }
+        let (hex_session::service::ClipMovePreviewDestination::NewTrack { before_track }, frame) =
+            self.audible_clip_move_position()?
+        else {
+            return None;
+        };
+        let state = self.state.as_ref()?;
+        let bounds = self.arrangement_bounds?;
+        let y = self.painted_track_insertion_line(before_track)?;
+        let fraction = self
+            .visible_viewport(state.timeline_frames)
+            .fraction(frame)?;
+        let width = bounds.width - self.track_header_width();
+        if !y.is_finite() || y < bounds.top || y >= bounds.top + bounds.height || width <= 0.0 {
+            return None;
+        }
+        Some((bounds.left + width * fraction, y))
     }
 
     /// Paint after the body and Main have measured their current-frame bounds.

@@ -1344,6 +1344,15 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::RebindNativeSource {
+            project_generation,
+            revision,
+            track,
+            expected_source,
+            source,
+        } => {
+            describe!("rebind_native_source"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "expected_source" => expected_source.map(|id| id.value()), "source" => source.map(|id| id.value())]; omitted="")
+        }
         Request::BindUnassignedNativeSource {
             project_generation,
             revision,

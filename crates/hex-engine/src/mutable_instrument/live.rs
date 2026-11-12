@@ -242,6 +242,18 @@ impl MutableInstrumentTrackRuntime {
             .as_ref()
             .map_or(0, |live| live.scratch.iter().flatten().count())
     }
+    /// Live occurrences occupy the same provider capacity as authored proofs.
+    /// Match the transaction selected by the caller's route transition.
+    pub(crate) fn transition_live_count(&self, speculative: bool) -> usize {
+        self.live.as_ref().map_or(0, |live| {
+            let voices = if speculative {
+                &live.scratch
+            } else {
+                &live.primary
+            };
+            voices.iter().flatten().count()
+        })
+    }
     /// A scheduling span contains transitions at offset zero only. The first
     /// callback sample and ordered ingress events have a one-frame span; empty
     /// spans reuse the ordinary query width. Release room is reserved before

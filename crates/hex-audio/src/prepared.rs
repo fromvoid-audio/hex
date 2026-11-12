@@ -242,6 +242,7 @@ struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
     project_generation: Option<u64>,
+    expected_source: Option<AppliedAudioSource>,
     sampler_edit_gate: u64,
     transport_epoch: u64,
 }
@@ -1193,9 +1194,20 @@ impl Status {
     }
 }
 
+/// Classification of a refused ordinary graph publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishErrorKind {
+    /// An original native source was unavailable during reference admission.
+    /// The reason for its unavailability is not implied by this classification.
+    NativeSourceUnavailable,
+    /// Any other publication refusal; consult the diagnostic reason.
+    Other,
+}
+
 /// Failed publication retains the candidate so the caller can retry or dispose
 /// of it off the callback. Revisions advance only after successful publication.
 pub struct PublishError {
+    pub kind: PublishErrorKind,
     pub reason: &'static str,
     pub playback: Playback,
 }
@@ -1219,6 +1231,7 @@ impl std::fmt::Debug for PublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PublishError")
+            .field("kind", &self.kind)
             .field("reason", &self.reason)
             .finish_non_exhaustive()
     }
@@ -1790,6 +1803,7 @@ impl PublicationControl {
     ) -> Result<u64, AdmittedPublishError<E>> {
         let Some(mut resources) = self.device_resources.take() else {
             return Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "ordinary worker publication is not configured",
                 playback,
             }));
@@ -1806,11 +1820,12 @@ impl PublicationControl {
                     .map_err(AdmittedPublishError::Publication)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
-                    AdmittedPublishError::Publication(PublishError { reason: "device resource publication storage reservation exceeded", playback }),
+                    AdmittedPublishError::Publication(PublishError { kind: PublishErrorKind::Other, reason: "device resource publication storage reservation exceeded", playback }),
                 hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
             })
         } else {
             Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation unavailable or overflowing",
                 playback,
             }))
@@ -1866,6 +1881,7 @@ impl PublicationControl {
         let Some(mut resources) = self.device_resources.take() else {
             if playback.contains_device_resource_leases() {
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "device resource publication was not reserved for this output",
                     playback,
                 });
@@ -1882,6 +1898,7 @@ impl PublicationControl {
         if forwarded_pcm {
             self.device_resources = Some(resources);
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "graph publication belongs to the audio worker for this output",
                 playback,
             });
@@ -1893,13 +1910,14 @@ impl PublicationControl {
             resources.publish_on_control(playback, |playback| {
                 self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm, None)
             }).map_err(|error| match error {
-                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError { kind: PublishErrorKind::Other,
                     reason: "device resource publication storage reservation exceeded", playback,
                 },
                 hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
             })
         } else {
             Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation unavailable or overflowing",
                 playback,
             })
@@ -1977,10 +1995,15 @@ impl PublicationControl {
             None
         };
         if let Some(reason) = reason {
-            return Err(PublishError { reason, playback });
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            });
         }
         let Some(pcm_frames) = playback.resident_pcm_capacity_frames() else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm capacity overflow",
                 playback,
             });
@@ -1990,6 +2013,7 @@ impl PublicationControl {
                 .checked_add(if forwarded_pcm { 0 } else { pcm_frames })
         else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation overflow",
                 playback,
             });
@@ -2003,6 +2027,7 @@ impl PublicationControl {
         };
         if !reserved {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "playback publication already pending",
                 playback,
             });
@@ -2024,20 +2049,30 @@ impl PublicationControl {
             Ok(Some(_)) if source_context.is_none() => {
                 self.status.publication_pending.store(false, Release);
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "native graph publication requires a canonical source context",
                     playback,
                 });
             }
             Ok(references) => references,
-            Err(reason) => {
+            Err(failure) => {
                 self.status.publication_pending.store(false, Release);
-                return Err(PublishError { reason, playback });
+                return Err(PublishError {
+                    kind: if failure.is_unavailable() {
+                        PublishErrorKind::NativeSourceUnavailable
+                    } else {
+                        PublishErrorKind::Other
+                    },
+                    reason: failure.message(),
+                    playback,
+                });
             }
         };
         let streams = if self.candidate_root.ordinary_streams_configured() {
             let Some(context) = source_context else {
                 self.status.publication_pending.store(false, Release);
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "ordinary stream context unavailable",
                     playback,
                 });
@@ -2049,7 +2084,11 @@ impl PublicationControl {
                 Ok(streams) => Some(streams),
                 Err(reason) => {
                     self.status.publication_pending.store(false, Release);
-                    return Err(PublishError { reason, playback });
+                    return Err(PublishError {
+                        kind: PublishErrorKind::Other,
+                        reason,
+                        playback,
+                    });
                 }
             }
         } else {
@@ -2074,6 +2113,7 @@ impl PublicationControl {
             publication.release_streams_on_control(&self.candidate_root);
             self.status.publication_pending.store(false, Release);
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "playback publication queue full",
                 playback: *publication.playback,
             });
@@ -4058,6 +4098,17 @@ impl Callback {
                 })
             {
                 let reason = PlaybackActionRejection::ProjectChanged;
+                self.status.publish_rejected_action(queued.ticket, reason);
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
+                continue;
+            }
+            if !fault
+                && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
+                && queued
+                    .expected_source
+                    .is_some_and(|expected| self.recording_source() != Some(expected))
+            {
+                let reason = PlaybackActionRejection::AudioSourceChanged;
                 self.status.publish_rejected_action(queued.ticket, reason);
                 *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
                 continue;
@@ -7784,6 +7835,7 @@ mod tests {
                     ticket,
                     action: PlaybackAction::Transport(PlaybackCommand::PlayFrom(45)),
                     project_generation: None,
+                    expected_source: None,
                     sampler_edit_gate: gate,
                     transport_epoch: epoch,
                 })
@@ -9141,6 +9193,170 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn source_bound_start_rejects_same_project_replacement_and_preserves_stop() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use hex_engine::AudioSourceContext;
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        let old = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 4,
+        };
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntime,
+                0,
+                true,
+                false,
+                Some(old),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(0);
+        let source = client.status().unwrap().recording_source().unwrap();
+        let wrong_output = AppliedAudioSource {
+            output_identity: source.output_identity + 1,
+            ..source
+        };
+        assert!(
+            client
+                .play_from_source_with_ticket(1, wrong_output)
+                .is_err()
+        );
+        let wrong_context = AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 1,
+                ..old
+            },
+            ..source
+        };
+        assert!(
+            client
+                .play_from_source_with_ticket(1, wrong_context)
+                .is_err()
+        );
+
+        let ticket = client.play_from_source_with_ticket(17, source).unwrap();
+        let measured =
+            allocation_counter::measure(|| data.owner_mut().unwrap().run(|c, _| c.begin_block()));
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Applied
+            })
+        );
+        assert!(client.status().unwrap().playing.load(Acquire));
+        client.stop();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+
+        let control = publication.control().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        // A graph can be replaced even while its canonical context is unchanged.
+        let next = old;
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                0,
+                true,
+                false,
+                Some(next),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        data.owner_mut()
+            .unwrap()
+            .run(|c, _| c.test_after_fresh_fence_validation = Some(Arc::clone(&barrier)));
+        let ticket = std::thread::scope(|scope| {
+            let callback = scope.spawn(|| {
+                allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| c.begin_block())
+                })
+            });
+            barrier.wait();
+            let ticket = client.play_from_source_with_ticket(47, source).unwrap();
+            barrier.wait();
+            let measured = callback.join().unwrap();
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            ticket
+        });
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Rejected(PlaybackActionRejection::AudioSourceChanged)
+            })
+        );
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        assert_eq!(
+            client.status().unwrap().recording_source().unwrap().context,
+            next
+        );
+        assert_ne!(
+            client
+                .status()
+                .unwrap()
+                .recording_source()
+                .unwrap()
+                .audio_revision,
+            source.audio_revision
+        );
+        assert!(client.play_from_source_with_ticket(47, source).is_err());
+        let source = client.status().unwrap().recording_source().unwrap();
+        for _ in 0..COMMANDS {
+            client.play_from_source_with_ticket(2, source).unwrap();
+        }
+        assert!(client.play_from_source_with_ticket(2, source).is_err());
+        client.stop();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
     }
 
     #[test]

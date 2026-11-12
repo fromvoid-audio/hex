@@ -141,7 +141,6 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             bytes,
-            source_bytes: std::mem::size_of_val(source.frames()),
         })?;
         super::view::placed_clip(audio, clip)
     }

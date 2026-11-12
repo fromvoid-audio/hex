@@ -3,9 +3,9 @@ use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
 use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Files(PathBuf);
+pub(super) struct Files(PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-verified-service-{}-{}",
             std::process::id(),
@@ -14,7 +14,7 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
+    pub(super) fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
         let path = self.0.join(name);
         let mut bytes = Vec::from(*b"RIFF");
         bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
@@ -40,7 +40,7 @@ impl Drop for Files {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn reservation(count: usize) -> SourcePlanReservation {
+pub(super) fn reservation(count: usize) -> SourcePlanReservation {
     SourcePlanReservation {
         reader: hex_media::VerifiedWavReaderLimits {
             reader: hex_media::WavReaderLimits {
@@ -56,13 +56,13 @@ fn reservation(count: usize) -> SourcePlanReservation {
         max_manifest_bytes: 4 * 1024 * 1024,
     }
 }
-fn next(service: &Service) -> Event {
+pub(super) fn next(service: &Service) -> Event {
     service
         .events
         .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap()
 }
-fn run(service: &Service, request: Request) -> Event {
+pub(super) fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
     let event = next(service);
     assert!(event.error.is_none(), "{:?}", event.error);

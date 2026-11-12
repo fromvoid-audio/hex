@@ -46,6 +46,7 @@ pub(super) struct MoveAudition {
     clips: std::sync::Arc<[ClipId]>,
     gesture: u64,
     sequence: u64,
+    new_track_defaults: Option<(std::sync::Arc<str>, f32)>,
     pub(super) target: Option<hex_session::service::ArrangementMoveAudition>,
 }
 
@@ -925,6 +926,7 @@ impl super::EditorView {
                 clips: drag.group.borrow().ids.clone().into(),
                 gesture,
                 sequence: 0,
+                new_track_defaults: None,
                 target: None,
             });
         }
@@ -946,20 +948,65 @@ impl super::EditorView {
                 .audio_status()
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
             && self.drag_start_is_current(drag);
+        let mode = if drag.alias_copy() {
+            hex_session::service::ArrangementMoveMode::AliasCopy
+        } else if drag.copy_modifier.get() {
+            hex_session::service::ArrangementMoveMode::Copy
+        } else {
+            hex_session::service::ArrangementMoveMode::Move
+        };
         let target = if eligible {
             match (drag.destination.get(), drag.preview.get()) {
                 (Some(ClipDropDestination::ExistingTrack(track)), Some(preview))
                     if preview.target_track == track
                         && !(drag.source_track == track && drag.position == preview.position) =>
                 {
-                    let mode = if drag.alias_copy() {
-                        hex_session::service::ArrangementMoveMode::AliasCopy
-                    } else if drag.copy_modifier.get() {
-                        hex_session::service::ArrangementMoveMode::Copy
+                    Some((
+                        hex_session::service::ArrangementMoveDestination::Existing(track),
+                        group_position(preview.position),
+                        mode,
+                    ))
+                }
+                (
+                    Some(ClipDropDestination::NewTrack {
+                        before_track,
+                        position,
+                        ..
+                    }),
+                    _,
+                ) if drag.group.borrow().ids.len() == 1 => {
+                    if let Some(audition) = self.clip_move_audition.as_mut() {
+                        if audition.new_track_defaults.is_none()
+                            && let (Ok(gain), Some(state)) =
+                                (self.track_defaults.captured_gain(), self.state.as_ref())
+                        {
+                            audition.new_track_defaults = Some((
+                                format!("track {}", state.project.tracks().len() + 1).into(),
+                                gain,
+                            ));
+                        }
+                        audition
+                            .new_track_defaults
+                            .as_ref()
+                            .and_then(|(name, gain)| {
+                                hex_session::service::NewTrackMoveDestination::new(
+                                    std::sync::Arc::clone(name),
+                                    before_track,
+                                    *gain,
+                                )
+                                .map(|destination| {
+                                    (
+                                        hex_session::service::ArrangementMoveDestination::NewTrack(
+                                            destination,
+                                        ),
+                                        group_position(position),
+                                        mode,
+                                    )
+                                })
+                            })
                     } else {
-                        hex_session::service::ArrangementMoveMode::Move
-                    };
-                    Some((track, group_position(preview.position), mode))
+                        None
+                    }
                 }
                 _ => None,
             }
@@ -969,16 +1016,19 @@ impl super::EditorView {
         let Some(audition) = self.clip_move_audition.as_mut() else {
             return false;
         };
-        if target.is_some_and(|(track, position, mode)| {
-            audition.target.as_ref().is_some_and(|last| {
-                matches!(&last.destination, hex_session::service::ArrangementMoveDestination::Existing(actual) if *actual == track)
-                    && (last.position, last.mode) == (position, mode)
+        if target
+            .as_ref()
+            .is_some_and(|(destination, position, mode)| {
+                audition.target.as_ref().is_some_and(|last| {
+                    &last.destination == destination
+                        && (last.position, last.mode) == (*position, *mode)
+                })
             })
-        }) || target.is_none() && audition.target.is_none()
+            || target.is_none() && audition.target.is_none()
         {
             return false;
         }
-        let Some((track, position, mode)) = target else {
+        let Some((destination, position, mode)) = target else {
             audition.target = None;
             self.expected_clip_preview = None;
             self.applied_clip_preview = None;
@@ -999,7 +1049,7 @@ impl super::EditorView {
             sequence,
             clips: std::sync::Arc::clone(&audition.clips),
             anchor: drag.clip,
-            destination: hex_session::service::ArrangementMoveDestination::Existing(track),
+            destination,
             position,
             mode,
         };
@@ -1063,7 +1113,6 @@ impl super::EditorView {
             self.clear_clip_drag(drag.project_generation, drag.clip);
             return;
         }
-        self.cancel_held_clip_move_audition();
         let Some(ClipDropDestination::NewTrack {
             before_track,
             position,
@@ -1083,87 +1132,75 @@ impl super::EditorView {
             cx.notify();
             return;
         }
-        let gain = match self.track_defaults.captured_gain() {
-            Ok(gain) => gain,
-            Err(error) => {
-                self.error = Some(error.into());
-                self.clear_clip_drag(drag.project_generation, drag.clip);
-                cx.notify();
-                return;
-            }
-        };
-        let count = self
-            .state
+        self.sync_held_clip_move_audition();
+        let defaults = self
+            .clip_move_audition
             .as_ref()
-            .map_or(0, |state| state.project.tracks().len());
-        let name = format!("track {}", count + 1);
-        if drag.alias_copy() {
-            let command = Command::DuplicateAliasClipToNewTrack {
+            .and_then(|audition| audition.new_track_defaults.clone());
+        let (name, gain) = if let Some((name, gain)) = defaults {
+            (name.to_string(), gain)
+        } else {
+            let gain = match self.track_defaults.captured_gain() {
+                Ok(gain) => gain,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    self.clear_clip_drag(drag.project_generation, drag.clip);
+                    cx.notify();
+                    return;
+                }
+            };
+            let count = self
+                .state
+                .as_ref()
+                .map_or(0, |state| state.project.tracks().len());
+            (format!("track {}", count + 1), gain)
+        };
+        let command = if drag.alias_copy() {
+            Command::DuplicateAliasClipToNewTrack {
                 initial_gain: Some(gain),
                 clip: drag.clip,
                 name,
                 before_track,
                 position: group_position(position),
-            };
-            let copy_intent = super::group_copy::Pending::capture(self, &command);
-            let Some(source) = self
-                .state
-                .as_ref()
-                .map(|state| std::sync::Arc::clone(&state.project))
-            else {
-                self.clear_clip_drag(drag.project_generation, drag.clip);
-                return;
-            };
-            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
-                super::pending_clip_move::Pending::new(
-                    drag,
-                    command.clone(),
-                    source,
-                    self.selection_intent_epoch,
-                )
-            });
-            let before_pending = self.worker_requests_pending;
-            if self.enqueue(Request::MoveExistingClips {
-                project_generation: drag.project_generation,
-                revision: drag.revision,
-                command,
-            }) {
-                if let Some(mut intent) = copy_intent {
-                    if self.worker_requests_pending > before_pending {
-                        intent.submitted(self.worker_requests_pending);
-                    }
-                    self.pending_group_copy = Some(intent);
+            }
+        } else if drag.copy_modifier.get() {
+            copy_to_new_track_command(drag.clip, name, before_track, position, gain)
+        } else {
+            move_to_new_track_command(drag.clip, name, before_track, position, gain)
+        };
+        let copy_intent = super::group_copy::Pending::capture(self, &command);
+        let Some(source) = self
+            .state
+            .as_ref()
+            .map(|state| std::sync::Arc::clone(&state.project))
+        else {
+            self.clear_clip_drag(drag.project_generation, drag.clip);
+            return;
+        };
+        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            super::pending_clip_move::Pending::new(
+                drag,
+                command.clone(),
+                source,
+                self.selection_intent_epoch,
+            )
+        });
+        let before_pending = self.worker_requests_pending;
+        self.finish_held_clip_move_audition();
+        if self.enqueue(Request::MoveExistingClips {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            command,
+        }) {
+            if let Some(mut intent) = copy_intent {
+                if self.worker_requests_pending > before_pending {
+                    intent.submitted(self.worker_requests_pending);
                 }
-            } else {
-                self.retire_pending_clip_move();
-                self.clear_clip_drag(drag.project_generation, drag.clip);
+                self.pending_group_copy = Some(intent);
             }
         } else {
-            let command = if drag.copy_modifier.get() {
-                copy_to_new_track_command(drag.clip, name, before_track, position, gain)
-            } else {
-                move_to_new_track_command(drag.clip, name, before_track, position, gain)
-            };
-            let Some(source) = self
-                .state
-                .as_ref()
-                .map(|state| std::sync::Arc::clone(&state.project))
-            else {
-                self.clear_clip_drag(drag.project_generation, drag.clip);
-                return;
-            };
-            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
-                super::pending_clip_move::Pending::new(
-                    drag,
-                    command.clone(),
-                    source,
-                    self.selection_intent_epoch,
-                )
-            });
-            if !self.enqueue(Request::Edit(command)) {
-                self.retire_pending_clip_move();
-                self.clear_clip_drag(drag.project_generation, drag.clip);
-            }
+            self.retire_pending_clip_move();
+            self.clear_clip_drag(drag.project_generation, drag.clip);
         }
         cx.notify();
     }
@@ -1404,6 +1441,36 @@ impl super::EditorView {
 
         self.painted_arrangement_tail_boundary(pointer_y)
             .map(|bottom| (None, timeline, bottom))
+    }
+
+    /// Resolve a captured insertion anchor using only the current painted rows.
+    pub(super) fn painted_track_insertion_line(&self, before: Option<TrackId>) -> Option<f32> {
+        let state = self.state.as_ref()?;
+        let tracks = self.arrangement_track_indices();
+        match before {
+            Some(id) => {
+                let index = tracks.iter().position(|index| {
+                    state
+                        .project
+                        .tracks()
+                        .get(*index)
+                        .is_some_and(|track| track.id() == id)
+                })?;
+                let next = self.painted_track_drop_lane(id)?;
+                if index == 0 {
+                    Some(next.top)
+                } else {
+                    let previous = state.project.tracks().get(*tracks.get(index - 1)?)?;
+                    let previous = self.painted_track_drop_lane(previous.id())?;
+                    Some((previous.top + previous.height + next.top) * 0.5)
+                }
+            }
+            None => {
+                let last = state.project.tracks().get(*tracks.last()?)?;
+                let last = self.painted_track_drop_lane(last.id())?;
+                Some(last.top + last.height)
+            }
+        }
     }
 
     pub(super) fn browser_audio_drop_position(

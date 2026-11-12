@@ -562,6 +562,7 @@ mod tests {
             ticket,
             sampler_edit_gate,
             project_generation: None,
+            expected_source: None,
             transport_epoch: 1,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }

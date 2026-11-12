@@ -32,6 +32,7 @@ mod resident_files;
 mod route_follow;
 mod sampler;
 mod section_edit;
+mod verified_clip_move;
 mod verified_gain;
 use verified_gain::{PreviewWatermark, VerifiedKey, VerifiedSource};
 #[cfg(all(test, feature = "allocation-probe"))]
@@ -128,6 +129,7 @@ pub(super) struct NativeAudioSink {
     route_follow: route_follow::RouteFollow,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     verified_preview: Option<VerifiedSource>,
+    verified_clip_control: verified_clip_move::VerifiedClipControl,
     preview_watermark: Option<PreviewWatermark>,
     verified_last: Option<VerifiedKey>,
     verified_blocked: Option<VerifiedKey>,
@@ -208,6 +210,7 @@ impl NativeAudioSink {
             route_follow: Default::default(),
             desired: None,
             verified_preview: None,
+            verified_clip_control: Default::default(),
             preview_watermark: None,
             verified_last: None,
             verified_blocked: None,
@@ -1555,6 +1558,13 @@ impl WorkerAudioSink for NativeAudioSink {
     ) {
         self.receive_verified_device(source);
     }
+    fn verified_clip_move_update(
+        &mut self,
+        update: hex_session::service::VerifiedClipMoveUpdate,
+    ) -> bool {
+        self.verified_clip_control
+            .receive(self.desired.as_ref(), update)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
     }
@@ -1614,7 +1624,11 @@ impl WorkerAudioSink for NativeAudioSink {
                 hex_session::service::ResidentPublicationPolicy::RestorePluginState
             ),
         ) {
-            return Err(hex_session::service::ResidentPublicationRefusal { playback, error });
+            return Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some((source, epoch, playing)) =
@@ -1627,6 +1641,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 != Some((source, epoch))
         {
             return Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "vst3 override transport changed".into(),
             });
@@ -1643,6 +1658,7 @@ impl WorkerAudioSink for NativeAudioSink {
                     requires_plugin_profile,
                 ) {
                     return Err(hex_session::service::ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error,
                     });
@@ -1667,7 +1683,11 @@ impl WorkerAudioSink for NativeAudioSink {
                 admit,
                 files.as_ref().map(|files| files.sources),
             ),
-            Err(error) => Err(hex_session::service::ResidentPublicationRefusal { playback, error }),
+            Err(error) => Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            }),
         };
         if preparing_output && let Err(ref refusal) = result {
             self.refuse_replacement_output(&refusal.error);
@@ -1707,6 +1727,13 @@ impl WorkerAudioSink for NativeAudioSink {
         Ok(rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+        if self
+            .desired
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &source))
+        {
+            self.verified_clip_control.reset();
+        }
         if self.desired.as_ref().is_none_or(|old| {
             old.context().project_generation != source.context().project_generation
         }) || source.audio_mode() != DocumentAudioMode::VerifiedStreaming
@@ -2020,6 +2047,7 @@ impl WorkerAudioSink for NativeAudioSink {
             })
     }
     fn close(&mut self) {
+        self.verified_clip_control.reset();
         self.shutdown_sampler();
         self.relinquish_output();
         self.pending_release_event = None;

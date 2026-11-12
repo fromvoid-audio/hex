@@ -67,7 +67,7 @@ fn editor_window(
 }
 
 #[gpui::test]
-fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppContext) {
+fn t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let directory = TrackTestDirectory::new();
     let (project, _, _, _) = audio_project();
@@ -76,7 +76,7 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-t");
+    visual.simulate_keystrokes("t");
     let command = editor.read_with(&visual, |view, _| {
         assert!(matches!(
             &view.last_enqueued_edit,
@@ -147,7 +147,7 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn command_t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext) {
+fn t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     for clip_name in [false, true] {
         let directory = TrackTestDirectory::new();
@@ -166,7 +166,7 @@ fn command_t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext)
         });
         visual.run_until_parked();
         let focus = visual.update(|window, cx| window.focused(cx).unwrap());
-        visual.simulate_keystrokes("cmd-t");
+        visual.simulate_keystrokes("t");
         visual.update(|window, _| assert!(focus.is_focused(window)));
         editor.read_with(&visual, |view, _| {
             assert!(view.last_enqueued_edit.is_none());

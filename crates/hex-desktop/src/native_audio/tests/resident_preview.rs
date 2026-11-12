@@ -14,6 +14,34 @@ use hex_session::service::{
 };
 use std::sync::atomic::AtomicU8;
 
+// At 48 kHz the arrangement loop tapers its final 128 frames. Compare every
+// sample against that envelope independently of publication scheduling.
+fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
+    let start = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    let pcm = h.render();
+    for (offset, frame) in pcm.iter().enumerate() {
+        let position = (start + offset as u64) % 8192;
+        let gain = if position >= 8192 - 128 {
+            (8191 - position) as f32 / 127.0
+        } else {
+            1.0
+        };
+        let expected = level * gain;
+        assert!(
+            frame.iter().all(|sample| (*sample - expected).abs() < 1e-5),
+            "loop frame {position}: {frame:?}, expected {expected}"
+        );
+    }
+    pcm
+}
+
 // Native fixture parameters are uninhabited on targets without the host; the
 // portable harness can still use its ordinary constructor with None.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -168,7 +196,7 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.25);
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
     let (preview, preview_metadata) = h.applied(applied);
     assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
@@ -204,7 +232,7 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
     assert!(!h.service.audition_arrangement_move(None));
     let (restored, restored_metadata) = h.applied(preview);
     assert!(restored_metadata.clip_preview.is_none());
-    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.25);
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
     let (preview, _) = h.applied(restored);
     h.service.finish_arrangement_move_audition();
@@ -224,7 +252,7 @@ fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
     assert!(h.render().iter().all(|f| *f == [0.0; 2]));
     assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
     h.applied(committed_audio);
-    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.25);
 }
 
 #[test]
@@ -267,7 +295,7 @@ fn held_audio_move_to_new_track_is_transient_and_commits_once() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.25);
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
     let (preview, preview_metadata) = h.applied(applied);
     assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
@@ -281,12 +309,12 @@ fn held_audio_move_to_new_track_is_transient_and_commits_once() {
     assert!(h.service.try_event().is_err());
     assert!(!h.service.audition_arrangement_move(None));
     let (restored, _) = h.applied(preview);
-    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.25);
     target.sequence = 2;
     target.position = ClipGroupPosition::Audio(0);
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
     let (preview, _) = h.applied(restored);
-    assert!(h.render().iter().all(|f| (f[0] - 0.125).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.125);
     h.service.finish_arrangement_move_audition();
     let committed = h.run(Request::MoveExistingClips {
         project_generation: target.context.project_generation,
@@ -305,12 +333,39 @@ fn held_audio_move_to_new_track_is_transient_and_commits_once() {
     assert_eq!(committed.state.project.tracks()[0].gain(), 0.5);
     h.service.retire_arrangement_move_audition();
     let (committed_audio, _) = h.applied(preview);
-    assert!(h.render().iter().all(|f| (f[0] - 0.125).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.125);
     let mut expected_undo = original;
     expected_undo.next_id = committed.state.project.snapshot().next_id;
     assert_eq!(h.run(Request::Undo).state.project.snapshot(), expected_undo);
     h.applied(committed_audio);
-    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert_loop_pcm(&h, 0.25);
+    for _ in 0..128 {
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            == 8128
+        {
+            break;
+        }
+        h.render();
+    }
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire),
+        8128
+    );
+    let seam = assert_loop_pcm(&h, 0.25);
+    assert_eq!(seam[63], [0.0; 2]);
+    assert_loop_pcm(&h, 0.25);
 }
 
 #[test]
@@ -1747,13 +1802,22 @@ impl WorkerAudioSink for ResidentSink {
                     source.editor_revision += 1;
                 }
             }
-            5 => actual.section_loop = None,
+            5 => {
+                actual.section_loop = if actual.section_loop.is_some() {
+                    None
+                } else {
+                    Some(hex_project::LoopRegion::new(0, 48_000, true).unwrap())
+                };
+            }
             6 => {
                 if let Some(region) = actual.section_loop {
                     actual.section_loop = Some(
                         hex_project::LoopRegion::new(region.start() + 1, region.end(), true)
                             .unwrap(),
                     );
+                } else {
+                    actual.section_loop =
+                        Some(hex_project::LoopRegion::new(1, 48_000, true).unwrap());
                 }
             }
             _ => {}
@@ -1979,11 +2043,14 @@ impl ResidentHarness {
         Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
     }
     pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+        Self::with_recovery_at_rate(frame_limit, recovery, 48_000)
+    }
+    pub(super) fn with_recovery_at_rate(frame_limit: u64, recovery: PathBuf, rate: u32) -> Self {
         Self::with_plugin_fixture(
             frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             None,
             None,
             None,
