@@ -60,9 +60,10 @@ fn clip_paste_and_insert_events_report_created_clips() {
             frame: 960_000,
         },
     );
-    let Some(Created::Clip(clip)) = inserted.created else {
+    let Some(Created::Clips { first: clip, last }) = inserted.created else {
         panic!("insert reports one clip: {:?}", inserted.created)
     };
+    assert_eq!(clip, last);
     assert!(
         inserted
             .state
