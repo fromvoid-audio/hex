@@ -230,9 +230,41 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
         .command(PlaybackCommand::Play)
         .map_err(|_| "command queue full")?;
     let mut output = [[0.0; 2]; 257];
-    for step in 0..6 {
+    for step in 0..8 {
         match step {
             1 => {
+                editor.execute(Command::Mute { track: b, muted: true })?;
+                let candidate = playback(
+                    editor.project(),
+                    prepared(editor.project())?,
+                    b,
+                    Arc::clone(&input),
+                )?;
+                control
+                    .publish_with_policy_and_context_generation(
+                        candidate,
+                        PublicationPolicy::InheritRuntime,
+                        7,
+                    )
+                    .map_err(|error| error.reason)?;
+            }
+            2 => {
+                editor.execute(Command::Mute { track: b, muted: false })?;
+                let candidate = playback(
+                    editor.project(),
+                    prepared(editor.project())?,
+                    b,
+                    Arc::clone(&input),
+                )?;
+                control
+                    .publish_with_policy_and_context_generation(
+                        candidate,
+                        PublicationPolicy::InheritRuntime,
+                        7,
+                    )
+                    .map_err(|error| error.reason)?;
+            }
+            3 => {
                 editor.execute(Command::SetNativeSourceReceiver {
                     source,
                     track: Some(b),
@@ -251,10 +283,10 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                     )
                     .map_err(|error| error.reason)?;
             }
-            2 => control
+            4 => control
                 .command(PlaybackCommand::Pause)
                 .map_err(|_| "command queue full")?,
-            3 => {
+            5 => {
                 editor.execute(Command::BindTrackSource {
                     track: a,
                     source: None,
@@ -273,8 +305,8 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                     )
                     .map_err(|error| error.reason)?;
             }
-            4 => input.set_key(0, None)?,
-            5 => control.request_shutdown(),
+            6 => input.set_key(0, None)?,
+            7 => control.request_shutdown(),
             _ => {}
         }
         let mut result = None;
@@ -293,11 +325,14 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
             (0, 0, 0, 0),
             "step {step}: {stats:?}"
         );
-        // Step 3 unbinds the source under a held live key. Its history cannot
+        // Step 5 unbinds the source under a held live key. Its history cannot
         // transfer, so the live handoff restarts audio (Pulse #3784) and the
         // held voice is cut until the key is pressed again; it must still be
         // applied, not refused, and allocate nothing.
-        if step < 3 {
+        if [1, 2, 5].contains(&step) {
+            assert!(control.status.rejected_revision().is_none(), "step {step}: {:?}", control.status.rejected_revision());
+        }
+        if step < 4 {
             assert!(
                 output
                     .iter()
@@ -306,10 +341,7 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
                 "step {step}"
             );
         }
-        if step == 3 {
-            assert!(control.status.rejected_revision().is_none());
-        }
-        if step == 5 {
+        if step == 7 {
             assert_eq!(output, [[0.0; 2]; 257]);
         }
         control.reclaim();
