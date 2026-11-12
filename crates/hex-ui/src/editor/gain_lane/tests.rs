@@ -291,7 +291,7 @@ pub(in crate::editor) mod native {
     }
 
     #[gpui::test]
-    fn command_t_and_r_preserve_active_gain_numeric_draft(cx: &mut TestAppContext) {
+    fn t_and_command_r_preserve_active_gain_numeric_draft(cx: &mut TestAppContext) {
         let (handle, entity, _) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -302,7 +302,7 @@ pub(in crate::editor) mod native {
         visual.simulate_input("invalid");
         visual.run_until_parked();
         let focus = visual.update(|window, cx| window.focused(cx).unwrap());
-        for key in ["cmd-t", "cmd-r"] {
+        for key in ["t", "cmd-r"] {
             visual.simulate_keystrokes(key);
             visual.update(|window, _| assert!(focus.is_focused(window)));
             entity.update(&mut visual, |view, cx| {

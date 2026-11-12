@@ -1344,6 +1344,15 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::RebindNativeSource {
+            project_generation,
+            revision,
+            track,
+            expected_source,
+            source,
+        } => {
+            describe!("rebind_native_source"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "expected_source" => expected_source.map(|id| id.value()), "source" => source.map(|id| id.value())]; omitted="")
+        }
         Request::BindUnassignedNativeSource {
             project_generation,
             revision,
@@ -1401,12 +1410,12 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             asset,
-            track,
-            start,
+            destination,
+            new_track_gain,
             warp,
             audition_timing,
         } => {
-            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "destination" => format!("{destination:?}"), "new_track_gain" => new_track_gain, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
         }
         Request::ReorderTracks {
             project_generation,

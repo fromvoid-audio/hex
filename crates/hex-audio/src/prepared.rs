@@ -242,6 +242,7 @@ struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
     project_generation: Option<u64>,
+    expected_source: Option<AppliedAudioSource>,
     sampler_edit_gate: u64,
     transport_epoch: u64,
 }
@@ -4101,6 +4102,17 @@ impl Callback {
                 *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
                 continue;
             }
+            if !fault
+                && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
+                && queued
+                    .expected_source
+                    .is_some_and(|expected| self.recording_source() != Some(expected))
+            {
+                let reason = PlaybackActionRejection::AudioSourceChanged;
+                self.status.publish_rejected_action(queued.ticket, reason);
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
+                continue;
+            }
             // Each command follows the audible end of an earlier fade.
             self.settle_transport_fade();
             if fault && sampler_edit::is_stop(queued.action) {
@@ -7823,6 +7835,7 @@ mod tests {
                     ticket,
                     action: PlaybackAction::Transport(PlaybackCommand::PlayFrom(45)),
                     project_generation: None,
+                    expected_source: None,
                     sampler_edit_gate: gate,
                     transport_epoch: epoch,
                 })
@@ -9180,6 +9193,170 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn source_bound_start_rejects_same_project_replacement_and_preserves_stop() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use hex_engine::AudioSourceContext;
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        let old = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 4,
+        };
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntime,
+                0,
+                true,
+                false,
+                Some(old),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(0);
+        let source = client.status().unwrap().recording_source().unwrap();
+        let wrong_output = AppliedAudioSource {
+            output_identity: source.output_identity + 1,
+            ..source
+        };
+        assert!(
+            client
+                .play_from_source_with_ticket(1, wrong_output)
+                .is_err()
+        );
+        let wrong_context = AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 1,
+                ..old
+            },
+            ..source
+        };
+        assert!(
+            client
+                .play_from_source_with_ticket(1, wrong_context)
+                .is_err()
+        );
+
+        let ticket = client.play_from_source_with_ticket(17, source).unwrap();
+        let measured =
+            allocation_counter::measure(|| data.owner_mut().unwrap().run(|c, _| c.begin_block()));
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Applied
+            })
+        );
+        assert!(client.status().unwrap().playing.load(Acquire));
+        client.stop();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+
+        let control = publication.control().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        // A graph can be replaced even while its canonical context is unchanged.
+        let next = old;
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                0,
+                true,
+                false,
+                Some(next),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        data.owner_mut()
+            .unwrap()
+            .run(|c, _| c.test_after_fresh_fence_validation = Some(Arc::clone(&barrier)));
+        let ticket = std::thread::scope(|scope| {
+            let callback = scope.spawn(|| {
+                allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| c.begin_block())
+                })
+            });
+            barrier.wait();
+            let ticket = client.play_from_source_with_ticket(47, source).unwrap();
+            barrier.wait();
+            let measured = callback.join().unwrap();
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            ticket
+        });
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Rejected(PlaybackActionRejection::AudioSourceChanged)
+            })
+        );
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        assert_eq!(
+            client.status().unwrap().recording_source().unwrap().context,
+            next
+        );
+        assert_ne!(
+            client
+                .status()
+                .unwrap()
+                .recording_source()
+                .unwrap()
+                .audio_revision,
+            source.audio_revision
+        );
+        assert!(client.play_from_source_with_ticket(47, source).is_err());
+        let source = client.status().unwrap().recording_source().unwrap();
+        for _ in 0..COMMANDS {
+            client.play_from_source_with_ticket(2, source).unwrap();
+        }
+        assert!(client.play_from_source_with_ticket(2, source).is_err());
+        client.stop();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
     }
 
     #[test]

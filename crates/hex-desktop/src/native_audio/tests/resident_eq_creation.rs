@@ -248,15 +248,14 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             let imported = h.run(Request::Import(periodic_source(&files, 4096)));
             (applied, _) = h.applied(applied);
             let track = imported.state.project.tracks()[0].id();
-            let transient = owner == 0 && kind != NodeKind::LowCut;
-            if !transient {
-                h.run(Request::Edit(Command::SetLoopRegion {
-                    start: 0,
-                    end: 4096,
-                    enabled: true,
-                }));
-                (applied, _) = h.applied(applied);
-            }
+            let launched_section = owner == 0 && kind != NodeKind::LowCut;
+            let loop_set = h.run(Request::Edit(Command::SetLoopRegion {
+                start: 0,
+                end: 4096,
+                enabled: true,
+            }));
+            assert!(loop_set.error.is_none(), "{:?}", loop_set.error);
+            (applied, _) = h.applied(applied);
             let main_compensated = owner == 0 && kind == NodeKind::LowCut;
             if main_compensated {
                 h.run(Request::Edit(Command::InsertMainDevice {
@@ -316,8 +315,8 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 panic!("eq")
             };
             let before = added.state.project.snapshot();
-            if transient {
-                // A real section-launch loop is absent from saved project state.
+            if launched_section {
+                // The enabled launch must match the canonical project loop.
                 let mut intent = h.seek_intent(1, added.state.revision, None, None);
                 intent.destination_frame = 0;
                 intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -328,7 +327,10 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert!(h.next().error.is_none());
                 assert!(h.seek_result().result.is_ok());
                 (applied, _) = h.applied(applied);
-                assert!(added.state.project.loop_region().is_none());
+                assert_eq!(
+                    added.state.project.loop_region(),
+                    Some(hex_project::LoopRegion::new(0, 4096, true).unwrap())
+                );
             }
             h.audio
                 .as_mut()
@@ -397,7 +399,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 vec![node]
             );
             let held = level(&h);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             if kind == NodeKind::Bell {
@@ -444,7 +446,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 snapshot: draft,
             }));
             (applied, _) = h.applied(preview_audio);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             assert_eq!(committed.state.project.next_identity(), before.next_id + 1);
@@ -460,7 +462,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
             assert!((level(&h) - dry).abs() < dry * 0.05);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             let redone = h.run(Request::Redo);
@@ -470,7 +472,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert_eq!(metadata.context.editor_revision, redone.state.revision);
             }
             assert_eq!(redone.state.project, committed.state.project);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             if main_compensated {
@@ -630,6 +632,13 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         start: BeatTime::ZERO,
         length: BeatTime::ONE,
     }));
+    (applied, _) = h.applied(applied);
+    let loop_set = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 4096,
+        enabled: true,
+    }));
+    assert!(loop_set.error.is_none(), "{:?}", loop_set.error);
     (applied, _) = h.applied(applied);
     let added = h.run(Request::Edit(Command::InsertDevice {
         track,

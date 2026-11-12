@@ -696,7 +696,12 @@ impl Inputs<'_> {
                     cancel: self.cancel,
                 }),
         )
-        .map_err(|refused| SessionError::NativeAudio(refused.error))
+        .map_err(|refused| match refused.kind {
+            super::ResidentPublicationFailure::NativeSourceUnavailable => {
+                SessionError::NativeSourceUnavailable(refused.error)
+            }
+            super::ResidentPublicationFailure::Other => SessionError::NativeAudio(refused.error),
+        })
     }
 }
 
@@ -1740,27 +1745,7 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
-        let inputs = Inputs {
-            native_parameter_input: None,
-            plugin_effect: None,
-            restoring_plugin_state: false,
-            preparing_edit: false,
-            native: NativeSamplerSources::Committed(&self.native_assets),
-            limits: self.native_reservation.ok_or(SessionError::Invalid(
-                "resident resource reservation unavailable",
-            ))?,
-            max_frames: self.max_resident_frames,
-            shutdown: &self.shutdown,
-            cancel: None,
-            admission,
-            current,
-            predecessor: Some(old),
-            legacy: self
-                .media
-                .values()
-                .flat_map(|media| [&media.source_audio, &media.audio])
-                .collect(),
-        };
+        let inputs = self.document_replacement_inputs(old, admission, current)?;
         let mut snapshot = inputs.prepare(
             self.project(),
             sink,
@@ -1794,6 +1779,36 @@ impl Session {
             .map_err(SessionError::NativeAudio)?;
         // The caller now performs only fixed canonical/document moves.
         Ok(snapshot)
+    }
+
+    /// Bind the exact candidate and predecessor owners before preparation.
+    fn document_replacement_inputs<'a>(
+        &'a self,
+        old: &'a Session,
+        admission: sampler_export::Admission<'a>,
+        current: Option<&'a Snapshot>,
+    ) -> Result<Inputs<'a>, SessionError> {
+        Ok(Inputs {
+            native_parameter_input: None,
+            plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: None,
+            admission,
+            current,
+            predecessor: Some(old),
+            legacy: self
+                .media
+                .values()
+                .flat_map(|media| [&media.source_audio, &media.audio])
+                .collect(),
+        })
     }
 
     pub(super) fn publish_resident_snapshot(
@@ -2657,6 +2672,7 @@ pub(super) mod tests {
     mod native_automation_recording;
     mod plugin_effect_tests;
     mod source_binding_tests;
+    mod verified_replacement_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;
@@ -2681,6 +2697,7 @@ pub(super) mod tests {
     struct Observed {
         accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
         refuse: AtomicBool,
+        refuse_native_source: AtomicBool,
         refuse_source_confirmation: AtomicBool,
         source_confirmations: AtomicUsize,
         closed: AtomicUsize,
@@ -2807,6 +2824,7 @@ pub(super) mod tests {
             if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_)) {
                 self.observed.seek_attempts.fetch_add(1, Ordering::Release);
                 return Err(ResidentPublicationRefusal {
+                    kind: crate::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture has no fresh output".into(),
                 });
@@ -2886,7 +2904,15 @@ pub(super) mod tests {
                         .push((metadata.context.editor_revision, thread::current().id()));
                     Ok(ResidentPublicationAcceptance::OfflineRetained)
                 }
-                Err(error) => Err(ResidentPublicationRefusal { playback, error }),
+                Err(error) => Err(ResidentPublicationRefusal {
+                    kind: if self.observed.refuse_native_source.load(Ordering::Acquire) {
+                        crate::service::ResidentPublicationFailure::NativeSourceUnavailable
+                    } else {
+                        crate::service::ResidentPublicationFailure::Other
+                    },
+                    playback,
+                    error,
+                }),
             }
         }
         fn device_automation_source(
@@ -3267,6 +3293,115 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn range_copy_reports_source_refusal_only_before_commit() {
+        let observed = Arc::new(Observed::default());
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            1024,
+            None,
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap();
+        let receive = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        receive();
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let added = receive();
+        let track = added.state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_raw(4 << 32),
+            }))
+            .unwrap();
+        let before = receive();
+        assert!(before.error.is_none());
+        let copy = || {
+            Request::Edit(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], 0, 96_000).unwrap(),
+                track,
+                frame: 96_000,
+            })
+        };
+        observed.refuse.store(true, Ordering::Release);
+        service.submit(copy()).unwrap();
+        let unrelated = receive();
+        assert!(unrelated.error.is_some());
+        assert_eq!(unrelated.range_copy_source_unavailable, None);
+        assert_eq!(unrelated.state.revision, before.state.revision);
+        observed.refuse_native_source.store(true, Ordering::Release);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "other".into(),
+            }))
+            .unwrap();
+        let other_edit = receive();
+        assert!(other_edit.error.is_some());
+        assert_eq!(other_edit.range_copy_source_unavailable, None);
+        assert_eq!(other_edit.state.revision, before.state.revision);
+        service.submit(copy()).unwrap();
+        let refused = receive();
+        assert!(refused.error.is_some());
+        assert_eq!(
+            refused.range_copy_source_unavailable,
+            Some(hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: before.state.revision,
+            })
+        );
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert_eq!(refused.state.project, before.state.project);
+        assert_eq!(refused.state.can_undo, before.state.can_undo);
+        observed.refuse.store(false, Ordering::Release);
+        observed
+            .refuse_native_source
+            .store(false, Ordering::Release);
+        service.submit(copy()).unwrap();
+        let committed = receive();
+        assert!(committed.error.is_none(), "{:?}", committed.error);
+        assert_eq!(committed.range_copy_source_unavailable, None);
+        assert_eq!(committed.state.revision, before.state.revision + 1);
+        service.submit(Request::Undo).unwrap();
+        let undone = receive();
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.range_copy_source_unavailable, None);
+        assert_eq!(
+            undone
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn project_sample_placement_publishes_or_refuses_before_commit() {
         let observed = Arc::new(Observed::default());
         let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
@@ -3310,8 +3445,8 @@ pub(super) mod tests {
             project_generation: 0,
             revision,
             asset,
-            track,
-            start: 32,
+            destination: crate::import_batch::AudioBatchDestination::Track { track, start: 32 },
+            new_track_gain: None,
             warp: hex_project::AudioImportWarp::Off,
             audition_timing: Some(hex_engine::playback::BrowserAuditionTiming {
                 grid: hex_project::ResolvedInputGrid::off(),

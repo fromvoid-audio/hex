@@ -97,6 +97,24 @@ impl EditorView {
             cx.notify();
             return;
         };
+        if let Some(asset) = drag.project_asset {
+            let request = Request::InsertProjectSample {
+                project_generation: drag.project_generation,
+                revision: drag.revision,
+                asset,
+                destination: AudioBatchDestination::Console(target),
+                new_track_gain: None,
+                warp: hex_project::AudioImportWarp::Off,
+                audition_timing: None,
+            };
+            if self.enqueue_sample_drop(request, drag, BrowserDropDestination::Console(target)) {
+                self.stop_browser_preview_for_drop();
+                self.error = None;
+            }
+            self.clear_browser_audio_drag(drag);
+            cx.notify();
+            return;
+        }
         let context = AudioBatchContext {
             project_generation: self.project_generation,
             revision: state.revision,

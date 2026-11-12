@@ -330,7 +330,7 @@ impl EditorView {
             visible |= self.retire_pending_clip_paint();
         }
         if kinds.section {
-            visible |= self.retire_pending_section();
+            visible |= self.refuse_section(request);
         }
         if kinds.track_reorder {
             visible |= self.retire_pending_track_reorder();

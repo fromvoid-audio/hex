@@ -100,11 +100,37 @@ pub(super) struct PendingTimeRangeMove {
 #[derive(Debug)]
 pub(super) struct KeyboardTimeCopy {
     receipt: Receipt,
+    recovery_attempted: bool,
     /// Cancellation drops future repeats while retaining the released copy.
     repeats: Option<u8>,
 }
 
 impl EditorView {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn fixture_submitted_time_duplicate(&mut self, source: hex_project::TimeRange) {
+        let end = source.end() + source.duration();
+        let range =
+            hex_project::TimeRange::new(source.tracks().to_vec(), source.end(), end).unwrap();
+        let (first, last) = self.time_selection_track_indices().unwrap();
+        let mut receipt = Receipt::new(self.project_generation);
+        assert!(receipt.submitted(1));
+        self.pending_time_range_move = Some(PendingTimeRangeMove {
+            source,
+            range,
+            project_scope: self.time_selection_project_scope,
+            destination_first_index: first,
+            destination_last_index: last,
+            source_revision: self.state.as_ref().unwrap().revision,
+            selection_intent_epoch: self.selection_intent_epoch.unwrap(),
+            copy_modifier: true,
+            keyboard: Some(KeyboardTimeCopy {
+                receipt,
+                recovery_attempted: false,
+                repeats: Some(0),
+            }),
+        });
+        self.worker_requests_pending = 1;
+    }
     /// Actual selection choices supersede pending ACK side effects, even when
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
@@ -836,7 +862,7 @@ impl EditorView {
             || self.export_dialog_open
     }
 
-    fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
+    pub(super) fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
         let Some(end) = range.end().checked_add(range.duration()) else {
             self.error = Some("duplicated time range would overflow".into());
             return;
@@ -873,6 +899,7 @@ impl EditorView {
             copy_modifier: true,
             keyboard: Some(KeyboardTimeCopy {
                 receipt: Receipt::new(self.project_generation),
+                recovery_attempted: false,
                 repeats: Some(repeats),
             }),
         });
@@ -926,6 +953,27 @@ impl EditorView {
                                 && pending.range.start() == *frame
                     )
             })
+    }
+
+    pub(super) fn pending_time_duplicate_intent_current(&self) -> bool {
+        self.pending_time_range_move
+            .as_ref()
+            .is_some_and(|pending| {
+                self.mode == EditorMode::Arrangement
+                    && self.selection_intent_epoch == Some(pending.selection_intent_epoch)
+                    && self.time_selection_project_scope == pending.project_scope
+                    && self.normalized_time_selection().as_ref() == Some(&pending.source)
+            })
+    }
+
+    pub(super) fn mark_time_duplicate_recovery_started(&mut self) {
+        if let Some(keyboard) = self
+            .pending_time_range_move
+            .as_mut()
+            .and_then(|pending| pending.keyboard.as_mut())
+        {
+            keyboard.recovery_attempted = true;
+        }
     }
 
     pub(super) fn time_duplicate_submitted(&mut self) {
@@ -1165,6 +1213,7 @@ impl EditorView {
             copy_modifier: true,
             keyboard: Some(KeyboardTimeCopy {
                 receipt: Receipt::new(self.project_generation),
+                recovery_attempted: false,
                 repeats: Some(remaining),
             }),
         });
@@ -1261,6 +1310,41 @@ impl EditorView {
                 }
                 Disposition::Invalidated => return 0,
                 Disposition::Terminal => {}
+            }
+            let context = hex_engine::AudioSourceContext {
+                project_generation: self.project_generation,
+                editor_revision: pending.source_revision,
+            };
+            if !keyboard.recovery_attempted
+                && event.error.is_some()
+                && event.range_copy_source_unavailable == Some(context)
+                && event.state.revision == pending.source_revision
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == pending.source_revision)
+                && self.ahead_time_range_move.is_none()
+                && !self.edit_pending()
+                && self.audio.is_some()
+                && self.selection_intent_epoch == Some(pending.selection_intent_epoch)
+                && self.time_selection_project_scope == pending.project_scope
+                && self.normalized_time_selection().as_ref() == Some(&pending.source)
+            {
+                keyboard.recovery_attempted = true;
+                keyboard.receipt = Receipt::new(self.project_generation);
+                let request = Request::Edit(Command::CopyTimeRangeTo {
+                    track: pending.source.tracks()[0],
+                    frame: pending.range.start(),
+                    range: pending.source.clone(),
+                });
+                self.pending_time_range_move = Some(pending);
+                if !self.recover_before_graph_edit(
+                    super::recovery_state::DeferredEditKind::TimeDuplicate,
+                    request,
+                ) {
+                    self.pending_time_range_move = None;
+                }
+                return 0;
             }
             if pending.source_revision.checked_add(1) != Some(event.state.revision) {
                 return 0;
