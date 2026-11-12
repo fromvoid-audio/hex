@@ -52,6 +52,9 @@ pub enum LiveNoteEvent {
         pitch: u8,
         velocity: u8,
     },
+    /// Polyphonic pressure for the currently held note on one channel and key.
+    /// A later NoteOn on the same key creates a new occurrence.
+    PolyPressure { channel: u8, pitch: u8, value: u8 },
     /// Release every live note owned by this input.
     #[default]
     AllNotesOff,
@@ -75,6 +78,11 @@ impl LiveNoteEvent {
                 (2_u64, channel, pitch, velocity)
             }
             Self::AllNotesOff => (3_u64, 0, 0, 0),
+            Self::PolyPressure {
+                channel,
+                pitch,
+                value,
+            } if channel <= 15 && pitch <= 127 && value <= 127 => (4_u64, channel, pitch, value),
             _ => return None,
         };
         Some(
@@ -102,6 +110,11 @@ impl LiveNoteEvent {
                 velocity,
             }),
             3 if word == (3_u64 << 18) => Some(Self::AllNotesOff),
+            4 => Some(Self::PolyPressure {
+                channel,
+                pitch,
+                value: velocity,
+            }),
             _ => None,
         }
     }

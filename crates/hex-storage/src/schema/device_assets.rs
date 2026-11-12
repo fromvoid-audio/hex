@@ -2,8 +2,15 @@
 use super::*;
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, MAX_DEVICE_ASSET_REFERENCES,
+    NativeDeviceState,
 };
 use std::collections::BTreeMap;
+
+pub(crate) fn authored_states(project: &Project) -> impl Iterator<Item = &NativeDeviceState> {
+    project
+        .devices()
+        .flat_map(hex_project::Device::authored_states)
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,12 +23,30 @@ struct DeviceAssets {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Reference {
+pub(crate) struct Reference {
     slot: u32,
     asset: u64,
 }
 
-fn bounded_references<'de, D: serde::Deserializer<'de>>(
+impl Reference {
+    pub(crate) fn from_model(reference: &DeviceAssetReference) -> Self {
+        Self {
+            slot: reference.slot.value(),
+            asset: reference.asset.value(),
+        }
+    }
+
+    pub(crate) fn into_model(self) -> Result<DeviceAssetReference, StorageError> {
+        Ok(DeviceAssetReference {
+            slot: DeviceAssetSlot::new(self.slot)
+                .map_err(|_| StorageError::Invalid("invalid device asset slot"))?,
+            asset: DeviceAssetKey::new(self.asset)
+                .map_err(|_| StorageError::Invalid("invalid device asset identity"))?,
+        })
+    }
+}
+
+pub(crate) fn bounded_references<'de, D: serde::Deserializer<'de>>(
     decoder: D,
 ) -> Result<Vec<Reference>, D::Error> {
     struct References;
@@ -204,6 +229,7 @@ pub(crate) struct ComparisonDto {
     active: VariantDto,
     type_id: String,
     state_version: u32,
+    #[serde(deserialize_with = "bounded_comparison_payload")]
     payload: Vec<u8>,
     #[serde(deserialize_with = "bounded_references")]
     references: Vec<Reference>,
@@ -213,6 +239,12 @@ pub(crate) struct ComparisonDto {
 enum VariantDto {
     A,
     B,
+}
+
+fn bounded_comparison_payload<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Vec<u8>, D::Error> {
+    super::device_automation::bounded(decoder, hex_lattice_contract::MAX_VST3_DEVICE_STATE_BYTES)
 }
 
 pub(crate) fn required_comparison<'de, D: serde::Deserializer<'de>>(
@@ -240,10 +272,7 @@ impl ComparisonDto {
             references: state
                 .asset_references()
                 .iter()
-                .map(|reference| Reference {
-                    slot: reference.slot.value(),
-                    asset: reference.asset.value(),
-                })
+                .map(Reference::from_model)
                 .collect(),
         })
     }
@@ -261,14 +290,7 @@ impl ComparisonDto {
         let references = self
             .references
             .into_iter()
-            .map(|reference| {
-                Ok(DeviceAssetReference {
-                    slot: DeviceAssetSlot::new(reference.slot)
-                        .map_err(|_| StorageError::Invalid("invalid comparison asset slot"))?,
-                    asset: DeviceAssetKey::new(reference.asset)
-                        .map_err(|_| StorageError::Invalid("invalid comparison asset identity"))?,
-                })
-            })
+            .map(Reference::into_model)
             .collect::<Result<Vec<_>, StorageError>>()?;
         let inactive =
             hex_lattice_contract::NativeDeviceState::new(type_id, self.state_version, self.payload)

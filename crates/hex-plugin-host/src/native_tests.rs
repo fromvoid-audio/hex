@@ -59,6 +59,8 @@ fn request(config: &Configuration, n: u64) -> Block {
         pcm: [[0.0; 2]; 256],
         events: Events::default(),
         parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: Default::default(),
     };
     for (i, frame) in block.pcm[..usize::from(block.frames)]
         .iter_mut()
@@ -71,6 +73,69 @@ fn request(config: &Configuration, n: u64) -> Block {
         ];
     }
     block
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn offline_retirement_requires_stop_but_skips_sdk_deactivation() {
+    let build = build();
+    // Variant 100 refuses setActive(false). Variant 58 refuses setProcessing(false).
+    for (variant, clean) in [(100, true), (58, false)] {
+        let case = Case::new();
+        let events = case.root.join("module-events");
+        let child_events = events.clone();
+        let source = source();
+        let state = startup_state(&source, false, 0);
+        let setup = case.setup(variant);
+        let mut instance = Pending::prepare_with_restore(
+            &build,
+            source,
+            options().preparation,
+            Some(state),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command
+                    .arg("--offline")
+                    .env("HEX_ORIGINAL_INSTANCE_MODULE_EVENTS", child_events);
+            },
+        )
+        .unwrap()
+        .complete_with_plan_on_control(protocol::PresentationPlan::AllowUnknown)
+        .unwrap();
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.pcm[0],
+            [input.pcm[0][0] * 0.375, input.pcm[0][1] * 0.375]
+        );
+        let result = instance.stop_and_reap_on_control();
+        if clean {
+            let retired = result.unwrap();
+            assert!(retired.status.success());
+            assert_eq!(
+                retired.terminal.unwrap(),
+                Terminal {
+                    blocks: 1,
+                    frames: 8,
+                    failure: 0,
+                    closed: true,
+                    unloaded: false,
+                }
+            );
+        } else {
+            assert!(result.is_err());
+            let retired = instance.cancel_and_reap_on_control().unwrap();
+            assert!(!retired.status.success());
+            assert!(retired.terminal.unwrap().failure != 0);
+        }
+        assert!(instance.child_id_on_control().is_none());
+        assert_eq!(
+            fs::read(events).unwrap(),
+            b"E",
+            "offline worker must not deactivate or unload"
+        );
+    }
 }
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
@@ -1337,6 +1402,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
         storage.data_bytes,
         instance.config.bundle.capacity()
             + instance.config.executable.capacity()
+            + crate::protocol::PACKET_LIMIT
             + instance.ready.initial_state.payload().len()
             + saved.payload().len()
             + std::mem::size_of::<UnixStream>()

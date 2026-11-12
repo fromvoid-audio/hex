@@ -3,16 +3,16 @@
 use super::*;
 
 pub(super) fn sink(
-    input: Arc<LiveExpressionInput>,
+    input: Option<Arc<LiveExpressionInput>>,
     notes: Arc<hex_midi::HeldNoteInput>,
     note_input: Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
     activation: hex_engine::computer_keyboard::LiveNoteActivation,
 ) -> hex_midi::Sink {
     let notes_cancel = Arc::clone(&notes);
     let notes_cancelled = Arc::clone(&notes);
-    let writer = Arc::clone(&input);
-    let cancel = Arc::clone(&input);
-    let cancelled = Arc::clone(&input);
+    let writer = input.clone();
+    let cancel = input.clone();
+    let cancelled = input;
     let note_writer = Arc::clone(&note_input);
     let note_cancel = Arc::clone(&note_input);
     let note_cancelled = Arc::clone(&note_input);
@@ -42,6 +42,15 @@ pub(super) fn sink(
                     pitch,
                     velocity,
                 },
+                hex_midi::NoteEvent::PolyPressure {
+                    channel,
+                    pitch,
+                    value,
+                } => LiveNoteEvent::PolyPressure {
+                    channel,
+                    pitch,
+                    value,
+                },
                 hex_midi::NoteEvent::AllNotesOff => LiveNoteEvent::AllNotesOff,
                 hex_midi::NoteEvent::InputLost(_) => {
                     let _ = input.cancel_activation(activation);
@@ -55,21 +64,25 @@ pub(super) fn sink(
         }),
         notes: Arc::clone(&notes),
         publish: Box::new(move |value| {
-            writer.publish(hex_engine::live_expression::Snapshot {
-                pressure: value.pressure,
-                bend: value.bend,
-                wheel: value.wheel,
-            })
+            if let Some(writer) = &writer {
+                writer.publish(hex_engine::live_expression::Snapshot {
+                    pressure: value.pressure,
+                    bend: value.bend,
+                    wheel: value.wheel,
+                });
+            }
         }),
         cancel: Box::new(move || {
             if let Some(input) = note_cancel.live_notes() {
                 let _ = input.cancel_activation(activation);
             }
-            cancel.cancel();
+            if let Some(cancel) = &cancel {
+                cancel.cancel();
+            }
             notes_cancel.cancel();
         }),
         is_cancelled: Box::new(move || {
-            cancelled.is_cancelled()
+            cancelled.as_ref().is_some_and(|input| input.is_cancelled())
                 || notes_cancelled.is_cancelled()
                 || note_cancelled.is_cancelled()
                 || note_cancelled
@@ -79,11 +92,12 @@ pub(super) fn sink(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
     use hex_engine::{PreparedRevision, SineTable, playback::Playback};
     use hex_project::{Command, Created, Editor, Project};
+
     #[test]
     fn actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -122,7 +136,7 @@ mod tests {
         let activation = input.begin_live_notes_activation_on_control().unwrap();
         let held = Arc::new(hex_midi::HeldNoteInput::default());
         let sink = sink(
-            Arc::new(LiveExpressionInput::new(1, track, device)),
+            Some(Arc::new(LiveExpressionInput::new(1, track, device))),
             Arc::clone(&held),
             Arc::clone(&input),
             activation,
@@ -176,5 +190,79 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::sink;
+    use std::sync::Arc;
+
+    #[test]
+    fn notes_only_sink_tracks_the_selected_port_and_cancels_its_activation() {
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let token = input.begin_live_notes_activation_on_control().unwrap();
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), token);
+        hex_midi::deliver_packets_with_notes(
+            &mut hex_midi::Decoder::default(),
+            2,
+            Default::default(),
+            [&[0x92, 60, 37][..]],
+            &held,
+            sink.publish.as_ref(),
+            sink.note.as_ref(),
+        );
+        let hex_midi::HeldNotesRead::Snapshot(notes) = held.read() else {
+            panic!("expected a published hardware note");
+        };
+        let note = notes.after(0).next().unwrap();
+        assert_eq!((note.pitch, note.velocity), (60, 37));
+        assert!(!(sink.is_cancelled)());
+        (sink.cancel)();
+        assert!((sink.is_cancelled)());
+        assert!(!input.live_notes().unwrap().same_current_activation(token));
+        assert!(
+            !input.is_cancelled(),
+            "physical computer keys keep their root"
+        );
+    }
+
+    #[test]
+    fn poly_pressure_reaches_the_bounded_note_queue_and_cancels_on_overflow() {
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let activation = input.begin_live_notes_activation_on_control().unwrap();
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), activation);
+        // One pressure status plus 512 running-status messages remains inside
+        // the decoder's packet budget. The smaller host queue must reject it.
+        let mut packet = vec![0x92, 60, 91, 0xa2];
+        packet.extend(std::iter::repeat_n([60, 85], 512).flatten());
+        hex_midi::deliver_packets_with_notes(
+            &mut hex_midi::Decoder::default(),
+            2,
+            Default::default(),
+            [packet.as_slice()],
+            &held,
+            sink.publish.as_ref(),
+            sink.note.as_ref(),
+        );
+        assert!((sink.is_cancelled)());
+        assert!(held.is_cancelled());
+        assert!(
+            !input
+                .live_notes()
+                .unwrap()
+                .same_current_activation(activation)
+        );
+        assert!(!input.is_cancelled(), "computer keys keep their own root");
     }
 }

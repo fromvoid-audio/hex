@@ -156,6 +156,7 @@ pub fn instance(
     probe: &Arc<Probe>,
 ) -> Result<PreparedRuntimeInstance, DeviceContractError> {
     Ok(PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         owner,

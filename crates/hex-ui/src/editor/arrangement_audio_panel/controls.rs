@@ -348,7 +348,9 @@ fn spec(window: ClipWindow, field: Field, horizon: u64) -> Option<NumericSpec> {
     .ok()
     .map(|s| {
         s.with_codec(
-            move |v| frame_value(v).map_or_else(String::new, |v| format_frame_time(v, rate)),
+            move |v| {
+                frame_value(v).map_or_else(String::new, |v| format_frame_time(i128::from(v), rate))
+            },
             move |s| {
                 let s = s.trim();
                 let frames = if let Some(seconds) = s.strip_suffix('s').filter(|_| !s.contains('·'))
@@ -698,7 +700,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
@@ -734,6 +736,15 @@ mod tests {
             absolute_command(window, Field::Gain, -6.1, false),
             Some(Command::SetAudioClipGain { millidb: -6100, .. })
         ));
+        for (gain_db, delta) in [(-0.1, -100), (1.0, 1_000)] {
+            assert!(matches!(
+                absolute_command(window, Field::Gain, gain_db, true),
+                Some(Command::EditClips {
+                    clips,
+                    edit: hex_project::ClipEdit::GainBy { millidb },
+                }) if clips == vec![window.clip] && millidb == delta
+            ));
+        }
         assert!(absolute_command(window, Field::Gain, 24.001, false).is_none());
     }
 }

@@ -5,7 +5,32 @@ use super::*;
 use crate::arrangement_seek::{ArrangementSeekMode, ArrangementSeekSpec, MAX_RESIDENT_SEEK_JOBS};
 use hex_engine::native_device_resources::DeviceResourceAdmission;
 
-/// Scalar UI intent; prepared graphs, original PCM and runtime owners stay worker-private.
+/// Explicit native control intent. Ordinary UI requests keep Fresh; Preserve
+/// reconstructs bounded linear history and refuses sections/transport loops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResidentSeekHistory {
+    #[default]
+    Fresh,
+    Preserve,
+}
+
+fn preparation_mode(
+    history: ResidentSeekHistory,
+    section: Option<crate::arrangement_seek::SectionLaunch>,
+) -> Result<ArrangementSeekMode, String> {
+    match (history, section) {
+        (ResidentSeekHistory::Preserve, Some(_)) => {
+            Err("history-preserving sections are not supported".into())
+        }
+        (ResidentSeekHistory::Preserve, None) => {
+            Ok(ArrangementSeekMode::HistoryPreservingInteractive)
+        }
+        (ResidentSeekHistory::Fresh, Some(section)) => Ok(section.mode()),
+        (ResidentSeekHistory::Fresh, None) => Ok(ArrangementSeekMode::Interactive),
+    }
+}
+
+/// Scalar control intent; prepared graphs, original PCM and runtime owners stay worker-private.
 #[derive(Clone, Debug)]
 pub struct ResidentArrangementSeekIntent {
     pub request_id: u64,
@@ -13,7 +38,11 @@ pub struct ResidentArrangementSeekIntent {
     pub project_revision: u64,
     pub destination_frame: u64,
     pub start_playing: bool,
+    pub history: ResidentSeekHistory,
     pub section: Option<crate::arrangement_seek::SectionLaunch>,
+    /// An ordinary playing seek with no section loop edit. Section launches
+    /// carry their quantization in the section intent.
+    pub locator_quantization: Option<hex_engine::LaunchQuantization>,
     pub fence: ResidentFreshRuntimeFence,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
@@ -51,6 +80,20 @@ fn selected_source<'a>(
         _ => Err("seek preview changed".into()),
     }
 }
+fn result_matches_intent(
+    result: &crate::arrangement_seek::ArrangementSeekResult,
+    intent: &ResidentArrangementSeekIntent,
+    prepared: &Arc<hex_engine::PreparedRevision>,
+) -> bool {
+    preparation_mode(intent.history, intent.section).is_ok_and(|mode| result.mode == mode)
+        && result.generation == intent.project_generation
+        && result.revision == intent.project_revision
+        && Arc::ptr_eq(&result.prepared_revision, prepared)
+        && result.destination_frame == intent.destination_frame
+        && result.work_budget_frames == crate::arrangement_seek::MAX_SEEK_WORK_FRAMES
+        && result.start_playing == intent.start_playing
+}
+
 struct Active {
     job: u64,
     intent: ResidentArrangementSeekIntent,
@@ -129,12 +172,20 @@ impl Lane {
             return Err("seek target changed or was cancelled".into());
         }
         if intent.section.is_some_and(|section| {
-            !section.region.enabled()
+            !section.matches_loop(session.project().loop_region())
                 || section.region.start() != intent.destination_frame
                 || !intent.start_playing
         }) {
-            return Err("section launch requires its exact enabled loop start".into());
+            return Err("section launch requires its exact start and loop state".into());
         }
+        if intent.locator_quantization.is_some()
+            && (intent.history != ResidentSeekHistory::Fresh
+                || intent.section.is_some()
+                || !intent.start_playing)
+        {
+            return Err("locator quantization requires an ordinary playing seek".into());
+        }
+        let mode = preparation_mode(intent.history, intent.section)?;
         let selected = selected_source(&intent, current, admission.preview)?;
         let files = selected
             .file_sources
@@ -158,6 +209,7 @@ impl Lane {
             .ok_or("resident resource reservation unavailable")?;
         let runtime = intent
             .section
+            .filter(|section| section.region.enabled())
             .map_or_else(
                 || hex_engine::SessionPlayback::interactive_runtime_allowance(&selected.prepared),
                 |section| {
@@ -219,6 +271,7 @@ impl Lane {
             .checked_add(
                 intent
                     .section
+                    .filter(|section| section.region.enabled())
                     .map_or_else(
                         || {
                             hex_engine::SessionPlayback::interactive_runtime_allowance(
@@ -266,11 +319,7 @@ impl Lane {
             .ok_or("seek worker unavailable")?
             .submit_resident(
                 ArrangementSeekSpec {
-                    mode: intent
-                        .section
-                        .map_or(ArrangementSeekMode::Interactive, |section| {
-                            ArrangementSeekMode::SectionLoop(section.region)
-                        }),
+                    mode,
                     generation: intent.project_generation,
                     revision: intent.project_revision,
                     prepared_revision: Arc::clone(&selected.prepared),
@@ -332,10 +381,13 @@ impl Lane {
             && let Some(mut job) = self.active[index].take()
         {
             let accepted = (|| {
+                let identity_matches =
+                    result_matches_intent(&result, &job.intent, &job.snapshot.prepared);
                 let playback = result
                     .result
                     .map_err(|e| format!("seek preparation failed: {e:?}"))?;
-                if job.intent.cancelled.load(Ordering::Acquire)
+                if !identity_matches
+                    || job.intent.cancelled.load(Ordering::Acquire)
                     || context.project_generation != job.intent.project_generation
                     || context.editor_revision != job.intent.project_revision
                     || !playback
@@ -389,13 +441,17 @@ impl Lane {
                                 .prepared
                                 .arrangement_seek_requires_preroll(),
                         },
-                        job.intent.section.map_or(
-                            ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
-                            |section| ResidentPublicationPolicy::SectionWhenReady {
-                                fence: job.intent.fence,
-                                quantization: section.quantization,
-                            },
-                        ),
+                        job.intent
+                            .section
+                            .map(|section| section.quantization)
+                            .or(job.intent.locator_quantization)
+                            .map_or(
+                                ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                                |quantization| ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                                    fence: job.intent.fence,
+                                    quantization,
+                                },
+                            ),
                         &job.intent.cancelled,
                     )
                     .map_err(|e| e.to_string())
@@ -442,3 +498,6 @@ impl Drop for Lane {
         // Anchors outlive the joined worker's final resource/result destruction.
     }
 }
+
+#[cfg(test)]
+mod tests;

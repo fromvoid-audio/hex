@@ -555,8 +555,8 @@ impl EditorView {
                 .is_none_or(|state| state.revision != panel.revision)
         {
             self.error = Some("project changed · relink cancelled".into());
-        } else {
-            self.enqueue(Request::RelinkMedia(panel.resolved()));
+        } else if !self.enqueue(Request::RelinkMedia(panel.resolved())) {
+            self.missing_media = Some(panel);
         }
         cx.notify();
     }
@@ -789,7 +789,7 @@ impl EditorView {
                 .debug_selector(|| "missing-media-overlay".into())
                 .absolute()
                 .inset_0()
-                .pt(px(super::header::TITLE_HEIGHT))
+                .pt(px(super::header::WINDOW_CONTROL_HEIGHT))
                 .flex()
                 .justify_center()
                 .bg(rgb(theme::color(PaletteRole::Background)))
@@ -889,7 +889,7 @@ fn button(id: impl Into<gpui::ElementId>, label: impl AsRef<str>) -> Stateful<Di
         .child(theme::text(label))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]

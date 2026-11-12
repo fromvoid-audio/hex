@@ -34,7 +34,7 @@ struct Lane {
 }
 #[derive(Deserialize)]
 struct Lanes(#[serde(deserialize_with = "lanes")] Vec<Lane>);
-fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
+pub(crate) fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -68,9 +68,20 @@ pub(super) fn points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Point
     bounded(d, hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
 }
 fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> {
-    struct Inventory;
-    impl<'de> serde::de::Visitor<'de> for Inventory {
-        type Value = Vec<Lane>;
+    bounded_lanes(d, |lane: &Lane| lane.points.len())
+}
+
+pub(super) fn bounded_lanes<'de, D, T>(
+    d: D,
+    point_count: impl Fn(&T) -> usize,
+) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Inventory<T, F>(F, std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>, F: Fn(&T) -> usize> serde::de::Visitor<'de> for Inventory<T, F> {
+        type Value = Vec<T>;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded device automation points")
         }
@@ -80,9 +91,9 @@ fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> 
         ) -> Result<Self::Value, A::Error> {
             let mut rows = Vec::new();
             let mut count = 0usize;
-            while let Some(row) = seq.next_element::<Lane>()? {
+            while let Some(row) = seq.next_element::<T>()? {
                 count = count
-                    .checked_add(row.points.len())
+                    .checked_add(self.0(&row))
                     .ok_or_else(|| serde::de::Error::custom("automation point count overflow"))?;
                 if rows.len() == hex_project::MAX_DEVICE_AUTOMATION_POINTS
                     || count > hex_project::MAX_DEVICE_AUTOMATION_POINTS
@@ -97,7 +108,7 @@ fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> 
             Ok(rows)
         }
     }
-    d.deserialize_seq(Inventory)
+    d.deserialize_seq(Inventory(point_count, std::marker::PhantomData))
 }
 /// Visit only canonical envelope owners. Track instrument projections remain
 /// empty even when many bindings reference the same retained source envelope.
@@ -221,6 +232,8 @@ pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, Stor
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let lane = DeviceAutomation {
+            touch: Vec::new(),
+            vst3_class: None,
             read_selection: hex_project::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter),
             points,

@@ -23,6 +23,11 @@ pub(super) fn retime(
     if numerator == denominator && numerator != 0 {
         return Ok(());
     }
+    if edit.domain.musical_event_source.is_some() {
+        return Err(Invalid(
+            "stretching a separated musical event source is unsupported",
+        ));
+    }
     let (_, old_frames, _, _) = edit.projected_domain(tempo)?;
     let old_fade = edit.domain.fade;
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;
@@ -106,7 +111,8 @@ pub(super) fn retime(
         old_fade.in_curve(),
         old_fade.out_curve(),
     )?
-    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?;
+    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?
+    .with_curve_laws(old_fade.curve_laws());
     domain.fade_projection = Some(AudioFadeProjection {
         tempo: tempo.clone(),
         origin_beat_raw: origin + i128::from(domain.fade_start),

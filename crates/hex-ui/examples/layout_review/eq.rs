@@ -229,10 +229,10 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         let entity = cx.new(|cx| Toggle::from_config(cx, config));
         subscriptions.push(
             cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
-                if index == 0 {
-                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
-                        discrete_event(fixture, DiscreteEdit::Enabled(event.checked));
-                    }
+                if index == 0
+                    && let Some(fixture) = view.fixtures.get_mut(&Entry::Eq)
+                {
+                    discrete_event(fixture, DiscreteEdit::Enabled(event.checked));
                 }
                 if (1..=5).contains(&index) && event.checked && !view.finish_drafts(cx) {
                     if let Some(fixture) = view.fixtures.get(&Entry::Eq) {
@@ -248,45 +248,44 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                     cx.notify();
                     return;
                 }
-                if (1..=5).contains(&index) {
-                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
-                        if defer_action(fixture, PendingAction::Bank(index, event.checked)) {
+                if (1..=5).contains(&index)
+                    && let Some(fixture) = view.fixtures.get_mut(&Entry::Eq)
+                    && defer_action(fixture, PendingAction::Bank(index, event.checked))
+                {
+                    cx.notify();
+                    return;
+                }
+                if (1..=5).contains(&index)
+                    && let Some(fixture) = view.fixtures.get_mut(&Entry::Eq)
+                {
+                    if event.checked {
+                        if let Err(error) = select_bank(fixture, (index - 1) as u8, cx) {
+                            view.error = Some(error);
+                            let bank = fixture
+                                .eq_local
+                                .as_ref()
+                                .map_or(0, |local| usize::from(local.bank));
+                            for other in 1..=5 {
+                                fixture.toggles[other].update(cx, |toggle, cx| {
+                                    toggle.set_checked(other == bank + 1, cx)
+                                });
+                            }
                             cx.notify();
                             return;
                         }
-                    }
-                }
-                if (1..=5).contains(&index) {
-                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
-                        if event.checked {
-                            if let Err(error) = select_bank(fixture, (index - 1) as u8, cx) {
-                                view.error = Some(error);
-                                let bank = fixture
-                                    .eq_local
-                                    .as_ref()
-                                    .map_or(0, |local| usize::from(local.bank));
-                                for other in 1..=5 {
-                                    fixture.toggles[other].update(cx, |toggle, cx| {
-                                        toggle.set_checked(other == bank + 1, cx)
-                                    });
-                                }
-                                cx.notify();
-                                return;
+                        for other in 1..=5 {
+                            if other != index {
+                                fixture.toggles[other]
+                                    .update(cx, |toggle, cx| toggle.set_checked(false, cx));
                             }
-                            for other in 1..=5 {
-                                if other != index {
-                                    fixture.toggles[other]
-                                        .update(cx, |toggle, cx| toggle.set_checked(false, cx));
-                                }
-                            }
-                        } else if fixture
-                            .eq_local
-                            .as_ref()
-                            .is_some_and(|local| usize::from(local.bank) + 1 == index)
-                        {
-                            fixture.toggles[index]
-                                .update(cx, |toggle, cx| toggle.set_checked(true, cx));
                         }
+                    } else if fixture
+                        .eq_local
+                        .as_ref()
+                        .is_some_and(|local| usize::from(local.bank) + 1 == index)
+                    {
+                        fixture.toggles[index]
+                            .update(cx, |toggle, cx| toggle.set_checked(true, cx));
                     }
                 }
                 cx.notify();
@@ -339,7 +338,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         graph.set_creation_enabled(true);
         graph.set_creation_drag_enabled(true);
         graph.set_backspace_removal(true);
-        graph.set_marquee_enabled(true, cx);
+        graph.set_blank_marquee_enabled(true, cx);
         graph
     });
     subscriptions.push(
@@ -432,10 +431,10 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         eq_local: Some(Local::new()?),
         discrete_height: 14.0,
     };
-    if let Some(state) = current(&fixture, cx) {
-        if let Some(local) = fixture.eq_local.as_mut() {
-            local.state = state;
-        }
+    if let Some(state) = current(&fixture, cx)
+        && let Some(local) = fixture.eq_local.as_mut()
+    {
+        local.state = state;
     }
     Ok(fixture)
 }
@@ -1294,7 +1293,7 @@ pub(super) fn sync(fixture: &Fixture, disabled: bool, cx: &mut Context<Gallery>)
         graph.set_editable(!disabled, cx);
         graph.set_creation_enabled(!disabled);
         graph.set_creation_hint_resolver(show_hint.then_some(node_geometry::creation_hint), cx);
-        graph.set_marquee_enabled(!disabled, cx);
+        graph.set_blank_marquee_enabled(!disabled, cx);
         let _ = graph.set_scroll_nodes(eligible, cx);
         let _ = graph.set_axes(Some(axes::frequency_axes(48000)), cx);
         let _ = graph.set_model(
@@ -1372,6 +1371,33 @@ pub(super) fn body(fixture: &Fixture) -> Div {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+
+    fn graph_double_click_down(
+        visual: &mut gpui::VisualTestContext,
+        position: gpui::Point<gpui::Pixels>,
+    ) {
+        let modifiers = gpui::Modifiers::default();
+        visual.simulate_click(position, modifiers);
+        visual.simulate_event(gpui::MouseDownEvent {
+            position,
+            modifiers,
+            button: gpui::MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+    }
+
+    fn graph_double_click(
+        visual: &mut gpui::VisualTestContext,
+        position: gpui::Point<gpui::Pixels>,
+    ) {
+        graph_double_click_down(visual, position);
+        visual.simulate_mouse_up(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+    }
 
     fn event(phase: ResponseGraphPhase, node_id: u32, position: [f32; 2]) -> ResponseGraphEvent {
         ResponseGraphEvent {
@@ -1824,7 +1850,7 @@ mod tests {
             plot.left() + plot.size.width * 0.3,
             plot.top() + plot.size.height * 0.3,
         );
-        visual.simulate_click(position, Modifiers::default());
+        graph_double_click(&mut visual, position);
         visual.run_until_parked();
         view.read_with(cx, |view, cx| {
             let state = current(&view.fixtures[&Entry::Eq], cx).unwrap();
@@ -2655,7 +2681,7 @@ mod tests {
             plot.left() + plot.size.width * 0.25,
             plot.top() + plot.size.height * 0.3,
         );
-        visual.simulate_click(position, Modifiers::default());
+        graph_double_click(&mut visual, position);
         visual.run_until_parked();
         view.read_with(cx, |view, cx| {
             assert!(view.error.is_some());
@@ -2710,7 +2736,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn graph_click_creates_a_node_and_existing_node_remains_selectable(cx: &mut TestAppContext) {
+    fn graph_double_click_creates_a_node_and_existing_node_remains_selectable(
+        cx: &mut TestAppContext,
+    ) {
         use gpui::{Modifiers, VisualTestContext, point, px, size};
         cx.update(hex_widgets::bind_response_graph_keys);
         let window = cx.add_window(|_, cx| {
@@ -2731,7 +2759,7 @@ mod tests {
                 plot.top() + plot.size.height * (1.0 - position[1]),
             )
         };
-        visual.simulate_click(at([0.25, 0.7]), Modifiers::default());
+        graph_double_click(&mut visual, at([0.25, 0.7]));
         visual.run_until_parked();
         let model_after = view.read_with(cx, |view, cx| {
             model(&view.fixtures[&Entry::Eq], cx).unwrap()
@@ -2749,7 +2777,7 @@ mod tests {
 
     #[gpui::test]
     fn graph_creates_and_disabling_during_capture_cancels_preview(cx: &mut TestAppContext) {
-        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        use gpui::{VisualTestContext, point, px, size};
         cx.update(hex_widgets::bind_response_graph_keys);
         let window = cx.add_window(|_, cx| {
             let mut view = Gallery::new(cx);
@@ -2767,7 +2795,7 @@ mod tests {
             plot.left() + plot.size.width * 0.25,
             plot.top() + plot.size.height * 0.3,
         );
-        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        graph_double_click_down(&mut visual, position);
         visual.run_until_parked();
         view.read_with(cx, |view, cx| {
             assert_eq!(
@@ -2792,7 +2820,7 @@ mod tests {
 
     #[gpui::test]
     fn escape_during_graph_creation_restores_prior_nodes(cx: &mut TestAppContext) {
-        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        use gpui::{VisualTestContext, point, px, size};
         cx.update(hex_widgets::bind_response_graph_keys);
         let window = cx.add_window(|_, cx| {
             let mut view = Gallery::new(cx);
@@ -2810,7 +2838,7 @@ mod tests {
             plot.left() + plot.size.width * 0.25,
             plot.top() + plot.size.height * 0.3,
         );
-        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        graph_double_click_down(&mut visual, position);
         visual.run_until_parked();
         view.read_with(cx, |view, cx| {
             assert_eq!(
@@ -2830,7 +2858,7 @@ mod tests {
 
     #[gpui::test]
     fn leaving_eq_during_capture_cancels_only_the_preview(cx: &mut TestAppContext) {
-        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        use gpui::{VisualTestContext, point, px, size};
         let window = cx.add_window(|_, cx| {
             let mut view = Gallery::new(cx);
             view.entry = Entry::Eq;
@@ -2847,7 +2875,7 @@ mod tests {
             plot.left() + plot.size.width * 0.25,
             plot.top() + plot.size.height * 0.3,
         );
-        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        graph_double_click_down(&mut visual, position);
         visual.run_until_parked();
         view.read_with(cx, |view, cx| {
             assert_eq!(
@@ -2889,8 +2917,8 @@ mod tests {
                 plot.top() + plot.size.height * (1.0 - p[1]),
             )
         };
-        visual.simulate_click(at([0.25, 0.7]), Modifiers::default());
-        visual.simulate_click(at([0.75, 0.7]), Modifiers::default());
+        graph_double_click(&mut visual, at([0.25, 0.7]));
+        graph_double_click(&mut visual, at([0.75, 0.7]));
         visual.run_until_parked();
         let shift = Modifiers {
             shift: true,
@@ -2937,9 +2965,13 @@ mod tests {
                 1
             );
         });
-        visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, shift);
-        visual.simulate_mouse_move(at([0.85, 0.4]), Some(MouseButton::Left), shift);
-        visual.simulate_mouse_up(at([0.85, 0.4]), MouseButton::Left, shift);
+        visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            at([0.85, 0.4]),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(at([0.85, 0.4]), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         let before = view.read_with(cx, |view, cx| {
             model(&view.fixtures[&Entry::Eq], cx).unwrap()
@@ -3025,15 +3057,15 @@ mod tests {
                 plot.top() + plot.size.height * (1.0 - p[1]),
             )
         };
-        visual.simulate_click(at([0.25, 0.7]), Modifiers::default());
-        visual.simulate_click(at([0.75, 0.7]), Modifiers::default());
+        graph_double_click(&mut visual, at([0.25, 0.7]));
+        graph_double_click(&mut visual, at([0.75, 0.7]));
         visual.run_until_parked();
-        let shift = Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, shift);
-        visual.simulate_mouse_move(at([0.85, 0.4]), Some(MouseButton::Left), shift);
+        visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            at([0.85, 0.4]),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
         visual.run_until_parked();
         view.read_with(cx, |view, cx| {
             assert_eq!(

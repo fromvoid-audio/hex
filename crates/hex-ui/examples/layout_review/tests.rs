@@ -49,13 +49,38 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             let card = visual.debug_bounds("catalog-card").unwrap();
             let header = visual.debug_bounds("device-frame-header").unwrap();
             let body = visual.debug_bounds("fixture-body").unwrap();
-            assert_eq!(card.size, size(px(entry.width()), px(184.0)), "{entry:?}");
             assert_eq!(
-                header.size.height,
-                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+                card.size,
+                size(
+                    px(entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH),
+                    px(200.0)
+                ),
+                "{entry:?}"
+            );
+            assert_eq!(
+                header.size.width,
+                px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH)
             );
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
-            assert_eq!(body.origin.y, header.bottom_left().y);
+            assert_eq!(body.origin.x, header.right());
+            assert_eq!(body.origin.y, header.origin.y);
+            if entry == Entry::Vector {
+                for index in 0..12 {
+                    let slider = visual
+                        .debug_bounds(number_id(entry, index, "-slider"))
+                        .unwrap();
+                    assert_eq!(slider.size, size(px(58.0), px(14.0)));
+                    assert!(
+                        visual
+                            .debug_bounds(number_id(entry, index, "-knob"))
+                            .is_none()
+                    );
+                }
+            }
+            assert_eq!(
+                body.bottom() + px(hex_widgets::DEVICE_FRAME_BORDER_WIDTH),
+                card.bottom()
+            );
             assert_eq!(
                 visual.rendered_background("device-frame-header"),
                 Some(gpui::Background::from(rgb(theme::device_style(
@@ -143,7 +168,7 @@ fn selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footpri
         Some(gpui::Background::from(rgb(theme::device_style(
             theme::DeviceStyleRole::Layout
         )
-        .accent)))
+        .surface)))
     );
     visual.simulate_keystrokes("escape");
     let bypass = visual.debug_bounds("bypass-sample").unwrap();
@@ -302,6 +327,7 @@ fn selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus(
     let _restore = RestoreTheme(theme::preferences());
     let (handle, view) = open(cx, Entry::Saturator);
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(960.0), px(660.0)));
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     let choice = view.read_with(cx, |view, _| {
@@ -340,6 +366,24 @@ fn selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus(
         "real widget choice changes locally"
     );
     visual.simulate_keystrokes("enter escape");
+    assert!(!choice.read_with(cx, |control, _| control.is_open()));
+
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.run_until_parked();
+    let outside = visual
+        .debug_bounds("fixture-saturator-selector-0-option-17")
+        .unwrap();
+    assert!(
+        outside.center().y > card.bottom(),
+        "option must be outside the clipped card"
+    );
+    assert!(
+        outside.center().y < px(660.0),
+        "option must remain inside the window"
+    );
+    visual.simulate_click(outside.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(choice.read_with(cx, |control, _| control.selected()), 17);
     assert!(!choice.read_with(cx, |control, _| control.is_open()));
 }
 

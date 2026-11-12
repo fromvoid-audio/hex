@@ -2,8 +2,21 @@
 use super::*;
 use std::mem;
 mod checkpoint;
+mod checkpoint_worker;
 pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
+
+#[cfg(test)]
+pub(super) fn install_checkpoint_gate(
+    path: PathBuf,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    checkpoint::CHECKPOINT_GATE
+        .lock()
+        .unwrap()
+        .push((path, entered, release));
+}
 
 /// Explicit source selection. Recovery never adopts an overwrite association.
 #[derive(Clone, Debug)]
@@ -220,6 +233,28 @@ pub(super) fn read_source(
     Ok((project, absolute_document_base(path)?, document))
 }
 
+fn validate_sampler_source_identity(project: &Project) -> Result<bool, String> {
+    let private_sampler =
+        hex_engine::native_device_resources::requires_private_sampler_sources(project);
+    if private_sampler
+        && project
+            .tracks()
+            .iter()
+            .filter_map(|track| track.instrument())
+            .filter(|device| device.state().type_id().as_str() == Ok("hex.instrument.sampler"))
+            .flat_map(|device| device.state().asset_references())
+            .any(|reference| {
+                !project.assets().any(|asset| {
+                    asset.id().value() == reference.asset.value()
+                        && asset.original_source().is_some()
+                })
+            })
+    {
+        return Err("sampler reopening requires qualified original source reconstruction and saved content identity".into());
+    }
+    Ok(private_sampler)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn open_source_with_limits(
     current: &Session,
@@ -233,32 +268,6 @@ pub(super) fn open_source_with_limits(
     admission: sampler_export::Admission<'_>,
 ) -> Result<OpenCandidate, String> {
     let (mut project, project_dir, document) = read_source(source)?;
-    let private_sampler =
-        hex_engine::native_device_resources::requires_private_sampler_sources(&project);
-    if private_sampler
-        && project
-            .tracks()
-            .iter()
-            .filter_map(|t| t.instrument())
-            .filter(|d| d.state().type_id().as_str() == Ok("hex.instrument.sampler"))
-            .flat_map(|d| d.state().asset_references())
-            .any(|reference| {
-                !project.assets().any(|a| {
-                    a.id().value() == reference.asset.value() && a.original_source().is_some()
-                })
-            })
-    {
-        return Err("sampler reopening requires qualified original source reconstruction and saved content identity".into());
-    }
-    let has_originals = project.assets().any(|a| a.original_source().is_some());
-    if (has_originals || private_sampler)
-        && (mode != DocumentAudioMode::Resident || native.is_none())
-    {
-        return Err("device-original reopening requires resident native limits".into());
-    }
-    if current.shutdown.load(Ordering::Acquire) {
-        return Err("project open cancelled".into());
-    }
     let dirty = document.is_none() || !relinks.is_empty();
     if !relinks.is_empty() {
         if relinks.keys().any(|id| project.asset(*id).is_none()) {
@@ -276,12 +285,49 @@ pub(super) fn open_source_with_limits(
         }
         project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
     }
+    // Validate saved sampler identity before inspecting its media. The prepare
+    // boundary repeats this check because other callers enter it directly.
+    validate_sampler_source_identity(&project)?;
     project = with_missing_media_offline(project, &project_dir)?;
-    if mode == DocumentAudioMode::Resident
-        && project.sample_rate() != current.project().sample_rate()
+    let session = prepare_project(
+        current,
+        history_capacity,
+        project,
+        &project_dir,
+        mode,
+        reservation,
+        native,
+        frame_allowance,
+        admission,
+    )?;
+    Ok((session, project_dir, document, dirty))
+}
+
+/// Rebuild a validated project from its original sources under the same
+/// reservations as opening. The caller retains ownership of document identity.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_project(
+    current: &Session,
+    history_capacity: usize,
+    project: Project,
+    project_dir: &Path,
+    mode: DocumentAudioMode,
+    reservation: Option<SourcePlanReservation>,
+    native: Option<crate::ResidentNativeReservation>,
+    frame_allowance: u64,
+    admission: sampler_export::Admission<'_>,
+) -> Result<Session, String> {
+    let private_sampler = validate_sampler_source_identity(&project)?;
+    let has_originals = project.assets().any(|a| a.original_source().is_some());
+    if (has_originals || private_sampler)
+        && (mode != DocumentAudioMode::Resident || native.is_none())
     {
-        return Err("project sample rate differs from the active audio device".into());
+        return Err("device-original reopening requires resident native limits".into());
     }
+    if current.shutdown.load(Ordering::Acquire) {
+        return Err("project open cancelled".into());
+    }
+
     let reservation = match mode {
         DocumentAudioMode::Resident => reservation.or(current.source_plan_reservation()),
         DocumentAudioMode::VerifiedStreaming => reservation,
@@ -299,10 +345,9 @@ pub(super) fn open_source_with_limits(
             .checked_add(frames)
             .ok_or("project pcm frame count overflow")
     })?;
-    // Preserve the ordinary document policy. Native replacement first retains
-    // factual file inputs with its admitted offline graph; the fresh output
-    // verifies its real catalog and delivers the endpoint before queue submission.
-    // File facts alone never promise page readiness or callback application.
+    // The fresh output verifies the candidate's factual file inputs and
+    // delivers the real page endpoint before queue submission. File facts
+    // alone never promise page readiness or callback application.
     // A plain asset past the per-file resident decode caps was imported as a
     // streamed file; reopening must keep it file-backed even when the total
     // working set would otherwise fit (Pulse #3949).
@@ -310,7 +355,7 @@ pub(super) fn open_source_with_limits(
         asset.original_source().is_none()
             && !asset_requires_resident_processing(&project, asset.id())
             && crate::verified_import::exceeds_resident_decode(
-                &asset_media_path(&project_dir, asset),
+                &asset_media_path(project_dir, asset),
                 asset.source_frames(),
             )
             .unwrap_or(false)
@@ -339,7 +384,7 @@ pub(super) fn open_source_with_limits(
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in online_assets(&project) {
-            let path = asset_media_path(&project_dir, asset);
+            let path = asset_media_path(project_dir, asset);
             let source = candidate
                 .verify_asset(path, asset)
                 .map_err(|e| e.to_string())?;
@@ -351,7 +396,7 @@ pub(super) fn open_source_with_limits(
         candidate.editor =
             hex_project::Editor::new(project, history_capacity).map_err(|e| e.to_string())?;
         candidate.sine_table = current.sine_table();
-        return Ok((candidate, project_dir, document, dirty));
+        return Ok(candidate);
     }
     let mut file_candidate = if ordinary_file_backed {
         Some(
@@ -378,7 +423,7 @@ pub(super) fn open_source_with_limits(
     // Load unreferenced assets too: the editor can place them later. Missing
     // media is either offline (recorded on the project) or rejects the candidate.
     for asset in online_assets(&project) {
-        let media_path = asset_media_path(&project_dir, asset);
+        let media_path = asset_media_path(project_dir, asset);
         if current.shutdown.load(Ordering::Acquire) {
             return Err("project open cancelled".into());
         }
@@ -606,12 +651,7 @@ pub(super) fn open_source_with_limits(
         session.semantic_source_epoch =
             crate::audio_sources::fresh_source_epoch().map_err(|e| e.to_string())?;
     }
-    Ok((
-        session.with_shutdown(Arc::clone(&current.shutdown)),
-        project_dir,
-        document,
-        dirty,
-    ))
+    Ok(session.with_shutdown(Arc::clone(&current.shutdown)))
 }
 
 fn asset_media_path(project_dir: &Path, asset: &hex_project::Asset) -> PathBuf {
@@ -672,21 +712,40 @@ fn asset_requires_resident_processing(project: &Project, asset: hex_project::Ass
         .any(requires)
 }
 
-pub(super) fn checkpoint_project(
-    session: &Session,
-    base: Option<&Path>,
-    document: Option<&DocumentHandle>,
-    untitled_path: &Path,
-    journal: &mut Option<hex_storage::Journal>,
-) -> Result<Option<PathBuf>, String> {
-    let path = checkpoint_path(document, untitled_path)?;
-    let project = project_for_save(session, base)?;
-    if journal
-        .as_ref()
-        .is_none_or(|current| current.path() != path)
-    {
-        if document.is_none() {
-            if let Some(parent) = path.parent() {
+/// A checkpoint's exact project and destination, captured on the service worker.
+/// Publication owns the image and journal exclusively; capture is not durability.
+pub(super) struct PreparedCheckpoint {
+    path: PathBuf,
+    untitled: bool,
+    image: SaveImage,
+}
+
+impl PreparedCheckpoint {
+    pub(super) fn capture(context: &RecoveryContext<'_>) -> Result<Self, String> {
+        Ok(Self {
+            path: checkpoint_path(context.document, context.untitled)?,
+            untitled: context.document.is_none(),
+            image: SaveImage::capture(context.session, context.base)?,
+        })
+    }
+
+    pub(super) fn publish(
+        self,
+        journal: &mut Option<hex_storage::Journal>,
+    ) -> Result<Option<PathBuf>, String> {
+        let Self {
+            path,
+            untitled,
+            image,
+        } = self;
+        #[cfg(test)]
+        checkpoint::wait_at_checkpoint(&path);
+        let project = image.materialize()?;
+        if journal
+            .as_ref()
+            .is_none_or(|current| current.path() != path)
+        {
+            if untitled && let Some(parent) = path.parent() {
                 match std::fs::symlink_metadata(parent) {
                     Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
                         return Err("recovery directory must be a real directory".into());
@@ -698,28 +757,28 @@ pub(super) fn checkpoint_project(
                 }
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
+            if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
+                .map_err(|e| e.to_string())?
+            {
+                let outcome = hex_storage::restart_journal(&token, &project);
+                *journal = outcome.journal;
+                outcome
+                    .result
+                    .map_err(|error| match outcome.preserved_path.as_ref() {
+                        Some(_) => format!(
+                            "{error}; previous recovery journal preserved beside its original slot"
+                        ),
+                        None => error.to_string(),
+                    })?;
+                return Ok(outcome.preserved_path);
+            }
+            *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
         }
-        if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
-            .map_err(|e| e.to_string())?
-        {
-            let outcome = hex_storage::restart_journal(&token, &project);
-            *journal = outcome.journal;
-            outcome
-                .result
-                .map_err(|error| match outcome.preserved_path.as_ref() {
-                    Some(_) => format!(
-                        "{error}; previous recovery journal preserved beside its original slot"
-                    ),
-                    None => error.to_string(),
-                })?;
-            return Ok(outcome.preserved_path);
+        if let Some(journal) = journal {
+            journal.checkpoint(&project).map_err(|e| e.to_string())?;
         }
-        *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
+        Ok(None)
     }
-    if let Some(journal) = journal {
-        journal.checkpoint(&project).map_err(|e| e.to_string())?;
-    }
-    Ok(None)
 }
 
 pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {
@@ -823,6 +882,61 @@ fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn prepared_checkpoint_keeps_snapshot_and_journal_custody_when_moved() {
+        let directory = scratch();
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "first".into(),
+            })
+            .unwrap();
+        let expected = project_for_save(&session, None).unwrap();
+        let mut journal = None;
+        let checkpoint = PreparedCheckpoint::capture(&RecoveryContext {
+            session: &session,
+            base: None,
+            document: None,
+            untitled: &path,
+            journal: &mut journal,
+            generation: 1,
+        })
+        .unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "later".into(),
+            })
+            .unwrap();
+        let mut journal = std::thread::spawn(move || {
+            checkpoint.publish(&mut journal).unwrap();
+            journal
+        })
+        .join()
+        .unwrap();
+        assert_eq!(hex_storage::load_journal(&path).unwrap(), expected);
+        let checkpoint = PreparedCheckpoint::capture(&RecoveryContext {
+            session: &session,
+            base: None,
+            document: None,
+            untitled: &path,
+            journal: &mut journal,
+            generation: 1,
+        })
+        .unwrap();
+        let external = b"external journal contents";
+        std::fs::write(&path, external).unwrap();
+        assert!(
+            std::thread::spawn(move || checkpoint.publish(&mut journal))
+                .join()
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), external);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn captured_save_image_moves_to_worker_and_keeps_its_original_revision() {

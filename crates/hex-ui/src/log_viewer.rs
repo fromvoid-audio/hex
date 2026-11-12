@@ -5,12 +5,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
-use hex_diagnostics::reader::{LogFilter, LogSnapshot, read_session_page};
+use hex_diagnostics::reader::{LogLine, LogSnapshot, read_session_page};
 use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const CATEGORIES: &[&str] = &[
@@ -32,8 +32,23 @@ const WINDOWS: &[(&str, Option<u64>)] = &[
     ("last 1 min", Some(60)),
     ("last 5 min", Some(300)),
 ];
-const COPY_LIMIT: usize = 1024 * 1024;
-const COPY_CLIPPED: &str = "[excerpt clipped at 1 mib]\n";
+
+mod presentation;
+mod scrollbar;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+use presentation::COPY_LIMIT;
+use presentation::{COPY_CLIPPED, format_time, make_excerpt};
+
+mod filter;
+use filter::ViewerFilter;
+
+struct FilteredCopy {
+    text: String,
+    matching_events: usize,
+    warnings: bool,
+    clipped: bool,
+}
 
 struct LogInputBindings;
 impl gpui::Global for LogInputBindings {}
@@ -83,6 +98,7 @@ struct Viewer {
     selection: Option<usize>,
     status: String,
     scroll: UniformListScrollHandle,
+    scrollbar: scrollbar::State,
 }
 impl Viewer {
     fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
@@ -127,6 +143,7 @@ impl Viewer {
             selection: None,
             status: "loading…".into(),
             scroll: UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
         };
         view.reload(cx);
         view
@@ -193,6 +210,20 @@ impl Viewer {
         .detach();
         cx.notify();
     }
+    fn current_filter(&self, cx: &App) -> Result<ViewerFilter, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| {
+                "could not resolve log time range: system clock is before unix epoch".to_owned()
+            })?
+            .as_nanos();
+        Ok(ViewerFilter::new(
+            CATEGORIES[self.category],
+            self.query.read(cx).text().to_owned(),
+            WINDOWS[self.window],
+            now,
+        ))
+    }
     fn filter(&mut self, cx: &mut Context<Self>) {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
@@ -208,25 +239,17 @@ impl Viewer {
             cx.notify();
             return;
         }
+        let request = match self.current_filter(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
         self.filtering = true;
-        let category = CATEGORIES[self.category].to_owned();
-        let seconds = WINDOWS[self.window].1;
-        let query = self.query.read(cx).text().to_owned();
         let task = cx.background_executor().spawn(async move {
-            let latest = snapshot
-                .lines
-                .iter()
-                .filter_map(|line| line.event.as_ref().map(|e| e.unix_nanos))
-                .max();
-            let since = seconds.zip(latest).map(|(seconds, latest)| {
-                latest.saturating_sub(Duration::from_secs(seconds).as_nanos())
-            });
-            let filter = LogFilter {
-                category: (category != "all").then_some(category.as_str()),
-                text: (!query.is_empty()).then_some(query.as_str()),
-                since_unix_nanos: since,
-                until_unix_nanos: None,
-            };
+            let filter = request.borrowed();
             let rows = snapshot
                 .lines
                 .iter()
@@ -290,6 +313,44 @@ impl Viewer {
             self.reload(cx);
         }
     }
+    fn copy_all(&mut self, cx: &mut Context<Self>) {
+        if self.copying {
+            return;
+        }
+        let request = match self.current_filter(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
+        let path = self.path.clone();
+        self.copying = true;
+        self.status = "reading all retained matching logs…".into();
+        let task = cx
+            .background_executor()
+            .spawn(async move { make_filtered_copy(&path, &request) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |view, cx| {
+                view.copying = false;
+                match result {
+                    Ok(copy) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.text.clone()));
+                        // GPUI's write API has no error return. Confirm the
+                        // bounded payload through its read API before success.
+                        let actual = cx.read_from_clipboard().and_then(|item| item.text());
+                        view.status = filtered_copy_status(&copy, actual.as_deref()).into();
+                    }
+                    Err(error) => view.status = format!("could not copy filtered logs: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         if self.copying {
             return;
@@ -341,56 +402,50 @@ impl Viewer {
     }
 }
 
-fn make_excerpt(
-    snapshot: &LogSnapshot,
-    rows: &[usize],
-    path: &Path,
-    category: &str,
-    time: &str,
-    query: &str,
-    selection: (usize, usize),
-) -> String {
-    let mut result = format!(
-        "hex log excerpt\nsession: {}\ncategory: {category}; time: {time}; search: {query}\n",
-        path.display()
+fn make_filtered_copy(path: &Path, request: &ViewerFilter) -> Result<FilteredCopy, String> {
+    let result = hex_diagnostics::reader::read_session_filtered(path, &request.borrowed())
+        .map_err(|error| error.to_string())?;
+    let since = request
+        .since
+        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+    let until = request
+        .until
+        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+    let time = format!(
+        "{}; inclusive unix_nanos {since}..{until}\nmatching event records: {}; omitted export entries: {}\nall retained pages; context/loss lines are kept regardless of event filters",
+        request.window, result.matching_events, result.omitted_lines
     );
-    if let Some(header) = &snapshot.header {
-        result.push_str(header);
-        result.push('\n');
+    let rows: Vec<_> = (0..result.snapshot.lines.len()).collect();
+    let text = make_excerpt(
+        &result.snapshot,
+        &rows,
+        path,
+        request.category,
+        &time,
+        &request.query,
+        (0, rows.len().saturating_sub(1)),
+    );
+    let clipped = result.omitted_lines > 0 || text.ends_with(COPY_CLIPPED);
+    Ok(FilteredCopy {
+        text,
+        matching_events: result.matching_events,
+        warnings: result.snapshot.header.is_none() || !result.snapshot.warnings.is_empty(),
+        clipped,
+    })
+}
+
+fn filtered_copy_status(copy: &FilteredCopy, actual: Option<&str>) -> &'static str {
+    if actual != Some(copy.text.as_str()) {
+        "could not verify clipboard contents · try copying again"
+    } else if copy.clipped {
+        "filtered logs copied · incomplete at export limit · review warnings"
+    } else if copy.warnings {
+        "filtered logs copied with warnings · review before sharing"
+    } else if copy.matching_events == 0 {
+        "no matching events · available context copied"
     } else {
-        result.push_str("warning: session header unavailable\n");
+        "all retained matching logs copied · review before sharing"
     }
-    for warning in &snapshot.warnings {
-        result.push_str(&format!("warning: {warning}\n"));
-    }
-    let content_limit = COPY_LIMIT - COPY_CLIPPED.len();
-    if result.len() > content_limit {
-        let mut end = content_limit;
-        while !result.is_char_boundary(end) {
-            end -= 1;
-        }
-        result.truncate(end);
-        result.push_str(COPY_CLIPPED);
-        return result;
-    }
-    let (start, end) = selection;
-    for index in start.min(end)..=start.max(end) {
-        let Some(line) = rows.get(index).and_then(|i| snapshot.lines.get(*i)) else {
-            continue;
-        };
-        if result
-            .len()
-            .saturating_add(line.text.len())
-            .saturating_add(1)
-            > content_limit
-        {
-            result.push_str(COPY_CLIPPED);
-            break;
-        }
-        result.push_str(&line.text);
-        result.push('\n');
-    }
-    result
 }
 
 fn list_sessions(active: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -432,6 +487,23 @@ fn list_sessions(active: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Recorded classification only: message words never imply a severity. The
+/// reader assigns legacy events its documented info default. Untyped lines
+/// remain context; a writer loss record has its own explicit warning label.
+fn level_badge(line: &LogLine) -> (&'static str, hex_project::ElementColor) {
+    use hex_project::ElementColor;
+    match line.event.as_ref().map(|event| event.level.as_str()) {
+        Some("error") => ("error", ElementColor::Red),
+        Some("warn") => ("warn", ElementColor::Amber),
+        Some("info") => ("info", ElementColor::Blue),
+        Some("debug") => ("debug", ElementColor::Gray),
+        Some("trace") => ("trace", ElementColor::Gray),
+        Some(_) => ("other", ElementColor::Gray),
+        None if line.text.starts_with("diagnostics_loss ") => ("loss", ElementColor::Amber),
+        None => ("context", ElementColor::Gray),
+    }
+}
+
 impl Render for Viewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
@@ -458,6 +530,28 @@ impl Render for Viewer {
                         let selected = selection
                             .as_ref()
                             .is_some_and(|range| range.contains(&index));
+                        let background = theme::color(if selected {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Background
+                        });
+                        let foreground = theme::readable_text(
+                            background,
+                            theme::color(theme::PaletteRole::Text),
+                        );
+                        let secondary = theme::readable_text(
+                            background,
+                            theme::color(theme::PaletteRole::Muted),
+                        );
+                        let (level, color) = level_badge(line);
+                        let badge = theme::element_colors(color);
+                        let category: String = line
+                            .event
+                            .as_ref()
+                            .map_or("—", |event| event.category.as_str())
+                            .chars()
+                            .take(24)
+                            .collect();
                         Some(
                             div()
                                 .id(("log-line", index))
@@ -469,17 +563,39 @@ impl Render for Viewer {
                                 .gap(px(8.0))
                                 .px(px(8.0))
                                 .overflow_hidden()
-                                .bg(rgb(theme::color(if selected {
-                                    theme::PaletteRole::Hover
-                                } else {
-                                    theme::PaletteRole::Background
-                                })))
+                                .bg(rgb(background))
+                                .text_color(rgb(foreground))
                                 .child(
                                     div()
                                         .w(px(92.0))
                                         .flex_shrink_0()
-                                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                        .text_color(rgb(secondary))
                                         .child(theme::text(time)),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-level-{index}"))
+                                        .w(px(60.0))
+                                        .h(px(18.0))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(2.0))
+                                        .bg(rgb(badge.accent))
+                                        .text_color(rgb(badge.accent_text))
+                                        .child(theme::text(level)),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-category-{index}"))
+                                        .w(px(80.0))
+                                        .flex_shrink_0()
+                                        .truncate()
+                                        .text_color(rgb(secondary))
+                                        .child(theme::text(hex_session::service::text::verbatim(
+                                            category,
+                                        ))),
                                 )
                                 .child(
                                     div()
@@ -587,12 +703,24 @@ impl Render for Viewer {
                         control("copy selection")
                             .on_click(cx.listener(|view, _, _, cx| view.copy_selection(cx))),
                     )
-                    .child(control("bottom").on_click(cx.listener(|view, _, _, _cx| {
-                        if !view.rows.is_empty() {
-                            view.scroll
-                                .scroll_to_item(view.rows.len() - 1, gpui::ScrollStrategy::Bottom);
-                        }
-                    }))),
+                    .child(
+                        control("copy all")
+                            .debug_selector(|| "log-copy-all".into())
+                            .on_click(cx.listener(|view, _, _, cx| view.copy_all(cx))),
+                    )
+                    .child(
+                        control("bottom")
+                            .debug_selector(|| "log-bottom".into())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if !view.rows.is_empty() {
+                                    view.scroll.scroll_to_item(
+                                        view.rows.len() - 1,
+                                        gpui::ScrollStrategy::Bottom,
+                                    );
+                                    cx.notify();
+                                }
+                            })),
+                    ),
             )
             .child(
                 div()
@@ -614,7 +742,14 @@ impl Render for Viewer {
                         self.page.saturating_add(1)
                     ))),
             )
-            .child(div().flex_1().min_h_0().child(list))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(div().flex_1().min_w_0().h_full().child(list))
+                    .child(self.log_scrollbar(cx)),
+            )
             .child(
                 div()
                     .id("log-detail")
@@ -643,109 +778,9 @@ fn control(label: &str) -> gpui::Stateful<gpui::Div> {
         .px(px(7.0))
 }
 
-fn format_time(unix_nanos: u128) -> String {
-    let millis = unix_nanos / 1_000_000;
-    let day_millis = millis % 86_400_000;
-    format!(
-        "{:02}:{:02}:{:02}.{:03}",
-        day_millis / 3_600_000,
-        day_millis / 60_000 % 60,
-        day_millis / 1000 % 60,
-        day_millis % 1000
-    )
-}
-
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
-    use hex_diagnostics::reader::LogLine;
-
-    #[test]
-    fn excerpt_copies_selected_visible_range_with_context_and_warning() {
-        let snapshot = LogSnapshot {
-            lines: vec![
-                LogLine {
-                    text: "session_started hex_version=1".into(),
-                    event: None,
-                },
-                LogLine {
-                    text: "first".into(),
-                    event: None,
-                },
-                LogLine {
-                    text: "hidden".into(),
-                    event: None,
-                },
-                LogLine {
-                    text: "last".into(),
-                    event: None,
-                },
-            ],
-            warnings: vec!["records were lost".into()],
-            header: Some("session_started hex_version=1".into()),
-        };
-        let result = make_excerpt(
-            &snapshot,
-            &[1, 3],
-            Path::new("/tmp/session.log"),
-            "audio",
-            "last 1 min",
-            "error",
-            (1, 0),
-        );
-        assert!(result.contains("session_started hex_version=1"));
-        assert!(result.contains("warning: records were lost"));
-        assert!(result.contains("first\nlast\n"));
-        assert!(!result.contains("hidden"));
-    }
-
-    #[test]
-    fn excerpt_clips_oversized_lines_and_reports_the_limit() {
-        let snapshot = LogSnapshot {
-            lines: vec![LogLine {
-                text: "x".repeat(COPY_LIMIT + 1),
-                event: None,
-            }],
-            warnings: Vec::new(),
-            header: None,
-        };
-        let result = make_excerpt(
-            &snapshot,
-            &[0],
-            Path::new("session.log"),
-            "all",
-            "entire session",
-            "",
-            (0, 0),
-        );
-        assert!(result.contains("excerpt clipped"));
-        assert!(result.len() < COPY_LIMIT);
-    }
-
-    #[test]
-    fn oversized_multibyte_warning_still_obeys_clipboard_limit() {
-        let snapshot = LogSnapshot {
-            lines: Vec::new(),
-            warnings: vec!["é".repeat(COPY_LIMIT)],
-            header: None,
-        };
-        let result = make_excerpt(
-            &snapshot,
-            &[],
-            Path::new("session.log"),
-            "all",
-            "entire session",
-            "",
-            (0, 0),
-        );
-        assert!(result.len() <= COPY_LIMIT);
-        assert!(result.ends_with(COPY_CLIPPED));
-    }
-
-    #[test]
-    fn timestamp_is_utc_time_of_day() {
-        assert_eq!(format_time(3_723_004_000_000), "01:02:03.004");
-    }
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
@@ -860,15 +895,21 @@ mod tests {
     }
 
     #[cfg(feature = "ui-test-support")]
-    #[gpui::test]
-    fn viewer_navigates_older_and_newer_pages(cx: &mut gpui::TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("hex-viewer-pages-{}", std::process::id()));
+    pub(super) fn paged_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("hex-viewer-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session-200-1.log");
         let mut content =
             "session_started log_schema=3 segment=0 build=fixture\noldest\n".to_owned();
         content.push_str(&"newer\n".repeat(100_000));
         std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn viewer_navigates_older_and_newer_pages(cx: &mut gpui::TestAppContext) {
+        let (dir, path) = paged_fixture("pages");
         let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
         cx.run_until_parked();
         let viewer = handle.root(cx).unwrap();
@@ -897,4 +938,66 @@ mod tests {
         });
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn severity_badges_keep_rows_readable_and_copy_original_records(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("hex-viewer-levels-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-400-1.log");
+        let mut content = "session_started log_schema=3 segment=0 build=fixture\n".to_owned();
+        for (index, level) in ["error", "warn", "info", "debug", "trace", "future"]
+            .iter()
+            .enumerate()
+        {
+            let sequence = index + 1;
+            content.push_str(&format!("event level={level} category=audio unix_nanos={sequence} elapsed_nanos={sequence} sequence={sequence} truncated=false message=\"original {level} Message\"\n"));
+        }
+        content.push_str("older untyped context\ndiagnostics_loss queue_full=1\n");
+        std::fs::write(&path, &content).unwrap();
+        let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
+        cx.run_until_parked();
+        let viewer = handle.root(cx).unwrap();
+        let visual = &mut gpui::VisualTestContext::from_window(*handle, cx);
+        for width in [850.0, 1200.0] {
+            visual.simulate_resize(gpui::size(px(width), px(600.0)));
+            visual.run_until_parked();
+            for index in 0..9 {
+                let row = visual
+                    .debug_bounds(Box::leak(format!("log-row-{index}").into_boxed_str()))
+                    .unwrap();
+                let badge = visual
+                    .debug_bounds(Box::leak(format!("log-level-{index}").into_boxed_str()))
+                    .expect("every record has an explicit level or context label");
+                let category = visual
+                    .debug_bounds(Box::leak(format!("log-category-{index}").into_boxed_str()))
+                    .unwrap();
+                let message = visual
+                    .debug_bounds(Box::leak(format!("log-message-{index}").into_boxed_str()))
+                    .unwrap();
+                assert!(badge.left() >= row.left() && badge.bottom() <= row.bottom());
+                assert!(badge.right() <= category.left() && category.right() <= message.left());
+                assert!(message.right() <= row.right());
+                visual.simulate_click(row.center(), gpui::Modifiers::default());
+                visual.run_until_parked();
+                viewer.update(visual, |view, cx| view.copy_selection(cx));
+                visual.run_until_parked();
+                viewer.read_with(visual, |view, cx| {
+                    assert_eq!(view.selection, Some(index));
+                    let original = &view.snapshot.as_ref().unwrap().lines[index].text;
+                    assert_eq!(original, content.lines().nth(index).unwrap());
+                    let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+                    assert!(
+                        copied.ends_with(&format!("{original}\n")),
+                        "copy keeps original case and structured fields"
+                    );
+                });
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "log_viewer/copy_tests.rs"]
+mod copy_tests;

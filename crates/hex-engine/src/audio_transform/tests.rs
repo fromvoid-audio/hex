@@ -22,7 +22,7 @@ mod musical_sharing;
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 
-fn fixture(
+pub(super) fn fixture(
     looping: bool,
 ) -> (
     Editor,
@@ -69,7 +69,7 @@ fn fixture(
     .unwrap();
     (editor, clip, BTreeMap::from([(asset, audio)]))
 }
-fn prepare(
+pub(super) fn prepare(
     editor: &Editor,
     media: &BTreeMap<hex_project::AssetId, Audio>,
     context: &AudioTransformPreparation,
@@ -83,7 +83,7 @@ fn prepare(
     )
     .unwrap()
 }
-fn render(
+pub(super) fn render(
     revision: &crate::PreparedRevision,
     start: u64,
     length: usize,
@@ -3248,11 +3248,12 @@ fn selection_crossfade_pcm_is_the_two_source_mix_with_unchanged_outside_audio() 
     let pcm = media.values().next().unwrap().frames();
     for frame in 3_500..4_500 {
         let progress = (frame - 3_500) as f64 / 999.0;
+        let incoming_gain = progress * progress * (3.0 - 2.0 * progress);
         let outgoing = pcm[(137 + frame) % 8_000];
         let incoming = pcm[(997_i64 + frame as i64 - 4_000).rem_euclid(8_000) as usize];
         for channel in 0..2 {
-            let expected =
-                outgoing[channel] * (1.0 - progress) as f32 + incoming[channel] * progress as f32;
+            let expected = outgoing[channel] * (1.0 - incoming_gain) as f32
+                + incoming[channel] * incoming_gain as f32;
             assert!(
                 (actual[frame][channel] - expected).abs() < 1e-7,
                 "frame={frame} channel={channel}"

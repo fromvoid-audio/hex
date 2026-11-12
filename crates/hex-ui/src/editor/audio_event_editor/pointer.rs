@@ -10,7 +10,11 @@ impl Kind {
         match self {
             Self::Select => CursorStyle::Arrow,
             Self::PlayStart { .. } => CursorStyle::ResizeLeftRight,
-            Self::RangeMove { .. } | Self::Move(_) => CursorStyle::OpenHand,
+            Self::RangeMove { .. }
+            | Self::FreeRangeMove { .. }
+            | Self::Move(_)
+            | Self::FreeMove { .. }
+            | Self::Duplicate { .. } => CursorStyle::OpenHand,
             Self::Leading(_) => CursorStyle::ResizeLeftBracket,
             Self::Trailing(_) => CursorStyle::ResizeRightBracket,
             Self::Fade(fade) => fade.pointer_cursor(),
@@ -65,6 +69,7 @@ impl EditorView {
                     // This boundary guards the captured display owner and focus.
                     if !view.audio_event_focus.is_focused(window) {
                         if view.audio_event_editor.gesture.take().is_some() {
+                            view.sync_held_play_start_audition();
                             cx.notify();
                         }
                         view.audio_event_editor.fade_key_held = false;
@@ -75,6 +80,7 @@ impl EditorView {
                     };
                     if !f32::from(position.x).is_finite() || !f32::from(position.y).is_finite() {
                         view.audio_event_editor.gesture = None;
+                        view.sync_held_play_start_audition();
                         cx.notify();
                         return;
                     }
@@ -136,6 +142,7 @@ impl EditorView {
                         && view.audio_event_editor.revision == revision
                         && view.audio_event_editor.gesture.take().is_some()
                     {
+                        view.sync_held_play_start_audition();
                         if !view.audio_event_focus.is_focused(window) {
                             view.audio_event_editor.fade_key_held = false;
                         }

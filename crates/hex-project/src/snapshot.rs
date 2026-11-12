@@ -17,6 +17,7 @@ pub struct Snapshot {
     pub aliases: crate::ClipAliasesSnapshot,
     pub native_sources: Vec<crate::NativeSourceSnapshot>,
     pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
+    pub arrangement_locators: Vec<crate::ArrangementLocatorSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     /// Strictly ascending IDs of tracks whose name is automatic (hex-generated
@@ -27,8 +28,10 @@ pub struct Snapshot {
     pub retained_source_paths: Vec<u64>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
+    pub sidechains: Vec<crate::SidechainRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
+    pub sample_rate_mode: crate::SampleRateMode,
     pub next_id: u64,
     pub assets: Vec<AssetSnapshot>,
     pub tracks: Vec<TrackSnapshot>,
@@ -110,6 +113,8 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub group_output_mutes: Vec<crate::GroupOutputMuteRange>,
+    pub tags: Vec<String>,
     pub kind: crate::TrackKind,
     pub parent_group: Option<u64>,
     pub color: crate::ElementColor,
@@ -124,8 +129,8 @@ pub struct TrackSnapshot {
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
     /// Resolved read projection of the bound source instrument. Identity, state,
-    /// bypass and comparison must match its registry device; `automation` must be
-    /// empty. NativeSourceSnapshot is the sole source-envelope transport owner,
+    /// bypass and comparison must match its registry device; `automation` and
+    /// `modulation` must be empty. NativeSourceSnapshot is the sole source-envelope transport owner,
     /// avoiding one curve copy per shared binding. This is never a second state
     /// owner. Historical inline projections use the explicit legacy adapter.
     pub instrument: Option<DeviceSnapshot>,
@@ -152,6 +157,8 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub modulation: crate::DeviceModulation,
+    pub parent: Option<u64>,
     pub automation: Vec<crate::DeviceAutomation>,
     pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
@@ -257,6 +264,7 @@ impl Project {
                 .iter()
                 .map(crate::ArrangementSectionSnapshot::from)
                 .collect(),
+            arrangement_locators: self.arrangement_locators().iter().map(Into::into).collect(),
             tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
@@ -266,6 +274,14 @@ impl Project {
                     source: f.source(),
                     destination: f.destination().value(),
                     gain: f.gain(),
+                })
+                .collect(),
+            sidechains: self
+                .sidechains
+                .iter()
+                .map(|route| crate::SidechainRouteSnapshot {
+                    device: route.device.value(),
+                    source: route.source.value(),
                 })
                 .collect(),
             midi_routes: self
@@ -305,6 +321,7 @@ impl Project {
                 .collect(),
             import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
+            sample_rate_mode: self.sample_rate_mode,
             next_id: self.next_id,
             assets: self
                 .assets
@@ -323,6 +340,12 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    group_output_mutes: track.group_output_mutes().to_vec(),
+                    tags: track
+                        .tags
+                        .iter()
+                        .map(|tag| tag.as_str().to_owned())
+                        .collect(),
                     kind: track.kind,
                     parent_group: track.parent_group.map(TrackId::value),
                     color: track.color,
@@ -339,6 +362,8 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            modulation: device.modulation.clone(),
+                            parent: device.parent.map(|id| id.value()),
                             automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
@@ -347,6 +372,8 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        modulation: Default::default(),
+                        parent: instrument.parent.map(|id| id.value()),
                         automation: Vec::new(),
                         comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
@@ -436,6 +463,8 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            modulation: device.modulation.clone(),
+                            parent: device.parent.map(|id| id.value()),
                             automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
@@ -519,6 +548,8 @@ impl Project {
                 .main_devices
                 .iter()
                 .map(|device| DeviceSnapshot {
+                    modulation: device.modulation.clone(),
+                    parent: device.parent.map(|id| id.value()),
                     automation: device.automation().to_vec(),
                     comparison: device.comparison.clone(),
                     id: device.id.value(),
@@ -560,16 +591,19 @@ impl Project {
                     .iter()
                     .flat_map(|source| source.devices.iter()),
             )
-            .any(|device| !device.automation.is_empty())
+            .any(|device| !device.automation.is_empty() || !device.modulation.is_empty())
         {
             return Err(Invalid(
-                "legacy snapshots cannot carry device automation; use strict current snapshots",
+                "legacy snapshots cannot carry device automation or modulation; use strict current snapshots",
             ));
         }
         let mut max_id = 0;
         let mut note_id = |id: u64| {
             max_id = max_id.max(id);
         };
+        for locator in &snapshot.arrangement_locators {
+            note_id(locator.id);
+        }
         for section in &snapshot.arrangement_sections {
             note_id(section.id);
         }
@@ -700,6 +734,7 @@ impl Project {
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
+        let sidechains = std::mem::take(&mut snapshot.sidechains);
         let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
         let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
         if retained_source_paths.len() > MAX_TRACKS
@@ -723,6 +758,7 @@ impl Project {
         }
         let mut automatic_track_names: BTreeSet<u64> = automatic_track_names.into_iter().collect();
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.sample_rate_mode = snapshot.sample_rate_mode;
         project.tuning = snapshot.tuning;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
@@ -764,6 +800,16 @@ impl Project {
                 .push(crate::arrangement_sections::from_snapshot(section)?);
         }
         crate::arrangement_sections::validate(&project.arrangement_sections, project.tempo_map())?;
+        if snapshot.arrangement_locators.len() > crate::MAX_ARRANGEMENT_LOCATORS {
+            return Err(Invalid("arrangement locator limit reached"));
+        }
+        let mut locators = Vec::with_capacity(snapshot.arrangement_locators.len());
+        for locator in snapshot.arrangement_locators {
+            insert_id(locator.id, &mut ids, &mut max_id)?;
+            locators.push(crate::arrangement_locators::from_snapshot(locator)?);
+        }
+        crate::arrangement_locators::validate(&locators, project.tempo_map())?;
+        project.arrangement_locators = Arc::new(locators);
         let mut assets = BTreeMap::new();
         for asset in snapshot.assets {
             insert_id(asset.id, &mut ids, &mut max_id)?;
@@ -800,6 +846,8 @@ impl Project {
         for device in snapshot.main_devices {
             insert_id(device.id, &mut ids, &mut max_id)?;
             main_devices.push(Device {
+                modulation: device.modulation,
+                parent: device.parent.map(DeviceId),
                 automation: device.automation,
                 comparison: device.comparison,
                 id: DeviceId(device.id),
@@ -831,6 +879,8 @@ impl Project {
                     comparison.validate(&device.state)?;
                 }
                 devices.push(Device {
+                    modulation: device.modulation,
+                    parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -869,6 +919,8 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    modulation: device.modulation,
+                    parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
@@ -920,6 +972,8 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    modulation: device.modulation,
+                    parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
@@ -935,6 +989,7 @@ impl Project {
                     .ok_or(Invalid("track instrument has no retained source"))?;
                 let expected = source.instrument();
                 if !instrument.automation.is_empty()
+                    || !instrument.modulation.is_empty()
                     || expected.state() != &instrument.state
                     || expected.bypassed() != instrument.bypassed
                     || expected.comparison() != instrument.comparison.as_ref()
@@ -1113,6 +1168,11 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                group_output_mutes: crate::group_output_mute::snapshot_ranges(
+                    track.kind,
+                    track.group_output_mutes,
+                )?,
+                tags: crate::track_tags::snapshot_list(track.tags)?,
                 kind: track.kind,
                 parent_group: track.parent_group.map(TrackId),
                 color: track.color,
@@ -1335,6 +1395,7 @@ impl Project {
         project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
         project.validate_device_automation()?;
+        project.validate_device_modulation()?;
         for track in &project.tracks {
             for clip in track.clips() {
                 if let Some(edit) = &clip.edit {
@@ -1346,6 +1407,7 @@ impl Project {
                 }
             }
         }
+        project.validate_serial_units()?;
         project.validate_source_bindings()?;
         project.validate_track_hierarchy()?;
         if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {
@@ -1355,6 +1417,9 @@ impl Project {
             candidate.midi_routes = midi_routes;
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
+        }
+        if !sidechains.is_empty() {
+            project.adopt_sidechains(sidechains)?;
         }
         project.validate_arrangement_occupancy()?;
         project.validate_midi_volumes()?;

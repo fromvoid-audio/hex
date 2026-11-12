@@ -126,8 +126,10 @@ pub struct ResidentFilePublication<'a> {
 }
 
 /// Stateless control capability executed on the existing bounded seek worker.
-/// Independent pages must be joined/dropped before returning. Native publication
-/// remains a separate operation with its original freshness and resource fences.
+/// Independent pages must be joined/dropped before returning. Honor the exact
+/// requested seek mode or refuse it: history-preserving preparation must replay
+/// through bounded pages, never substitute a fresh-history candidate. Native
+/// publication remains separate with its original freshness and resource fences.
 pub type ResidentFileSeekPreparer =
     fn(
         ResidentFileSeekRequest<'_>,

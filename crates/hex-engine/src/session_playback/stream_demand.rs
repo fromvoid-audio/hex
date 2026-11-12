@@ -356,26 +356,21 @@ impl SessionPlayback {
                 RouteOwner::Session { .. } | RouteOwner::Silence => {}
             }
         }
-        if let Some(binding) = self.revision.scalar_automation.as_ref() {
-            let input = self
-                .revision
-                .native_parameter_input_target()
-                .ok_or(Invalid("scalar parameter target is unavailable"))?;
-            let delay = self
-                .revision
-                .arrangement()
-                .signal_graph
-                .as_ref()
-                .ok_or(Invalid("scalar signal graph is unavailable"))?
-                .parameter_arrival(input)?;
+        for binding in self
+            .revision
+            .scalar_automation
+            .as_deref()
+            .unwrap_or_default()
+        {
+            let delay = binding.arrival_frames;
             if delay == 0 {
                 crate::stream_demand::visit_scalar_page_range(
-                    &binding.source,
+                    &binding.request.source,
                     window.arrangement_frame,
                     window.frames,
-                    visit,
+                    &mut *visit,
                 )?;
-                return Ok(window);
+                continue;
             }
             let (owner, lead) = match history {
                 ScalarOriginHistory::Current(owner) => (
@@ -419,7 +414,7 @@ impl SessionPlayback {
                 },
                 |_, frame, len| {
                     crate::stream_demand::visit_scalar_page_range(
-                        &binding.source,
+                        &binding.request.source,
                         frame,
                         len,
                         &mut *visit,

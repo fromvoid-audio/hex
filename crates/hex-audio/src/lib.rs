@@ -27,6 +27,7 @@ pub mod plugin_effects;
 pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
+pub mod sample_recording;
 pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,
@@ -42,6 +43,7 @@ mod candidate_custody;
 pub use candidate_custody::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
+pub mod foreign_parameter_delivery;
 pub mod gain_recording;
 mod lifecycle;
 mod live_delivery;

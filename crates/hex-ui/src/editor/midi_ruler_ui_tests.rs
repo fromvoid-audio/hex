@@ -113,6 +113,60 @@ pub(in crate::editor) fn roundtrip(
     event.state.project.clone()
 }
 #[gpui::test]
+fn midi_start_drag_submits_held_marker_before_mouse_up(cx: &mut TestAppContext) {
+    use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use hex_session::service::PlayStartEdit;
+    use std::sync::atomic::Ordering::Release;
+
+    let _output_guard = status_fixture_guard();
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let (mut output, _callback) = headless_status_output();
+    let control = output.take_client().unwrap();
+    control.status().unwrap().playing.store(true, Release);
+    editor.update(&mut visual, |v, _| {
+        v.audio = Some(crate::editor_backend::EditorAudio {
+            control,
+            sample_rate: 48_000,
+            label: "play-start audition fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+    });
+    let down = marker_at(&mut visual, 0.0);
+    let up = marker_at(&mut visual, 0.5);
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        let target = v
+            .service
+            .held_arrangement_play_start_audition_for_test()
+            .unwrap();
+        assert_eq!(target.context.editor_revision, revision);
+        assert_eq!(
+            target.edit,
+            PlayStartEdit::MidiRegion {
+                clip,
+                source_start: beat(2)
+            }
+        );
+    });
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.service
+                .held_arrangement_play_start_audition_for_test()
+                .is_none()
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, revision + 1);
+    });
+    assert_marker(&mut visual, 0.5);
+}
+
+#[gpui::test]
 fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_state(
     cx: &mut TestAppContext,
 ) {
@@ -409,7 +463,7 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for cancel in 0..5 {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = BeatTime::ZERO;
+            v.piano_beat_start = 0;
             v.piano_beat_span = beat(4);
             cx.notify();
         });

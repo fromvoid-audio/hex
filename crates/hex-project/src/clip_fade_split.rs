@@ -79,7 +79,8 @@ pub(crate) fn split(
 /// anchored to a domain of `span` frames measured from the matching edge.
 fn ramps(fade: ClipFade, span: u64, fade_in: bool, fade_out: bool) -> Result<ClipFade, Invalid> {
     let pick = |keep: bool, value| if keep { value } else { 0 };
-    ClipFade::new(
+    let [in_law, out_law] = fade.curve_laws();
+    Ok(ClipFade::new(
         span,
         0,
         pick(fade_in, fade.fade_in()),
@@ -94,7 +95,19 @@ fn ramps(fade: ClipFade, span: u64, fade_in: bool, fade_out: bool) -> Result<Cli
     .with_curve_positions(
         if fade_in { fade.in_position() } else { 500 },
         if fade_out { fade.out_position() } else { 500 },
-    )
+    )?
+    .with_curve_laws([
+        if fade_in {
+            in_law
+        } else {
+            crate::FadeCurveLaw::Linear
+        },
+        if fade_out {
+            out_law
+        } else {
+            crate::FadeCurveLaw::Linear
+        },
+    ]))
 }
 
 #[cfg(test)]

@@ -463,6 +463,60 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     );
     assert!(!files.0.join("must-not-render.wav").exists());
 }
+
+#[test]
+fn project_sample_request_refuses_verified_streaming_without_history_change() {
+    let files = Files::new();
+    let path = files.wav("verified-project-sample.wav", 48_000, 64, 1000);
+    let service = Service::new(48_000, 16, 0).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(path));
+    let snapshot = imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .expect("verified source snapshot");
+    assert_eq!(snapshot.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    assert!(imported.playback.is_none());
+    let track = imported.state.project.tracks()[0].id();
+    let asset = imported.state.project.assets().next().unwrap().id();
+    assert!(matches!(
+        snapshot.sources().get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    let request = Request::InsertProjectSample {
+        project_generation: snapshot.context().project_generation,
+        revision: imported.state.revision,
+        asset,
+        track,
+        start: 64,
+        warp: hex_project::AudioImportWarp::Off,
+        audition_timing: None,
+    };
+    service.submit(request).unwrap();
+    let refused = next(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("project sample placement requires resident audio")
+    );
+    assert_eq!(refused.state.revision, imported.state.revision);
+    assert_eq!(refused.state.project, imported.state.project);
+
+    // The refused request must not add an undo entry ahead of the import.
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.tracks().is_empty());
+    assert!(undone.state.project.assets().next().is_none());
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, imported.state.project);
+}
+
 #[test]
 fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_adoption() {
     let files = Files::new();
@@ -930,6 +984,31 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
 }
 
 #[test]
+fn identical_file_extrema_do_not_hide_independent_channels() {
+    let files = Files::new();
+    let path = files.0.join("independent.wav");
+    let mut index = 0;
+    hex_export::write_float_wav_new(&path, 48_000, 4096, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = if index % 2 == 0 {
+                [0.8, -0.8]
+            } else {
+                [-0.8, 0.8]
+            };
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false).unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    let waveform = source.cached_waveform().unwrap();
+    assert!(waveform.bins().iter().all(|pair| pair[0] == pair[1]));
+    assert!(!waveform.has_identical_channels());
+}
+
+#[test]
 fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm() {
     let files = Files::new();
     for (source_rate, project_rate) in [(48_000, 48_000), (44_100, 48_000), (96_000, 44_100)] {
@@ -959,7 +1038,7 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
                 crate::VerifiedAudioFile::inspect(path.clone(), project_rate, small, || false)
                     .unwrap();
             bounded.prepare_waveform_on_control(|| false).unwrap();
-            assert_eq!(bounded.cached_waveform().unwrap().source_frames, 5003);
+            assert_eq!(bounded.cached_waveform().unwrap().source_frames(), 5003);
         }
         assert!(source.cached_waveform().is_none());
         let decoded = hex_media::decode_wav_file(
@@ -979,8 +1058,9 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
         let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
         source.prepare_waveform_on_control(|| false).unwrap();
         let actual = source.cached_waveform().unwrap();
-        assert_eq!(actual.source_frames, expected.source_frames);
-        assert_eq!(actual.bins, expected.bins);
+        assert!(actual.has_identical_channels());
+        assert_eq!(actual.source_frames(), expected.source_frames());
+        assert_eq!(actual.bins(), expected.bins());
         assert_eq!(actual.cached_bin_count(), expected.cached_bin_count());
         assert!(actual.cached_bin_count() <= 2047);
         assert!(!actual.shares_audio_with(&resident.audio));

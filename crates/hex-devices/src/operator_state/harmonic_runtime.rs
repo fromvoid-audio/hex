@@ -228,7 +228,19 @@ fn compatible_base(
         let enabled = (LFO_PAYLOAD_BYTES..ENABLE_PAYLOAD_BYTES).contains(&i);
         let lfo = (FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES).contains(&i);
         let routing = allow_routing && (48..112).contains(&i);
-        routing || levels || carriers || waveforms || feedback || enabled || lfo || a == b
+        // Keytrack's fixed endpoint mirrors the legacy fixed-mode word. The
+        // target prepares all new phase steps before preserving voice history.
+        let pitch_mode = (WAVEFORM_PAYLOAD_BYTES..TUNING_PAYLOAD_BYTES).contains(&i)
+            && (i - WAVEFORM_PAYLOAD_BYTES) % 12 < 4;
+        routing
+            || levels
+            || carriers
+            || waveforms
+            || feedback
+            || enabled
+            || lfo
+            || pitch_mode
+            || a == b
     })
 }
 // Keep the partially shared path out of the distinct-envelope render path.
@@ -437,6 +449,9 @@ impl EventProof {
             return self.apply_global(factory, event);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -614,6 +629,9 @@ impl Runtime {
             return self.apply_global(event, origin, beat, running);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -783,7 +801,11 @@ impl MutableInstrumentRuntime for Runtime {
             };
             // Shared analytic contexts are neutral; custom tables opt into the
             // wide mutable owner before any note is prepared.
-            let note = if self.factory.tuning.is_some() {
+            let note = if self.factory.tuning.is_some()
+                || self.factory.settings.fine.values() != source.configuration.fine_offsets_hz()
+                || self.factory.settings.pitch_keytrack.values()
+                    != source.configuration.pitch_keytrack_percent()
+            {
                 let Ok(note) = self.factory.retuned_note(source_note) else {
                     return;
                 };
@@ -887,11 +909,7 @@ impl MutableInstrumentRuntime for Runtime {
         let mut proof = EventProof::new(self);
         let mut offset = 0;
         for event in events {
-            let at = match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let at = event.frame_offset();
             if at < offset || at >= frames {
                 return Err(Error::InvalidEventBatch);
             }
@@ -1028,11 +1046,7 @@ impl MutableInstrumentRuntime for Runtime {
             }
             let mut voices_changed = false;
             while let Some(event) = events.get(cursor) {
-                let at = match *event {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-                };
+                let at = event.frame_offset();
                 if at != offset {
                     break;
                 }
@@ -1356,7 +1370,9 @@ impl MutableInstrumentRuntime for Runtime {
                         self.factory.settings.global.active,
                     )
                     && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
-                    && (p.tuning == self.factory.tuning.as_ref()
+                    && ((p.tuning == self.factory.tuning.as_ref()
+                        && p.fine_offsets == self.factory.settings.fine.values()
+                        && p.pitch_keytrack == self.factory.settings.pitch_keytrack.values())
                         || p.voices().filter(|v| v.id != 0).all(|v| {
                             self.factory.retuned_note(v.note).is_ok_and(|note| {
                                 (!self.factory.settings.lfo.active()
@@ -1394,7 +1410,10 @@ impl MutableInstrumentRuntime for Runtime {
                 .zip(p.voices().filter(|voice| voice.id != 0))
             {
                 *target = source;
-                if p.tuning != self.factory.tuning.as_ref() {
+                if p.tuning != self.factory.tuning.as_ref()
+                    || p.fine_offsets != self.factory.settings.fine.values()
+                    || p.pitch_keytrack != self.factory.settings.pitch_keytrack.values()
+                {
                     let Ok(note) = self.factory.retuned_note(source.note) else {
                         return;
                     };
@@ -1470,6 +1489,8 @@ impl VoiceHistory for Runtime {
 }
 
 pub(super) struct Legacy<'a> {
+    pub fine_offsets: [f32; 4],
+    pub pitch_keytrack: [f32; 4],
     pub tuning: Option<&'a hex_lattice::TuningTable>,
     pub rate: u32,
     pub base: [u8; ENABLE_PAYLOAD_BYTES],
@@ -1516,6 +1537,8 @@ impl<'a> Legacy<'a> {
     fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
             return Some(Self {
+                fine_offsets: p.factory.settings.fine.values(),
+                pitch_keytrack: p.factory.settings.pitch_keytrack.values(),
                 tuning: p.factory.tuning.as_ref(),
                 rate: p.factory.rate,
                 base: p.factory.base,
@@ -1542,3 +1565,6 @@ mod tests;
 
 #[cfg(test)]
 mod global_tests;
+
+#[cfg(test)]
+mod fine_tests;

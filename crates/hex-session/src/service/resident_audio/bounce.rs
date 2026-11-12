@@ -1,5 +1,6 @@
 //! Synchronous isolated source render followed by one reserved ordinary conversion transaction.
 use super::*;
+use crate::service::{RequestCancellation, plugin_state_save};
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::service) fn bounce_clip(
@@ -123,11 +124,16 @@ pub(in crate::service) fn bounce_arrangement(
     adoption: hex_project::BounceAdoption,
     directory: &Path,
     control: &hex_export::ExportControl,
+    cancellation: &RequestCancellation,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
 ) -> Result<(Created, Arc<PreparedRevision>), String> {
+    session
+        .project()
+        .validate_bounce_adoption(&target, in_place, adoption)
+        .map_err(|e| e.to_string())?;
     let replaces_devices = target.bakes_devices(in_place);
     if replaces_devices
         && current.as_ref().is_some_and(|s| {
@@ -162,15 +168,32 @@ pub(in crate::service) fn bounce_arrangement(
                 .map_err(|e| e.to_string())?;
             let waveforms =
                 std::cell::RefCell::new(session.audio_clip_waveforms().map_err(|e| e.to_string())?);
+            let effect_input = |project| ResidentEffectPreparation {
+                project,
+                context,
+                restoring_plugin_state: false,
+                preparing_edit: false,
+            };
+            let captured = plugin_state_save::project_for_bounce_with_capture(
+                session.project(),
+                &effect_input(project),
+                cancellation,
+                &mut **sink,
+            )?;
+            let project = captured.as_ref().unwrap_or(project);
+            let offline = sink.prepare_offline_bounce(effect_input(project), control)?;
             let mut isolated = inputs
-                .prepare(
+                .prepare_with_gain(
                     project,
                     &mut **sink,
                     &session.media_bank(),
                     session.sine_table(),
                     &session.audio_transforms,
                     &waveforms,
+                    None,
+                    None,
                     context,
+                    offline.as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
             isolated.inputs = RuntimeInputs::default();
@@ -181,6 +204,13 @@ pub(in crate::service) fn bounce_arrangement(
                         hex_export::control_storage_allowance(None).map_err(|e| e.to_string())?,
                     )
                     .and_then(|n| n.checked_add(sink.native_sampler_hold().construction_bytes))
+                    .and_then(|n| {
+                        n.checked_add(
+                            offline
+                                .as_ref()
+                                .map_or(0, |owner| owner.retained_data_bytes()),
+                        )
+                    })
                     .ok_or("bounce runtime allowance overflows")?;
             let construction = usize::try_from(allowance_frames)
                 .ok()
@@ -200,9 +230,9 @@ pub(in crate::service) fn bounce_arrangement(
                 &session.verified_sources,
             )
             .files;
-            Ok((isolated, files))
+            Ok((isolated, files, offline))
         },
-        |path, (isolated, files), item, tails, control| {
+        |path, (isolated, files, mut offline), item, tails, control| {
             crate::arrangement_bounce::streamed::render(
                 path,
                 crate::arrangement_bounce::streamed::BounceRevision {
@@ -215,6 +245,9 @@ pub(in crate::service) fn bounce_arrangement(
                 tails,
                 control,
                 streamed,
+                offline
+                    .as_deref_mut()
+                    .map(|source| source as &mut dyn hex_export::ForeignBounceRenderer),
             )
         },
         |session, prepared, files| {

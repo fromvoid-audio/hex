@@ -71,6 +71,13 @@ pub enum SessionError {
     Engine(hex_engine::Invalid),
     Allocation,
     NativeAudio(String),
+    /// Exact hosted source loss, never a retained preview or restoration ACK.
+    PluginSourceLost(String),
+    /// A recorded terminal failed after its original SDK/final-output release
+    /// or its confirmed unchanged terminal (no point was admitted). The caller
+    /// must observe that exact terminal before returning this error. The
+    /// source remains available; the completed preview cannot be retained.
+    PluginRecordingReleased(String),
     NativeResource(hex_engine::native_device_resources::ResourcePreparationError),
     DeviceAssetClipUnsupported(AssetId),
 }
@@ -80,6 +87,8 @@ impl fmt::Display for SessionError {
         match self {
             Self::Invalid(message) => f.write_str(message),
             Self::NativeAudio(message) => f.write_str(message),
+            Self::PluginSourceLost(message) => f.write_str(message),
+            Self::PluginRecordingReleased(message) => f.write_str(message),
             Self::Project(error) => write!(f, "project edit failed: {error}"),
             Self::Media(error) => write!(f, "media preparation failed: {error}"),
             Self::Engine(error) => write!(f, "playback compile failed: {error}"),
@@ -104,6 +113,8 @@ impl Error for SessionError {
             Self::Engine(error) => Some(error),
             Self::Invalid(_)
             | Self::NativeAudio(_)
+            | Self::PluginSourceLost(_)
+            | Self::PluginRecordingReleased(_)
             | Self::Allocation
             | Self::NativeResource(_)
             | Self::DeviceAssetClipUnsupported(_) => None,
@@ -261,7 +272,7 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
         command,
         Command::AddAsset { .. }
             | Command::ImportDeviceAsset { .. }
-            | Command::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Command::ImportDeviceAssetIntoNewInstrument { .. }
             | Command::ImportAudioTrack { .. }
             | Command::ImportPreparedAudioTrack { .. }
             | Command::ImportPreparedAudioTrackAt { .. }
@@ -748,31 +759,21 @@ impl Session {
         &self,
         device: hex_project::DeviceId,
     ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
-        for track in self.project().tracks() {
-            if track
-                .instrument()
-                .is_some_and(|instrument| instrument.id() == device)
-            {
-                return Ok(hex_engine::NativeDeviceClass::Instrument);
-            }
-            if track.devices().iter().any(|effect| effect.id() == device) {
-                return Ok(hex_engine::NativeDeviceClass::Effect);
-            }
-        }
-        if self
-            .project()
-            .return_tracks()
-            .iter()
-            .any(|track| track.devices().iter().any(|effect| effect.id() == device))
-            || self
-                .project()
-                .main_devices()
-                .iter()
-                .any(|effect| effect.id() == device)
-        {
-            return Ok(hex_engine::NativeDeviceClass::Effect);
-        }
-        Err(SessionError::Invalid("device no longer exists"))
+        Self::native_device_class_for_project(self.project(), device)
+    }
+    /// Snapshot queries use the same actual owning-slot rule as live Session.
+    /// Frontend parameter requests never choose a registry/class themselves.
+    pub(crate) fn native_device_class_for_project(
+        project: &Project,
+        device: hex_project::DeviceId,
+    ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
+        let location = project
+            .device_location(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        Ok(match location.class {
+            hex_project::DeviceUnitClass::Instrument => hex_engine::NativeDeviceClass::Instrument,
+            hex_project::DeviceUnitClass::Effect => hex_engine::NativeDeviceClass::Effect,
+        })
     }
 
     pub fn sine_table(&self) -> Arc<hex_engine::SineTable> {
@@ -1329,7 +1330,7 @@ impl Session {
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
-        let frames = u64::try_from(prepared.waveform.source_frames)
+        let frames = u64::try_from(prepared.waveform.source_frames())
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
@@ -1512,7 +1513,7 @@ impl Session {
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
-        let frames = u64::try_from(prepared.waveform.source_frames)
+        let frames = u64::try_from(prepared.waveform.source_frames())
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
@@ -1657,7 +1658,7 @@ impl Session {
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
-        let frames = u64::try_from(prepared.waveform.source_frames)
+        let frames = u64::try_from(prepared.waveform.source_frames())
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
@@ -2056,6 +2057,31 @@ fn prepare_with_waveforms_using(
         let mut roots: Vec<(Audio, Shape, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
         for view in prepared.arrangement().audio_clip_views() {
+            if let Some(map) = &view.sparse {
+                let waveform = if let Some(existing) = old.get(&view.clip).filter(|entry| {
+                    entry.waveform.bins().len() <= requested_bins
+                        && entry.waveform.shares_sparse_with(&view.audio, map)
+                }) {
+                    Arc::clone(&existing.waveform)
+                } else {
+                    Arc::new(
+                        waveform::summarize_sparse(&view.audio, Arc::clone(map), requested_bins)
+                            .map_err(|_| {
+                                hex_engine::Invalid("sparse waveform preparation failed")
+                            })?,
+                    )
+                };
+                next.insert(
+                    view.clip,
+                    service::AudioClipWaveform {
+                        waveform,
+                        offset: view.offset,
+                        length: view.length,
+                        preview_root: None,
+                    },
+                );
+                continue;
+            }
             let shape: Shape = view
                 .repeat
                 .map(|repeat| {
@@ -2082,7 +2108,7 @@ fn prepare_with_waveforms_using(
             } else {
                 // Existing summaries retain exact PCM identity for safe cross-revision reuse.
                 let existing = old.values().find(|entry| {
-                    entry.waveform.bins.len() <= requested_bins
+                    entry.waveform.bins().len() <= requested_bins
                         && match shape {
                             None => entry.waveform.shares_audio_with(&view.audio),
                             Some((repeat, frames)) => {
@@ -2124,12 +2150,25 @@ fn prepare_with_waveforms_using(
                         media.resident.get(&asset)
                     })?
                     .map(|root| {
-                        let waveform = roots
-                            .iter()
-                            .find(|(audio, shape, _)| {
-                                shape.is_none() && audio.shares_pcm_with(&root.audio)
+                        // A placement-only change can leave a large preview
+                        // root byte-for-byte identical even when it differs
+                        // from the outer clip waveform. Keep its exact peaks.
+                        let waveform = old
+                            .get(&view.clip)
+                            .and_then(|entry| entry.preview_root.as_ref())
+                            .filter(|previous| {
+                                previous.waveform.bins().len() <= requested_bins
+                                    && previous.waveform.shares_audio_with(&root.audio)
                             })
-                            .map(|(_, _, waveform)| Arc::clone(waveform))
+                            .map(|previous| Arc::clone(&previous.waveform))
+                            .or_else(|| {
+                                roots
+                                    .iter()
+                                    .find(|(audio, shape, _)| {
+                                        shape.is_none() && audio.shares_pcm_with(&root.audio)
+                                    })
+                                    .map(|(_, _, waveform)| Arc::clone(waveform))
+                            })
                             .map(Ok)
                             .unwrap_or_else(|| {
                                 waveform::summarize(&root.audio, requested_bins)

@@ -15,10 +15,11 @@
 //! Not preserved (documented limitations of rename-based replacement):
 //! - `com.apple.provenance` is assigned by macOS to files hex writes; the old
 //!   file's value is not transplanted onto the new file.
-//! - macOS ACLs are not exposed through the xattr interface and need a separate
-//!   safe API; owner/group follow the saving user (changing them needs
-//!   privilege); creation date is the new file's; extra hard links keep the
-//!   previous bytes because the directory entry, not the inode, is replaced.
+//! - macOS ACLs use a separate filesystem interface. The pinned rustix
+//!   `fcopyfile` API requires an unsafe call. An ACL transfer needs a safe
+//!   descriptor-based boundary that preserves the native ACL as a whole.
+//! - Owner and group follow the saving user. The new file has a new creation
+//!   date. Other hard links keep pointing to the previous inode and bytes.
 //! - Platforms other than Linux and macOS copy nothing.
 use std::{io, path::Path};
 
@@ -121,14 +122,13 @@ mod platform {
                 }),
             }
         }
-        if copied_any {
-            if let Err(source) = File::open(destination).and_then(|file| file.sync_all()) {
-                warnings.push(MetadataWarning {
-                    attribute: None,
-                    operation: "synchronize copied file attributes",
-                    source,
-                });
-            }
+        if copied_any && let Err(source) = File::open(destination).and_then(|file| file.sync_all())
+        {
+            warnings.push(MetadataWarning {
+                attribute: None,
+                operation: "synchronize copied file attributes",
+                source,
+            });
         }
         warnings
     }

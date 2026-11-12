@@ -21,7 +21,144 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
 }
+
+/// One ordered plugin gesture request and its exact canonical baseline. This
+/// is borrowed DATA, never native source/endpoint custody or SDK admission.
+pub struct PluginParameterGestureInput<'a> {
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
+    pub(in crate::service) operation: crate::device_gesture::PluginGesturePreparation,
+    pub(in crate::service) canonical_state: &'a NativeDeviceState,
+    pub(in crate::service) reading_class: Option<[u8; 16]>,
+    pub(in crate::service) isolated_class: Option<[u8; 16]>,
+    pub(in crate::service) instrument: bool,
+    pub(in crate::service) confirm_delivery: bool,
+    pub(in crate::service) record_touch: bool,
+}
+impl<'a> PluginParameterGestureInput<'a> {
+    /// Recorded touches require a playing reading lane and return admission
+    /// before input, then exclusive restoration instead of an opaque edit.
+    pub fn with_touch_recording(mut self) -> Self {
+        self.confirm_delivery = true;
+        self.record_touch = true;
+        self
+    }
+    pub fn records_touch(&self) -> bool {
+        self.record_touch
+    }
+
+    /// Request actual final-output point receipts. This copied request grants
+    /// no source/SDK authority; the adapter must admit its exact loaded worker.
+    pub fn with_delivery_confirmation(mut self) -> Self {
+        self.confirm_delivery = true;
+        self
+    }
+    pub fn requires_delivery_confirmation(&self) -> bool {
+        self.confirm_delivery
+    }
+
+    pub fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
+    pub fn operation(&self) -> crate::device_gesture::PluginGesturePreparation {
+        self.operation
+    }
+    /// Exact class of the reading Arrangement lane, for the ordinary processor.
+    pub fn reading_class(&self) -> Option<[u8; 16]> {
+        self.reading_class
+    }
+    /// A retained lane on this exact processor requires an isolated manual base,
+    /// including when the edited parameter has no lane of its own.
+    pub fn isolated_class(&self) -> Option<[u8; 16]> {
+        self.isolated_class
+    }
+    /// Canonical slot role only; the host validates its actual SDK profile.
+    pub fn is_instrument(&self) -> bool {
+        self.instrument
+    }
+    pub fn canonical_state(&self) -> &'a NativeDeviceState {
+        self.canonical_state
+    }
+}
+/// Canonical target selected for one original editor take. Desktop must bind
+/// these copied facts to the exact playing worker and its frozen base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginEditorRecordingInput {
+    pub key: crate::device_gesture::GestureKey,
+    pub context: hex_engine::AudioSourceContext,
+    pub target: super::PluginEditorRecordingTarget,
+}
+
+/// Control-side observation copied only after matching the complete private
+/// final-output receipt. Persist `application.origin`, not the later delivery
+/// processing frame. A caller requesting these records owns their retention.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PluginParameterDelivery {
+    pub key: crate::device_gesture::GestureKey,
+    pub context: hex_engine::AudioSourceContext,
+    pub target: super::automation_draft::Vst3CaptureTarget,
+    pub source: super::DeviceAutomationSource,
+    pub sequence: u64,
+    pub application: super::automation_draft::Vst3ParameterApplication,
+    pub delivery_performance_frame: u64,
+}
+/// A confirmed point or a conservative interruption with no invented clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // A whole physical group remains one control observation.
+pub enum PluginParameterObservation {
+    Grouped(super::Vst3EditorGroupObservation),
+    Ready {
+        key: crate::device_gesture::GestureKey,
+        context: hex_engine::AudioSourceContext,
+        target: super::automation_draft::Vst3CaptureTarget,
+        source: super::DeviceAutomationSource,
+    },
+    Delivered(PluginParameterDelivery),
+    Restored(PluginParameterDelivery),
+    /// No point was admitted; no audio clock is invented for this no-op.
+    Unchanged {
+        key: crate::device_gesture::GestureKey,
+    },
+    Interrupted {
+        key: crate::device_gesture::GestureKey,
+        context: hex_engine::AudioSourceContext,
+        target: super::automation_draft::Vst3CaptureTarget,
+        source: super::DeviceAutomationSource,
+        sequence: u64,
+    },
+}
+pub enum PluginParameterGestureResult {
+    /// Validated Begin or completed Preview/Restore, not physical delivery or
+    /// an assertion that a plugin returned the exact requested normalized value.
+    /// SDK readback remains separate from the client's lossless intent.
+    Applied,
+    /// Actual host capture. The host retains its private matching receipt and
+    /// staged compiler permission until finish_plugin_parameter_commit.
+    Captured(Box<PluginParameterCapture>),
+    /// A manual base prepared from the exact canonical plug-in state in
+    /// isolation from the live authored processor. This does not authorize
+    /// changing another parameter's read selection or using live DSP state
+    /// as the Undo preimage.
+    OverrideCaptured(Box<PluginParameterOverride>),
+}
+pub struct PluginParameterOverride {
+    pub source: hex_engine::AudioSourceContext,
+    pub class: [u8; 16],
+    pub parameter: u32,
+    pub base: NativeDeviceState,
+}
+pub struct PluginParameterCapture {
+    pub before: NativeDeviceState,
+    pub after: NativeDeviceState,
+}
+#[derive(Debug)]
+pub enum PluginParameterGestureError {
+    Refused(String),
+    SourceLost(String),
+}
 impl<'a> ResidentEffectPreparation<'a> {
+    pub fn sample_rate(&self) -> u32 {
+        self.project.sample_rate()
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }
@@ -35,39 +172,189 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
-    pub fn visit_plugin_effects(
+    /// Whether the saved document needs the fixed-quantum plugin output profile.
+    pub fn requires_plugin_profile(&self) -> bool {
+        requires_plugin_profile(self.project)
+    }
+    /// Borrow all saved raw targets, including lanes currently set to Base. The
+    /// native source owner still validates the class and exact SDK capabilities.
+    pub fn authored_plugin_targets(
         &self,
-        mut visit: impl FnMut(
-            hex_engine::ProcessorChainOwner,
-            u64,
-            &'a NativeDeviceState,
-        ) -> Result<(), String>,
-    ) -> Result<(), String> {
-        let mut chain = |owner, devices: &'a [hex_project::Device]| {
-            for device in devices.iter().filter(|d| {
-                d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
-            }) {
-                visit(owner, device.id().value(), device.state())?;
-            }
-            Ok(())
+        device: u64,
+    ) -> impl Iterator<Item = (u32, Option<[u8; 16]>)> + '_ {
+        self.project
+            .automation_devices()
+            .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+            .into_iter()
+            .flat_map(|device| device.automation().iter())
+            .filter_map(|lane| match lane.target {
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter } => {
+                    Some((parameter, lane.vst3_class))
+                }
+                _ => None,
+            })
+    }
+
+    /// Canonical raw target for this effect's requested dense reservation.
+    /// The host independently validates the actual original source metadata.
+    pub fn modulated_plugin_target(&self, device: u64) -> Result<Option<(u32, [u8; 16])>, String> {
+        let Some(candidate) = self
+            .project
+            .automation_devices()
+            .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+        else {
+            return Ok(None);
         };
+        let selected = hex_engine::project_vst3_modulation_target(candidate)
+            .map_err(|error| error.to_string())?;
+        if selected.is_some()
+            && !self
+                .project
+                .device_location(candidate.id())
+                .is_some_and(|location| {
+                    location.class == hex_project::DeviceUnitClass::Effect
+                        && !matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                })
+        {
+            return Err("vst3 modulation requires a track, return or main effect".into());
+        }
+        Ok(selected)
+    }
+
+    /// An authored program is immutable for one native worker epoch. An
+    /// instrument loop edit may keep that epoch when the run budget matches.
+    pub fn same_authored_plugin_program(
+        &self,
+        previous: &Self,
+        device: u64,
+        quantum_frames: Option<u16>,
+    ) -> bool {
+        fn lanes(
+            project: &Project,
+            device: u64,
+        ) -> impl Iterator<Item = &hex_project::DeviceAutomation> {
+            project
+                .automation_devices()
+                .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+                .into_iter()
+                .flat_map(hex_project::Device::reading_automation)
+                .filter(|lane| {
+                    matches!(
+                        lane.target,
+                        hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
+                    )
+                })
+        }
+        let mut current = lanes(self.project, device).peekable();
+        let mut old = lanes(previous.project, device).peekable();
+        if current.peek().is_none() && old.peek().is_none() {
+            return true;
+        }
+        let next_loop = self.project.loop_region();
+        let previous_loop = previous.project.loop_region();
+        let same_loop_budget = next_loop == previous_loop
+            || quantum_frames.is_some_and(|frames| {
+                self.project
+                    .native_sources()
+                    .iter()
+                    .any(|source| source.instrument().id().value() == device)
+                    && hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+                        frames,
+                        previous_loop,
+                        next_loop,
+                    )
+            });
+        self.project.tempo_map() == previous.project.tempo_map()
+            && same_loop_budget
+            && current.eq(old)
+    }
+
+    pub fn visit_plugin_devices(
+        &self,
+        mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,
+    ) -> Result<(), String> {
         for track in self.project.tracks() {
-            chain(
-                hex_engine::ProcessorChainOwner::Track(track.id().value()),
-                track.devices(),
-            )?;
+            if let Some(device) = track
+                .instrument()
+                .filter(|device| track.receives_source_audio() && is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Instrument(track.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
+            for device in track
+                .devices()
+                .iter()
+                .filter(|device| is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Track(track.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
         }
         for bus in self.project.return_tracks() {
-            chain(
-                hex_engine::ProcessorChainOwner::Return(bus.id().value()),
-                bus.devices(),
+            for device in bus
+                .devices()
+                .iter()
+                .filter(|device| is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Return(bus.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
+        }
+        for device in self
+            .project
+            .main_devices()
+            .iter()
+            .filter(|device| is_plugin_effect(device))
+        {
+            visit(
+                PluginEffectDestination::Main,
+                device.id().value(),
+                device.state(),
             )?;
         }
-        chain(
-            hex_engine::ProcessorChainOwner::Main,
-            self.project.main_devices(),
-        )
+        Ok(())
     }
+}
+
+/// One private native bounce owner. It supplies exact compile facts before
+/// rendering and is dropped before Session adopts any of the output media.
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+    fn retained_data_bytes(&self) -> usize;
+    fn prepare(
+        &self,
+        compile: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String>;
+}
+
+fn is_plugin_effect(device: &hex_project::Device) -> bool {
+    device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+}
+
+pub(super) fn requires_plugin_profile(project: &Project) -> bool {
+    project
+        .tracks()
+        .iter()
+        .flat_map(|track| {
+            track
+                .devices()
+                .iter()
+                .chain(track.instrument().filter(|_| track.receives_source_audio()))
+        })
+        .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
+        .chain(project.main_devices())
+        .any(is_plugin_effect)
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
@@ -102,6 +389,35 @@ pub struct ResidentRuntimeLoop {
     pub source_context: Option<hex_engine::AudioSourceContext>,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
+/// Read-only, output-bound observation of the one admitted resident graph.
+/// This is not a publication receipt, lease, or permission to mutate a graph.
+/// `publication_in_flight` is a snapshot of the publication reservation, not
+/// an admission guarantee: other owners and subsequent races can still refuse.
+/// Applied or refused revisions can be visible before that reservation clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationReadiness {
+    NoOutput,
+    Idle {
+        output_identity: u64,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Pending {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Applied {
+        submission: ResidentRuntimeLoop,
+        publication_in_flight: bool,
+    },
+    Refused {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+}
+
 /// One callback-observed source and transport witness under the arrangement gate.
 #[derive(Clone, Copy, Debug)]
 pub struct ArrangementEditPosition {
@@ -144,12 +460,14 @@ pub enum ResidentPublicationPolicy {
     /// Only the same-context fresh-output plugin continuation may replace its
     /// admitted unpublished graph after actual native/endpoint readiness.
     RestorePluginState,
-    /// New/Open only: admit one exact pending owner before canonical generation replacement.
-    /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
-    /// This never converts ordinary queue pressure into offline acceptance.
-    ReplaceDocument,
+    /// New/Open only: admit the exact successor before canonical replacement.
+    /// Matching rates may retain the graph for the existing deferred reopen.
+    /// A rate mismatch requires a fresh output and graph installation before adoption.
+    ReplaceDocument {
+        requires_plugin_profile: bool,
+    },
     FreshIfUnchanged(ResidentFreshRuntimeFence),
-    SectionWhenReady {
+    QuantizedSeekWhenReady {
         fence: ResidentFreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },
@@ -181,16 +499,104 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Before Begin, request renewal only when the exact stopped source has
+    /// returned its endpoints. Session republishes its unchanged canonical
+    /// snapshot through the existing stopped-restore owner before admission.
+    /// An already owned restoration must refuse this independent request.
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _origin: crate::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Bind a selected target without affecting SDK PCM. The caller opens the
+    /// shared durable draft using Ready before it may start this exact scope.
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        _input: PluginEditorRecordingInput,
+    ) -> Result<PluginParameterObservation, String> {
+        Err("plugin editor recording is unavailable for this output".into())
+    }
+    /// Publish an exact previously prepared editor scope to the original SDK.
+    fn start_plugin_editor_recording(
+        &mut self,
+        _key: crate::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        Err("plugin editor recording is unavailable for this output".into())
+    }
+    /// Stop admission, retaining the accepted prefix until its terminal.
+    fn cancel_plugin_editor_recording(&mut self, _key: crate::device_gesture::GestureKey) -> bool {
+        false
+    }
+
+    /// Drain bounded final-output observations after each confirmed preparation,
+    /// including refusal and output loss. The requesting control owner retains
+    /// every returned record until durable recording admission; never UI time.
+    fn take_plugin_parameter_observation(&mut self) -> Option<PluginParameterObservation> {
+        None
+    }
+    /// Use the existing actual source for one keyed plugin operation. Begin
+    /// revalidates observed metadata/context. Preview/Restore must apply the
+    /// real point before returning Applied; they never edit canonical state.
+    /// Commit captures/stages that same source and returns DATA only. A refusal
+    /// must preserve the last acknowledged preview or report source loss; it
+    /// must not fabricate application, restore or a canonical terminal.
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        _input: PluginParameterGestureInput<'_>,
+    ) -> Result<PluginParameterGestureResult, PluginParameterGestureError> {
+        Err(PluginParameterGestureError::Refused(
+            "plugin parameter controls are unavailable for this output".into(),
+        ))
+    }
+    /// Correlate the exact graph's callback terminal before the editor writes history.
+    fn confirm_plugin_parameter_publication(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), PluginParameterGestureError> {
+        Err(PluginParameterGestureError::Refused(
+            "vst3 publication confirmation is unavailable".into(),
+        ))
+    }
+    /// Wait for the exact audio terminal of an edit that changes a revision
+    /// with active source effects. A submission alone cannot commit history.
+    fn confirm_source_effect_publication(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        match acceptance {
+            ResidentPublicationAcceptance::OfflineRetained => Ok(()),
+            ResidentPublicationAcceptance::Submitted { .. } => {
+                Err("source effect publication confirmation is unavailable".into())
+            }
+        }
+    }
+
+    /// Called for every Commit attempt, including capture/compilation/publication
+    /// refusal. Retire only the exact key/sequence/input context's pending
+    /// compiler permission. This is the canonical worker's actual terminal,
+    /// never a request to force acceptance or roll back foreign DSP.
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+        _accepted: bool,
+    ) {
+    }
     /// Capture every active hosted instance required by this exact canonical
-    /// save input. The existing worker retains request order while the adapter
+    /// capture input. The existing worker retains request order while the adapter
     /// drains each admitted native token to its matching terminal, including
     /// failure/cancellation. No stop, canonical edit or source owner transfer.
     /// An output without native hosting has no runtime states to capture and
     /// preserves the project's opaque unavailable state. Native hosts must
     /// override this method; failed capture must never fall back to empty data.
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        _input: PluginStateSaveInput<'_>,
+        _input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
         Ok(Vec::new())
     }
@@ -207,6 +613,12 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
 
+    /// The fresh output's plug-in restoration owns publication for this
+    /// context. Restart must wait for its ready receipt before compiling.
+    fn plugin_state_restore_pending(&self, _context: hex_engine::AudioSourceContext) -> bool {
+        false
+    }
+
     /// A fresh-output owner has restored the unchanged canonical plugin state
     /// through its actual native/endpoint ACKs. The worker may now recompile
     /// that exact context; this scalar transfers no source or graph custody.
@@ -215,10 +627,11 @@ pub trait WorkerAudioSink: Send {
     }
     /// Exact same-context recompilation terminal. Before acceptance, the sink
     /// retains its admitted unpublished document graph and original resources.
+    /// Refusals carry the reason for the matching output's recovery consumer.
     fn finish_plugin_state_restore(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-        _accepted: bool,
+        _result: Result<(), &str>,
     ) {
     }
     /// Renew stopped native sources through their original output owner. None
@@ -249,6 +662,25 @@ pub trait WorkerAudioSink: Send {
     fn plugin_effect_ready(&self) -> bool {
         false
     }
+    /// Send a window action to the existing hosted instance, without a project edit.
+    fn toggle_plugin_editor(&mut self, _generation: u64, _device: u64) -> Result<(), String> {
+        Err("vst3 editor unavailable for this output".into())
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_editor_result(&mut self, _generation: u64) -> Option<Result<bool, String>> {
+        None
+    }
+    fn query_plugin_parameters(&mut self, _query: PluginParameterQuery) -> Result<(), String> {
+        Err("vst3 parameters unavailable for this output".into())
+    }
+    fn plugin_parameters_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -268,6 +700,34 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// Actual original-worker pickup only, for bounded immutable program
+    /// retention. Unknown/Empty retain existing history; only an actual empty
+    /// worker receipt can qualify a first programme. Never synthesize this from
+    /// a queued graph key or final Main publication.
+    fn received_foreign_program_on_control(
+        &mut self,
+        _binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> hex_engine::ForeignProgramFrontier {
+        hex_engine::ForeignProgramFrontier::Unknown
+    }
+
+    /// A host with no private offline capability must refuse foreign bounce
+    /// instead of using its live source or publishing unprocessed audio.
+    fn prepare_offline_bounce(
+        &mut self,
+        input: ResidentEffectPreparation<'_>,
+        _control: &hex_export::ExportControl,
+    ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
+        if input.requires_plugin_profile() {
+            return Err("offline vst3 bounce unavailable for this host".into());
+        }
+        Ok(None)
+    }
+    /// Rate of the current default interface for an un-authored document.
+    /// An unavailable observation leaves selection to the existing fallback.
+    fn default_project_sample_rate(&self) -> Option<u32> {
+        None
     }
     /// Ordinary source-planning defaults, independent of the document mode.
     /// A host opts in only with bounded file preparation/publication consumers.
@@ -327,6 +787,11 @@ pub trait WorkerAudioSink: Send {
     fn resident_publication_enabled(&self) -> bool {
         false
     }
+    /// Observe the exact resident publication without granting graph custody.
+    /// The default denotes an output that does not support resident graphs.
+    fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        ResidentPublicationReadiness::NoOutput
+    }
     /// Actual output/source/revision-bound loop, never the saved loop marker.
     /// None means no active ordinary output; offline edits remain available.
     /// A witness may become stale during preparation and must be revalidated by
@@ -335,6 +800,15 @@ pub trait WorkerAudioSink: Send {
         &mut self,
         _context: hex_engine::AudioSourceContext,
     ) -> Result<Option<ResidentRuntimeLoop>, String> {
+        Ok(None)
+    }
+    /// Exact current armed and playing ordinary output. A copied observation
+    /// cannot reserve an audio input or substitute for a delivery receipt.
+    fn device_automation_source(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _target: super::DeviceCaptureTarget,
+    ) -> Result<Option<super::DeviceAutomationSource>, String> {
         Ok(None)
     }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.
@@ -398,6 +872,13 @@ pub trait WorkerAudioSink: Send {
             admit,
         )
     }
+    /// Finish an already submitted document replacement before the canonical swap.
+    /// A host that opened a private candidate output must observe its exact
+    /// installation or retire that candidate on refusal. Offline retention
+    /// and hosts without a private output have no additional terminal to wait for.
+    fn finish_resident_document_replacement(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     /// Retry an already admitted offline candidate only while the canonical worker lends the
     /// current source/export/control union. Pending custody is not released by cancellation/ACK.
     fn poll_resident_pending(
@@ -407,9 +888,11 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) {
     }
-    /// Negotiate the initial device rate on the lifecycle lane. An error leaves
-    /// editing available at the explicit offline rate of 48000 Hz. Observe the
-    /// shutdown flag while awaiting that lane; never wait for a UI response.
+    /// Start audio without waiting for device opening and return the initial
+    /// canonical project rate. Polling owns delayed completion and errors; an
+    /// opened output must honor this rate without retiming intervening edits.
+    /// An immediate failure leaves editing available at 48000 Hz. Observe
+    /// shutdown before starting; never await a device or UI response here.
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String>;
     /// Called before the corresponding canonical event can block on UI delivery.
     /// On generation replacement relinquish the previous publication/output
@@ -419,6 +902,10 @@ pub trait WorkerAudioSink: Send {
     /// from its actual canonical source and validated gesture. Metadata only;
     /// acceptance is not callback application or new source admission.
     fn verified_track_gain_source(&mut self, _source: Arc<VerifiedTrackGainSource>) {}
+    /// Worker-derived native-effect metadata, anchored to the canonical source.
+    /// A consumer uses its existing reserved builder; this grants no source,
+    /// output or callback owner. Offline/default sinks retain model editing.
+    fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -431,6 +918,23 @@ pub trait WorkerAudioSink: Send {
         Err("native arrangement edits are unavailable".into())
     }
     /// Callback-observed transport. None means the command prefix is pending.
+    /// A structural section edit can recover from a refused same-project
+    /// publication by fencing the exact runtime still installed on the output.
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        self.begin_section_edit(context, true)
+    }
+    /// A recovered section edit must reach its callback terminal before commit.
+    /// An ordinary section edit uses the existing publication contract.
+    fn confirm_section_edit_recovery(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
         None
     }
@@ -547,18 +1051,68 @@ pub(super) struct WorkerEvents {
     // Observed-request timing only; absent without an installed observer.
     diagnostic_started: Option<std::time::Instant>,
     section_phases: Option<super::diagnostics::SectionPhases>,
+    recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
     // Last delivered actor observation, not another editable gesture model.
     // It proves ownership when a terminal (including a retired refusal) arrives.
     last_verified_gain: Option<(crate::device_gesture::GestureKey, u64)>,
+    last_verified_device: Option<(crate::device_gesture::GestureKey, u64)>,
     startup_error: Option<String>,
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
+    publication_wait: Option<super::publication_wait::Wait>,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
+/// One request's unsent event and diagnostic identity stay together if the
+/// control worker has to retain an outcome before delivering it.
+pub(super) struct PendingOutcome {
+    pub(super) event: Event,
+    diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    diagnostic_started: Option<std::time::Instant>,
+    section_phases: Option<super::diagnostics::SectionPhases>,
+    recovery_timing: Option<(&'static str, Duration)>,
+}
+impl PendingOutcome {
+    pub(super) fn finish_recovery(
+        &mut self,
+        metric: &'static str,
+        elapsed: Duration,
+        result: Result<Option<PathBuf>, String>,
+        failure: Option<Arc<super::RecoveryFailure>>,
+    ) {
+        if self.diagnostic.is_some() {
+            self.recovery_timing = Some((metric, elapsed));
+        }
+        match result {
+            Ok(Some(_)) => {
+                self.event.status =
+                    Some("previous recovery journal preserved beside its original slot".into());
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                let message = format!("automatic recovery: {reason}");
+                self.event.error = Some(match self.event.error.take() {
+                    Some(existing) => format!("{existing}; {message}"),
+                    None => message,
+                });
+            }
+        }
+        self.event.recovery_failure = failure;
+    }
+}
+/// One bounded control poll may make a previously admitted gesture ready.
+/// The queued user FIFO retains priority over this copied continuation.
+#[derive(Default)]
+pub(super) struct ControlPoll {
+    pub pending: bool,
+    pub gesture: Option<GestureRequest>,
+    pub editor_take: Option<u64>,
+    pub recovery_ready: bool,
+}
+
 impl WorkerEvents {
     pub(super) fn legacy_reader_limit(&self) -> usize {
         self.diagnostics.legacy_reader_limit()
@@ -576,6 +1130,7 @@ impl WorkerEvents {
         self.diagnostic = request;
         self.diagnostic_started = request.map(|_| std::time::Instant::now());
         self.section_phases = None;
+        self.recovery_timing = None;
         self.diagnostics.emit(
             request,
             super::diagnostics::DiagnosticStage::WorkerBegin {
@@ -604,19 +1159,44 @@ impl WorkerEvents {
         }
         result
     }
+    /// Time recovery maintenance only for observed requests with a named phase.
+    pub(super) fn measure_recovery<T>(
+        &mut self,
+        field: &'static str,
+        maintain: impl FnOnce() -> T,
+    ) -> T {
+        let Some(_) = self.diagnostic else {
+            return maintain();
+        };
+        let started = std::time::Instant::now();
+        let result = maintain();
+        self.recovery_timing = Some((field, started.elapsed()));
+        result
+    }
     pub(super) fn begin_request(
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
         expected_intent: u64,
+        publication_waited: bool,
     ) {
         if let Some(audio) = self.audio.as_mut() {
-            audio.begin_request(RequestCancellation::new(
-                Arc::clone(&self.shutdown),
-                Arc::clone(document_intent),
-                expected_intent,
-            ));
+            audio.begin_request(
+                RequestCancellation::new(
+                    Arc::clone(&self.shutdown),
+                    Arc::clone(document_intent),
+                    expected_intent,
+                )
+                .after_publication_wait(publication_waited),
+            );
         }
     }
+    pub(super) fn default_project_sample_rate(&self) -> Option<u32> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.default_project_sample_rate())
+            .filter(|rate| (8_000..=192_000).contains(rate))
+    }
+
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
         self.audio
             .as_ref()
@@ -661,12 +1241,15 @@ impl WorkerEvents {
             diagnostic: None,
             diagnostic_started: None,
             section_phases: None,
+            recovery_timing: None,
             shutdown,
             audio,
             last_context: None,
             last_verified_gain: None,
+            last_verified_device: None,
             startup_error: None,
             stopped_fence: Default::default(),
+            publication_wait: None,
             idle_polls: 0,
         }
     }
@@ -757,9 +1340,14 @@ impl WorkerEvents {
     /// backpressure already retries at the busy cadence.
     pub(super) fn send_with_control_poll<R>(
         &mut self,
-        mut event: Event,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+        event: Event,
+        control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
     ) -> bool {
+        let pending = self.capture_outcome(event);
+        self.send_pending_with_control_poll(pending, control_poll)
+    }
+
+    pub(super) fn capture_outcome(&mut self, mut event: Event) -> PendingOutcome {
         if let Some(source) = &event.state.canonical_audio_source {
             self.canonical_source_changed(source);
         }
@@ -777,12 +1365,30 @@ impl WorkerEvents {
                 })
             }
         }
+        match VerifiedDeviceParameterSource::capture(&event, self.last_verified_device) {
+            Ok(Some(source)) => {
+                self.last_verified_device = source
+                    .preview_identity()
+                    .map(|identity| (identity.key, identity.sequence));
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.verified_device_parameter_source(Arc::new(source));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                event.error = Some(match event.error.take() {
+                    Some(previous) => format!("{previous}; {error}"),
+                    None => error.to_string(),
+                });
+            }
+        }
         self.last_verified_gain = event
             .active_device_gesture
             .filter(|active| {
                 matches!(
                     active.target,
                     crate::device_gesture::GestureTarget::TrackGain { .. }
+                        | crate::device_gesture::GestureTarget::TrackGains { .. }
                 ) && event
                     .state
                     .canonical_audio_source
@@ -792,11 +1398,30 @@ impl WorkerEvents {
                     })
             })
             .map(|active| (active.key, active.sequence));
-        let diagnostic = self.diagnostic.take();
-        let worker = self.diagnostic_started.take().map(|start| start.elapsed());
-        let section = self.section_phases.take();
+        PendingOutcome {
+            event,
+            diagnostic: self.diagnostic.take(),
+            diagnostic_started: self.diagnostic_started.take(),
+            section_phases: self.section_phases.take(),
+            recovery_timing: self.recovery_timing.take(),
+        }
+    }
+
+    pub(super) fn send_pending_with_control_poll<R>(
+        &mut self,
+        pending: PendingOutcome,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+    ) -> bool {
+        let PendingOutcome {
+            mut event,
+            diagnostic,
+            diagnostic_started,
+            section_phases: section,
+            recovery_timing,
+        } = pending;
+        let worker = diagnostic_started.map(|start| start.elapsed());
         self.diagnostics
-            .outcome(diagnostic, &event, false, worker, section);
+            .outcome(diagnostic, &event, false, worker, section, recovery_timing);
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
@@ -847,19 +1472,40 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    /// Park one edit ahead of the FIFO while the current publication settles.
+    pub(super) fn defer_publication(&mut self, queued: QueuedRequest) -> Option<QueuedRequest> {
+        // A request that just completed its wait must dispatch without re-parking.
+        if queued.publication_wait_failure.is_some() {
+            return Some(queued);
+        }
+        let readiness = self
+            .audio
+            .as_mut()
+            .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                audio.resident_publication_readiness()
+            });
+        match super::publication_wait::Wait::begin(queued, readiness) {
+            Ok(wait) => {
+                self.publication_wait = Some(wait);
+                None
+            }
+            Err(queued) => Some(queued),
+        }
+    }
     /// Begin the stopped Arrangement lease for a request that fences first;
     /// `None` parks it until the callback answers (see `stopped_arrangement`).
     pub(super) fn defer_stopped_fence(
         &mut self,
         queued: QueuedRequest,
         source: hex_engine::AudioSourceContext,
+        recover: bool,
     ) -> Option<QueuedRequest> {
         let sink = self
             .audio
             .as_mut()
             .filter(|audio| audio.resident_publication_enabled())
             .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
-        self.stopped_fence.defer(sink, queued, source)
+        self.stopped_fence.defer(sink, queued, source, recover)
     }
     /// The lease outcome resolved before dispatch for `source`, if any.
     pub(super) fn take_stopped_fence(
@@ -911,21 +1557,72 @@ impl WorkerEvents {
         &mut self,
         requests: &Receiver<QueuedRequest>,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        recording_barrier: &mut super::recording_barrier::State,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> bool,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>, bool) -> ControlPoll,
     ) -> Option<QueuedRequest> {
+        // The original barrier retains its FIFO place. Continue polling SDK/disk
+        // work without consuming a later request; accepted New/Open intent and
+        // shutdown are observable independently of the bounded channel.
+        while recording_barrier.active() {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            self.poll();
+            let control = control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
+            );
+            if let Some(request) =
+                recording_barrier.poll(context, document_intent.load(Ordering::Acquire))
+            {
+                return Some(request);
+            }
+            if let Some(gesture) = control.gesture
+                && let Some(request) = recording_barrier.continuation(gesture)
+            {
+                return Some(request);
+            }
+            thread::sleep(super::recording_barrier::POLL);
+        }
         if self.stopped_fence.active()
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
         {
             return Some(request);
         }
+        while let Some(wait) = self.publication_wait.take() {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            self.poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
+            );
+            let readiness = self
+                .audio
+                .as_mut()
+                .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                    audio.resident_publication_readiness()
+                });
+            match wait.poll(readiness, document_intent.load(Ordering::Acquire)) {
+                Ok(request) => return Some(request),
+                Err(wait) => self.publication_wait = Some(wait),
+            }
+            thread::sleep(super::publication_wait::POLL);
+        }
         control_poll(
             self.audio
                 .as_mut()
                 .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            false,
         );
         if self.audio.is_none() && !bounded {
             let result = requests.recv().ok();
@@ -933,6 +1630,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             return result;
         }
@@ -946,6 +1644,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             // Preserve queued New/Open/edit ordering before a callback-ready
             // continuation. No worker wait can strand project replacement.
@@ -953,6 +1652,24 @@ impl WorkerEvents {
                 Ok(request) => return Some(request),
                 Err(mpsc::TryRecvError::Disconnected) => return None,
                 Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if control_pending.recovery_ready {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueRecovery,
+                    document_intent,
+                ));
+            }
+            if let Some(request_id) = control_pending.editor_take {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditorRecording { request_id },
+                    document_intent,
+                ));
+            }
+            if let Some(gesture) = control_pending.gesture {
+                return Some(QueuedRequest::continuation(
+                    Request::DeviceGesture(gesture),
+                    document_intent,
+                ));
             }
             if self
                 .audio
@@ -971,6 +1688,26 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_editor_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditor,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameters_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameters,
                     document_intent,
                 ));
             }
@@ -1001,7 +1738,14 @@ impl WorkerEvents {
             }
             // Idle only when no worker continuation, control lane or sink work
             // is pending; any of them restores the busy cadence at once.
-            let idle = !control_pending
+            let audition = control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                true,
+            );
+            let idle = !control_pending.pending
+                && !audition.pending
                 && plugin_effect.is_none()
                 && stopped_restore.is_none()
                 && !self.stopped_fence.active()
@@ -1018,6 +1762,7 @@ impl WorkerEvents {
                         self.audio
                             .as_mut()
                             .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                        false,
                     );
                     return Some(request);
                 }
@@ -1045,6 +1790,125 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn retained_outcomes_keep_their_request_identity_and_order() {
+        use super::super::diagnostics::{DiagnosticOrigin, DiagnosticRequest, Hooks};
+        use std::sync::atomic::AtomicU64;
+
+        let mut service = Service::new(48_000, 8, 1024).unwrap();
+        let first = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack { name: "one".into() }))
+            .unwrap();
+        let second = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        let first_context = first
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let second_context = second
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let observed = Arc::new(Observation::default());
+        let mut events = WorkerEvents::new_with_diagnostics(
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(Sink {
+                observed: Arc::clone(&observed),
+                fail: false,
+                idle: true,
+            })),
+            Arc::new(Hooks::default()),
+        );
+        let intent = AtomicU64::new(0);
+        let mut queued = QueuedRequest::continuation(Request::CopyClips(Vec::new()), &intent);
+        queued.diagnostic = Some(DiagnosticRequest {
+            request_id: 1,
+            origin: DiagnosticOrigin::Submitted,
+            ui_action_id: None,
+            kind: "first",
+            operation: None,
+        });
+        events.begin_diagnostics(&queued, 0, first.state.revision);
+        let first_revision = first.state.revision;
+        let first = events.capture_outcome(first);
+        queued.diagnostic.as_mut().unwrap().request_id = 2;
+        events.begin_diagnostics(&queued, 0, second.state.revision);
+        let second_revision = second.state.revision;
+        let second = events.capture_outcome(second);
+        {
+            let sources = observed.sources.lock().unwrap();
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|(generation, revision, _)| (*generation, *revision))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (
+                        first_context.project_generation,
+                        first_context.editor_revision
+                    ),
+                    (
+                        second_context.project_generation,
+                        second_context.editor_revision
+                    ),
+                ]
+            );
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(events.send_pending_with_control_poll(first, |_| ()));
+        assert!(events.send_pending_with_control_poll(second, |_| ()));
+        let first = receiver.try_recv().unwrap();
+        let second = receiver.try_recv().unwrap();
+        assert_eq!(
+            (
+                first.request.unwrap().request_id,
+                first.event.state.revision
+            ),
+            (1, first_revision)
+        );
+        assert_eq!(
+            (
+                second.request.unwrap().request_id,
+                second.event.state.revision
+            ),
+            (2, second_revision)
+        );
+        let sources = observed.sources.lock().unwrap();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(generation, revision, _)| (*generation, *revision))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    first_context.project_generation,
+                    first_context.editor_revision
+                ),
+                (
+                    second_context.project_generation,
+                    second_context.editor_revision
+                ),
+            ]
+        );
+    }
     #[derive(Default)]
     struct Observation {
         sources: Mutex<Vec<(u64, u64, thread::ThreadId)>>,
@@ -1098,6 +1962,127 @@ mod tests {
             crate::test_wait::pause();
         }
     }
+    #[test]
+    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
+        };
+        let class = [1; 16];
+        let state = hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new(class).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [2; 32],
+                    info_sha256: [3; 32],
+                },
+            },
+            component: Some(&[4]),
+            controller: None,
+        })
+        .unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("plugin fixture");
+        };
+        for parameter in [7, 11] {
+            editor
+                .execute(Command::ReplaceDeviceAutomationTarget {
+                    device,
+                    target: DeviceAutomationTarget::Vst3 { parameter },
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.5).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetDeviceAutomationReadSelection {
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+                selection: AutomationReadSelection::Base,
+            })
+            .unwrap();
+        let input = ResidentEffectPreparation {
+            project: editor.project(),
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            restoring_plugin_state: false,
+            preparing_edit: true,
+        };
+        assert_eq!(
+            input
+                .authored_plugin_targets(device.value())
+                .collect::<Vec<_>>(),
+            vec![(7, Some(class)), (11, Some(class))]
+        );
+        assert_eq!(input.modulated_plugin_target(device.value()).unwrap(), None);
+        use hex_project::{
+            DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+            ModulationOutputId, ModulationRouteId, ModulationSourceId, Modulator,
+        };
+        let first = editor.project().next_identity();
+        let source = ModulationSourceId::new(first).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(
+                    vec![Modulator {
+                        id: source,
+                        color: Default::default(),
+                        enabled: false,
+                        state: hex_engine::lfo_modulator::Settings::default()
+                            .encode()
+                            .unwrap(),
+                    }],
+                    vec![DeviceModulationRoute {
+                        id: ModulationRouteId::new(first + 1).unwrap(),
+                        source,
+                        output: ModulationOutputId::MAIN,
+                        destination: ModulationDestination::Device {
+                            device_type: hex_plugin_state::TYPE_ID,
+                            target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+                            vst3_class: Some(class),
+                        },
+                        amount: ModulationAmount::new(0.25).unwrap(),
+                        range: Default::default(),
+                        enabled: false,
+                    }],
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let projected = |project: &Project, reopen| {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 2,
+                },
+                restoring_plugin_state: reopen,
+                preparing_edit: !reopen,
+            }
+            .modulated_plugin_target(device.value())
+            .unwrap()
+        };
+        assert_eq!(projected(editor.project(), false), Some((0, class)));
+        assert_eq!(projected(editor.project(), true), Some((0, class)));
+        assert!(editor.undo());
+        assert_eq!(projected(editor.project(), false), None);
+        assert!(editor.redo());
+        assert_eq!(projected(editor.project(), false), Some((0, class)));
+    }
+
     #[test]
     fn worker_uses_negotiated_rate_and_keeps_cleanup_live_under_event_backpressure_and_close() {
         let observed = Arc::new(Observation::default());

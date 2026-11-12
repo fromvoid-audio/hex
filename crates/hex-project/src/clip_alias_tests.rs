@@ -46,6 +46,37 @@ fn duplicate(editor: &mut Editor, clip: ClipId) -> ClipId {
     first
 }
 #[test]
+fn grouping_linked_midi_clips_preserves_the_unselected_alias() {
+    let (mut editor, _, first) = midi();
+    let second = duplicate(&mut editor, first);
+    let surviving = duplicate(&mut editor, second);
+    let before = editor.project().clone();
+    let source = before.clip_alias(surviving).unwrap();
+
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap()
+    else {
+        panic!("grouped midi clip");
+    };
+
+    let grouped = editor.project();
+    assert_eq!(grouped.clip_alias(group), None);
+    assert_eq!(grouped.clip_alias(first), None);
+    assert_eq!(grouped.clip_alias(second), None);
+    assert_eq!(grouped.clip_alias(surviving), Some(source));
+    assert_eq!(grouped.midi_clip(surviving), before.midi_clip(surviving));
+    let notes = grouped.midi_clip(group).unwrap().notes();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0].start(), beat(1));
+    assert_eq!(notes[1].start(), beat(5));
+    assert_eq!(
+        Project::from_snapshot(grouped.snapshot()).unwrap(),
+        *grouped
+    );
+}
+
+#[test]
 fn midi_alias_content_local_settings_unique_and_original_deletion_round_trip() {
     let (mut editor, _, original) = midi();
     let alias = duplicate(&mut editor, original);
@@ -980,4 +1011,99 @@ fn alias_to_new_track_respects_track_capacity_without_mutation() {
             .is_err()
     );
     assert_eq!(editor.project().snapshot(), before);
+}
+
+#[test]
+fn midi_note_extent_edits_keep_linked_content_and_independent_playback_windows() {
+    use crate::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint, MidiNoteUpdate};
+    let (mut editor, _, original) = midi();
+    let alias = duplicate(&mut editor, original);
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: alias,
+            source_length: beat(4),
+            source_start: beat(1),
+            loop_start: beat(2),
+            loop_end: beat(3),
+            looping: true,
+            length: beat(3),
+        })
+        .unwrap();
+    let volume = MidiClipVolume::new(
+        vec![
+            MidiClipVolumePoint::linear(beat(1), MidiClipGain::new(0.25).unwrap()),
+            MidiClipVolumePoint::linear(beat(3), MidiClipGain::new(0.75).unwrap()),
+        ],
+        beat(4),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip: alias,
+            volume: volume.clone(),
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    let note = before.midi_source(original).unwrap().notes()[0].id();
+    let update = |start| MidiNoteUpdate {
+        note,
+        start,
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    };
+    editor
+        .execute(Command::UpdateMidiNotesWithSourcePrefix {
+            clip: original,
+            prefix: beat(1),
+            notes: vec![update(BeatTime::ZERO)],
+        })
+        .unwrap();
+    let after = editor.project().clone();
+    let original_source = after.midi_source(original).unwrap();
+    let linked_clip = after.midi_clip(alias).unwrap();
+    assert_eq!(after.clip_alias(original), before.clip_alias(original));
+    assert_eq!(after.clip_alias(alias), before.clip_alias(alias));
+    assert!(Arc::ptr_eq(
+        &original_source.content,
+        &linked_clip.source().content
+    ));
+    assert_eq!(linked_clip.notes()[0].id(), note);
+    assert_eq!(linked_clip.notes()[0].start(), BeatTime::ZERO);
+    let old_linked = before.midi_clip(alias).unwrap();
+    assert_eq!(
+        (linked_clip.start(), linked_clip.length()),
+        (old_linked.start(), old_linked.length())
+    );
+    assert_eq!(
+        (
+            linked_clip.source_start(),
+            linked_clip.loop_start(),
+            linked_clip.loop_end()
+        ),
+        (beat(2), beat(3), beat(4))
+    );
+    assert_eq!(
+        linked_clip.volume(),
+        &volume.shifted(beat(1), beat(5)).unwrap()
+    );
+    assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+
+    editor
+        .execute(Command::UpdateMidiNotesWithSourceExtent {
+            clip: alias,
+            notes: vec![update(beat(8))],
+        })
+        .unwrap();
+    let updated = editor.project().midi_source(original).unwrap();
+    let linked = editor.project().midi_source(alias).unwrap();
+    assert!(Arc::ptr_eq(&updated.content, &linked.content));
+    assert_eq!(linked.notes()[0].start(), beat(8));
+    assert_eq!(linked.source_length(), beat(9));
+    assert_eq!(linked.loop_end(), beat(4));
 }

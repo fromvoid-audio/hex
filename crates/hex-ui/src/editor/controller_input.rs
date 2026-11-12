@@ -14,59 +14,6 @@ use std::sync::Arc;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[gpui::test]
-fn configured_hardware_defers_selection_audition_without_retiring_the_live_input(
-    cx: &mut gpui::TestAppContext,
-) {
-    use super::midi_canvas::creation_tests::{fixture, pump};
-    use hex_project::{BeatTime, Command};
-    let (mut visual, editor, _environment, clip) = fixture(cx);
-    editor.update(&mut visual, |view, _| {
-        assert!(
-            view.enqueue(hex_session::service::Request::Edit(Command::AddMidiNote {
-                clip,
-                start: BeatTime::ZERO,
-                duration: BeatTime::ONE,
-                pitch: 60,
-                channel: 0,
-                velocity: 37,
-            }))
-        );
-    });
-    pump(&editor, &mut visual);
-    editor.update(&mut visual, |view, _| {
-        let note = view
-            .state
-            .as_ref()
-            .unwrap()
-            .project
-            .midi_source(clip)
-            .unwrap()
-            .notes()[0]
-            .id();
-        let input = Arc::new(
-            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
-                .with_live_notes()
-                .unwrap(),
-        );
-        view.computer_keyboard.input = Some(Arc::clone(&input));
-        view.controller_input.selected_port = Some(hex_midi::Port {
-            id: 1,
-            name: "synthetic input".into(),
-        });
-        view.midi_audition.enabled = true;
-        view.audition_midi_notes(&[note]);
-        assert_eq!(view.tick_midi_audition(), None);
-        assert!(Arc::ptr_eq(
-            view.computer_keyboard.input.as_ref().unwrap(),
-            &input
-        ));
-        assert!(!input.is_cancelled());
-        assert!(view.controller_input.selected_port.is_some());
-    });
-}
-
-#[cfg(all(test, feature = "ui-test-support"))]
-#[gpui::test]
 fn settings_uses_stable_port_identity_preserves_missing_choice_and_saves_explicit_selection(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -310,6 +257,15 @@ impl EditorView {
             self.controller_input.cancel();
         }
     }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_audition_port(&mut self) {
+        self.controller_input.selected_port = Some(hex_midi::Port {
+            id: 1,
+            name: "synthetic input".into(),
+        });
+        self.controller_input.target = self.controller_target();
+    }
+
     pub(super) fn controller_wants_live_notes(&self) -> bool {
         self.controller_input.selected_port.is_some()
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
@@ -327,6 +283,12 @@ impl EditorView {
             .instrument()
             .filter(|instrument| !instrument.bypassed())?;
         Some((self.project_generation, track, instrument.id()))
+    }
+    fn controller_target_uses_vst3_notes(&self) -> bool {
+        self.selected_track
+            .zip(self.state.as_ref())
+            .and_then(|(track, state)| state.project.track(track)?.instrument())
+            .is_some_and(|instrument| instrument.state().type_id().as_str() == Ok("hex.vst3"))
     }
     /// Called for every rendered focus/clip context. Both leaving and entering
     /// establish a floor, excluding keys pressed while the editor was unfocused.
@@ -699,8 +661,13 @@ impl EditorView {
                 self.error = Some("controller activation identity exhausted".into());
                 return true;
             }
-            let input = Arc::new(LiveExpressionInput::new(generation, track, instrument));
             self.controller_input.held_notes = Some(Arc::new(hex_midi::HeldNoteInput::default()));
+            if self.controller_target_uses_vst3_notes() {
+                self.controller_input.target = target;
+                self.connect_prepared_controller();
+                return true;
+            }
+            let input = Arc::new(LiveExpressionInput::new(generation, track, instrument));
             let revision = self.state.as_ref().map_or(0, |state| state.revision);
             if !self.enqueue(hex_session::service::Request::PrepareLiveExpression {
                 input: Arc::clone(&input),
@@ -735,10 +702,19 @@ impl EditorView {
             && !input.is_cancelled()
     }
     pub(super) fn connect_prepared_controller(&mut self) {
+        let note_only = self.controller_target_uses_vst3_notes();
+        let Some((generation, track, _)) = self.controller_input.target else {
+            return;
+        };
         if self.controller_input.connected
             || self.controller_input.connecting
-            || !self.controller_input.expression_prepared
+            || (!note_only && !self.controller_input.expression_prepared)
             || !self.computer_keyboard.prepared
+            || self.controller_input.target != self.controller_target()
+            || !self
+                .computer_keyboard
+                .target
+                .is_some_and(|(owner, _, selected)| owner == generation && selected == track)
         {
             return;
         }
@@ -751,14 +727,15 @@ impl EditorView {
             return;
         };
         let note_input = Arc::clone(note_input);
-        let Some(input) = self
+        let expression = self
             .controller_input
             .input
             .as_ref()
             .filter(|input| !input.is_cancelled())
-        else {
+            .cloned();
+        if !note_only && expression.is_none() {
             return;
-        };
+        }
         let Some(port) = self.controller_input.selected_port.clone() else {
             return;
         };
@@ -779,7 +756,6 @@ impl EditorView {
                 return;
             }
         };
-        let expression = Arc::clone(input);
         let held = Arc::clone(notes);
         self.controller_input.note_input = Some((Arc::clone(&note_input), activation));
         let sink = monitoring::sink(expression, held, note_input, activation);
@@ -828,18 +804,19 @@ impl EditorView {
         let connection = if self.controller_input.connected {
             "connected"
         } else if self.controller_input.selected_port.is_some()
-            && self
-                .controller_input
-                .input
-                .as_ref()
-                .is_some_and(|input| !input.is_cancelled())
+            && self.controller_input.target.is_some()
         {
             "pending"
         } else {
             "off"
         };
+        let monitoring = if self.controller_target_uses_vst3_notes() {
+            "hardware notes play the selected vst3 instrument"
+        } else {
+            "hardware notes, pressure, pitch bend and mod wheel for the selected instrument"
+        };
         let description = theme::text(format!(
-            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · ordered hardware notes play the selected instrument and support piano-roll step entry · sustain, recording and mpe are not included"
+            "controller input {connection} · {monitoring} · click to choose port and channel · hardware notes support piano-roll step entry"
         ));
         div().w(px(46.0)).flex_shrink_0().children([div()
             .id("controller-input-menu")
@@ -1014,7 +991,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

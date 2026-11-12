@@ -134,11 +134,23 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             })
         })
         .collect();
+    // Host trim is bound to the selected Arrangement lane. Its reserved
+    // descriptor never appears in the provider's parameter inventory.
+    let trim = view.selected_automation_trim();
     let stale: Vec<_> =
         view.device_panel
             .controls
             .iter()
             .filter_map(|(key, control)| {
+                if trim.is_some_and(|trim| {
+                    trim.device == key.device
+                        && trim.kind
+                            == super::super::native_automation_recording::automation_target(
+                                key.parameter,
+                            )
+                }) {
+                    return (!control.binding().current(view, true)).then_some(*key);
+                }
                 let (old_class, old_type, old_descriptor) = control.metadata();
                 let valid = descriptors.get(key).is_some_and(
                     |(class, type_id, descriptor, compatible, _)| {
@@ -198,8 +210,11 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                 GestureTarget::DeviceParameterSnapshot { device }
                 | GestureTarget::EqNodeCreation { device } => device == key.device,
                 GestureTarget::ReturnSend { .. }
+                | GestureTarget::PluginParameter { .. }
                 | GestureTarget::TrackGain { .. }
+                | GestureTarget::TrackGains { .. }
                 | GestureTarget::TrackBalance { .. }
+                | GestureTarget::MainGain
                 | GestureTarget::ReturnGain { .. } => false,
             })
         || view
@@ -369,6 +384,7 @@ pub(super) mod tests {
             .collect()
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn mixed_rows_preserve_order_extent_resize_and_surviving_scroll_anchor() {
         let mut parameters = parameters();

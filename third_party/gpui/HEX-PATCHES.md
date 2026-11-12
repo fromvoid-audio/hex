@@ -12,12 +12,15 @@ per-event device-direction inversion flag; offer opt-in physical_delta() while
 keeping ordinary scroll delta unchanged; initialize the flag false on other
 platforms; clear rendered debug selector bounds between test-support frames.
 AppKit access stays inside GPUI's existing native boundary.
+Test-support also exposes completed path triangles with their actual fill and replay mask,
+so nonrectangular application surfaces can be checked without framebuffer claims.
 
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-explicit grid-literal, bounded accessibility and text decoration storage decisions.
-view-cache epoch, scene replay and explicit grid-literal decisions.
+explicit grid-literal, bounded accessibility, text decoration storage,
+view-cache epoch, scene replay, retained path placement and macOS Blade layer
+ownership decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -424,3 +427,33 @@ The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
 for acceptance and cancellation followed by acceptance; run it with
 `crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
 existing native dependency boundary and adds no unsafe Hex workspace code.
+
+6 November rotated device titles: the existing monochrome glyph raster cache
+and sprite transform support a bottom-to-top quarter turn at a shaped glyph's
+baseline. Scene admission and cached replay use the transformed sprite bounds
+for clipping and paint order. The app supplies the name and title hitbox, so
+normal text layout and pointer handling remain with their existing owners.
+Test support exposes the resulting rotated glyph bounds without GPU readback.
+
+6 November macOS Blade layer ownership: the backing-properties callback borrows
+the Metal layer retained by the Blade surface. Its accessor returns a
+`MetalLayerRef` tied to the renderer borrow. The previous owning wrapper released
+a reference on every scale update despite receiving only a borrowed pointer.
+The change stays in the existing external renderer and leaves surface custody,
+display-link behavior, and Hex's workspace unsafe prohibition intact.
+
+12 November retained path translation: add `Window::paint_path_with_offset`,
+which borrows a retained logical-pixel path and applies its logical offset to
+vertices, bounds and contour points before device scaling. The active content
+mask is scaled without translation; current element opacity and scene ordering
+are preserved. Existing `paint_path` and `Path::scale` remain unchanged. The
+translated scene path is built in one vertex pass without cloning the retained
+path or introducing a new public `Path` API.
+
+12 November disjoint waveform path reservation: two translated filled stereo
+paths may share one bounds-tree order if both clipped device-space bounds are
+finite, vertically separated by at least one device pixel and covered by their
+computed union. Otherwise each path uses ordinary insertion. The pair retains
+separate masks, primitive records and PathIds, and inherits any enclosing layer.
+Cached scene tests cover ordering, fallback and replay, and widget tests compare
+the completed triangles under the live clip mask.

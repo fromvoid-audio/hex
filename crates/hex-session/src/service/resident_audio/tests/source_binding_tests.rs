@@ -303,3 +303,169 @@ fn retained_sampler_unlink_delete_rebind_undo_redo_preserves_resident_pcm() {
     assert_binding(&session, track, source_id, device_id, local_effect, true);
     assert_eq!(render(&snapshot), baseline);
 }
+
+#[test]
+fn source_effect_binding_commits_only_after_its_terminal_and_survives_history() {
+    let observed = Arc::new(Observed::default());
+    let mut sink = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    let bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 3;
+    let mut session = Session::new(48_000, 8, 1024)
+        .unwrap()
+        .with_native_reservation(crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: bytes,
+                max_construction_peak_bytes: bytes,
+            },
+            max_scan_frames: 1024,
+        })
+        .unwrap();
+    let Created::Track(track) = session
+        .command(Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let Created::NativeSource(source) = session
+        .command(Command::CreateNativeSource {
+            name: "shared".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let parent = session
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let Created::Device(child) = session
+        .command(Command::InsertNestedDevice {
+            parent,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("child")
+    };
+    let before = session.project().snapshot();
+    let original = prepare(&session, &mut sink);
+    let bind = || Command::BindTrackSource {
+        track,
+        source: Some(source),
+    };
+
+    observed
+        .refuse_source_confirmation
+        .store(true, Ordering::Release);
+    let rejected = session.command_resident_snapshot(
+        bind(),
+        context(1),
+        &mut sink,
+        sampler_export::Admission::default(),
+        Some(&original),
+    );
+    assert!(
+        matches!(rejected, Err(SessionError::NativeAudio(message)) if message == "fixture callback refused source edit")
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 1);
+
+    observed
+        .refuse_source_confirmation
+        .store(false, Ordering::Release);
+    let (_, active) = command(&mut session, &original, &mut sink, bind(), 2);
+    let bound = session.project().snapshot();
+    assert_eq!(
+        session.project().native_source(source).unwrap().receiver(),
+        Some(track)
+    );
+    assert_eq!(
+        session
+            .project()
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()[0]
+            .id(),
+        child
+    );
+    let undone = history(&mut session, &active, &mut sink, false, 3);
+    assert_eq!(session.project().snapshot(), before);
+    let rebound = history(&mut session, &undone, &mut sink, true, 4);
+    assert_eq!(session.project().snapshot(), bound);
+    assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 4);
+
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+    let next = session.project().next_identity();
+    let modulator = ModulationSourceId::new(next).unwrap();
+    let bank = DeviceModulation::new(
+        vec![Modulator {
+            id: modulator,
+            color: Default::default(),
+            enabled: true,
+            state: hex_engine::lfo_modulator::Settings::default()
+                .encode()
+                .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source: modulator,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: session.project().device(child).unwrap().state().type_id(),
+                target: DeviceAutomationTarget::HostOutputGain,
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.05).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap();
+    let edit = || Command::ReplaceDeviceModulation {
+        device: child,
+        modulation: bank.clone(),
+    };
+    observed
+        .refuse_source_confirmation
+        .store(true, Ordering::Release);
+    let rejected = session.command_resident_snapshot(
+        edit(),
+        context(5),
+        &mut sink,
+        sampler_export::Admission::default(),
+        Some(&rebound),
+    );
+    assert!(matches!(rejected, Err(SessionError::NativeAudio(message))
+        if message == "fixture callback refused source edit"));
+    assert_eq!(session.project().snapshot(), bound);
+
+    observed
+        .refuse_source_confirmation
+        .store(false, Ordering::Release);
+    let (_, edited) = command(&mut session, &rebound, &mut sink, edit(), 6);
+    assert_eq!(session.project().device(child).unwrap().modulation(), &bank);
+    let _ = history(&mut session, &edited, &mut sink, false, 7);
+    let mut expected = bound;
+    expected.next_id = next + 2;
+    assert_eq!(session.project().snapshot(), expected);
+    assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 7);
+}

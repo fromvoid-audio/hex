@@ -356,6 +356,7 @@ pub(super) fn project_with_frames(frames: u64) -> hex_project::Project {
     clips[0].fade = hex_project::ClipFade::neutral(frames).unwrap();
     hex_project::Project::from_snapshot(snapshot).unwrap()
 }
+#[cfg(feature = "stream-test-support")]
 #[test]
 fn later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_play() {
     let _serial = serial();
@@ -366,6 +367,12 @@ fn later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_
     let asset = project.assets().next().unwrap().id();
     let wav = stream_fixture::Wav::with_frames(8192);
     let definition = wav.definition(asset, 11);
+    // A fast worker may otherwise finish page two within the same callback.
+    // Keep its absence explicit under allocation-probe + stream-test-support.
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: definition.metadata.key(),
+        page_index: 1,
+    });
     let mut owner = stream_fixture::owner_with_context(
         &project,
         definition.metadata.clone(),
@@ -381,9 +388,18 @@ fn later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_
         .configure_audio_candidate_publication(limits)
         .unwrap();
     control.configure_audio_candidate_streaming(3).unwrap();
+    let mut runtime = hex_stream::StreamRuntime::new_with_page_gate(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        vec![definition],
+        gate,
+    )
+    .unwrap();
+    runtime
+        .wait_until_ready(std::time::Duration::from_secs(2))
+        .unwrap();
     let domain = control
         .register_audio_candidate_domain_with_readiness(
-            stream_fixture::pair(definition),
+            runtime.split().ok().unwrap(),
             hex_stream::StreamReadinessReservation {
                 extents_per_role: 3,
             },
@@ -427,6 +443,9 @@ fn later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_
     assert_eq!(control.status.performance_frame.load(Acquire), 4096);
     assert_eq!(&output[..4096], &vec![[0.25; 2]; 4096]);
     assert_eq!(&output[4096..], &vec![[0.0; 2]; 4096]);
+    entered
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
     // Play is deferred even on an installed runtime; Pause must pass it and run
     // the actual zero-page reset before any more page/clock/DSP commit.
     let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
@@ -479,6 +498,7 @@ fn later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_
     assert_eq!(control.status.position.load(Acquire), 0);
     assert_eq!(control.status.performance_frame.load(Acquire), 0);
     assert!(!control.status.playing.load(Acquire));
+    release.try_send(()).unwrap();
     let mut backend = Some(());
     let mut pending = false;
     let mut disposed = false;
@@ -1158,6 +1178,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
         std::thread::yield_now();
     }
     let reported = control.status.stream_source_changed.load(Acquire);
+    assert!(!control.status.take_stream_read_failure());
     control.stop();
     let measured = allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|c, _| {
@@ -1207,6 +1228,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     control.stop();
     data.owner_mut().unwrap().run(|c, _| c.begin_block());
     std::fs::write(&source_path, &original).unwrap();
+    control.status.stream_read_failed.store(true, Release);
     let replacement_definition = wav.definition(asset, 11);
     let replacement = stream_fixture::owner_with_context(
         &project,
@@ -1250,6 +1272,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     );
     assert_eq!(control.status.applied_revision.load(Acquire), 2);
     assert!(!control.status.stream_source_changed.load(Acquire));
+    assert!(!control.status.take_stream_read_failure());
     let old = recover(&mut control, &ticket);
     assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
     drop(old);

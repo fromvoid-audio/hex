@@ -1,13 +1,16 @@
 pub(crate) mod alias_projection_v60;
 pub(crate) mod appearance;
+pub(crate) mod arrangement_locators;
 mod arrangement_sections;
 mod audio_alias_projection;
 pub(crate) mod audio_events;
 pub(crate) mod automation_read;
+pub(crate) mod bound_source_effects;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
+pub(crate) mod coincident_automation;
 pub(crate) mod combined;
 pub(crate) mod content_view_resampler;
 pub(crate) mod content_views;
@@ -15,6 +18,8 @@ pub(crate) mod conversion_v2;
 pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
+pub(crate) mod device_automation_touch;
+pub(crate) mod device_modulation;
 pub(crate) mod event_activation;
 pub(crate) mod event_fades;
 pub(crate) mod event_gain;
@@ -22,6 +27,7 @@ pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
+pub(crate) mod group_output_mute;
 pub(crate) mod grouped_audio;
 mod host_gain;
 pub(crate) mod legacy;
@@ -31,6 +37,7 @@ mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
+pub(crate) mod musical_event_source;
 pub(crate) mod native_sources;
 pub(crate) mod nested_audio;
 pub(crate) mod note_activation;
@@ -40,11 +47,17 @@ pub(crate) mod provenance;
 pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod s_curve_fades;
+pub(crate) mod sample_rate_mode;
 pub(crate) mod sampler_crossfade;
+pub(crate) mod serial_units;
 pub(crate) mod session_audio_loops;
+pub(crate) mod sidechain;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
+pub(crate) mod track_tags;
 pub(crate) mod tuning;
+pub(crate) mod vst3_automation;
 pub(crate) mod warp_resampler;
 use crate::StorageError;
 use hex_project::{
@@ -1215,6 +1228,8 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         id: device.id,
         bypassed: device.bypassed,
@@ -1294,13 +1309,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1337,13 +1355,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1380,13 +1401,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1430,13 +1454,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1480,13 +1507,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1530,13 +1560,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1580,13 +1613,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1648,13 +1684,16 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -2064,6 +2103,8 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    group_output_mutes: Vec::new(),
+                    tags: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2097,13 +2138,16 @@ impl DocumentV13 {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
             next_id: doc.next_id,
             assets: doc
                 .assets
@@ -2437,6 +2481,8 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            group_output_mutes: Vec::new(),
+                            tags: Vec::new(),
                             kind: hex_project::TrackKind::Ordinary,
                             parent_group: None,
                             color: hex_project::ElementColor::default(),
@@ -2463,13 +2509,16 @@ impl DocumentV10 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: doc.next_id,
                     assets: doc
                         .assets
@@ -2589,6 +2638,8 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    group_output_mutes: Vec::new(),
+                    tags: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2615,13 +2666,16 @@ impl DocumentV9 {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
             next_id: doc.next_id,
             assets: doc
                 .assets
@@ -2904,6 +2958,8 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2931,6 +2987,8 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2958,6 +3016,8 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3014,6 +3074,8 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3070,6 +3132,8 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

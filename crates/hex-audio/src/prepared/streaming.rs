@@ -49,6 +49,9 @@ pub(super) fn record_outcome(
     if outcome.source_changed {
         status.stream_source_changed.store(true, Release);
     }
+    if outcome.read_failed {
+        status.stream_read_failed.store(true, Release);
+    }
     status
         .stream_readiness_refused
         .store(outcome.readiness_refused, Release);
@@ -66,6 +69,16 @@ pub(super) fn record_outcome(
         applied_action: outcome.action_applied,
         rejected_action: outcome.action_rejection,
         fault: outcome.fault,
+    }
+}
+impl Status {
+    /// Take the current-demand audio read-error notification on control/UI.
+    /// Exactly one notification observer may consume it. Repeated failures
+    /// coalesce until taken; a later failure remains observable. No readiness,
+    /// identity change, persistent fault or successful recovery is implied.
+    pub fn take_stream_read_failure(&self) -> bool {
+        self.stream_read_failed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 }
 impl Callback {
@@ -321,7 +334,7 @@ impl Callback {
                 }
             };
             if fading {
-                self.begin_transport_fade(ticket, stop, true);
+                self.begin_transport_fade(ticket, action, true);
             }
             outcome
         } else if !matches!(
@@ -548,9 +561,7 @@ impl Callback {
                             crate::gain_recording::AbortReason::TransportChanged,
                         );
                     } else {
-                        self.invalidate_gain_recording(
-                            crate::gain_recording::AbortReason::TransportChanged,
-                        );
+                        self.invalidate_for_transport_change(queued.action);
                     }
                 }
                 PlaybackAction::Session(SessionPlaybackCommand::CancelPending { track }) => {
@@ -631,8 +642,8 @@ impl Callback {
 }
 
 #[cfg(test)]
-mod starvation_tests {
-    use super::{Relaxed, Status, count_starvation};
+mod tests {
+    use super::{Relaxed, Status, count_starvation, record_outcome};
     use crate::candidate_custody::{StreamOutcome, StreamProgress};
 
     fn outcome(progress: StreamProgress) -> StreamOutcome {
@@ -641,6 +652,7 @@ mod starvation_tests {
             play_applied: false,
             readiness_refused: false,
             source_changed: false,
+            read_failed: false,
             fault: None,
             action_rejection: None,
             action_applied: None,
@@ -672,5 +684,28 @@ mod starvation_tests {
             }),
         );
         assert_eq!(status.stream_starved_callbacks.load(Relaxed), 2);
+    }
+
+    #[test]
+    fn read_failure_notifications_coalesce_until_taken_and_allow_later_faults() {
+        let status = Status::default();
+        let mut pending = None;
+        assert!(!status.take_stream_read_failure());
+        for read_failed in [true, true, false] {
+            let mut result = outcome(StreamProgress::Complete);
+            result.read_failed = read_failed;
+            record_outcome(&status, &mut pending, 0, false, result);
+        }
+        assert!(status.take_stream_read_failure());
+        assert!(!status.take_stream_read_failure());
+        let mut result = outcome(StreamProgress::Buffering {
+            committed_frames: 0,
+        });
+        result.read_failed = true;
+        record_outcome(&status, &mut pending, 0, false, result);
+        assert!(status.take_stream_read_failure());
+        assert!(!status.take_stream_read_failure());
+        assert!(!status.stream_source_changed.load(Relaxed));
+        assert!(!status.render_fault.load(Relaxed));
     }
 }

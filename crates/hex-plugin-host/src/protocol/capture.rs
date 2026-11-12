@@ -53,8 +53,8 @@ pub fn live_captured_state(
         1 => true,
         _ => return Err(Error::Protocol("invalid live capture disposition")),
     };
-    let count = usize::from(u16::from_le_bytes(reader.array()?));
-    if count > 4096 || (!complete && count != 0) {
+    let count = u32::from_le_bytes(reader.array()?) as usize;
+    if count > hex_plugin_state::MAX_ENVELOPE_BYTES || (!complete && count != 0) {
         return Err(Error::Protocol("invalid live capture extent"));
     }
     let payload = reader.take(count)?;
@@ -89,8 +89,8 @@ pub fn captured_state(
             "capture acknowledgement differs from original operation",
         ));
     }
-    let count = usize::from(u16::from_le_bytes(reader.array()?));
-    if count > 4096 {
+    let count = u32::from_le_bytes(reader.array()?) as usize;
+    if count > hex_plugin_state::MAX_ENVELOPE_BYTES {
         return Err(Error::Protocol("captured state exceeds envelope bound"));
     }
     let payload = reader.take(count)?;
@@ -172,7 +172,7 @@ pub fn live_capture_reply(
             body, config, sequence, operation,
         )?));
     }
-    if magic != b"HXVLCA01" {
+    if magic != b"HXVLCA02" {
         return Err(Error::Protocol("missing live capture acknowledgement"));
     }
     live_captured_state(body, config, sequence, operation)

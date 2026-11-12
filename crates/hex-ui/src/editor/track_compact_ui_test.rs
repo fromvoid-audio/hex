@@ -384,6 +384,51 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
             .expect("real compact trim preview");
         assert_eq!(preview.size.height, px(23.0));
         assert_title(&mut f.visual, "clip-name", clip, preview);
+        let fill = f.editor.read_with(&f.visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            theme::clip_activity_fill(
+                project.track(f.tracks[index]).unwrap().color(),
+                project.clip_flavor(clip).unwrap(),
+                false,
+                project.clip_active(clip).unwrap(),
+            )
+        });
+        let background = gpui::Background::from(gpui::rgb(fill));
+        assert_eq!(
+            f.visual
+                .rendered_background(selector("clip-name", clip.value())),
+            Some(background),
+            "held title inherits its clip color"
+        );
+        assert_eq!(
+            f.visual.rendered_background(preview_selector),
+            Some(background)
+        );
+        let scale = f.visual.update(|window, _| window.scale_factor());
+        let corner = point(preview.right() - px(0.25), preview.top() + px(0.25)).scale(scale);
+        assert!(
+            f.visual
+                .rendered_filled_quads(preview_selector)
+                .iter()
+                .filter(|(_, color)| *color == background)
+                .all(|(bounds, _)| !bounds.contains(&corner)),
+            "held preview leaves the real upper-right cut open"
+        );
+        let trailing = if index == 0 {
+            "trim-preview-trailing"
+        } else {
+            "midi-trim-preview-trailing"
+        };
+        let edge = f.visual.debug_bounds(trailing).unwrap();
+        assert_eq!(edge.left(), preview.right());
+        assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+        let layers = f.visual.rendered_quad_paint_layers(trailing, false);
+        assert!(!layers.is_empty());
+        assert!(
+            layers
+                .iter()
+                .all(|(_, mask)| mask.top() >= (preview.top() + px(5.0)).scale(scale))
+        );
         assert_no_bodies(&mut f);
         f.editor.update(&mut f.visual, |view, cx| {
             if index == 0 {
@@ -409,6 +454,62 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
         f.visual.simulate_keystrokes("escape");
         f.visual
             .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        // Start with a cropped endpoint: changing the viewport during a held
+        // trim intentionally cancels that capture rather than reinterpreting it.
+        let viewport = f.editor.update(&mut f.visual, |view, cx| {
+            let project = &view.state.as_ref().unwrap().project;
+            let stop = if index == 0 {
+                let source = project.clip(clip).unwrap();
+                source.start() + source.duration()
+            } else {
+                let source = project.midi_clip(clip).unwrap();
+                project
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(
+                        source.start().raw() + source.length().raw(),
+                    ))
+                    .unwrap()
+            };
+            let old = view.viewport.replace(super::viewport::Viewport {
+                start: 0,
+                length: stop - 1_000,
+            });
+            cx.notify();
+            old
+        });
+        f.visual.run_until_parked();
+        let left = if index == 0 {
+            "clip-trim-left"
+        } else {
+            "midi-clip-trim-left"
+        };
+        let down = bounds(&mut f.visual, left, clip.value()).center();
+        let end = point(down.x + px(20.0), down.y);
+        f.visual
+            .simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        f.visual
+            .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        let cropped = f
+            .visual
+            .debug_bounds(preview_selector)
+            .expect("held left trim with cropped right endpoint");
+        let corner = point(cropped.right() - px(0.25), cropped.top() + px(2.0)).scale(scale);
+        assert!(
+            f.visual
+                .rendered_filled_quads(preview_selector)
+                .iter()
+                .any(|(bounds, color)| *color == background && bounds.contains(&corner)),
+            "viewport crop keeps its square filled edge, not a false clip ending"
+        );
+        f.visual.simulate_keystrokes("escape");
+        f.visual
+            .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        f.editor.update(&mut f.visual, |view, cx| {
+            view.viewport = viewport;
+            cx.notify();
+        });
         f.visual.run_until_parked();
         f.editor.read_with(&f.visual, |view, _| {
             assert!(view.active_trim_drag.is_none() && view.active_midi_trim_drag.is_none());
@@ -459,6 +560,12 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
     let previews = f.clips.map(|clip| {
         let preview = bounds(&mut f.visual, "group-clip-preview", clip.value());
         assert_title(&mut f.visual, "clip-drag-name", clip, preview);
+        super::clip_boundary::tests::assert_open_upper_right(
+            &mut f.visual,
+            selector("group-clip-preview", clip.value()),
+            selector("group-clip-preview-trailing", clip.value()),
+            Some(selector("clip-drag-name", clip.value())),
+        );
         preview
     });
     assert_no_bodies(&mut f);
@@ -502,8 +609,8 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
     // rendered handle and uses normal Option-copy routing.
     f.editor.update(&mut f.visual, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: f.tracks[0],
-            end_track: f.tracks[1],
+            anchor_track: Some(f.tracks[0]),
+            end_track: Some(f.tracks[1]),
             anchor_frame: 0,
             end_frame: 120_000,
         });
@@ -549,7 +656,25 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
             .debug_bounds(name)
             .expect("named compact time fragment");
         assert_eq!(fragment.size.height, px(23.0));
-        assert_title(&mut f.visual, "clip-drag-name", f.clips[index], fragment);
+        // Fragment captions are passive and uniquely scoped, rather than
+        // mounting the same authored clip identity in multiple residuals.
+        let title_name = if index == 0 {
+            Box::leak(format!("{name}-name").into_boxed_str()) as &'static str
+        } else {
+            selector("time-move-midi-fragment-name", f.clips[index].value())
+        };
+        let title = f
+            .visual
+            .debug_bounds(title_name)
+            .expect("passive fragment title");
+        assert!(title.size.width > px(30.0));
+        assert_title_rail_height(title, title_name);
+        assert!(title.top() >= fragment.top() - px(1.0));
+        assert!(title.bottom() <= fragment.bottom());
+        assert!(
+            f.visual.rendered_background(title_name).is_some(),
+            "fragment title strip actually paints"
+        );
     }
     assert_no_bodies(&mut f);
     f.visual.simulate_keystrokes("escape");

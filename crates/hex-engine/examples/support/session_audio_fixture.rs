@@ -72,6 +72,8 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         };
         let arrangement_duration = 16_384;
         snapshot_tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -147,13 +149,16 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id,
         assets,
         tracks: snapshot_tracks,

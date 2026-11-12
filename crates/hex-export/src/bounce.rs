@@ -142,9 +142,95 @@ pub fn render_arrangement_bounce_with_pages(
         frames,
         include_tails,
         control,
-        pages,
+        RenderInputs {
+            pages,
+            foreign: None,
+        },
         FRAMES_PER_BLOCK,
     )
+}
+
+/// A private, independently prepared foreign processor set for one bounce.
+/// The host owns its instances and confirms each complete render block. An
+/// error aborts the job before its WAV or model edit can be published.
+pub trait ForeignBounceRenderer {
+    fn max_block_frames(&self) -> usize;
+    /// True only when the processor's declared finite tail allowance has
+    /// elapsed since the selected span ended and the engine released its
+    /// source gates. Unknown tails retain the existing finite render cap.
+    fn tail_is_drained(&self, _quiescent_source_frames: u64) -> bool {
+        false
+    }
+    fn render_block(
+        &mut self,
+        playback: &mut SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        pages: Option<&mut dyn hex_engine::MediaPages>,
+        control: &ExportControl,
+    ) -> Result<(), ExportError>;
+    /// Complete the provider before WAV publication. Drop must also clean
+    /// its private instance on cancellation or any earlier refusal.
+    fn finish(&mut self, control: &ExportControl) -> Result<(), ExportError>;
+}
+
+/// Run the same finite bounce with a caller-owned offline processor set.
+#[allow(clippy::too_many_arguments)]
+pub fn render_arrangement_bounce_with_foreign(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    include_tails: bool,
+    control: &ExportControl,
+    pages: Option<&mut dyn PreparedExportPages>,
+    foreign: &mut dyn ForeignBounceRenderer,
+) -> Result<ExportReport, ExportError> {
+    let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
+    render_arrangement_bounce_partitioned(
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        include_tails,
+        control,
+        RenderInputs {
+            pages,
+            foreign: Some(foreign),
+        },
+        block_frames,
+    )
+}
+
+pub(super) struct RenderInputs<'p, 'pages, 'f> {
+    pub(super) pages: Option<&'p mut (dyn PreparedExportPages + 'pages)>,
+    pub(super) foreign: Option<&'f mut dyn ForeignBounceRenderer>,
+}
+impl RenderInputs<'_, '_, '_> {
+    pub(super) fn render(
+        &mut self,
+        playback: &mut SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        control: &ExportControl,
+    ) -> Result<(), ExportError> {
+        if let Some(pages) = self.pages.as_deref_mut() {
+            pages.prepare_chunk(playback, output.len(), control)?;
+            let mut view = crate::pages::PageView(pages);
+            if let Some(foreign) = self.foreign.as_deref_mut() {
+                foreign.render_block(playback, output, Some(&mut view), control)?;
+            } else {
+                playback
+                    .render_with_pages(output, &mut view)
+                    .map_err(ExportError::SessionRender)?;
+            }
+            pages.complete_chunk()
+        } else if let Some(foreign) = self.foreign.as_deref_mut() {
+            foreign.render_block(playback, output, None, control)
+        } else {
+            playback.render(output).map_err(ExportError::SessionRender)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Internal partition used to verify block-boundary invariance.
@@ -156,7 +242,7 @@ fn render_arrangement_bounce_partitioned(
     frames: u64,
     include_tails: bool,
     control: &ExportControl,
-    mut pages: Option<&mut dyn PreparedExportPages>,
+    mut inputs: RenderInputs<'_, '_, '_>,
     block_frames: usize,
 ) -> Result<ExportReport, ExportError> {
     if block_frames == 0 || block_frames > FRAMES_PER_BLOCK {
@@ -190,13 +276,14 @@ fn render_arrangement_bounce_partitioned(
     start
         .checked_add(rendered_maximum)
         .ok_or(ExportError::Invalid("compensated bounce range overflows"))?;
-    let mut playback = controlled::prepare_bounce_runtime(
+    let mut playback = controlled::prepare_bounce_runtime_with_inputs(
         revision,
         resources,
         start,
         rendered_maximum,
         control,
-        pages.as_deref_mut(),
+        &mut inputs,
+        block_frames,
     )?;
     let mut audio = Vec::new();
     audio
@@ -210,17 +297,7 @@ fn render_arrangement_bounce_partitioned(
     while remaining_latency != 0 {
         control.check()?;
         let count = remaining_latency.min(block_frames as u64) as usize;
-        if let Some(pages) = pages.as_deref_mut() {
-            pages.prepare_chunk(&playback, count, control)?;
-            playback
-                .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
-                .map_err(ExportError::SessionRender)?;
-            pages.complete_chunk()?;
-        } else {
-            playback
-                .render(&mut block[..count])
-                .map_err(ExportError::SessionRender)?;
-        }
+        inputs.render(&mut playback, &mut block[..count], control)?;
         if block[..count].iter().flatten().any(|s| !s.is_finite()) {
             return Err(ExportError::Invalid("bounce produced a non-finite sample"));
         }
@@ -230,6 +307,7 @@ fn render_arrangement_bounce_partitioned(
     let mut rendered = 0;
     let mut quiet_frames = 0_u64;
     let mut tail_quiescent = false;
+    let mut quiet_source_at = None;
     let mut quiet_start = None;
     let mut last_audible_block_end = frames;
     let stopped_quiescent = loop {
@@ -237,17 +315,7 @@ fn render_arrangement_bounce_partitioned(
         let boundary = if rendered < frames { frames } else { maximum };
         let count = (boundary - rendered).min(block_frames as u64) as usize;
         if count != 0 {
-            if let Some(pages) = pages.as_deref_mut() {
-                pages.prepare_chunk(&playback, count, control)?;
-                playback
-                    .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
-                    .map_err(ExportError::SessionRender)?;
-                pages.complete_chunk()?;
-            } else {
-                playback
-                    .render(&mut block[..count])
-                    .map_err(ExportError::SessionRender)?;
-            }
+            inputs.render(&mut playback, &mut block[..count], control)?;
             if block[..count].iter().flatten().any(|s| !s.is_finite()) {
                 return Err(ExportError::Invalid("bounce produced a non-finite sample"));
             }
@@ -265,7 +333,19 @@ fn render_arrangement_bounce_partitioned(
         }
         if rendered >= frames && include_tails {
             let was_quiescent = tail_quiescent;
-            tail_quiescent = playback.arrangement_bounce_is_quiescent();
+            let source_quiescent = playback.arrangement_bounce_is_quiescent();
+            if !source_quiescent {
+                quiet_source_at = None;
+            }
+            tail_quiescent = source_quiescent
+                && inputs.foreign.as_ref().is_none_or(|foreign| {
+                    let since = rendered - *quiet_source_at.get_or_insert(rendered);
+                    foreign.tail_is_drained(since)
+                        && block[..count]
+                            .iter()
+                            .flatten()
+                            .all(|sample| sample.abs() <= BOUNCE_TAIL_SILENCE_PEAK)
+                });
             if !tail_quiescent {
                 quiet_start = None;
             } else if !was_quiescent {
@@ -286,7 +366,10 @@ fn render_arrangement_bounce_partitioned(
     };
     drop(playback);
     // Verify and release the provider before anything is published.
-    if let Some(pages) = pages {
+    if let Some(foreign) = inputs.foreign {
+        foreign.finish(control)?;
+    }
+    if let Some(pages) = inputs.pages {
         pages.finish(control)?;
     }
     if include_tails {

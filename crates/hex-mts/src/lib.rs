@@ -62,7 +62,7 @@ pub enum State {
     Pending,
     Disabling,
     Active,
-    Blocked,
+    Blocked { recovery_available: bool },
     Unavailable(NativeError),
     Stopped,
 }
@@ -110,6 +110,7 @@ struct Mailbox {
     latest: Option<Publication>,
     epoch: u64,
     attempt: u64,
+    recover: bool,
     next_client: u64,
     shutdown: bool,
 }
@@ -168,6 +169,7 @@ impl Handle {
             .ok_or(ControlError::Exhausted)?;
         state.epoch = epoch;
         state.attempt = attempt;
+        state.recover = false;
         state.snapshot = Snapshot {
             owner: Some(publication.revision.owner),
             desired: Some(publication.revision),
@@ -220,18 +222,34 @@ impl Handle {
         Ok(())
     }
     pub fn retry(&self, owner: Owner) -> Result<(), ControlError> {
+        self.request_attempt(owner, false)
+    }
+    /// Request a single shared-state reset after an explicit user action.
+    /// Only the current owner of an IPC-blocked registration can request it.
+    pub fn recover(&self, owner: Owner) -> Result<(), ControlError> {
+        self.request_attempt(owner, true)
+    }
+    fn request_attempt(&self, owner: Owner, recover: bool) -> Result<(), ControlError> {
         let mut state = self
             .0
             .mailbox
             .lock()
             .map_err(|_| ControlError::Unavailable)?;
-        if state.shutdown || state.snapshot.owner != Some(owner) {
+        if state.shutdown
+            || state.snapshot.owner != Some(owner)
+            || recover
+                && state.snapshot.state
+                    != (State::Blocked {
+                        recovery_available: true,
+                    })
+        {
             return Err(ControlError::Stale);
         }
         state.attempt = state
             .attempt
             .checked_add(1)
             .ok_or(ControlError::Exhausted)?;
+        state.recover = recover;
         state.snapshot.state = State::Pending;
         self.0.ready.notify_one();
         Ok(())
@@ -284,7 +302,7 @@ fn run(shared: &Shared, mut transport: impl Transport) {
     let mut attempted = None;
     let mut published = None;
     loop {
-        let (epoch, attempt, owner, latest, shutdown) = {
+        let (epoch, attempt, recover, owner, latest, shutdown) = {
             let Ok(state) = shared.mailbox.lock() else {
                 transport.release();
                 return;
@@ -292,6 +310,7 @@ fn run(shared: &Shared, mut transport: impl Transport) {
             (
                 state.epoch,
                 state.attempt,
+                state.recover,
                 state.snapshot.owner,
                 state.latest,
                 state.shutdown,
@@ -322,7 +341,14 @@ fn run(shared: &Shared, mut transport: impl Transport) {
         } else if let Some(publication) = latest {
             if active_epoch.is_none() && attempted != Some((epoch, attempt)) {
                 attempted = Some((epoch, attempt));
-                match transport.acquire() {
+                if recover
+                    && !shared.mailbox.lock().is_ok_and(|state| {
+                        state.epoch == epoch && state.attempt == attempt && !state.shutdown
+                    })
+                {
+                    continue;
+                }
+                match transport.acquire(recover) {
                     Ok(()) => {
                         active_epoch = Some(epoch);
                         published = None;
@@ -330,15 +356,15 @@ fn run(shared: &Shared, mut transport: impl Transport) {
                     Err(error) => {
                         if let Ok(mut state) = shared.mailbox.lock()
                             && state.epoch == epoch
+                            && state.attempt == attempt
+                            && !state.shutdown
                         {
-                            state.snapshot.state = if matches!(
-                                error,
+                            state.snapshot.state = match error {
                                 NativeError::ExistingMaster
-                                    | NativeError::LocalMasterAlreadyRegistered
-                            ) {
-                                State::Blocked
-                            } else {
-                                State::Unavailable(error)
+                                | NativeError::ExistingMasterWithIpc => State::Blocked {
+                                    recovery_available: error == NativeError::ExistingMasterWithIpc,
+                                },
+                                _ => State::Unavailable(error),
                             };
                         }
                     }

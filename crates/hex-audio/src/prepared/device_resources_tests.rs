@@ -593,6 +593,7 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     );
     // Compatible edits use the ordinary same-output handoff. Repeated publication
     // must close the returned candidate's unused lease rather than accumulating it.
+    let mut current_gain = 1.0_f32;
     for (muted, gain) in [(true, 1.0), (false, 1.0), (false, 0.5), (false, 1.0)] {
         editor.execute(Command::Mute { track, muted }).unwrap();
         editor.execute(Command::Gain { track, gain }).unwrap();
@@ -604,13 +605,13 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
             )
             .unwrap();
         let output = block(&mut callback);
-        let expected = if muted { 0.0 } else { 0.25 * gain };
-        assert!(
-            output
-                .iter()
-                .flatten()
-                .all(|sample| (*sample - expected).abs() < 1e-6)
-        );
+        for (index, frame) in output.iter().enumerate() {
+            if current_gain != gain {
+                current_gain += (gain - current_gain) / (40 - index) as f32;
+            }
+            let expected = if muted { 0.0 } else { 0.25 * current_gain };
+            assert!(frame.iter().all(|sample| (*sample - expected).abs() < 1e-6));
+        }
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         assert_eq!(control.reclaim(), 1);
         assert_eq!(control.outstanding_device_resource_leases(), 1);
@@ -1386,6 +1387,120 @@ fn one_voice_sampler_retrigger_steals_its_release_without_callback_allocation() 
         steal[31], held[31],
         "the stolen release has retired beside the one new held voice"
     );
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
+fn sampler_gain_modulation_renders_through_ordinary_publication_without_allocations() {
+    use hex_engine::lfo_modulator::{Rate, Settings, Waveform};
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let state = hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+        1024, asset, 0.002,
+    )
+    .unwrap();
+    let device_type = state.type_id();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("sampler track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("arrangement clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        color: Default::default(),
+        enabled: true,
+        state: Settings {
+            rate: Rate::Hertz(2_000.0),
+            phase: 0.0,
+            waveform: Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let edit = |depth| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![slot.clone()],
+            vec![DeviceModulationRoute {
+                id: ModulationRouteId::new(next + 1).unwrap(),
+                source,
+                output: ModulationOutputId::MAIN,
+                destination: ModulationDestination::Device {
+                    device_type,
+                    target: DeviceAutomationTarget::Parameter(
+                        hex_lattice_contract::ParameterId::from_static(1),
+                    ),
+                    vst3_class: None,
+                },
+                amount: ModulationAmount::new(depth).unwrap(),
+                range: ModulationRange::default(),
+                enabled: true,
+            }],
+        )
+        .unwrap(),
+    };
+    editor.execute(edit(0.125)).unwrap();
+    let (mut control, mut callback) = channel(8_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control.publish(compile(&editor, &sources)).unwrap();
+    control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    assert_eq!(
+        block(&mut callback),
+        std::array::from_fn(|index| { [if index % 4 < 2 { 0.375 } else { 0.125 }; 2] })
+    );
+    editor.execute(edit(0.25)).unwrap();
+    let admitted = control.publish(compile(&editor, &sources)).unwrap();
+    assert_eq!(
+        block(&mut callback),
+        std::array::from_fn(|index| { [if index % 4 < 2 { 0.5 } else { 0.0 }; 2] })
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), admitted);
     control.request_shutdown();
     callback.begin_block();
     control.reclaim();

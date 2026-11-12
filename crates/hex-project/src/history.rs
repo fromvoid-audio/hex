@@ -14,6 +14,16 @@ struct HistoryEntry {
     stopped_bounce: bool,
 }
 
+/// A rate-changing edge uses the exact same bounded history stacks as edits.
+pub enum SampleRateHistoryAction {
+    Apply {
+        rate: u32,
+        mode: crate::SampleRateMode,
+    },
+    Undo,
+    Redo,
+}
+
 pub struct Editor {
     project: Project,
     undo: VecDeque<HistoryEntry>,
@@ -98,6 +108,131 @@ impl Editor {
         .is_some_and(|entry| entry.section_publication)
     }
 
+    /// Prepare a rate edge with the optional live-state projection validated
+    /// by the Session owner. The projection describes the outgoing project
+    /// with its freshly captured device state. Failure and no-op restore the
+    /// exact original model and leave both history stacks unchanged.
+    pub fn change_sample_rate_prepared<T, E: From<Invalid>>(
+        &mut self,
+        action: SampleRateHistoryAction,
+        outgoing: Option<Project>,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        if outgoing.as_ref().is_some_and(|project| {
+            project.sample_rate() != self.project.sample_rate()
+                || project.sample_rate_mode() != self.project.sample_rate_mode()
+        }) {
+            return Err(E::from(Invalid(
+                "captured project clock differs from the current rate",
+            )));
+        }
+        let original = outgoing.map(|project| std::mem::replace(&mut self.project, project));
+        let result = match action {
+            SampleRateHistoryAction::Apply { rate, mode } => {
+                self.apply_sample_rate(rate, mode, prepare)
+            }
+            SampleRateHistoryAction::Undo => self.undo_prepared(prepare),
+            SampleRateHistoryAction::Redo => self.redo_prepared(prepare),
+        };
+        if !matches!(result, Ok(Some(_)))
+            && let Some(original) = original
+        {
+            self.project = original;
+        }
+        result
+    }
+
+    fn apply_sample_rate<T, E: From<Invalid>>(
+        &mut self,
+        rate: u32,
+        mode: crate::SampleRateMode,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let candidate = self
+            .project
+            .at_sample_rate(rate)?
+            .with_sample_rate_mode(mode);
+        if candidate == self.project {
+            return Ok(None);
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve sample rate history")))?;
+        let prepared = prepare(&candidate)?;
+        self.commit_candidate(candidate, None, false, false);
+        Ok(Some(prepared))
+    }
+
+    fn commit_candidate(
+        &mut self,
+        candidate: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
+        let previous = std::mem::replace(&mut self.project, candidate);
+        self.push_undo(previous, midi_effect, section_publication, stopped_bounce);
+    }
+
+    fn push_undo(
+        &mut self,
+        previous: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
+        if self.undo.len() == self.capacity {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(HistoryEntry {
+            project: previous,
+            midi_effect,
+            section_publication,
+            stopped_bounce,
+        });
+        self.redo.clear();
+    }
+
+    /// Commit one device state with the actual pre-gesture state as its Undo
+    /// preimage. Preparation still compares the canonical source and candidate.
+    pub fn replace_captured_device_state<T, E: From<Invalid>>(
+        &mut self,
+        device: crate::DeviceId,
+        before: hex_lattice_contract::NativeDeviceState,
+        after: hex_lattice_contract::NativeDeviceState,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let original = self
+            .project
+            .device(device)
+            .ok_or(Invalid("device no longer exists"))?;
+        if before.type_id() != original.state().type_id() || after.type_id() != before.type_id() {
+            return Err(Invalid("captured device type changed").into());
+        }
+        let previous = self
+            .project
+            .preview_device_edit(&Command::ReplaceDeviceState {
+                device,
+                state: before,
+            })?;
+        let candidate = self
+            .project
+            .preview_device_edit(&Command::ReplaceDeviceState {
+                device,
+                state: after,
+            })?;
+        if previous == candidate {
+            return Err(Invalid("captured device edit has no state change").into());
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve device edit history")))?;
+        let prepared = prepare(&self.project, &candidate)?;
+        self.project = candidate;
+        self.push_undo(previous, None, false, false);
+        Ok(prepared)
+    }
+
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
         self.execute_validated(command, |_| Ok(()))
     }
@@ -166,9 +301,11 @@ impl Editor {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         let alias_changed = alias_plan.finish(&mut candidate)?;
+        candidate.prune_deleted_sidechains();
         if alias_changed {
             Project::from_snapshot(candidate.snapshot())?;
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
@@ -176,6 +313,7 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
@@ -194,17 +332,7 @@ impl Editor {
         if candidate == self.project {
             return Ok((result, prepared));
         }
-        let previous = std::mem::replace(&mut self.project, candidate);
-        if self.undo.len() == self.capacity {
-            self.undo.pop_front();
-        }
-        self.undo.push_back(HistoryEntry {
-            project: previous,
-            midi_effect: effect,
-            section_publication,
-            stopped_bounce,
-        });
-        self.redo.clear();
+        self.commit_candidate(candidate, effect, section_publication, stopped_bounce);
         Ok((result, prepared))
     }
     /// Apply at most MAX_CLIPS ordered commands to one private candidate and
@@ -324,12 +452,14 @@ impl Editor {
             for mut command in commands {
                 let alias_plan = crate::clip_alias_edit::Plan::capture(&candidate, &mut command)?;
                 results.push(candidate.apply(command)?);
+                candidate.prune_deleted_sidechains();
                 alias_changed |= alias_plan.finish(&mut candidate)?;
             }
             if alias_changed {
                 Project::from_snapshot(candidate.snapshot())?;
             }
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
@@ -337,6 +467,7 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.

@@ -27,13 +27,16 @@ fn project(source_start: u64, source_end: u64) -> Project {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 10,
         assets: vec![
             AssetSnapshot {
@@ -66,6 +69,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -85,6 +90,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -899,13 +906,11 @@ fn streamed_session_audio_remains_frame_anchored_across_arrangement_loop_wrap() 
     for (offset, frame) in across_wrap.iter().enumerate() {
         let mut expected = sample(4_094 + offset as u64);
         if offset >= 2 {
-            // The wrapped Arrangement bed ramps in from the silence past the
-            // loop end (`loop_seam`, F = 128); the Session clip is untouched.
-            let k = (offset - 2) as f32;
-            let gain = (k + 1.0) / 128.0;
+            // The wrapped Arrangement bed retains its full attack; the
+            // Session clip continues on its independent frame clock.
             let bed = sample((offset - 2) as u64 + 2);
-            expected[0] += bed[0] * gain;
-            expected[1] += bed[1] * gain;
+            expected[0] += bed[0];
+            expected[1] += bed[1];
         }
         assert!(
             (frame[0] - expected[0]).abs() < 1e-6 && (frame[1] - expected[1]).abs() < 1e-6,
@@ -959,6 +964,11 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         let bed = sample(timeline_frame + 2);
         expected[0] += bed[0];
         expected[1] += bed[1];
+        // A three-frame loop has a one-frame end fade. Both Arrangement
+        // sources fade together; source offsets and page requests stay put.
+        if timeline_frame == 3 {
+            expected = [0.0; 2];
+        }
         assert_eq!(*frame, expected, "looped finite Playback frame {index}");
     }
     assert!(pages.requests.is_empty());

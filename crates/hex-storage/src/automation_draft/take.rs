@@ -373,7 +373,7 @@ fn event_clock(event: AppliedEvent) -> DraftClock {
 }
 
 #[derive(Clone, Copy)]
-struct ClockMapping {
+pub(super) struct ClockMapping {
     first: DraftClock,
     end: DraftClock,
     region: Option<LoopRegion>,
@@ -409,19 +409,25 @@ impl ClockMapping {
         end: DraftClock,
         region: Option<LoopRegion>,
     ) -> Result<Self, String> {
-        let first = event_clock(first);
+        Self::from_clocks(event_clock(first), end, region)
+    }
+
+    pub(super) fn from_clocks(
+        first: DraftClock,
+        end: DraftClock,
+        region: Option<LoopRegion>,
+    ) -> Result<Self, String> {
         if region.is_some_and(|region| !region.enabled()) {
             return Err("captured loop must be enabled".into());
         }
         let region =
             region.filter(|region| first.loop_pass > 0 || first.content_frame < region.end());
-        if let Some(region) = region {
-            if !region.enabled()
+        if let Some(region) = region
+            && (!region.enabled()
                 || first.content_frame >= region.end()
-                || (first.loop_pass > 0 && first.content_frame < region.start())
-            {
-                return Err("captured loop origin is invalid".into());
-            }
+                || (first.loop_pass > 0 && first.content_frame < region.start()))
+        {
+            return Err("captured loop origin is invalid".into());
         }
         let mapping = Self { first, end, region };
         if mapping.clock_at(end.performance_frame)? != end {
@@ -486,6 +492,9 @@ impl ClockMapping {
             .and_then(|frame| u64::try_from(frame).ok())
     }
 }
+
+mod grouped;
+pub use grouped::ProjectedGroupLane;
 
 mod prepared;
 pub use prepared::{

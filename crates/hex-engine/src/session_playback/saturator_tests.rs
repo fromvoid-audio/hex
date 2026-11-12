@@ -39,6 +39,8 @@ fn project_with_saturators_bypassed(
     snapshot.next_id = return_device + 1;
 
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: track_device,
@@ -55,6 +57,8 @@ fn project_with_saturators_bypassed(
         gain: 0.75,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: return_device,
@@ -78,7 +82,7 @@ fn render_project(project: &Project) -> Vec<[f32; 2]> {
 }
 
 #[test]
-fn saturator_runs_on_track_and_return_chains_and_bypass_is_transparent() {
+fn saturator_runs_on_track_and_return_chains_and_bypass_keeps_dry_alignment() {
     let no_devices = render_project(&project(1.0, 0, 8 << 32));
     let track_only = render_project(&project_with_saturators(36.0, 0.0));
     let return_only = render_project(&project_with_saturators(0.0, 36.0));
@@ -148,9 +152,11 @@ fn saturator_runs_on_track_and_return_chains_and_bypass_is_transparent() {
         }
     }
 
-    // Bypassed native devices report no latency and pass input undelayed.
+    // The two bypassed Saturators preserve the 11-frame latency on each
+    // path. Both the aligned direct signal and the return are dry.
     let bypassed = render_project(&project_with_saturators_bypassed(36.0, 36.0, true, true));
-    for (actual, input) in bypassed.iter().zip(&no_devices) {
+    assert_eq!(&bypassed[..22], &[[0.0; 2]; 22]);
+    for (actual, input) in bypassed[22..].iter().zip(&no_devices) {
         for channel in 0..2 {
             let expected = f64::from(input[channel]) * (1.0 + 0.75 * 0.5);
             assert!((f64::from(actual[channel]) - expected).abs() <= 2.0e-6);

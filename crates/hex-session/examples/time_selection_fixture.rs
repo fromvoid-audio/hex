@@ -80,6 +80,8 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             });
         }
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -112,9 +114,11 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: vec![AssetSnapshot {
             original_source: None,
@@ -134,6 +138,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         return_feeds: Vec::new(),
         import_provenance: None,
     })?)

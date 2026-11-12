@@ -25,13 +25,22 @@
 //! Playback admission is owned by hex-engine and may refuse unsupported hierarchy.
 //!
 //! # Dependencies
-//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state. The pure
+//! hex-plugin-state codec validates class identity for VST3 lanes and state
+//! replacements. This crate never loads a plug-in or depends on DSP implementations.
 //!
 //! # Does not own
 //! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
 //! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
 //! preparation must preserve project, IDs and history.
+mod sidechain;
+pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
+mod arrangement_locators;
 mod arrangement_occupancy;
+pub use arrangement_locators::{
+    ArrangementLocator, ArrangementLocatorAppearance, ArrangementLocatorSnapshot,
+    MAX_ARRANGEMENT_LOCATORS,
+};
 mod arrangement_sections;
 pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
@@ -40,11 +49,17 @@ pub use arrangement_sections::{
 mod audio_event_fade;
 mod audio_events;
 pub use audio_event_fade::AudioEventFade;
+mod project_rate;
+pub use project_rate::SampleRateMode;
 mod project_tempo;
+mod track_gain_group;
+pub use track_gain_group::RelativeTrackGains;
 mod retained_audio;
 pub use retained_audio::MAX_RETAINED_AUDIO_DEPTH;
 mod track_groups;
 mod track_name;
+mod track_tags;
+pub use track_tags::{MAX_TRACK_TAG_BYTES, MAX_TRACK_TAG_CHARS, MAX_TRACK_TAGS, TrackTag};
 mod track_order;
 pub use audio_events::{
     AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
@@ -61,7 +76,9 @@ mod clip_alias_edit;
 pub use clip_alias::{
     AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
 };
+mod audio_event_placement_preview;
 mod audio_event_timeline;
+pub use audio_event_placement_preview::AudioEventPlacementPreview;
 mod clip_fade_split;
 mod clip_fade_trim;
 mod clip_name;
@@ -74,13 +91,13 @@ pub use audio_edit::{
     AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpResampler, WarpSettings, audio_projection_beat, audio_projection_frame,
-    audio_projection_frame_q32, default_audio_warp, preview_audio_clip_stretch,
-    preview_audio_view_resize, preview_view_resize,
+    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioCycles,
+    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler,
+    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
+    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
-pub use content_window::{ContentWindow, RepeatBoundaryPlan};
+pub use content_window::{ContentWindow, RepeatBoundaryPlan, RepeatCycles};
 mod appearance;
 mod bounce;
 mod clip_conversion;
@@ -106,15 +123,35 @@ mod clip_fragment;
 mod conversion;
 mod device;
 mod device_automation;
+mod device_modulation;
+pub use device_modulation::{
+    DeviceModulation, DeviceModulationRoute, MAX_MODULATION_ROUTES_PER_DEVICE,
+    MAX_MODULATORS_PER_DEVICE, MAX_PROJECT_MODULATION_ROUTES, MAX_PROJECT_MODULATOR_STATE_BYTES,
+    MAX_PROJECT_MODULATORS, ModulationAmount, ModulationDestination, ModulationOutputId,
+    ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+};
+mod device_inventory;
+pub use device_inventory::{DeviceLocation, DeviceOwner};
+mod device_unit_template;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-    DeviceAutomation, DeviceAutomationTarget, MAX_DEVICE_AUTOMATION_LANES,
+    DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
+    DeviceAutomationTouchSpan, DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_LANES,
     MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
     validate_device_automation,
+};
+pub use device_inventory::MAX_SERIAL_DEVICE_DEPTH;
+pub use device_unit_template::{
+    DeviceUnitClass, MAX_PORTABLE_DEVICE_UNIT_ASSETS, MAX_PORTABLE_DEVICE_UNIT_NODES,
+    MAX_PORTABLE_DEVICE_UNIT_PAYLOAD_BYTES, PortableDeviceAsset, PortableDeviceNode,
+    PortableDeviceUnit,
 };
 mod device_clipboard;
 pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;
+mod device_initialization;
+pub use device_initialization::DeviceInitialization;
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod native_sources;
@@ -142,14 +179,17 @@ mod time_range;
 pub use time_range::{RangeClipboard, TimeRange};
 mod gain_envelope;
 mod gain_touch;
+mod group_output_mute;
 pub use gain_touch::{
     GAIN_TOUCH_UNSUPPORTED, GainLane, GainTouchContext, GainTouchSpan, GainTouchStep,
     MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, validate_gain_lane_parts,
 };
+pub use group_output_mute::{GroupOutputMuteRange, MAX_GROUP_OUTPUT_MUTE_RANGES};
 mod midi;
 mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
+mod midi_source_prefix;
 mod midi_source_range;
 mod midi_stretch;
 pub use midi_stretch::MidiClipStretch;
@@ -181,18 +221,22 @@ pub use session::{
     SessionMidiClip, SessionSceneTarget, session_audio_source_frame,
 };
 pub mod timebase;
-pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
-pub use history::Editor;
+pub use edit::{
+    Command, Created, InstrumentLoadPlacement, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+};
+pub use history::{Editor, SampleRateHistoryAction};
 mod import_existing;
 pub use import_existing::ExistingAudioPlacement;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,
-    MidiSourceIdentity, TrackContent,
+    MidiSourceIdentity, MidiSourceWeakIdentity, TrackContent,
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
-pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
+pub use midi_note_overwrite::{
+    MidiNoteOverwriteChange, MidiNoteOverwriteGeometry, MidiNoteOverwritePreview,
+};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };
@@ -247,6 +291,7 @@ identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
 identifier!(SectionId);
+identifier!(LocatorId);
 identifier!(SourceId);
 
 /// Optional half-open timeline region used by prepared playback.
@@ -357,7 +402,7 @@ impl Asset {
 }
 
 mod clip_fade;
-pub use clip_fade::ClipFade;
+pub use clip_fade::{ClipFade, FadeCurveLaw};
 
 /// Edge used by clip trimming and structural section resizing.
 /// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
@@ -516,6 +561,8 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) group_output_mutes: Arc<[GroupOutputMuteRange]>,
+    pub(crate) tags: Vec<TrackTag>,
     pub(crate) kind: TrackKind,
     pub(crate) parent_group: Option<TrackId>,
     pub(crate) color: crate::ElementColor,
@@ -671,12 +718,15 @@ pub struct Project {
     pub(crate) aliases: clip_alias::ClipAliases,
     pub(crate) native_sources: Vec<NativeSource>,
     pub(crate) arrangement_sections: Vec<ArrangementSection>,
+    pub(crate) arrangement_locators: std::sync::Arc<Vec<ArrangementLocator>>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
+    pub(crate) sidechains: Vec<SidechainRoute>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
+    pub(crate) sample_rate_mode: SampleRateMode,
     pub(crate) next_id: u64,
     pub(crate) assets: BTreeMap<AssetId, Asset>,
     pub(crate) tracks: Vec<Track>,
@@ -702,11 +752,14 @@ impl Project {
             aliases: clip_alias::ClipAliases::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Default::default(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             sample_rate,
+            sample_rate_mode: SampleRateMode::Fixed,
             next_id: 1,
             import_provenance: None,
             assets: BTreeMap::new(),
@@ -733,12 +786,15 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning: _,
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
+            sample_rate_mode,
             next_id,
             assets,
             tracks,
@@ -754,11 +810,14 @@ impl Project {
         aliases == &other.aliases
             && native_sources == &other.native_sources
             && arrangement_sections == &other.arrangement_sections
+            && arrangement_locators == &other.arrangement_locators
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
+            && sidechains == &other.sidechains
             && import_provenance == &other.import_provenance
             && sample_rate == &other.sample_rate
+            && sample_rate_mode == &other.sample_rate_mode
             && next_id == &other.next_id
             && assets == &other.assets
             && tracks == &other.tracks
@@ -1002,15 +1061,6 @@ impl Project {
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(Invalid("track no longer exists"))
-    }
-    pub fn device(&self, id: DeviceId) -> Option<&Device> {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.devices())
-            .chain(self.returns.iter().flat_map(|t| t.devices()))
-            .chain(self.main_devices())
-            .chain(self.native_sources.iter().flat_map(|s| s.devices()))
-            .find(|d| d.id() == id)
     }
     /// Mutate authored device state at its canonical owner; a retained source
     /// update replaces every immutable binding only after the edit succeeds.

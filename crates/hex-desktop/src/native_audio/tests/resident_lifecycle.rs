@@ -1,4 +1,4 @@
-//! Real current-format document swaps retain one admitted graph through actual output teardown.
+//! Real current-format document swaps retain one admitted graph through output rebind or teardown.
 use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_project::{BeatTime, Command, Created};
@@ -16,6 +16,24 @@ fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
     h.applied(applied);
     let path = files.0.join("backpressured.hex");
     let saved = h.run(Request::SaveNew(path.clone()));
+    // An active outgoing transport takes the fresh-output path. Keep the
+    // replacement Client queued so the next Open meets actual backpressure.
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
     let new = h.run(Request::NewWithAudioMode {
         mode: hex_session::DocumentAudioMode::Resident,
         reservation: None,
@@ -76,7 +94,7 @@ fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
-fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
+pub(super) fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
     assert!(event.project_replaced && event.playback.is_none());
     assert!(h.submitted.is_none_or(|(_, metadata)| {
         metadata.context.project_generation
@@ -92,10 +110,33 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
         h.audio.as_ref().unwrap().control.output_identity(),
         Some(old_output)
     );
-    // Neither pending acceptance nor closing the old publication is callback retirement. Release
-    // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
+    let context = event
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let terminal = (context.project_generation, old_output);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        h.pump();
+        if h.released.last() == Some(&terminal) {
+            // Closing publication alone does not release the native lease.
+            h.release_relinquished_output();
+            h.wait_fresh_output(old_output);
+            break;
+        }
+        if h.rebound == Some(terminal) {
+            assert_eq!(
+                h.audio.as_ref().unwrap().control.output_identity(),
+                Some(old_output)
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "output handoff did not settle");
+        h.render();
+        std::thread::yield_now();
+    }
     assert!(
         h.audio
             .as_ref()
@@ -104,17 +145,7 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
             .worker_owns_graph_publication()
     );
     let (audio_revision, metadata) = h.applied(0);
-    assert_eq!(
-        metadata.context.project_generation,
-        event
-            .state
-            .canonical_audio_source
-            .as_ref()
-            .unwrap()
-            .context()
-            .project_generation
-    );
-    assert_eq!(metadata.context.editor_revision, event.state.revision);
+    assert_eq!(metadata.context, context);
     audio_revision
 }
 
@@ -144,7 +175,9 @@ fn resident_new_saved_open_and_journal_recovery_replay_exact_original_with_atomi
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -346,13 +379,14 @@ fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_exten
     // the same physical bank, rather than charging another 8192 frames during output teardown.
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
     let initial = h.next();
-    assert!(
-        initial
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("fixture output unavailable")
-    );
+    assert!(initial.error.is_none());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while h.unavailable.is_empty() {
+        h.pump();
+        assert!(Instant::now() < deadline, "open refusal was not delivered");
+        std::thread::yield_now();
+    }
+    assert!(h.unavailable[0].contains("fixture output unavailable"));
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));
@@ -364,7 +398,9 @@ fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_exten
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -484,7 +520,11 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
     let files = Files::new();
     let gate = Arc::new(AtomicBool::new(false));
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
-    assert!(h.next().error.is_some());
+    assert!(
+        h.next().error.is_none(),
+        "the editor opens while audio is pending"
+    );
+    assert!(h.audio.is_none(), "the gate still holds the output closed");
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));
@@ -496,7 +536,9 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -565,7 +607,9 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
         project_generation: 2,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -835,11 +879,11 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
     );
     assert_eq!(second.state.waveforms.len(), 2);
     for waveform in second.state.waveforms.values() {
-        assert_eq!(waveform.source_frames, 4);
-        assert_eq!(waveform.bins.len(), 4);
+        assert_eq!(waveform.source_frames(), 4);
+        assert_eq!(waveform.bins().len(), 4);
         assert!(
             waveform
-                .bins
+                .bins()
                 .iter()
                 .flatten()
                 .all(|peak| peak.min == 0.25 && peak.max == 0.25)
@@ -993,9 +1037,9 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
     assert_eq!(reopened.state.project.as_ref(), &persisted);
     assert_eq!(reopened.state.waveforms.len(), 16);
     assert!(reopened.state.waveforms.values().all(|waveform| {
-        waveform.source_frames == 4
+        waveform.source_frames() == 4
             && waveform
-                .bins
+                .bins()
                 .iter()
                 .flatten()
                 .all(|peak| peak.min == 0.25 && peak.max == 0.25)
@@ -1061,7 +1105,9 @@ fn ordinary_file_seek_case(sampler: bool, section: bool) {
             project_generation: 0,
             revision: added.state.revision,
             track,
-            empty_sampler: None,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
             path: sampler_files.wav(48_000, 8192),
             cancel: Arc::new(AtomicBool::new(false)),
         });
@@ -1194,7 +1240,9 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: sampler_files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1248,7 +1296,7 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
             .values()
             .next()
             .unwrap()
-            .source_frames,
+            .source_frames(),
         12_288
     );
     assert!(

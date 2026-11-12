@@ -3,4 +3,5 @@
 set -e
 cd "$(dirname "$0")"
 git pull
-exec cargo run -r -- "$@"
+# Open the runtime steps from the updated checkout.
+exec /bin/sh ./scripts/run-desktop.sh "$@"

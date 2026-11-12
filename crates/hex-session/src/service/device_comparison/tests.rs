@@ -411,6 +411,7 @@ fn review_2845_public_reserved_edit_cannot_retarget_an_identical_slot_switch() {
     let device = initial.state.project.track(track).unwrap().devices()[0].id();
     let entry = initial.state.project.device(device).unwrap();
     let command = Command::ReplaceDeviceStateWithIdentityReservation {
+        automation: None,
         device,
         expected_state: entry.state().clone(),
         expected_variant: entry.active_variant(),

@@ -1,4 +1,8 @@
 use super::*;
+#[path = "capture_tests/render_work_tests.rs"]
+mod render_work_tests;
+#[path = "capture_tests/stereo_meter_tests.rs"]
+mod stereo_meter_tests;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 
@@ -57,6 +61,8 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 21,
@@ -162,6 +168,8 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 22,
@@ -171,6 +179,8 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 23,
@@ -778,6 +788,8 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 100,
@@ -785,6 +797,8 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
                 state: prefix,
             },
             DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 101,
@@ -803,6 +817,8 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 103,
@@ -974,9 +990,15 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             .render_with_capture(&mut retarget_main, &mut retarget_capture)
             .unwrap();
         for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
-            let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
-            assert_eq!(*frame, expected);
-            assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+            let progress = (index + 1) as f32 / 240.0;
+            let expected = [
+                (0.4 + 0.25) * (0.5 - 0.375 * progress),
+                (-0.2 + 0.25) * 0.25,
+            ];
+            for channel in 0..2 {
+                assert!((frame[channel] - expected[channel]).abs() < 1e-6);
+                assert!((retarget_main[index][channel] - expected[channel] * 0.25).abs() < 1e-6);
+            }
         }
         if metered {
             let observed = observation
@@ -984,7 +1006,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
                 .unwrap()
                 .take_track_output();
             assert!(
-                (observed - (0.4 + 0.25) * 0.125).abs() < 1e-7,
+                (observed - (0.4 + 0.25) * (0.5 - 0.375 / 240.0)).abs() < 1e-6,
                 "track meter must follow the new post-fader gain: {observed}"
             );
         }
@@ -1188,6 +1210,8 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 31,
@@ -1196,6 +1220,8 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 32,
@@ -1204,6 +1230,8 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 21,
@@ -1341,7 +1369,7 @@ fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
                     to[1] += from[1];
                 }
             }
-            ProjectSignal::Track(_) => panic!("unexpected track"),
+            ProjectSignal::Track(_) | ProjectSignal::Return(_) => panic!("unexpected owner"),
             ProjectSignal::Unavailable => panic!("stopped canonical monitor is available"),
         };
         let mut tap = ProjectOutputTap::new(&[1], &mut observer).unwrap();
@@ -1370,11 +1398,19 @@ fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
 }
 
 #[test]
-fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
+fn live_project_taps_preserve_pcm_and_independent_tracks_and_returns_across_loop_wraps() {
     for looping in [false, true] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.loop_region = looping.then(|| LoopRegion::new(0, 1024, true).unwrap());
+        snapshot.return_tracks.push(ReturnTrackSnapshot {
+            id: 24,
+            name: "unselected".into(),
+            gain: 1.0,
+            muted: false,
+            devices: Vec::new(),
+        });
         let project = Project::from_snapshot(snapshot).unwrap();
+        let return_id = project.return_tracks()[0].id();
         let prepared = prepare_audio(&project);
         let playback = crate::playback::Playback::from_prepared(Arc::clone(&prepared));
         assert!(playback.project_output_supported(&[1, 6]));
@@ -1394,6 +1430,7 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
             ));
         }
         let mut tracks = [[[0.0; 2]; 1536]; 2];
+        let mut returned = [[0.0; 2]; 1536];
         let mut master = [[0.0; 2]; 1536];
         let mut seen = [false; 1536];
         let mut observe = |signal, offset: usize, frames: &[Frame]| {
@@ -1415,10 +1452,18 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
                     master[offset..end].copy_from_slice(frames);
                     seen[offset..end].fill(true);
                 }
+                ProjectSignal::Return(id) if id == return_id => {
+                    for (to, from) in returned[offset..end].iter_mut().zip(frames) {
+                        to[0] += from[0];
+                        to[1] += from[1];
+                    }
+                }
+                ProjectSignal::Return(_) => panic!("unselected return"),
                 ProjectSignal::Unavailable => panic!("valid live selection unavailable"),
             }
         };
-        let mut tap = ProjectOutputTap::new(&[1, 6], &mut observe).unwrap();
+        let returns = [return_id];
+        let mut tap = ProjectOutputTap::with_returns(&[1, 6], &returns, &mut observe).unwrap();
         let mut output = [[0.0; 2]; 1536];
         observed
             .render_with_signal_observers(&mut output, None, Some(&mut tap))
@@ -1439,9 +1484,11 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
             let level = |at: usize| f32::from(u8::from(sounding)) * [0.1, 0.3][at] * fade;
             let a = [level(0), -level(0)];
             let b = [level(1), -level(1) * 0.25];
+            let returned_level = ((a[0] + a[1]) * 0.5 + b[0] + b[1]) * 0.5 * 0.25;
             for channel in 0..2 {
                 assert!((tracks[0][index][channel] - a[channel]).abs() < 1e-6);
                 assert!((tracks[1][index][channel] - b[channel]).abs() < 1e-6);
+                assert!((returned[index][channel] - returned_level).abs() < 1e-6);
             }
             // Shared Return is independent of the direct track stems.
             if sounding && fade > 0.0 {
@@ -1459,6 +1506,17 @@ fn live_project_selection_refuses_unsorted_duplicate_and_unbounded_id_lists() {
     }
     assert!(ProjectOutputTap::new(&[1; hex_project::MAX_TRACKS + 1], &mut observer).is_none());
     assert!(ProjectOutputTap::new(&[], &mut observer).is_some());
+    let project = audio_fixture_project(true, false, false);
+    let id = project.return_tracks()[0].id();
+    assert!(ProjectOutputTap::with_returns(&[], &[id, id], &mut observer).is_none());
+    assert!(
+        ProjectOutputTap::with_returns(
+            &[],
+            &[id; hex_project::MAX_RETURN_TRACKS + 1],
+            &mut observer
+        )
+        .is_none()
+    );
 }
 
 #[test]

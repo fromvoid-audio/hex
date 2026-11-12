@@ -1,5 +1,6 @@
 //! Bounded native-arm64 admission for thin and normal big-endian fat mach-o.
 use serde::{Deserialize, Serialize};
+use std::{fs::File, os::unix::fs::FileExt};
 
 const ARM64: u32 = 0x0100_000c;
 const X86_64: u32 = 0x0100_0007;
@@ -18,13 +19,53 @@ pub enum Image {
     UniversalArm64,
 }
 
-fn word(bytes: &[u8], offset: usize, big: bool) -> Result<u32, &'static str> {
-    let end = offset.checked_add(4).ok_or("mach-o offset overflow")?;
-    let value = bytes
-        .get(offset..end)
-        .ok_or("truncated mach-o word")?
-        .try_into()
-        .map_err(|_| "mach-o word width")?;
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    Bytes(&'a [u8]),
+    File(&'a File),
+}
+
+#[derive(Clone, Copy)]
+struct Region<'a> {
+    input: Input<'a>,
+    start: u64,
+    len: u64,
+}
+
+impl Region<'_> {
+    fn slice(self, start: u64, len: u64) -> Result<Self, &'static str> {
+        if start > self.len || len > self.len - start {
+            return Err("mach-o read outside declared region");
+        }
+        Ok(Self {
+            start: self.start + start,
+            len,
+            ..self
+        })
+    }
+
+    fn read<const N: usize>(self, offset: u64) -> Result<[u8; N], &'static str> {
+        let start = self.slice(offset, N as u64)?.start;
+        let mut result = [0; N];
+        match self.input {
+            Input::Bytes(bytes) => {
+                let start = usize::try_from(start).map_err(|_| "mach-o offset range")?;
+                let source = bytes
+                    .get(start..)
+                    .and_then(|tail| tail.get(..N))
+                    .ok_or("truncated mach-o input")?;
+                result.copy_from_slice(source);
+            }
+            Input::File(file) => file
+                .read_exact_at(&mut result, start)
+                .map_err(|_| "mach-o file read failed")?,
+        }
+        Ok(result)
+    }
+}
+
+fn word(bytes: Region<'_>, offset: u64, big: bool) -> Result<u32, &'static str> {
+    let value = bytes.read(offset)?;
     Ok(if big {
         u32::from_be_bytes(value)
     } else {
@@ -32,19 +73,12 @@ fn word(bytes: &[u8], offset: usize, big: bool) -> Result<u32, &'static str> {
     })
 }
 
-fn wide(bytes: &[u8], offset: usize) -> Result<u64, &'static str> {
-    let end = offset.checked_add(8).ok_or("mach-o offset overflow")?;
-    Ok(u64::from_be_bytes(
-        bytes
-            .get(offset..end)
-            .ok_or("truncated fat mach-o offset")?
-            .try_into()
-            .map_err(|_| "fat mach-o width")?,
-    ))
+fn wide(bytes: Region<'_>, offset: u64) -> Result<u64, &'static str> {
+    Ok(u64::from_be_bytes(bytes.read(offset)?))
 }
 
-fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), &'static str> {
-    if bytes.len() < 32 || word(bytes, 0, false)? != 0xfeed_facf {
+fn thin(bytes: Region<'_>, role: Role) -> Result<(u32, u32), &'static str> {
+    if bytes.len < 32 || word(bytes, 0, false)? != 0xfeed_facf {
         return Err("64-bit little-endian mach-o required");
     }
     let cpu = word(bytes, 4, false)?;
@@ -61,15 +95,15 @@ fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), &'static str> {
         return Err("mach-o binary role refused");
     }
     let count = word(bytes, 16, false)? as usize;
-    let size = word(bytes, 20, false)? as usize;
-    let end = 32_usize.checked_add(size).ok_or("load-command overflow")?;
-    if count == 0 || count > 4096 || size < count * 8 || end > bytes.len() {
+    let size = u64::from(word(bytes, 20, false)?);
+    let end = 32 + size;
+    if count == 0 || count > 4096 || size < count as u64 * 8 || end > bytes.len {
         return Err("mach-o load-command bounds refused");
     }
     // Validate command framing too; a header-only claim cannot admit a slice.
-    let mut offset = 32_usize;
+    let mut offset = 32_u64;
     for _ in 0..count {
-        let length = word(bytes, offset + 4, false)? as usize;
+        let length = u64::from(word(bytes, offset + 4, false)?);
         // Mach-O command sizes are aligned to eight bytes.
         if length < 8 || length & 7 != 0 {
             return Err("invalid mach-o load command");
@@ -86,6 +120,28 @@ fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), &'static str> {
 }
 
 pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, &'static str> {
+    inspect_region(
+        Region {
+            input: Input::Bytes(bytes),
+            start: 0,
+            len: bytes.len() as u64,
+        },
+        role,
+    )
+}
+
+pub(super) fn inspect_file(file: &File, len: u64) -> Result<Image, &'static str> {
+    inspect_region(
+        Region {
+            input: Input::File(file),
+            start: 0,
+            len,
+        },
+        Role::Module,
+    )
+}
+
+fn inspect_region(bytes: Region<'_>, role: Role) -> Result<Image, &'static str> {
     let magic = word(bytes, 0, true)?;
     if magic == 0xcffa_edfe {
         if thin(bytes, role)?.0 != ARM64 {
@@ -103,15 +159,15 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, &'static str> {
         return Err("fat mach-o slice count refused");
     }
     let width = if large { 32 } else { 20 };
-    let header_end = 8 + count * width;
-    if header_end > bytes.len() {
+    let header_end = 8 + count as u64 * width;
+    if header_end > bytes.len {
         return Err("truncated fat mach-o table");
     }
-    let mut regions = [(0_usize, 0_usize); MAX_SLICES];
+    let mut regions = [(0_u64, 0_u64); MAX_SLICES];
     let mut architectures = [(0_u32, 0_u32); MAX_SLICES];
     let mut arm64 = false;
     for index in 0..count {
-        let base = 8 + index * width;
+        let base = 8 + index as u64 * width;
         let cpu = word(bytes, base, true)?;
         let subtype = word(bytes, base + 4, true)?;
         let (offset, size, alignment) = if large {
@@ -134,22 +190,16 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, &'static str> {
             .checked_shl(alignment)
             .ok_or("fat alignment overflow")?;
         let end = offset.checked_add(size).ok_or("fat slice overflow")?;
-        if offset < header_end as u64
-            || size < 32
-            || offset % align != 0
-            || end > bytes.len() as u64
-        {
+        if offset < header_end || size < 32 || offset % align != 0 || end > bytes.len {
             return Err("fat mach-o slice range refused");
         }
-        let start = usize::try_from(offset).map_err(|_| "fat offset range")?;
-        let end = usize::try_from(end).map_err(|_| "fat end range")?;
-        let slice = bytes.get(start..end).ok_or("fat slice bounds")?;
+        let slice = bytes.slice(offset, size)?;
         if thin(slice, role)? != (cpu, subtype) || architectures[..index].contains(&(cpu, subtype))
         {
             return Err("fat slice architecture mismatch or duplicate");
         }
         architectures[index] = (cpu, subtype);
-        regions[index] = (start, end);
+        regions[index] = (offset, end);
         arm64 |= cpu == ARM64;
     }
     let regions = &mut regions[..count];

@@ -65,6 +65,7 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
             None,
+            &[],
         )
         .unwrap(),
     );
@@ -222,6 +223,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
             None,
+            &[],
         )
         .unwrap(),
     );
@@ -452,6 +454,7 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
                 &crate::audio_transform::AudioTransformPreparation::default(),
                 None,
                 None,
+                &[],
             )
             .unwrap(),
         )
@@ -603,6 +606,7 @@ fn closed_zero_latency_group_demand_matches_render_through_loop_and_seek() {
         &crate::audio_transform::AudioTransformPreparation::default(),
         None,
         None,
+        &[],
     )
     .unwrap();
     let mut arrangement = revision.arrangement().as_ref().clone();
@@ -868,6 +872,7 @@ fn check_streamed_session_lookup_and_miss_semantics(with_resident_sessions: bool
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
             None,
+            &[],
         )
         .unwrap(),
     );

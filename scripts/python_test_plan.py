@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 REVIEWED_MODULES = frozenset({
-    "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
+    "test_cargo_slot", "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
     "test_eq8_response_compare", "test_gpui_patch", "test_dependency_patches",
     "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
@@ -29,7 +29,7 @@ REVIEWED_MODULES = frozenset({
     "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
     # Viewer style fixtures exercise the standalone guard with temporary source;
     # changes to the guard itself still retain comprehensive discovery.
-    "test_ui_style_log_viewer",
+    "test_ui_style_log_viewer", "test_ui_style_browser_scrollbar",
     # Architecture fixtures exercise check-architecture.py policy/refusal logic;
     # that guard still runs for app source/doc edits. Policy/test edits fall back.
     "test_architecture",
@@ -69,6 +69,9 @@ COMPREHENSIVE_ARGV = (
 )
 
 
+SHARDED_DISCOVERY_ARGV = ("python3", "scripts/python_shards.py", "--discover")
+
+
 def native_acceptance_inputs(env: dict) -> list[str]:
     """External fixtures/SDKs/signing state require fresh observations.
 
@@ -100,9 +103,10 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     """
     modules = sorted(set(modules))
 
-    def comprehensive(reason: str) -> dict:
+    def comprehensive(reason: str, *, native: bool = False) -> dict:
         return {"mode": "comprehensive", "selected_groups": modules,
                 "excluded_groups": [], "test_selectors": modules,
+                "sharded_discovery": profile == "merge" and not native,
                 "reasons": [reason]}
 
     if profile not in {"merge", "health"}:
@@ -113,7 +117,7 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     native = native_acceptance_inputs(os.environ if env is None else env)
     if native:
         return comprehensive("explicit native acceptance inputs retain full Python coverage: "
-                             + ", ".join(native))
+                             + ", ".join(native), native=True)
     if set(modules) != REVIEWED_MODULES:
         return comprehensive("new, missing or unregistered Python test module")
     owned = tooling_owner_modules(paths, modules)
@@ -185,7 +189,7 @@ def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:
 
 def argv(selection: dict) -> tuple[str, ...]:
     if selection.get("mode") == "comprehensive":
-        return COMPREHENSIVE_ARGV
+        return SHARDED_DISCOVERY_ARGV if selection.get("sharded_discovery") else COMPREHENSIVE_ARGV
     if selection.get("mode") != "shared":
         raise ValueError("Python test step needs a known nonempty selection")
     selectors = selection.get("test_selectors")

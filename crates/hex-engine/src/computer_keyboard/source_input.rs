@@ -12,6 +12,7 @@ pub(super) struct SourceInputState {
     pub(super) id: LiveInputId,
     pub(super) capacity: usize,
     pub(super) mutable: bool,
+    pub(super) note_pressure: bool,
     pub(super) context: Option<Arc<crate::shared_analytic::SharedContextOwner>>,
     pub(super) events: [NativeInstrumentEvent; 259],
     pub(super) len: usize,
@@ -38,6 +39,9 @@ impl SourceInputState {
             id: LiveInputId { track, generation },
             capacity: source.capacity,
             mutable: source.runtime.is_some(),
+            note_pressure: source
+                .runtime
+                .is_some_and(MutableInstrumentTrackRuntime::supports_note_pressure),
             context: source.context.clone(),
             events: [NativeInstrumentEvent::NoteOff {
                 frame_offset: 0,

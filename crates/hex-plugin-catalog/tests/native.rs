@@ -67,6 +67,27 @@ fn copy(source: &Path, target: &Path) {
 }
 
 #[test]
+#[ignore = "explicit source-launch tools and original native fixtures required"]
+fn source_launch_tools_scan_and_publish_catalog_metadata() {
+    let fixture = Fixture::new();
+    let tools = worker::available_app().unwrap();
+    let cancellation = Cancellation::default();
+    let update = worker::scan(
+        &fixture.catalog(),
+        &tools,
+        module("normal"),
+        cancellation.token(),
+    );
+    assert!(update.status.contains("discovered"), "{}", update.status);
+    assert!(
+        !Catalog::load(&fixture.catalog())
+            .unwrap()
+            .rows("")
+            .is_empty()
+    );
+}
+
+#[test]
 #[ignore = "explicit original signed package and native fixtures required"]
 fn selected_packaged_thin_and_universal_scan_persist_actual_uids_and_restart_without_rescan() {
     let fixture = Fixture::new();
@@ -306,7 +327,17 @@ fn actual_optional_factory_types_persist_and_search_without_foreign_restart_work
         let restored = Catalog::load(&fixture.catalog()).unwrap();
         let rows = restored.rows("");
         let row = rows.iter().find(|r| r.module == module(name)).unwrap();
-        assert_eq!(row.status, format!("vst3 {kind} · hosting unavailable"));
+        let action = if kind != "processor · type unknown" {
+            let expected = restored
+                .select_plugin(&row.module, row.cid.unwrap())
+                .unwrap();
+            assert_eq!(row.selection.as_deref(), Some(&expected));
+            "drag or enter to insert"
+        } else {
+            assert!(row.selection.is_none());
+            "hosting unavailable"
+        };
+        assert_eq!(row.status, format!("vst3 {kind} · {action}"));
         assert_eq!(row.vendor, "original extended vendor");
     }
     let bytes = fs::read(fixture.catalog()).unwrap();
@@ -328,11 +359,36 @@ fn folder_batch_publishes_known_failures_and_actual_types_then_preserves_restart
     copy(&module("factory2-effect"), &root.join("C.vst3"));
     #[cfg(unix)]
     std::os::unix::fs::symlink(root.join("C.vst3"), root.join("linked.vst3")).unwrap();
+    // Both fixture entries were remembered as failures before discovery tools
+    // were tracked. The signed folder scan must retry them without file changes.
+    let bad = root.join("A-bad.vst3");
+    let effect = root.join("C.vst3");
+    let old_entries = [&bad, &effect].map(|path| {
+        serde_json::json!({
+            "path": path, "last_good": null, "source": null, "failure": "historical refusal",
+            "failed_bundle": hex_plugin_scan::macos::identity::Bundle::inspect(path).unwrap(),
+        })
+    });
+    let old_bytes = serde_json::to_vec(&serde_json::json!({
+        "version": 3, "entries": old_entries,
+    }))
+    .unwrap();
+    fs::write(f.catalog(), &old_bytes).unwrap();
+    let migrated = Catalog::load(&f.catalog()).unwrap();
+    assert_eq!(migrated.entries.len(), 2);
+    assert!(
+        migrated
+            .entries
+            .iter()
+            .all(|entry| entry.failure.as_deref() == Some("historical refusal"))
+    );
+    assert_eq!(fs::read(f.catalog()).unwrap(), old_bytes);
+
     let owner = Cancellation::default();
     let result = worker::scan_folders(
         &f.catalog(),
         &app(),
-        &[root, f.0.join("missing")],
+        &[root.clone(), f.0.join("missing")],
         owner.token(),
     );
     assert!(result.catalog.is_some(), "{}", result.status);
@@ -350,6 +406,8 @@ fn folder_batch_publishes_known_failures_and_actual_types_then_preserves_restart
             .collect::<Vec<_>>()
     );
     assert!(result.status.contains("1 linked entries skipped"));
+    assert!(result.status.contains("0 unchanged failures skipped"));
+    assert!(!result.status.contains("hosting unavailable"));
     let bytes = fs::read(f.catalog()).unwrap();
     let saved = Catalog::load(&f.catalog()).unwrap();
     assert_eq!(saved.entries.len(), 3);
@@ -357,6 +415,19 @@ fn folder_batch_publishes_known_failures_and_actual_types_then_preserves_restart
     assert_eq!(saved.rows("effect").len(), 1);
     assert!(saved.rows("").iter().any(|r| r.cid.is_none()));
     assert_eq!(fs::read(f.catalog()).unwrap(), bytes);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
+        4
+    );
+    let next_scan = Cancellation::default();
+    let second = worker::scan_folders(&f.catalog(), &app(), &[root], next_scan.token());
+    assert!(
+        second
+            .status
+            .contains("2 discovered · 0 failed · 1 unchanged failures skipped"),
+        "{}",
+        second.status
+    );
 }
 #[test]
 #[ignore = "explicit original signed package and native fixtures required"]
@@ -390,7 +461,13 @@ fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_resul
     let package = app();
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let thread = std::thread::spawn(move || {
-        let result = worker::scan_folders(&catalog, &package, &[root], token);
+        let result = worker::scan_folders_with_deadline(
+            &catalog,
+            &package,
+            &[root],
+            token,
+            worker::ScanDeadline::interactive(),
+        );
         let _ = tx.send(result);
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
@@ -431,6 +508,7 @@ fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_resul
         }
         std::thread::sleep(Duration::from_millis(2));
     }
+    assert_eq!(owner.current_module().as_deref(), Some(first.as_path()));
     if !owner.has_started_scanner() || !owner.cancel() {
         f.1.store(true, Ordering::Release);
         let _ = owner.cancel();
@@ -450,6 +528,7 @@ fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_resul
         }
     };
     thread.join().unwrap();
+    assert!(owner.current_module().is_none());
     // Preserve this isolated fixture if the scanner's final custody cannot be
     // proven, even when the worker itself has returned.
     f.1.store(true, Ordering::Release);

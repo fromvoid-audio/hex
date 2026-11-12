@@ -164,7 +164,11 @@ impl Fixture {
         let generic = matches!(entry, Entry::Instrument | Entry::Effect);
         let mut numeric = Vec::new();
         for index in 0..numbers {
+            let oscillator_level = entry == Entry::Vector && index < 12 && index % 3 == 2;
             let (appearance, width, height) = match entry {
+                Entry::Vector if index < 12 => {
+                    (NumericControlPresentation::FilledSlider, 60.0, 18.0)
+                }
                 Entry::Vector if index >= 24 => {
                     (NumericControlPresentation::InlineValue, 46.0, 14.0)
                 }
@@ -189,14 +193,50 @@ impl Fixture {
             } else {
                 theme::DeviceStyleRole::Control
             };
-            let spec = NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%"))
-                .map_err(|error| error.to_string())?;
+            let (spec, value) = if oscillator_level {
+                (
+                    NumericSpec::new(
+                        0.0,
+                        1.0,
+                        0.5,
+                        NumericScale::LinearAmplitudeDecibels,
+                        1,
+                        None::<&str>,
+                    ),
+                    0.5,
+                )
+            } else if entry == Entry::Vector && index < 12 {
+                if index % 3 == 0 {
+                    (
+                        NumericSpec::new(
+                            1.0 / 128.0,
+                            128.0,
+                            1.0,
+                            NumericScale::Logarithmic,
+                            2,
+                            None::<&str>,
+                        ),
+                        [1.0, 2.0, 8.0, 10.0][index / 3],
+                    )
+                } else {
+                    (
+                        NumericSpec::new(-1000.0, 1000.0, 0.0, NumericScale::Linear, 2, Some("hz")),
+                        if index == 4 { 0.75 } else { 0.0 },
+                    )
+                }
+            } else {
+                (
+                    NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%")),
+                    50.0,
+                )
+            };
+            let spec = spec.map_err(|error| error.to_string())?;
             let config = NumericControlConfig::new(
                 format!("fixture-{}-numeric-{index}", entry.key()),
                 theme::text(["amount", "fine", "level"][index % 3]),
                 appearance,
                 spec,
-                50.0,
+                value,
                 theme::device_style(role),
             )
             .map_err(|error| error.to_string())?;
@@ -234,13 +274,17 @@ impl Fixture {
         }
         let mut choices = Vec::new();
         for index in 0..selectors {
+            // Exercise a compact menu beyond the taller clipped Saturator card.
+            let extra_choices = if entry == Entry::Saturator { 20 } else { 8 };
             let config = SelectorConfig::new(
                 format!("fixture-{}-selector-{index}", entry.key()),
                 ["sine", "saw", "square", "triangle", "long fixture option"]
                     .map(theme::text)
                     .into_iter()
-                    // Keep the compact menu taller than the clipped device body too.
-                    .chain((0..8).map(|index| theme::text(format!("extra choice {index}")))),
+                    .chain(
+                        (0..extra_choices)
+                            .map(|index| theme::text(format!("extra choice {index}"))),
+                    ),
                 0,
                 theme::device_style(theme::DeviceStyleRole::Control),
             )
@@ -462,17 +506,17 @@ impl Gallery {
                 return false;
             }
             for (index, entity, value) in prepared {
-                if self.entry == Entry::Eq {
-                    if let Some(fixture) = self.fixtures.get_mut(&Entry::Eq) {
-                        eq::finish_numeric(
-                            fixture,
-                            index,
-                            value.previous,
-                            value.value,
-                            value.gesture.clone(),
-                            cx,
-                        );
-                    }
+                if self.entry == Entry::Eq
+                    && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
+                {
+                    eq::finish_numeric(
+                        fixture,
+                        index,
+                        value.previous,
+                        value.value,
+                        value.gesture.clone(),
+                        cx,
+                    );
                 }
                 entity.update(cx, |control, cx| {
                     control.accept_finish_edit_for_owner(value, cx)
@@ -487,10 +531,11 @@ impl Gallery {
             cx.notify();
             return;
         }
-        if self.entry == Entry::Eq && entry != Entry::Eq {
-            if let Some(fixture) = self.fixtures.get(&Entry::Eq) {
-                fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
-            }
+        if self.entry == Entry::Eq
+            && entry != Entry::Eq
+            && let Some(fixture) = self.fixtures.get(&Entry::Eq)
+        {
+            fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
         }
         self.entry = entry;
         self.selected = false;
@@ -522,15 +567,12 @@ impl Gallery {
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
         {
-            if self.finish_drafts(cx) {
-                if let Some(fixture) = self.fixtures.get_mut(&Entry::Eq) {
-                    if !eq::defer_history(fixture, event.keystroke.modifiers.shift)
-                        && let Err(error) =
-                            eq::history(fixture, event.keystroke.modifiers.shift, cx)
-                    {
-                        self.error = Some(error);
-                    }
-                }
+            if self.finish_drafts(cx)
+                && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
+                && !eq::defer_history(fixture, event.keystroke.modifiers.shift)
+                && let Err(error) = eq::history(fixture, event.keystroke.modifiers.shift, cx)
+            {
+                self.error = Some(error);
             }
             cx.stop_propagation();
             cx.notify();

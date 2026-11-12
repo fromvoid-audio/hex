@@ -1,7 +1,10 @@
 //! Optional bounded mutable note runtimes for instruments with voice history.
+mod automation;
+pub use automation::{InstrumentParameterRuntime, MAX_INSTRUMENT_AUTOMATION_FRAMES};
+
 use super::StereoFrame;
 use hex_lattice_contract::DeviceContractError;
-use std::{any::Any, fmt};
+use std::{any::Any, fmt, num::NonZeroU64};
 
 /// Borrowed, immutable host musical clock. Q32.32 quarter-note beats at frame
 /// centers, including the exclusive segment end. Implementations must return
@@ -26,7 +29,21 @@ pub trait NativeInstrumentClock {
     fn arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Exact Arrangement content origin eligible for authored foreign
+    /// automation. Stopped monitoring, audition and uncompensated warmup
+    /// return None even if they have a cursor or a musical clock.
+    fn authored_arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
+    /// Canonical time signature at the aligned Arrangement position.
+    fn arrangement_meter_at_offset(&self, _offset: usize) -> Option<(u8, u8)> {
+        None
+    }
+    /// Active Arrangement cycle bounds in Q32.32 quarter-note beats.
+    fn arrangement_cycle_at_offset(&self, _offset: usize) -> Option<(u64, u64)> {
         None
     }
     /// Optional exact host performance-frame origin, independent of arrangement
@@ -67,12 +84,18 @@ impl NativeInstrumentExpression {
 }
 
 /// Sample-offset note/controller event in caller-owned bounded block storage.
-/// Equal offsets retain the caller's order; controllers have no occurrence ID.
+/// Equal offsets retain the caller's order. Note pressure addresses a held
+/// occurrence, including an onset earlier at the same offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInstrumentEvent {
     Expression {
         frame_offset: usize,
         expression: NativeInstrumentExpression,
+    },
+    NotePressure {
+        frame_offset: usize,
+        occurrence_id: NonZeroU64,
+        value: u8,
     },
     NoteOn {
         frame_offset: usize,
@@ -91,6 +114,7 @@ impl NativeInstrumentEvent {
         match self {
             Self::NoteOn { frame_offset, .. }
             | Self::NoteOff { frame_offset, .. }
+            | Self::NotePressure { frame_offset, .. }
             | Self::Expression { frame_offset, .. } => frame_offset,
         }
     }
@@ -100,6 +124,7 @@ impl NativeInstrumentEvent {
             Self::NoteOn { occurrence_id, .. } | Self::NoteOff { occurrence_id, .. } => {
                 Some(occurrence_id)
             }
+            Self::NotePressure { occurrence_id, .. } => Some(occurrence_id.get()),
             Self::Expression { .. } => None,
         }
     }
@@ -156,9 +181,30 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Exact sorted, unique parameter grants for the borrowed automation view.
+    /// Empty keeps the existing unsupported path. Both actual twins must expose
+    /// these same immutable descriptors for their entire lifetime.
+    fn parameter_automation_descriptors(&self) -> &[hex_lattice_contract::ParameterDescriptor] {
+        &[]
+    }
+    /// Exact sample-rate semantics for one parameter of this prepared instance.
+    /// The parameter must also appear in the borrowed automation descriptors,
+    /// and both actual twins must agree with the factory at admission.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
+    }
+
     /// Immutable opt-in for exact read-only active occurrence IDs. Both actual
     /// twins must agree before the pair is admitted; the default is unsupported.
     fn supports_active_occurrence_ids(&self) -> bool {
+        false
+    }
+    /// Both runtime twins must agree. Providers preflight pressure against
+    /// held occurrences in event order before changing audio or history.
+    fn supports_note_pressure(&self) -> bool {
         false
     }
     /// Immutable opt-in for borrowed per-occurrence output gain. The pair checks
@@ -278,8 +324,27 @@ pub struct AnalyticInstrumentHistory<'a> {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    /// Optional borrowed view into this same voice/runtime owner. Its immutable
+    /// grants must match the prepared factory; no new resource custody is created.
+    fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
+        None
+    }
+
+    /// Optional read-only view of the same parameter owner for complete canonical
+    /// target snapshots. Both twins must opt in with immutable factory-matching
+    /// grants and support bounded copying throughout reset/history transfer.
+    /// No voice history, resource custody or future program evaluation is added.
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        None
+    }
+
     /// Must agree with the prepared factory and remain invariant for this runtime.
     fn supports_active_occurrence_ids(&self) -> bool {
+        false
+    }
+    /// An immutable grant matching the factory. Preflight refuses unknown,
+    /// released and retired occurrences before processing any event.
+    fn supports_note_pressure(&self) -> bool {
         false
     }
     /// Report exact live occurrence identities, including released voices that
@@ -420,6 +485,10 @@ pub enum NativeInstrumentRuntimeError {
     InvalidActiveOccurrenceIds,
     InvalidOccurrenceGain,
     UnsupportedOccurrenceGain,
+    UnsupportedNotePressure,
+    UnsupportedParameterAutomation,
+    UnsupportedParameterModulation,
+    InvalidParameterAutomation,
     RuntimeBudgetExceeded,
     InvalidEventBatch,
     EventCapacityExceeded,
@@ -444,6 +513,14 @@ impl NativeInstrumentRuntimeError {
             }
             Self::InvalidOccurrenceGain => "native instrument occurrence gain is invalid",
             Self::UnsupportedOccurrenceGain => "native instrument occurrence gain is unsupported",
+            Self::UnsupportedNotePressure => "native instrument note pressure is unsupported",
+            Self::UnsupportedParameterModulation => {
+                "native instrument sample-rate modulation is unsupported"
+            }
+            Self::UnsupportedParameterAutomation => {
+                "native instrument parameter automation is unsupported"
+            }
+            Self::InvalidParameterAutomation => "native instrument parameter automation is invalid",
             Self::RuntimeBudgetExceeded => "native instrument runtime exceeds caller limits",
             Self::InvalidEventBatch => "native instrument event batch is invalid",
             Self::EventCapacityExceeded => "native instrument event or voice capacity is exceeded",
@@ -470,6 +547,8 @@ impl std::error::Error for NativeInstrumentRuntimeError {}
 pub struct NativeInstrumentRuntimePair {
     active_occurrence_ids: bool,
     occurrence_gain: bool,
+    note_pressure: bool,
+    parameter_automation: bool,
     steals_releasing_voices: bool,
     runtime_version: u32,
     declared_pair_bytes: usize,
@@ -495,6 +574,7 @@ impl NativeInstrumentRuntimePair {
         let max_release_tail_frames = prepared.max_release_tail_frames();
         let occurrence_gain = prepared.supports_occurrence_gain();
         let active_occurrence_ids = prepared.supports_active_occurrence_ids();
+        let note_pressure = prepared.supports_note_pressure();
         let steals_releasing_voices = prepared.steals_releasing_voices();
         let declared_pair_bytes = declared_twin_bytes
             .checked_mul(2)
@@ -514,14 +594,25 @@ impl NativeInstrumentRuntimePair {
             return Err(NativeInstrumentRuntimeError::RuntimeBudgetExceeded);
         }
 
-        let primary = prepared.create_runtime();
-        let scratch = prepared.create_runtime();
+        let descriptors = prepared.parameter_automation_descriptors();
+        automation::validate_grants(descriptors)?;
+        let mut primary = prepared.create_runtime();
+        let mut scratch = prepared.create_runtime();
+        let parameter_automation = !descriptors.is_empty();
+        if !automation::matches_grants(primary.as_mut(), prepared, descriptors)
+            || !automation::matches_grants(scratch.as_mut(), prepared, descriptors)
+        {
+            return Err(NativeInstrumentRuntimeError::IncompatibleTwins);
+        }
+        automation::validate_target_views(primary.as_ref(), scratch.as_ref(), descriptors)?;
         if !primary.can_copy_history_from(scratch.as_ref())
             || !scratch.can_copy_history_from(primary.as_ref())
             || primary.supports_active_occurrence_ids() != active_occurrence_ids
             || scratch.supports_active_occurrence_ids() != active_occurrence_ids
             || primary.supports_occurrence_gain() != occurrence_gain
             || scratch.supports_occurrence_gain() != occurrence_gain
+            || primary.supports_note_pressure() != note_pressure
+            || scratch.supports_note_pressure() != note_pressure
         {
             return Err(NativeInstrumentRuntimeError::IncompatibleTwins);
         }
@@ -534,6 +625,8 @@ impl NativeInstrumentRuntimePair {
         Ok(Self {
             active_occurrence_ids,
             occurrence_gain,
+            note_pressure,
+            parameter_automation,
             steals_releasing_voices,
             runtime_version,
             declared_pair_bytes,
@@ -552,6 +645,9 @@ impl NativeInstrumentRuntimePair {
 
     pub const fn supports_active_occurrence_ids(&self) -> bool {
         self.active_occurrence_ids
+    }
+    pub const fn supports_note_pressure(&self) -> bool {
+        self.note_pressure
     }
 
     /// Observe scratch while a speculative block is open, otherwise committed
@@ -670,7 +766,12 @@ impl NativeInstrumentRuntimePair {
         frame_count: usize,
         _resources: &dyn crate::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
-        validate_event_batch(events, frame_count, self.max_events_per_block)?;
+        validate_event_batch(
+            events,
+            frame_count,
+            self.max_events_per_block,
+            self.note_pressure,
+        )?;
         self.primary
             .preflight_events(events, frame_count, _resources)?;
         self.scratch
@@ -701,7 +802,12 @@ impl NativeInstrumentRuntimePair {
         if !self.block_started {
             return Err(NativeInstrumentRuntimeError::BlockNotStarted);
         }
-        validate_event_batch(events, frames.len(), self.max_events_per_block)?;
+        validate_event_batch(
+            events,
+            frames.len(),
+            self.max_events_per_block,
+            self.note_pressure,
+        )?;
         self.scratch
             .preflight_events(events, frames.len(), _resources)?;
         self.scratch
@@ -738,7 +844,12 @@ impl NativeInstrumentRuntimePair {
             .checked_add(self.max_events_per_block)
             .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
         crate::instrument_gain::validate_occurrence_gains(gains, frames.len(), maximum)?;
-        validate_event_batch(events, frames.len(), self.max_events_per_block)?;
+        validate_event_batch(
+            events,
+            frames.len(),
+            self.max_events_per_block,
+            self.note_pressure,
+        )?;
         self.scratch
             .preflight_events(events, frames.len(), resources)?;
         self.scratch
@@ -779,6 +890,7 @@ impl NativeInstrumentRuntimePair {
         !self.block_started
             && !previous.block_started
             && self.runtime_version == previous.runtime_version
+            && self.note_pressure == previous.note_pressure
             && self
                 .primary
                 .can_copy_history_from(previous.primary.as_ref())
@@ -849,6 +961,7 @@ impl NativeInstrumentRuntimePair {
         !self.block_started
             && !previous.block_started
             && proof.allows_runtime_versions(previous.runtime_version, self.runtime_version)
+            && self.note_pressure == previous.note_pressure
             && self
                 .primary
                 .can_retarget_history_from(previous.primary.as_ref(), proof)
@@ -878,6 +991,7 @@ pub(super) fn validate_event_batch(
     events: &[NativeInstrumentEvent],
     frame_count: usize,
     max_events: usize,
+    note_pressure: bool,
 ) -> Result<(), NativeInstrumentRuntimeError> {
     if events.len() > max_events {
         return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -891,6 +1005,14 @@ pub(super) fn validate_event_batch(
             || matches!(event, NativeInstrumentEvent::Expression { expression, .. } if !expression.is_valid())
         {
             return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
+        if let NativeInstrumentEvent::NotePressure { value, .. } = event {
+            if value > 127 {
+                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            if !note_pressure {
+                return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+            }
         }
         if let NativeInstrumentEvent::NoteOn {
             occurrence_id,
@@ -971,7 +1093,8 @@ mod tests {
     impl FeedbackRuntime {
         fn apply_event(&mut self, event: NativeInstrumentEvent) {
             match event {
-                NativeInstrumentEvent::Expression { .. } => {}
+                NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::NotePressure { .. } => {}
                 NativeInstrumentEvent::NoteOn {
                     occurrence_id,
                     pitch,
@@ -1100,6 +1223,9 @@ mod tests {
                 let offset = event.frame_offset();
                 Self::advance_many(&mut voices, offset - previous_offset);
                 match event {
+                    NativeInstrumentEvent::NotePressure { .. } => {
+                        return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+                    }
                     NativeInstrumentEvent::Expression { .. } => {
                         return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
                     }
@@ -1276,7 +1402,7 @@ mod tests {
                 frame_offset: 3,
                 expression,
             };
-            assert_eq!(validate_event_batch(&[event], 4, 4), Ok(()));
+            assert_eq!(validate_event_batch(&[event], 4, 4, false), Ok(()));
         }
         for expression in [
             ChannelPressure(128),
@@ -1291,7 +1417,8 @@ mod tests {
                         expression
                     }],
                     1,
-                    4
+                    4,
+                    false
                 ),
                 Err(NativeInstrumentRuntimeError::InvalidEventBatch)
             );
@@ -1307,8 +1434,8 @@ mod tests {
             frame_offset: 4,
             expression: ModWheel(100),
         };
-        assert!(validate_event_batch(&[late], 4, 4).is_err());
-        assert!(validate_event_batch(&[event_on(1, 1, 60, 127), expression], 4, 4).is_err());
+        assert!(validate_event_batch(&[late], 4, 4, false).is_err());
+        assert!(validate_event_batch(&[event_on(1, 1, 60, 127), expression], 4, 4, false).is_err());
         let factory = prepared(1, 2, Arc::new(AtomicUsize::new(0)));
         let mut pair = NativeInstrumentRuntimePair::new(&factory, TEST_LIMITS).unwrap();
         let mut frames = [[0.123, -0.456]; 4];

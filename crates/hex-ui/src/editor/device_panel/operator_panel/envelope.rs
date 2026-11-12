@@ -2,7 +2,10 @@
 use super::super::*;
 use super::id;
 use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
-use hex_widgets::{ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode};
+use hex_widgets::{
+    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode,
+    ResponseGraphReference,
+};
 
 const STAGE_WIDTH: f32 = 1.0 / 3.0;
 const MIN_DECAY_RELEASE_SECONDS: f32 = 0.001;
@@ -20,6 +23,7 @@ pub(in crate::editor::device_panel) struct GraphControl {
     entity: Entity<ResponseGraph>,
     selected_node: u32,
     model_input: Option<ModelInput>,
+    reference_input: Option<ReferenceInput>,
     _subscription: Subscription,
 }
 
@@ -28,6 +32,13 @@ struct ModelInput {
     values: [f32; 6],
     selected: u32,
     style: hex_widgets::ControlStyle,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ReferenceInput {
+    envelopes: [[f32; 6]; 3],
+    colors: [u32; 3],
+    enabled: [bool; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +53,7 @@ pub(super) fn graph(
     device: DeviceId,
     operator: usize,
     values: [f32; 6],
+    parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
     let key = GraphKey { device, operator };
     view.device_panel
@@ -67,6 +79,7 @@ pub(super) fn graph(
                 entity,
                 selected_node: 1,
                 model_input: None,
+                reference_input: None,
                 _subscription: subscription,
             }
         });
@@ -80,6 +93,31 @@ pub(super) fn graph(
         selected,
         style: super::display_style(),
     };
+    let others: [usize; 3] =
+        std::array::from_fn(|index| if index < operator { index } else { index + 1 });
+    let reference_input = ReferenceInput {
+        envelopes: others.map(|other| {
+            std::array::from_fn(|field| {
+                super::value(
+                    view,
+                    device,
+                    parameters,
+                    id(33 + other as u32 * 6 + field as u32),
+                )
+                .and_then(|value| match value {
+                    ParameterValue::Float(value) if value.is_finite() => Some(value),
+                    _ => None,
+                })
+                .unwrap_or(0.0)
+            })
+        }),
+        colors: others
+            .map(|other| theme::oscillator_identity_color(other).unwrap_or(input.style.muted)),
+        enabled: others.map(|other| {
+            super::value(view, device, parameters, id(513 + other as u32))
+                == Some(ParameterValue::Bool(true))
+        }),
+    };
     let Some(control) = view.device_panel.operator_envelope_graphs.get_mut(&key) else {
         return div().id("operator-envelope-graph-unavailable");
     };
@@ -91,6 +129,24 @@ pub(super) fn graph(
         });
         if updated {
             control.model_input = Some(input);
+        }
+    }
+    if control.reference_input != Some(reference_input) {
+        let references = (0..3)
+            .map(|index| ResponseGraphReference {
+                points: graph_model(reference_input.envelopes[index], 0)
+                    .primary
+                    .into(),
+                color: reference_input.colors[index],
+                opacity: if reference_input.enabled[index] {
+                    0.28
+                } else {
+                    0.12
+                },
+            })
+            .collect();
+        if graph_entity.update(cx, |graph, cx| graph.set_references(references, cx).is_ok()) {
+            control.reference_input = Some(reference_input);
         }
     }
     div()
@@ -377,6 +433,24 @@ pub(in crate::editor::device_panel) fn displayed_node(
         .entity
         .read(cx)
         .node_position(node)
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor::device_panel) fn displayed_references(
+    view: &EditorView,
+    device: DeviceId,
+    operator: usize,
+    cx: &gpui::App,
+) -> Option<Vec<ResponseGraphReference>> {
+    Some(
+        view.device_panel
+            .operator_envelope_graphs
+            .get(&GraphKey { device, operator })?
+            .entity
+            .read(cx)
+            .references()
+            .to_vec(),
+    )
 }
 
 fn begin_gesture(
@@ -685,7 +759,7 @@ fn gesture_target_matches(key: GraphKey, node_id: u32, target: GestureTarget) ->
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

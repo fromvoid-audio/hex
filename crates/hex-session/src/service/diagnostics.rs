@@ -286,8 +286,8 @@ impl Hooks {
             details_truncated,
         });
     }
-    /// `worker` (WorkerBegin to OutcomeReady) and `section` phases are worker
-    /// observations; client receipt reports neither.
+    /// `worker` (WorkerBegin to OutcomeReady), `section` phases and opt-in
+    /// recovery maintenance are observations recorded on the worker outcome.
     pub fn outcome(
         &self,
         request: Option<DiagnosticRequest>,
@@ -295,6 +295,7 @@ impl Hooks {
         received: bool,
         worker: Option<Duration>,
         section: Option<SectionPhases>,
+        recovery_timing: Option<(&'static str, Duration)>,
     ) {
         if self.observer.get().is_none() {
             return;
@@ -335,6 +336,9 @@ impl Hooks {
             ] {
                 description.field(name, format_args!("{}", value.as_micros()));
             }
+        }
+        if !received && let Some((field, duration)) = recovery_timing {
+            description.field(field, format_args!("{}", duration.as_micros()));
         }
         if let Some(ack) = &event.gesture_ack {
             description.field("gesture_generation", format_args!("{}", ack.key.generation));
@@ -393,7 +397,7 @@ impl EventReceiver {
     }
     fn received(&self, observed: ObservedEvent) -> Event {
         self.diagnostics
-            .outcome(observed.request, &observed.event, true, None, None);
+            .outcome(observed.request, &observed.event, true, None, None, None);
         observed.event
     }
     pub fn try_recv(&self) -> Result<Event, std::sync::mpsc::TryRecvError> {
@@ -542,6 +546,10 @@ mod tests {
                 start: 123,
             },
             Request::SaveNew(path.clone()),
+            Request::Edit(Command::SetTrackTags {
+                track,
+                tags: vec![hex_project::TrackTag::new(name).unwrap()],
+            }),
         ];
         let hooks = Hooks::default();
         let records = Arc::new(Mutex::new(Vec::new()));
@@ -559,7 +567,7 @@ mod tests {
             hooks.begin(request).expect("request identity");
         }
         let records = records.lock().unwrap();
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
         for (index, (stamp, text, truncated)) in records.iter().enumerate() {
             assert!(!truncated);
             assert!(!text.contains(name));
@@ -567,6 +575,8 @@ mod tests {
             assert!(!text.contains("/private/"));
             assert_eq!(stamp.unwrap().request_id, index as u64 + 1);
         }
+        assert!(records[3].1.contains("set_track_tags"));
+        assert!(records[3].1.contains("tags_count=1"));
         assert!(records[0].1.contains(&format!("track={}", track.value())));
         assert!(
             records[0]
@@ -655,8 +665,9 @@ mod tests {
         assert!(event.request_complete);
         assert!(event.error.is_some());
         assert_eq!(event.state.revision, initial.state.revision);
-        let rows = records.lock().unwrap();
-        let stamp = rows
+        let stamp = records
+            .lock()
+            .unwrap()
             .iter()
             .find_map(|(stamp, stage, _)| {
                 matches!(stage, DiagnosticStage::SubmitAttempt)
@@ -664,6 +675,22 @@ mod tests {
                     .flatten()
             })
             .unwrap();
+        // Reception may beat the observer notification after successful queue
+        // publication. Wait without holding its mutex, so the worker can emit it.
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+        loop {
+            if records.lock().unwrap().iter().any(|(id, stage, _)| {
+                *id == Some(stamp) && *stage == DiagnosticStage::OutcomeQueued
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued outcome diagnostic missing"
+            );
+            std::thread::yield_now();
+        }
+        let rows = records.lock().unwrap();
         assert_eq!(stamp.ui_action_id, Some(42));
         assert_eq!(stamp.operation, Some("add_track"));
         assert!(

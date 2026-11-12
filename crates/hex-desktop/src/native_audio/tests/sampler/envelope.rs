@@ -69,31 +69,7 @@ pub(super) fn exercise(
         std::thread::sleep(Duration::from_millis(1));
     };
     let input = |visual: &mut VisualTestContext, parameter, text: &str| {
-        let field = visual.debug_bounds(selector(parameter)).unwrap();
-        let rail = visual.debug_bounds("device-chain-scroll").unwrap();
-        let delta = if field.left() < rail.left() {
-            rail.left() - field.left() + gpui::px(4.0)
-        } else if field.right() > rail.right() {
-            rail.right() - field.right() - gpui::px(4.0)
-        } else {
-            gpui::px(0.0)
-        };
-        // The wide sampler intentionally scrolls in a narrow native window.
-        // Reach the actual input instead of clicking its offscreen layout bounds.
-        if delta != gpui::px(0.0) {
-            visual.simulate_event(gpui::ScrollWheelEvent {
-                position: rail.center(),
-                delta: gpui::ScrollDelta::Pixels(gpui::point(delta, gpui::px(0.0))),
-                ..Default::default()
-            });
-            visual.run_until_parked();
-        }
-        let field = visual.debug_bounds(selector(parameter)).unwrap();
-        assert!(
-            field.left() >= rail.left() && field.right() <= rail.right(),
-            "{parameter:?} must be reachable before text entry: {field:?} in {rail:?}"
-        );
-        let center = field.center();
+        let center = visible_control_center(visual, selector(parameter));
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
@@ -258,7 +234,7 @@ pub(super) fn exercise(
                 .and_then(|s| s.rendered_current(h))
                 .is_some_and(|a| {
                     a.context.project_generation == before.context.project_generation + 2
-                        && a.output_identity != before.output_identity
+                        && a.context.editor_revision > before.context.editor_revision
                 })
             {
                 break;
@@ -389,6 +365,38 @@ pub(super) fn exercise(
             pulse(visual);
         }
     }
+}
+
+/// Scroll the headless device rail to the actual field before sending input.
+pub(super) fn visible_control_center(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+) -> gpui::Point<gpui::Pixels> {
+    let field = visual.debug_bounds(selector).unwrap();
+    let rail = visual.debug_bounds("device-chain-scroll").unwrap();
+    let delta = if field.left() < rail.left() {
+        rail.left() - field.left() + gpui::px(4.0)
+    } else if field.right() > rail.right() {
+        rail.right() - field.right() - gpui::px(4.0)
+    } else {
+        gpui::px(0.0)
+    };
+    // The wide sampler intentionally scrolls in a narrow native window.
+    // Reach the actual input instead of clicking its offscreen layout bounds.
+    if delta != gpui::px(0.0) {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: rail.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(delta, gpui::px(0.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    let field = visual.debug_bounds(selector).unwrap();
+    assert!(
+        field.left() >= rail.left() && field.right() <= rail.right(),
+        "{selector} must be reachable before text entry: {field:?} in {rail:?}"
+    );
+    field.center()
 }
 
 pub(super) fn render(

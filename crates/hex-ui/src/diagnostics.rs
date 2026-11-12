@@ -3,8 +3,10 @@
 //! Coverage: existing action handlers (no new dispatch listeners), pre-dispatch
 //! editor keys including consumed shortcuts, root pointer down/up, and changes
 //! observed at the existing 16 ms poll in track/clip/scene selection, mode,
-//! viewport and browser query length. Semantic widget edits use exhaustive
-//! session request/command projections; transport attempts retain actual tickets.
+//! viewport and browser query length. Loop refusals record bounded gate names
+//! and section pointer captures record release/cancellation outcomes. Semantic
+//! widget edits use exhaustive session request/command projections; transport
+//! attempts retain actual tickets.
 //! This is a causal aid, not lossless input replay: intermediate view states,
 //! pointer moves/scroll deltas, OS file dialogs, text contents, and deferred-work
 //! UI parents are not captured. Unknown parents remain None. Callback application
@@ -204,6 +206,90 @@ pub(crate) fn record_group_selection(cx: &App, route: &str) {
     }
 }
 
+/// Correlates the catalog class with its insertion terminal using the original
+/// request context. Includes bounded plug-in metadata, never its path or state.
+pub(crate) struct PluginLoad {
+    handle: DiagnosticsHandle,
+    details: String,
+}
+
+impl PluginLoad {
+    pub(crate) fn new(
+        cx: &App,
+        name: &str,
+        context: hex_engine::AudioSourceContext,
+        destination: hex_session::service::PluginEffectDestination,
+        rate: u32,
+    ) -> Option<Self> {
+        let config = cx.try_global::<SessionDiagnostics>()?;
+        config.action_observer.as_ref()?;
+        let handle = config.handle.as_ref().ok()?.clone();
+        let name: String = name.chars().take(128).collect();
+        let details = format!(
+            "class={name:?} generation={} revision={} rate_hz={rate} destination={destination:?}",
+            context.project_generation, context.editor_revision,
+        );
+        Some(Self { handle, details })
+    }
+
+    pub(crate) fn submitted(&self) {
+        self.record("submitted");
+    }
+
+    pub(crate) fn complete(&self, accepted: bool) {
+        self.record(if accepted { "accepted" } else { "refused" });
+    }
+
+    fn record(&self, stage: &'static str) {
+        let _ = self.handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!("vst3_load v=1 stage={stage} {}", self.details),
+        );
+    }
+}
+
+/// One bounded control-side record per refused loop action; labels are static
+/// and contain no project names, paths, or user-entered text.
+pub(crate) fn record_loop_refusal(
+    cx: &App,
+    gates: &[(&'static str, bool)],
+    section_view_blocked: bool,
+    worker_pending: usize,
+    queued_pending: usize,
+    section_pending: bool,
+    stopped_edit_pending: bool,
+) {
+    if let Some(diagnostics) = cx.try_global::<SessionDiagnostics>()
+        && let (Ok(handle), Some(observer)) = (&diagnostics.handle, &diagnostics.action_observer)
+    {
+        let active = gates
+            .iter()
+            .filter_map(|(name, active)| active.then_some(*name))
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = handle.record_typed(Level::Debug, Category::Ui, &format!(
+            "action_diag v=1 stage=loop_refused gates={active} section_view_blocked={section_view_blocked} worker_pending={worker_pending} queued_pending={queued_pending} section_pending={section_pending} stopped_edit_pending={stopped_edit_pending} ui_action_id={:?}",
+            observer.current_ui_action()
+        ));
+    }
+}
+
+/// Capture terminal events omit pointer coordinates and source data.
+pub(crate) fn record_section_capture(cx: &App, outcome: &'static str) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!("action_diag v=1 stage=section_capture outcome={outcome}"),
+        );
+    }
+}
+
 pub(crate) fn actions_enabled(cx: &App) -> bool {
     cx.try_global::<SessionDiagnostics>()
         .is_some_and(|d| d.action_observer.is_some())
@@ -380,6 +466,7 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         | E::Publication {
             state: P::Fault(_), ..
         } => Level::Error,
+        E::PluginParameterTouched { .. } => Level::Debug,
         E::DegradedPlugins { .. }
         | E::Publication {
             state: P::Refused(_) | P::Busy,
@@ -409,13 +496,43 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             old_output_identity,
             target,
         } => format!("stage=output_relinquish output={old_output_identity} target={target:?}"),
+        E::OutputRebound {
+            project_generation,
+            output_identity,
+        } => {
+            format!("stage=output_rebound generation={project_generation} output={output_identity}")
+        }
+        E::OutputReleased {
+            project_generation,
+            old_output_identity,
+        } => format!(
+            "stage=output_released generation={project_generation} output={old_output_identity}"
+        ),
         E::OutputRouteChanged { output_identity } => {
             format!("stage=output_route_changed output={output_identity}")
         }
+        E::NativeLatencyRestart { source } => {
+            format!("stage=native_latency_restart source={source:?}")
+        }
+        E::PluginParameterTouched {
+            source,
+            binding,
+            device,
+            parameter,
+            sequence,
+            ..
+        } => {
+            format!(
+                "stage=plugin_parameter_touched source={source:?} binding={binding:?} device={device} parameter={parameter} sequence={sequence}"
+            )
+        }
         E::DegradedPlugins {
+            project_generation,
             output_identity,
             devices,
-        } => format!("stage=degraded_plugins output={output_identity} devices={devices:?}"),
+        } => format!(
+            "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?}"
+        ),
         E::Publication {
             context,
             output_identity,
@@ -534,6 +651,42 @@ pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> O
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn loop_and_capture_diagnostics_respect_configuration_and_report_active_gates(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("hex-ui-loop-gate-test-{}", std::process::id()));
+        let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, false);
+            record_loop_refusal(cx, &[("disabled", true)], false, 0, 0, false, false);
+            record_section_capture(cx, "disabled");
+            install_action_diagnostics(cx, true);
+            record_loop_refusal(
+                cx,
+                &[
+                    ("section_held", true),
+                    ("scrub", false),
+                    ("edit_pending", true),
+                ],
+                true,
+                2,
+                3,
+                true,
+                false,
+            );
+            record_section_capture(cx, "cancel");
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(!contents.contains("disabled"));
+        assert!(contents.contains("stage=loop_refused gates=section_held,edit_pending"));
+        assert!(contents.contains("section_view_blocked=true worker_pending=2 queued_pending=3 section_pending=true stopped_edit_pending=false"));
+        assert!(contents.contains("stage=section_capture outcome=cancel"));
+    }
 
     #[gpui::test]
     fn view_snapshot_reuses_its_buffer_and_records_only_changes(cx: &mut gpui::TestAppContext) {

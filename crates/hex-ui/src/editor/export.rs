@@ -259,22 +259,22 @@ impl EditorView {
 
     pub(super) fn poll_export(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
-        if self.export_pending {
-            if let Some(control) = &self.export_control {
-                let progress = control.progress();
-                let status = format!(
-                    "{} {} / {} frames · click export to cancel",
-                    if control.is_cancelled() {
-                        "cancelling export"
-                    } else {
-                        "export"
-                    },
-                    progress.processed_frames,
-                    progress.total_frames
-                );
-                changed = self.status != status;
-                self.status = status;
-            }
+        if self.export_pending
+            && let Some(control) = &self.export_control
+        {
+            let progress = control.progress();
+            let status = format!(
+                "{} {} / {} frames · click export to cancel",
+                if control.is_cancelled() {
+                    "cancelling export"
+                } else {
+                    "export"
+                },
+                progress.processed_frames,
+                progress.total_frames
+            );
+            changed = self.status != status;
+            self.status = status;
         }
         match self.service.try_export_event() {
             Ok(event) => {
@@ -292,8 +292,7 @@ impl EditorView {
                     Err(error) => Some(error.clone()),
                 };
                 if let (Some(handle), Some(message)) = (self.export_window.take(), recovery_message)
-                {
-                    if let Ok(response) = cx.update_window(handle, |_, window, cx| {
+                    && let Ok(response) = cx.update_window(handle, |_, window, cx| {
                         window.prompt(
                             PromptLevel::Info,
                             "export result",
@@ -301,12 +300,12 @@ impl EditorView {
                             &[PromptButton::new("ok")],
                             cx,
                         )
-                    }) {
-                        cx.spawn(async move |_, _| {
-                            let _ = response.await;
-                        })
-                        .detach();
-                    }
+                    })
+                {
+                    cx.spawn(async move |_, _| {
+                        let _ = response.await;
+                    })
+                    .detach();
                 }
                 match event.result {
                     Ok(report) => {
@@ -373,7 +372,7 @@ fn export_status(
     status
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod status_tests {
     use super::{ExportFormat, export_status, format_choice, format_label};
 

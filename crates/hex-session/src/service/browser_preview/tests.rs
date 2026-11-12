@@ -2,9 +2,28 @@
 use super::*;
 use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT};
 use crate::service::service_tests::{TestDir, wav_mono};
+use hex_media::waveform::summarize_peaks;
 use std::{fs, thread, time::Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+#[test]
+fn captured_resident_audition_uses_the_same_conversion_after_path_removal() {
+    let directory = TestDir::new();
+    let path = directory.0.join("resident.wav");
+    fs::write(
+        &path,
+        wav_at(48_000, &[8192, -4096, 2048, -1024].repeat(32)),
+    )
+    .unwrap();
+    let sources = PreviewSources::default();
+    let captured = sources.source(&path, &RUNNING).unwrap();
+    let expected = sources.prepare_playback(&path, 44_100, &RUNNING).unwrap();
+    fs::remove_file(path).unwrap();
+    let actual = PreviewSources::prepare_resident_playback(&captured, 44_100, &RUNNING).unwrap();
+    assert_eq!(actual.sample_rate(), 44_100);
+    assert_eq!(actual.frames(), expected.frames());
+}
 
 /// Uncached single-job playback, as a fresh browser would prepare it.
 fn playback(path: impl AsRef<Path>, rate: u32) -> Result<Audio, String> {
@@ -30,6 +49,91 @@ fn wav_at(rate: u32, samples: &[i16]) -> Vec<u8> {
     bytes[24..28].copy_from_slice(&rate.to_le_bytes());
     bytes[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
     bytes
+}
+
+#[test]
+fn windowed_wav_matches_whole_preview_at_matched_and_converted_rates() {
+    let directory = TestDir::new();
+    let path = directory.0.join("windowed.wav");
+    let samples: Vec<i16> = (0..10_003)
+        .map(|n| ((n * 37 % 24_000) as i16) - 12_000)
+        .collect();
+    for (source_rate, rate) in [(44_100, 44_100), (44_100, 48_000), (192_000, 8_000)] {
+        fs::write(&path, wav_at(source_rate, &samples)).unwrap();
+        let expected = playback(&path, rate).unwrap();
+        let mut source = PreviewWindowSource::open(&path, rate, &RUNNING).unwrap();
+        assert_eq!(source.output_rate(), rate);
+        assert_eq!(source.output_frames(), expected.frames().len() as u64);
+        let mut actual = Vec::new();
+        let mut offset = 0_u64;
+        for size in [1, 511, BROWSER_PREVIEW_WINDOW_FRAMES, 37]
+            .into_iter()
+            .cycle()
+        {
+            if offset == source.output_frames() {
+                break;
+            }
+            let count = size.min((source.output_frames() - offset) as usize);
+            actual.extend(source.read_window(offset, count, &RUNNING).unwrap());
+            offset += count as u64;
+        }
+        assert_eq!(actual.len(), expected.frames().len());
+        for (actual, expected) in actual
+            .iter()
+            .flatten()
+            .zip(expected.frames().iter().flatten())
+        {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+}
+
+#[test]
+fn windowed_wav_refuses_cancelled_changed_and_invalid_requests() {
+    let directory = TestDir::new();
+    let path = directory.0.join("windowed.wav");
+    fs::write(&path, wav_at(48_000, &[100; 512])).unwrap();
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        PreviewWindowSource::open(&path, 48_000, &cancelled),
+        Err(PreviewFailure::Cancelled)
+    ));
+    let mut source = PreviewWindowSource::open(&path, 48_000, &RUNNING).unwrap();
+    assert!(matches!(
+        source.read_window(0, 32, &cancelled),
+        Err(PreviewFailure::Cancelled)
+    ));
+    assert!(source.read_window(0, 0, &RUNNING).is_err());
+    assert!(
+        source
+            .read_window(0, BROWSER_PREVIEW_WINDOW_FRAMES + 1, &RUNNING)
+            .is_err()
+    );
+    assert!(source.read_window(500, 13, &RUNNING).is_err());
+    assert!(source.read_window(u64::MAX, 1, &RUNNING).is_err());
+    assert!(PreviewWindowSource::open(&path, 0, &RUNNING).is_err());
+    fs::write(&path, wav_at(48_000, &[100; 513])).unwrap();
+    assert!(source.read_window(0, 32, &RUNNING).is_err());
+    fs::write(&path, b"not a wav").unwrap();
+    assert!(PreviewWindowSource::open(&path, 48_000, &RUNNING).is_err());
+    let oversized = directory.0.join("oversized.wav");
+    fs::File::create(&oversized)
+        .unwrap()
+        .set_len(BROWSER_PREVIEW_FILE_LIMIT as u64 + 1)
+        .unwrap();
+    assert!(PreviewWindowSource::open(&oversized, 48_000, &RUNNING).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn windowed_wav_rejects_a_replaced_path_while_the_old_descriptor_remains_open() {
+    let directory = TestDir::new();
+    let path = directory.0.join("current.wav");
+    fs::write(&path, wav_at(48_000, &[100; 512])).unwrap();
+    let mut source = PreviewWindowSource::open(&path, 48_000, &RUNNING).unwrap();
+    fs::rename(&path, directory.0.join("original.wav")).unwrap();
+    fs::write(&path, wav_at(48_000, &[100; 513])).unwrap();
+    assert!(source.read_window(0, 32, &RUNNING).is_err());
 }
 
 #[test]
@@ -64,9 +168,11 @@ fn waveform_at_another_rate_is_the_unconverted_source_summary() {
     let expected = summarize_peaks(&source, BROWSER_PREVIEW_BINS).unwrap();
     let preview = waveform(&path, 48_000).unwrap();
     let converted = hex_project::converted_frame_count(10_000, 44_100, 48_000).unwrap();
-    assert_eq!(preview.waveform.bins, expected.bins);
+    assert!(expected.has_identical_channels());
+    assert!(preview.waveform.has_identical_channels());
+    assert_eq!(preview.waveform.bins(), expected.bins());
     assert_eq!(preview.playback_frames, converted);
-    assert_eq!(preview.waveform.source_frames as u64, converted);
+    assert_eq!(preview.waveform.source_frames() as u64, converted);
     assert_eq!(
         playback(&path, 48_000).unwrap().frames().len() as u64,
         converted
@@ -144,6 +250,28 @@ fn cancelled_jobs_stop_promptly_and_cache_nothing() {
 }
 
 #[test]
+fn cancellation_after_decode_refuses_waveform_and_preserves_cached_source() {
+    let directory = TestDir::new();
+    let path = directory.0.join("cancel-after-decode.wav");
+    fs::write(&path, wav_mono(&[100; 64])).unwrap();
+    let sources = PreviewSources::default();
+    let cancel = AtomicBool::new(false);
+    let source = sources.source(&path, &cancel).unwrap();
+    cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        waveform_from_source(source, 48_000, &cancel),
+        Err(PreviewFailure::Cancelled)
+    ));
+    let retry = sources.prepare_waveform(&path, 48_000, &RUNNING).unwrap();
+    assert_eq!(retry.playback_frames, 64);
+    assert_eq!(
+        decodes(&sources),
+        1,
+        "a cancelled summary keeps decoded PCM"
+    );
+}
+
+#[test]
 fn a_waiting_job_receives_the_in_flight_decode() {
     let directory = TestDir::new();
     let path = directory.0.join("single-flight.wav");
@@ -204,8 +332,8 @@ fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
     let preview = waveform(&path, 48_000).unwrap();
     assert_eq!(preview.playback_frames, frames as u64);
     assert_eq!(preview.sample_rate, 48_000);
-    assert_eq!(preview.waveform.source_frames, frames);
-    assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+    assert_eq!(preview.waveform.source_frames(), frames);
+    assert!(preview.waveform.bins().len() <= BROWSER_PREVIEW_BINS);
     assert_eq!(
         preview
             .waveform
@@ -269,9 +397,9 @@ fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
         let preview = waveform(&path, 24_000).expect("prepare preview");
         assert_eq!(preview.playback_frames, 48);
         assert_eq!(preview.sample_rate, 24_000);
-        assert_eq!(preview.waveform.source_frames, 48);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert!(!preview.waveform.bins.is_empty());
+        assert_eq!(preview.waveform.source_frames(), 48);
+        assert!(preview.waveform.bins().len() <= BROWSER_PREVIEW_BINS);
+        assert!(!preview.waveform.bins().is_empty());
         let pcm = playback(&path, 24_000).expect("prepare playback");
         assert_eq!(pcm.sample_rate(), 24_000);
         assert_eq!(pcm.frames().len(), 48);
@@ -293,8 +421,8 @@ fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() 
     frames[8194] = -16_000;
     fs::write(&path, wav_mono(&frames)).unwrap();
     let preview = waveform(&path, 48_000).unwrap();
-    assert_eq!(preview.waveform.bins.len(), 4096);
-    assert_eq!(preview.waveform.source_frames, 8195);
+    assert_eq!(preview.waveform.bins().len(), 4096);
+    assert_eq!(preview.waveform.source_frames(), 8195);
     let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
     assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
     let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();

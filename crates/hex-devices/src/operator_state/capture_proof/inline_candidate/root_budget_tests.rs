@@ -61,7 +61,7 @@ fn real_context_budget_and_new_host_table_charge_prevent_universal_fit_claims() 
             - 33554432,
         8
     );
-    // Proposed actual v9 context2572 alone: 417 independent three-root recipes exceed context2MiB.
+    // The proposed context alone makes 417 independent three-root recipes exceed 2 MiB.
     assert!(417 * 3 * super::super::layout::context_bytes() > 2 * 1024 * 1024);
     eprintln!(
         "cached metadata={} slot={} header={} pool={} EQ_margin=9112 real_v8_context={} owner_entry={} host_header={} new_host_capacity256_EQ_margin=696 complete_fixture_declared_closure={}",

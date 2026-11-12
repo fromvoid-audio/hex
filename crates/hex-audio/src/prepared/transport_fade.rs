@@ -1,5 +1,5 @@
 //! Host effects of a declicked queued or streamed Pause/Stop (Pulse #4151)
-//! and a queued resident Seek (Pulse #4140).
+//! and queued resident Seek/PlayFrom actions.
 //!
 //! `hex_engine::Playback` owns the fade itself: a Pause/Stop/Seek admitted
 //! while playing is reported Applied when consumed and takes effect F frames
@@ -23,16 +23,21 @@ use super::*;
 pub(super) struct PendingFade {
     ticket: u64,
     revision: u64,
-    stop: bool,
+    action: PlaybackAction,
     stream: bool,
 }
 
 impl Callback {
-    pub(super) fn begin_transport_fade(&mut self, ticket: u64, stop: bool, stream: bool) {
+    pub(super) fn begin_transport_fade(
+        &mut self,
+        ticket: u64,
+        action: PlaybackAction,
+        stream: bool,
+    ) {
         self.transport_fade = Some(PendingFade {
             ticket,
             revision: self.status.applied_revision.load(Relaxed),
-            stop,
+            action,
             stream,
         });
     }
@@ -42,6 +47,13 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
             .is_some_and(|active| active.playback.pending_transport_fade().is_some())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn transport_fade_is_pause(&self) -> bool {
+        self.transport_fade
+            .as_ref()
+            .is_some_and(|fade| is_pause_action(fade.action))
     }
 
     /// Complete a pending fade now, then apply its deferred effects. A refusal
@@ -65,13 +77,20 @@ impl Callback {
         if let Some(reason) = failure {
             self.status.publish_rejected_action(fade.ticket, reason);
         }
-        if fade.stop {
+        if matches!(
+            fade.action,
+            PlaybackAction::Transport(PlaybackCommand::Stop)
+        ) {
             self.revoke_current_sampler_keyboard();
         }
         if fade.stream {
             self.clear_active_stream_roles();
         }
-        self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
+        if failure.is_some() {
+            self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
+        } else {
+            self.invalidate_for_transport_change(fade.action);
+        }
     }
 }
 
@@ -94,6 +113,39 @@ mod tests {
         control
             .publish(Playback::new(Project::new(48_000, vec![track]).unwrap()))
             .unwrap();
+        (control, callback)
+    }
+
+    fn session_dc_callback() -> (Control, prepared::Callback) {
+        use hex_engine::{PreparedRevision, SineTable};
+        use hex_project::{Command, Created, Editor, Project};
+        use std::{collections::BTreeMap, sync::Arc};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "dc".into(),
+                path: "dc.wav".into(),
+                sample_rate: 48_000,
+                frames: 8192,
+            })
+            .unwrap()
+        else {
+            panic!("expected audio asset")
+        };
+        let audio = Audio::new(48_000, vec![[1.0, -1.0]; 8192]).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::from([(asset, audio)]),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        let (mut control, callback) = prepared::channel(48_000).unwrap();
+        control.publish(playback).unwrap();
         (control, callback)
     }
 
@@ -177,6 +229,34 @@ mod tests {
             }
             control.request_shutdown();
             callback.begin_block();
+        }
+    }
+
+    #[test]
+    fn queued_session_seek_and_play_from_declick_across_blocks() {
+        for action in [
+            hex_engine::PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Seek(5000)),
+            hex_engine::PlaybackAction::Transport(PlaybackCommand::PlayFrom(5000)),
+        ] {
+            let mut reference = None;
+            for block in [1, 64, 100, 512] {
+                let (mut control, mut callback) = session_dc_callback();
+                control.command(PlaybackCommand::Play).unwrap();
+                let mut output = render(&mut callback, 1000, block);
+                control.action_with_ticket(action).unwrap();
+                output.extend(render(&mut callback, 1000, block));
+                assert!(control.status.playing.load(Acquire));
+                assert_eq!(control.status.position.load(Acquire), 5000 + 1000 - F);
+                assert!(largest_step(&output[1..]) <= 1.0 / F as f32 + 1e-6);
+                assert_eq!(output[1000 + F as usize - 1], [0.0; 2]);
+                assert_eq!(output[1000 + F as usize][0], 1.0 / F as f32);
+                match &reference {
+                    None => reference = Some(output),
+                    Some(reference) => assert_eq!(&output, reference, "{action:?}, block {block}"),
+                }
+                control.request_shutdown();
+                callback.begin_block();
+            }
         }
     }
 

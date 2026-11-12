@@ -120,6 +120,14 @@ impl ClaimedAudioCandidateRuntime {
         self.current_playback()
             .is_some_and(|p| p.project_output_supported(tracks))
     }
+    pub fn project_sample_sources_supported(
+        &self,
+        tracks: &[u64],
+        returns: &[crate::ReturnId],
+    ) -> bool {
+        self.current_playback()
+            .is_some_and(|p| p.project_sample_sources_supported(tracks, returns))
+    }
     pub fn render_with_pages_and_post_node_observer<P: crate::MediaPages + ?Sized>(
         &mut self,
         output: &mut [crate::Frame],
@@ -297,6 +305,11 @@ impl ClaimedAudioCandidateRuntime {
             playback.invalidate_native_parameter_input();
         }
     }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.finish_native_parameter_input();
+        }
+    }
     pub fn take_native_parameter_application(
         &mut self,
     ) -> Option<crate::NativeParameterApplication> {
@@ -327,6 +340,13 @@ impl ClaimedAudioCandidateRuntime {
             return false;
         };
         playback.clear_gain_recording_override();
+        true
+    }
+    pub fn release_gain_recording_override(&mut self) -> bool {
+        let Some(playback) = self.current_playback_mut() else {
+            return false;
+        };
+        playback.release_gain_recording_override();
         true
     }
     pub fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {

@@ -37,6 +37,8 @@ pub use native_custody::{
 mod pending;
 pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
 mod disposal;
+#[cfg(test)]
+mod read_outcome_tests;
 pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -987,6 +989,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(2);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
             scalar_steps: None,
             entered: entered_tx,
             release: release_rx,
@@ -1081,6 +1084,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(3);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
             entered: entered_tx,
             release: release_rx,
             publications: publication_tx,
@@ -1243,6 +1247,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(3);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
             entered: entered_tx,
             release: release_rx,
             publications: publication_tx,

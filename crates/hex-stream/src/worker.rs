@@ -174,6 +174,7 @@ pub(crate) fn preparation_data_bound_with_scalar_sources(
 // Observe actual worker publication/holding without exposing a production API.
 // The gate also honors Stop, so a failed test cannot strand a paused worker.
 pub(crate) struct TestWorkerHooks {
+    pub(crate) read_gate: Option<TestReadGate>,
     pub(crate) entered: SyncSender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
     pub(crate) publications: SyncSender<usize>,
@@ -181,6 +182,50 @@ pub(crate) struct TestWorkerHooks {
         SyncSender<hex_engine::ScalarSourceKey>,
         std::sync::mpsc::Receiver<()>,
     )>,
+}
+
+#[cfg(test)]
+pub(crate) struct TestReadGate {
+    pub(crate) key: PageKey,
+    pub(crate) after_checks: usize,
+    failure_after_page_reads: Option<u32>,
+    used: std::cell::Cell<bool>,
+    pub(crate) entered: SyncSender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+impl TestReadGate {
+    pub(crate) fn new(
+        key: PageKey,
+        after_checks: usize,
+        entered: SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        failure_after_page_reads: Option<u32>,
+    ) -> Self {
+        Self {
+            key,
+            after_checks,
+            entered,
+            release,
+            failure_after_page_reads,
+            used: std::cell::Cell::new(false),
+        }
+    }
+
+    fn wait(&self, stop: &AtomicBool) {
+        self.used.set(true);
+        if self.entered.try_send(()).is_err() {
+            return;
+        }
+        while !stop.load(Ordering::Acquire) {
+            match self.release.recv_timeout(Duration::from_millis(2)) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,12 +354,11 @@ pub(crate) fn run_worker(
             continue;
         }
         #[cfg(test)]
-        if let Some(job) = &scalar_job {
-            if let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source) {
-                if !hooks.before_scalar_step(key, &stop) {
-                    break;
-                }
-            }
+        if let Some(job) = &scalar_job
+            && let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source)
+            && !hooks.before_scalar_step(key, &stop)
+        {
+            break;
         }
         if let Some(mut job) = scalar_job.take() {
             let outcome = job.step(&mut scalar_definitions[job.source]);
@@ -365,14 +409,18 @@ pub(crate) fn run_worker(
             continue;
         };
         #[cfg(feature = "test-support")]
-        if page_gate.as_ref().is_some_and(|gate| {
+        let read_failure_after = if let Some(gate) = page_gate.take_if(|gate| {
             key.source == StreamResourceKey::Audio(gate.key.source)
                 && key.page_index == gate.key.page_index
-        }) && let Some(gate) = page_gate.take()
-            && !gate.wait(&stop)
-        {
-            break;
-        }
+        }) {
+            let failure = gate.read_failure_after;
+            if !gate.wait(&stop) {
+                break;
+            }
+            failure
+        } else {
+            None
+        };
         if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
             if deferred_scalar.len() < deferred_scalar.capacity() {
                 deferred_scalar.push_back(key);
@@ -456,7 +504,11 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
-        match render_page(
+        #[cfg(feature = "test-support")]
+        if let Some(after) = read_failure_after {
+            source.reader.fail_page_read_after(after);
+        }
+        let rendered = render_page(
             source,
             PageKey {
                 source: audio_key,
@@ -465,7 +517,16 @@ pub(crate) fn run_worker(
             &mut page,
             &mut source_scratch,
             &stop,
-        ) {
+            #[cfg(test)]
+            test_hooks
+                .as_ref()
+                .and_then(|hooks| hooks.read_gate.as_ref()),
+        );
+        #[cfg(feature = "test-support")]
+        if read_failure_after.is_some() {
+            source.reader.clear_page_read_failure();
+        }
+        match rendered {
             Ok(()) => {
                 match queues.ready.push(page) {
                     Ok(()) => {}
@@ -945,6 +1006,7 @@ fn render_page(
     page: &mut PageBuffer,
     source_scratch: &mut [[f32; 2]],
     stop: &AtomicBool,
+    #[cfg(test)] read_gate: Option<&TestReadGate>,
 ) -> Result<(), StreamFailureKind> {
     let output_start = key
         .page_index
@@ -967,9 +1029,26 @@ fn render_page(
         return Err(StreamFailureKind::CapacityExhausted);
     }
     let input = &mut source_scratch[..source_count];
+    #[cfg(test)]
+    let read_gate = read_gate.filter(|gate| gate.key == key && !gate.used.get());
+    #[cfg(test)]
+    if let Some(after) = read_gate.and_then(|gate| gate.failure_after_page_reads) {
+        source.reader.fail_page_read_after(after);
+    }
+    #[cfg(test)]
+    let mut checks = 0;
     source
         .reader
-        .read_frames_into_with_cancel(source_start, input, || stop.load(Ordering::Acquire))
+        .read_frames_into_with_cancel(source_start, input, || {
+            #[cfg(test)]
+            if let Some(gate) = read_gate.filter(|gate| gate.key == key) {
+                checks += 1;
+                if checks == gate.after_checks {
+                    gate.wait(stop);
+                }
+            }
+            stop.load(Ordering::Acquire)
+        })
         .map_err(map_import_error)?;
     page.frames.fill([0.0; 2]);
     source
@@ -1057,6 +1136,16 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn pcm16_frames(frames: u16) -> Self {
+            Self::pcm_frames(frames, 16)
+        }
+
+        pub(crate) fn pcm32_frames(frames: u16) -> Self {
+            Self::pcm_frames(frames, 32)
+        }
+
+        fn pcm_frames(frames: u16, bits: u16) -> Self {
+            assert!(matches!(bits, 16 | 32));
+            let block_align = bits / 8 * 2;
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -1073,7 +1162,7 @@ pub(crate) mod tests {
                 .open(&path)
                 .expect("create fixture");
             file.write_all(b"RIFF").expect("RIFF");
-            file.write_all(&(36_u32 + u32::from(frames) * 4).to_le_bytes())
+            file.write_all(&(36_u32 + u32::from(frames) * u32::from(block_align)).to_le_bytes())
                 .expect("riff length");
             file.write_all(b"WAVEfmt ").expect("WAVE format");
             file.write_all(&16_u32.to_le_bytes())
@@ -1082,17 +1171,23 @@ pub(crate) mod tests {
             file.write_all(&2_u16.to_le_bytes()).expect("channel count");
             file.write_all(&48_000_u32.to_le_bytes())
                 .expect("sample rate");
-            file.write_all(&192_000_u32.to_le_bytes())
+            file.write_all(&(48_000 * u32::from(block_align)).to_le_bytes())
                 .expect("byte rate");
-            file.write_all(&4_u16.to_le_bytes()).expect("block align");
-            file.write_all(&16_u16.to_le_bytes()).expect("bit depth");
+            file.write_all(&block_align.to_le_bytes())
+                .expect("block align");
+            file.write_all(&bits.to_le_bytes()).expect("bit depth");
             file.write_all(b"data").expect("data header");
-            file.write_all(&(u32::from(frames) * 4).to_le_bytes())
+            file.write_all(&(u32::from(frames) * u32::from(block_align)).to_le_bytes())
                 .expect("data length");
-            let mut pcm = Vec::with_capacity(usize::from(frames) * 4);
+            let mut pcm = Vec::with_capacity(usize::from(frames) * usize::from(block_align));
             for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
-                pcm.extend_from_slice(&index.to_le_bytes());
-                pcm.extend_from_slice(&(-index).to_le_bytes());
+                if bits == 16 {
+                    pcm.extend_from_slice(&index.to_le_bytes());
+                    pcm.extend_from_slice(&(-index).to_le_bytes());
+                } else {
+                    pcm.extend_from_slice(&(i32::from(index) << 16).to_le_bytes());
+                    pcm.extend_from_slice(&(-i32::from(index) << 16).to_le_bytes());
+                }
             }
             file.write_all(&pcm).expect("PCM samples");
             file.sync_all().expect("flush fixture");
@@ -1154,7 +1249,7 @@ pub(crate) mod tests {
         let mut scratch = vec![[0.0; 2]; 8192];
         let cancelled = AtomicBool::new(true);
         assert_eq!(
-            render_page(&mut source, key, &mut page, &mut scratch, &cancelled),
+            render_page(&mut source, key, &mut page, &mut scratch, &cancelled, None),
             Err(StreamFailureKind::Cancelled),
         );
         assert_eq!(page.key, None);

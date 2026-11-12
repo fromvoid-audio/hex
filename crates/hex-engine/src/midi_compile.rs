@@ -419,9 +419,10 @@ fn compile_instrument_track_with_empty_bank(
         None
     };
     let mutable = mutable_limits.is_some();
+    let has_playable_source = instrument.is_some() || mutable;
     let mut spans = Vec::new();
     spans
-        .try_reserve_exact(if instrument.is_some() { span_count } else { 0 })
+        .try_reserve_exact(if has_playable_source { span_count } else { 0 })
         .map_err(|_| Invalid("could not reserve instrument note storage"))?;
     let mut timeline_end = None;
     for (clip, occurrence_count) in track.midi_clips().iter().zip(clip_counts) {
@@ -513,19 +514,19 @@ fn compile_instrument_track_with_empty_bank(
             project,
             clip,
             |note, iteration, start, gate_end, onset_beat, off_beat, playable| {
-                if let Some((ordinals, samples)) = preview.as_mut() {
-                    if ordinals.get(samples.len()).copied() == Some(emitted) {
-                        samples.push(crate::MidiPreviewSample {
-                            frame_start: start,
-                            frame_gate_end: gate_end,
-                            pitch: note.pitch(),
-                        });
-                    }
+                if let Some((ordinals, samples)) = preview.as_mut()
+                    && ordinals.get(samples.len()).copied() == Some(emitted)
+                {
+                    samples.push(crate::MidiPreviewSample {
+                        frame_start: start,
+                        frame_gate_end: gate_end,
+                        pitch: note.pitch(),
+                    });
                 }
                 emitted = emitted
                     .checked_add(1)
                     .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-                if clip.active() && note.active() && playable && instrument.is_some() {
+                if clip.active() && note.active() && playable && has_playable_source {
                     let (sampler_index, end) = if mutable {
                         let tail = mutable_limits
                             .ok_or(Invalid("mutable instrument limits are missing"))?

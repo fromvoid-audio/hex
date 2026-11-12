@@ -93,10 +93,10 @@ pub struct ThemePreferences {
 impl Default for ThemePreferences {
     fn default() -> Self {
         Self {
-            background: RgbColor::new(0x2a, 0x28, 0x28),
-            text: RgbColor::new(0xc3, 0xc5, 0xc0),
-            primary: RgbColor::new(0xf0, 0x64, 0x49),
-            secondary: RgbColor::new(0x70, 0xe8, 0xe3),
+            background: RgbColor::new(0x1b, 0x1b, 0x1b),
+            text: RgbColor::new(0xd2, 0xd2, 0xd2),
+            primary: RgbColor::new(0x3b, 0x95, 0xdf),
+            secondary: RgbColor::new(0x75, 0xba, 0xff),
         }
     }
 }
@@ -142,6 +142,26 @@ pub struct BrowserPlaces {
     icons: BTreeMap<PathBuf, String>,
     builtins: BTreeMap<BrowserBuiltin, BuiltinPreference>,
     hidden_places: HashSet<PathBuf>,
+    pub vst3_scan_sources: Vst3ScanSources,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vst3ScanSources {
+    pub system: bool,
+    pub user: bool,
+    pub custom_enabled: bool,
+    pub custom_folder: Option<PathBuf>,
+}
+
+impl Default for Vst3ScanSources {
+    fn default() -> Self {
+        Self {
+            system: true,
+            user: true,
+            custom_enabled: false,
+            custom_folder: None,
+        }
+    }
 }
 
 impl BrowserPlaces {
@@ -180,6 +200,7 @@ impl BrowserPlaces {
             icons: BTreeMap::new(),
             builtins: BTreeMap::new(),
             hidden_places: HashSet::new(),
+            vst3_scan_sources: Vst3ScanSources::default(),
         })
     }
 
@@ -452,6 +473,18 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
         .map(StoredPath::into_path)
         .collect::<Result<Vec<_>, _>>()?;
     let mut places = BrowserPlaces::new(paths)?;
+    if let Some(scan) = document.vst3_scan_sources {
+        let custom_folder = scan.custom_folder.map(StoredPath::into_path).transpose()?;
+        if let Some(path) = custom_folder.as_deref() {
+            validate_saved_path(path)?;
+        }
+        places.vst3_scan_sources = Vst3ScanSources {
+            system: scan.system,
+            user: scan.user,
+            custom_enabled: scan.custom_enabled,
+            custom_folder,
+        };
+    }
     if document.place_icons.len() > MAX_USER_PLACES {
         return Err(PreferencesError::InvalidDocument(
             "too many place icons".into(),
@@ -617,6 +650,25 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
     }
     let document = Document {
         version: DOCUMENT_VERSION,
+        vst3_scan_sources: (places.vst3_scan_sources != Vst3ScanSources::default())
+            .then(|| {
+                let scan = &places.vst3_scan_sources;
+                let custom_folder = scan
+                    .custom_folder
+                    .as_deref()
+                    .map(|path| {
+                        validate_saved_path(path)?;
+                        StoredPath::from_path(path)
+                    })
+                    .transpose()?;
+                Ok::<_, PreferencesError>(StoredVst3ScanSources {
+                    system: scan.system,
+                    user: scan.user,
+                    custom_enabled: scan.custom_enabled,
+                    custom_folder,
+                })
+            })
+            .transpose()?,
         builtin_sources: places
             .builtins
             .iter()
@@ -782,6 +834,17 @@ struct Document {
     builtin_sources: Vec<StoredBuiltinPreference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hidden_places: Vec<StoredPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vst3_scan_sources: Option<StoredVst3ScanSources>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredVst3ScanSources {
+    system: bool,
+    user: bool,
+    custom_enabled: bool,
+    custom_folder: Option<StoredPath>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -901,6 +964,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn vst3_scan_sources_default_for_older_preferences_and_round_trip() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        fs::write(&config, br#"{"version":1,"additional_places":[]}"#).unwrap();
+        let mut places = load(&config).unwrap();
+        assert_eq!(places.vst3_scan_sources, Vst3ScanSources::default());
+        places.vst3_scan_sources = Vst3ScanSources {
+            system: false,
+            user: true,
+            custom_enabled: false,
+            custom_folder: Some(PathBuf::from("/offline/plug-ins")),
+        };
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
     }
 
     #[test]

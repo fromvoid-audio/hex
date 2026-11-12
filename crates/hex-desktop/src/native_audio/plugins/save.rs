@@ -1,20 +1,19 @@
 //! Existing canonical worker's bounded native capture batch. No native owners
 //! or extra queue/reader move here. Every admitted token is drained, including
-//! failed/cancelled saves, before its caller-owned metadata is released.
+//! failed/cancelled captures, before its caller-owned metadata is released.
 use super::*;
 use hex_audio::plugin_worker::{
     NativeWorkerCapture, NativeWorkerCaptureProgress, StateCaptureRefusal,
 };
-use hex_session::service::{PluginStateCapture, PluginStateSaveInput};
+use hex_session::service::{PluginStateCapture, PluginStateCaptureInput};
 
 /// Whole-capture attempts per device while the helper reports that the plugin
 /// is still changing. Each refused attempt already spent the helper's settle
 /// bound (about one second), so Save gives up after a few seconds.
 const STILL_CHANGING_ATTEMPTS: u8 = 3;
-const STILL_CHANGING: &str =
-    "vst3 state kept changing during save · stop editing the plugin, then save again";
+const STILL_CHANGING: &str = "vst3 state kept changing · stop editing the plugin, then try again";
 
-/// Save's disposition of one helper capture refusal: `Ok` retries the whole
+/// Disposition of one helper capture refusal: `Ok` retries the whole
 /// capture for that device, `Err` is the specific failure. The plugin keeps
 /// running either way; nothing partial is saved.
 fn refused_capture(attempts: &mut u8, refusal: StateCaptureRefusal) -> Result<(), String> {
@@ -27,7 +26,9 @@ fn refused_capture(attempts: &mut u8, refusal: StateCaptureRefusal) -> Result<()
                 Err(STILL_CHANGING.to_owned())
             }
         }
-        StateCaptureRefusal::ExceedsLimit { .. } => Err(format!("vst3 save refused: {refusal}")),
+        StateCaptureRefusal::ExceedsLimit { .. } => {
+            Err(format!("vst3 state capture refused: {refusal}"))
+        }
     }
 }
 
@@ -44,20 +45,20 @@ struct Entry {
 }
 
 impl NativeAudioSink {
-    pub(in crate::native_audio) fn capture_plugin_save(
+    pub(in crate::native_audio) fn capture_current_plugin_states(
         &mut self,
-        input: PluginStateSaveInput<'_>,
+        input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
-        // Save captures exact accepted native bindings, not the graph's loop
+        // Capture uses exact accepted native bindings, not the graph's loop
         // tag. A pending gain/loop publication may retain those same instances;
         // refusing it would break Save queued behind an accepted state edit.
-        self.plugins.required_save_sources(&input)?;
-        self.plugins.capture_save(self.output.as_mut(), input)
+        self.plugins.required_capture_sources(&input)?;
+        self.plugins.capture_states(self.output.as_mut(), input)
     }
 }
 
 impl Plugins {
-    fn required_save_sources(&self, input: &PluginStateSaveInput<'_>) -> Result<(), String> {
+    fn required_capture_sources(&self, input: &PluginStateCaptureInput<'_>) -> Result<(), String> {
         let mut required = false;
         input.visit_plugin_devices(|owner, device, _| {
             required = true;
@@ -69,20 +70,20 @@ impl Plugins {
             if !sources.clone().any(|source| source.accepted)
                 && sources.any(|source| !source.retiring)
             {
-                return Err("vst3 save source preparation is pending".into());
+                return Err("vst3 capture source preparation is pending".into());
             }
             Ok(())
         })?;
         if required && self.hold_reopen(input.context()) {
-            return Err("vst3 state restoration owns save preparation".into());
+            return Err("vst3 state restoration is pending".into());
         }
         Ok(())
     }
 
-    fn capture_save(
+    fn capture_states(
         &mut self,
         output: Option<&mut WorkerPreparedOutput>,
-        input: PluginStateSaveInput<'_>,
+        input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
         let cancellation = input.cancellation();
         let mut wanted = Vec::new();
@@ -94,11 +95,11 @@ impl Plugins {
                     && source.device == device
             }) {
                 if source.retiring {
-                    return Err("vst3 save source is retiring".into());
+                    return Err("vst3 capture source is retiring".into());
                 }
                 wanted
                     .try_reserve(1)
-                    .map_err(|_| "vst3 save inventory allocation failed")?;
+                    .map_err(|_| "vst3 capture inventory allocation failed")?;
                 wanted.push(Entry {
                     binding: source.binding,
                     owner,
@@ -118,18 +119,34 @@ impl Plugins {
         }
         let control = output
             .and_then(|output| output.publication.control())
-            .ok_or("vst3 save output is unavailable")?;
+            .ok_or("vst3 capture output is unavailable")?;
         for entry in &wanted {
             if !edits::original_state(control, entry.binding, Some(cancellation))?
                 .processing_eq(&entry.expected)
             {
-                return Err("vst3 save source differs from canonical device".into());
+                loop {
+                    edits::check_cancel(Some(cancellation))?;
+                    match control.native_source_approves_captured_state_on_control(
+                        entry.binding,
+                        &entry.expected,
+                    ) {
+                        Some(true) => break,
+                        Some(false) => {
+                            return Err("vst3 capture source differs from canonical device".into());
+                        }
+                        None => {
+                            let _ =
+                                edits::original_state(control, entry.binding, Some(cancellation))?;
+                            edits::poll_control(control);
+                        }
+                    }
+                }
             }
         }
         let mut failure = None;
         while wanted.iter().any(|entry| !entry.done) {
             if cancellation.is_cancelled() && failure.is_none() {
-                failure = Some("vst3 save cancelled by document request or shutdown".to_owned());
+                failure = Some("vst3 state capture cancelled".to_owned());
             }
             for entry in &mut wanted {
                 if entry.done {
@@ -190,7 +207,7 @@ impl Plugins {
             }
         }
         if cancellation.is_cancelled() && failure.is_none() {
-            failure = Some("vst3 save cancelled by document request or shutdown".to_owned());
+            failure = Some("vst3 state capture cancelled".to_owned());
         }
         if let Some(reason) = failure {
             return Err(reason);
@@ -198,11 +215,73 @@ impl Plugins {
         let mut captures = Vec::new();
         captures
             .try_reserve_exact(wanted.len())
-            .map_err(|_| "vst3 saved state allocation failed")?;
-        for entry in wanted {
+            .map_err(|_| "vst3 captured state allocation failed")?;
+        for mut entry in wanted {
             // All tokens have reached their actual terminals. A late source
             // close/replacement still refuses data before snapshot publication.
-            control.native_source_metadata(entry.binding)?;
+            let selection = edits::armed_selection(control, entry.binding, Some(cancellation))?;
+            if let Some(selection) = selection.as_ref() {
+                let host = self
+                    .host
+                    .as_ref()
+                    .ok_or("qualified vst3 helper unavailable")?;
+                let state = entry
+                    .captured
+                    .as_ref()
+                    .ok_or("vst3 capture terminal is missing")?;
+                let canonical_bases =
+                    if edits::original_state(control, entry.binding, Some(cancellation))?
+                        .processing_eq(&entry.expected)
+                    {
+                        None
+                    } else {
+                        Some(edits::canonical_bases(
+                            host,
+                            control,
+                            entry.binding,
+                            &entry.expected,
+                            selection,
+                            Some(cancellation),
+                            None,
+                        )?)
+                    };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                let mut scratch = loop {
+                    if cancellation.is_cancelled() {
+                        return Err("vst3 state capture cancelled".into());
+                    }
+                    match host.begin_saved_base_capture_on_control(
+                        control,
+                        entry.binding,
+                        &entry.expected,
+                        state,
+                        selection,
+                        canonical_bases.as_ref(),
+                    ) {
+                        Ok(scratch) => break scratch,
+                        Err(error)
+                            if matches!(
+                                error.as_str(),
+                                "native preparation is busy" | "native source is busy"
+                            ) && std::time::Instant::now() < deadline =>
+                        {
+                            edits::poll_control(control)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
+                // Cancellation stops work, then keeps polling until the private
+                // source actually disposes. Its Root retains every native owner.
+                loop {
+                    let mut cancelled =
+                        || cancellation.is_cancelled() || std::time::Instant::now() >= deadline;
+                    if let Some(terminal) = scratch.poll_on_control(control, &mut cancelled) {
+                        entry.captured = Some(terminal?);
+                        break;
+                    }
+                    edits::poll_control(control);
+                }
+            }
             captures.push(PluginStateCapture {
                 owner: entry.owner,
                 device_id: entry.device,
@@ -244,7 +323,7 @@ mod tests {
             },
         )
         .expect_err("no retry for oversized state");
-        assert!(failure.starts_with("vst3 save refused: plugin state exceeds"));
+        assert!(failure.starts_with("vst3 state capture refused: plugin state exceeds"));
         assert_eq!(attempts, 0);
     }
 }

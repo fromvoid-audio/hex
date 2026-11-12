@@ -136,6 +136,13 @@ fn fixture_with_target(
         )
         .unwrap(),
     );
+    publish_armed_revision(revision, setup)
+}
+
+fn publish_armed_revision(
+    revision: Arc<PreparedRevision>,
+    setup: impl FnOnce(&mut prepared::Callback),
+) -> (prepared::Control, prepared::Callback, Target) {
     let input = revision.native_parameter_input_target().unwrap();
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     setup(&mut callback);
@@ -188,6 +195,56 @@ fn shutdown(control: &mut prepared::Control, callback: &mut prepared::Callback) 
     assert!(write(callback, &mut source, &rendered, 2));
     control.reclaim();
 }
+#[test]
+fn output_trim_clear_receipt_does_not_end_ramp_and_seek_discards_it() {
+    let (mut control, mut callback, target) =
+        fixture_with_target(false, DeviceAutomationTarget::HostOutputGain, false, |_| {});
+    let gain = HostGain::from_db(-6.0).unwrap();
+    control
+        .native_parameter_input
+        .begin(target, NativeTransientValue::HostOutputGain(gain))
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    for block in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        if block == 0 {
+            assert!(pcm[0][0] < 0.25 && pcm[0][0] > 0.249);
+        }
+        assert!(control.native_parameter_input.try_receipt().is_none());
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        if block == 0 {
+            assert!(matches!(
+                control.native_parameter_input.try_receipt(),
+                Some(Receipt::Applied { sequence: 1, .. })
+            ));
+        }
+    }
+    assert_eq!(pcm[63], [0.25 * gain.linear(), -0.5 * gain.linear()]);
+    control.native_parameter_input.release().unwrap();
+    let rendered = render(&mut callback, &mut pcm[..1]);
+    let first = pcm[0];
+    assert!(first[0] > 0.25 * gain.linear() && first[0] < 0.25);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut pcm[..1], &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Finished { .. })
+    ));
+    let rendered = render(&mut callback, &mut pcm);
+    assert!(pcm[0][0] > first[0] && pcm[63][0] < 0.25);
+    assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    control
+        .command(hex_engine::PlaybackCommand::Seek(1024))
+        .unwrap();
+    for _ in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    }
+    assert_eq!(pcm[63], [0.25, -0.5]);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
+
 #[test]
 fn native_input_receipt_waits_for_actual_delayed_pcm_and_clear_waits_for_sink() {
     let (mut control, mut callback, target) = fixture(true);
@@ -874,4 +931,203 @@ fn bypassed_provider_gain_still_applies_and_finishes_clear_without_changing_dry_
     assert!(control.status.publication_reserve_for_test());
     control.status.publication_clear_for_test();
     shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn unlaned_fm4_carrier_touch_and_clear_reach_compensated_main_without_restarting_voice() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "held source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: registry
+                .default_state(hex_devices::fm4::device::FM4_TYPE_ID)
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("source track")
+    };
+    let length = hex_project::BeatTime::from_quarters(4).unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length,
+        })
+        .unwrap()
+    else {
+        panic!("held MIDI clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 2,
+            velocity: 96,
+        })
+        .unwrap();
+    let instrument = editor.project().track(track).unwrap().instrument().unwrap();
+    assert!(instrument.automation().is_empty());
+    let device = instrument.id();
+    let definition = &hex_devices::limiter::DEFINITION;
+    let state = definition
+        .patch_parameter(
+            &definition.default_state().unwrap(),
+            hex_devices::limiter::parameter::LOOKAHEAD,
+            ParameterValue::Choice(2),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap();
+    let id = hex_devices::fm4::device::parameter::carrier(1);
+    let revision = Arc::new(
+        PreparedRevision::prepare_for_native_parameter_input(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+            device,
+            DeviceAutomationTarget::Parameter(id),
+        )
+        .unwrap(),
+    );
+    let (mut baseline_control, mut baseline_callback, _) =
+        publish_armed_revision(Arc::clone(&revision), |_| {});
+    let (mut control, mut callback, target) = publish_armed_revision(revision, |_| {});
+    let mut baseline = [[0.0; 2]; 64];
+    let mut baseline_render = |len| {
+        let frames = &mut baseline[..len];
+        let result = render(&mut baseline_callback, frames);
+        assert!(write(&mut baseline_callback, frames, &result, 2));
+        baseline
+    };
+    let mut pcm = [[0.0; 2]; 64];
+    for _ in 0..8 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        assert_eq!(pcm, baseline_render(64));
+    }
+    assert!(
+        pcm.iter().any(|frame| frame[0].abs() > 0.001),
+        "held FM4 note"
+    );
+    let begin = 16 + 8 * 64;
+    let delay = 288;
+    control
+        .native_parameter_input
+        .begin(
+            target,
+            NativeTransientValue::Parameter {
+                id,
+                value: ParameterValue::Float(0.0),
+            },
+        )
+        .unwrap();
+    for len in [64, 64, 64, 64, 32] {
+        let rendered = render(&mut callback, &mut pcm[..len]);
+        assert!(write(&mut callback, &mut pcm[..len], &rendered, 2));
+        assert_eq!(&pcm[..len], &baseline_render(len)[..len]);
+        assert!(control.native_parameter_input.try_receipt().is_none());
+    }
+    let rendered = render(&mut callback, &mut pcm[..1]);
+    let unchanged = baseline_render(1)[0];
+    assert!(unchanged[0].abs() > 0.01);
+    // FM4 applies the first of 240 ramp samples at the delivered origin.
+    for (actual, base) in pcm[0].into_iter().zip(unchanged) {
+        assert!(
+            (actual - base * (239.0 / 240.0)).abs() < 1.0e-5,
+            "{actual} vs {base}"
+        );
+    }
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut pcm[..1], &rendered, 2));
+    let Some(Receipt::Applied {
+        target: actual,
+        sequence: 1,
+        application,
+    }) = control.native_parameter_input.try_receipt()
+    else {
+        panic!("delivered FM4 input")
+    };
+    assert_eq!(actual, target);
+    assert_eq!(application.performance_frame, begin);
+    assert_eq!(application.arrangement_frame, begin);
+    assert_eq!(application.remaining_latency_frames, delay);
+    for _ in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        assert!(control.native_parameter_input.try_receipt().is_none());
+    }
+    assert_eq!(pcm[63], [0.0; 2]);
+    control.native_parameter_input.release().unwrap();
+    for len in [64, 64, 64, 64, 32] {
+        let rendered = render(&mut callback, &mut pcm[..len]);
+        assert!(pcm[..len].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(write(&mut callback, &mut pcm[..len], &rendered, 2));
+        assert!(control.native_parameter_input.try_receipt().is_none());
+    }
+    let rendered = render(&mut callback, &mut pcm[..1]);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut pcm[..1], &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Finished { target: actual, .. }) if actual == target
+    ));
+    let rendered = render(&mut callback, &mut pcm);
+    assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    assert!(
+        pcm.iter().any(|frame| frame[0].abs() > 0.001),
+        "same held FM4 note restored"
+    );
+    let second = Target {
+        gesture_serial: 2,
+        ..target
+    };
+    control
+        .native_parameter_input
+        .begin(
+            second,
+            NativeTransientValue::Parameter {
+                id,
+                value: ParameterValue::Float(0.0),
+            },
+        )
+        .unwrap();
+    let rendered = render(&mut callback, &mut pcm[..19]);
+    assert!(write(&mut callback, &mut pcm[..19], &rendered, 2));
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    control
+        .command(hex_engine::PlaybackCommand::Seek(0))
+        .unwrap();
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+    let rendered = render(&mut callback, &mut pcm);
+    assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { target: actual, sequence: 1 }) if actual == second
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted { target: actual, reason: AbortReason::TransportChanged }) if actual == second
+    ));
+    for _ in 0..8 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    }
+    assert!(
+        pcm.iter().any(|frame| frame[0].abs() > 0.001),
+        "seek kept the authored FM4 base"
+    );
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+    shutdown(&mut baseline_control, &mut baseline_callback);
 }

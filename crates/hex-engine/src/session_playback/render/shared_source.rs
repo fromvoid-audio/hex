@@ -183,6 +183,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        transient,
         chase_at_start,
         loop_region,
         timing,
@@ -338,6 +339,21 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
         |resources| resources,
     );
+    let parameter_context = instrument_automation::SourceAutomation::new(
+        revision,
+        receiver,
+        instrument_automation::Origin {
+            arrangement: Some(arrangement_frame),
+            performance: performance_frame,
+            pass: arrangement_loop_pass,
+            running: true,
+        },
+        output.len(),
+    )?;
+    let parameter_block = parameter_context.block_with_input(transient)?;
+    let parameter_values = parameter_block
+        .as_ref()
+        .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);
     let clock = InstrumentClock {
         timing,
         start: performance_frame,
@@ -353,6 +369,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                 Some(&clock),
                 resources,
                 None,
+                parameter_values,
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
@@ -525,6 +542,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
             Some(&clock),
             resources,
             &mut lookup,
+            parameter_values,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
@@ -1174,6 +1192,7 @@ mod tests {
                 .unwrap(),
             &cancel,
             &effects,
+            None,
         )
         .unwrap();
         let source_factor = 2.5 * source_gain * 0.25;

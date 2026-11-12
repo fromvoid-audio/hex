@@ -65,6 +65,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -91,13 +93,16 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 102 + clips_total,
         assets: vec![AssetSnapshot {
             original_source: None,
@@ -215,8 +220,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .id();
 
     let run_mutations = |editor: &mut Editor, iteration: usize| -> Result<(), Box<dyn Error>> {
-        let gain = if iteration % 2 == 0 { 0.75 } else { 0.5 };
-        let start = if iteration % 2 == 0 { 1 } else { 0 };
+        let gain = if iteration.is_multiple_of(2) {
+            0.75
+        } else {
+            0.5
+        };
+        let start = if iteration.is_multiple_of(2) { 1 } else { 0 };
         editor.execute(Command::Gain { track, gain })?;
         editor.execute(Command::MoveClip { clip, track, start })?;
         Ok(())

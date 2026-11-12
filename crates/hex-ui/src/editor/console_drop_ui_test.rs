@@ -1067,6 +1067,23 @@ fn console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_sour
         }),
     );
     let changed = project(&editor, cx);
+    // AddScene reveals the new row. At this narrow window height the original
+    // row can leave the virtualized viewport; scroll it back into view so the
+    // stale payload is released on a real, current painted insertion surface.
+    editor.update(&mut visual, |view, cx| {
+        let index = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .scenes()
+            .iter()
+            .position(|candidate| candidate.id() == scene)
+            .expect("original scene retained");
+        view.session_scene_scroll
+            .scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
     visual.run_until_parked();
     let at = bounds(
         &mut visual,
@@ -1377,4 +1394,319 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
     assert_eq!(after.tracks().len(), 2);
     history(&editor, cx, Request::Undo);
     restored(&project(&editor, cx), &before, after.next_identity());
+}
+
+#[gpui::test]
+fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mut TestAppContext) {
+    use hex_audio::sample_recording::{Source, Take};
+    use hex_project::{Project, SessionCellContent};
+    let selection =
+        |project: &Project, mode, track, scene| -> Option<(hex_project::AssetId, u64)> {
+            if mode == EditorMode::Arrangement {
+                let clip = project.track(track)?.clips().first()?;
+                Some((clip.asset(), clip.source_length()))
+            } else {
+                match project.session_cell(track, scene)? {
+                    SessionCellContent::Audio(clip) => Some((clip.asset(), clip.source_end())),
+                    _ => None,
+                }
+            }
+        };
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        let (handle, editor, track, scene, path) = fixture(cx);
+        let mut recorded = std::fs::read(&path).unwrap();
+        for (index, bytes) in recorded[44..].chunks_exact_mut(2).enumerate() {
+            bytes.copy_from_slice(&(8192 + index as i16).to_le_bytes());
+        }
+        std::fs::write(&path, recorded).unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(cx, |view, cx| {
+            view.mode = mode;
+            view.show_take_fixture(Take {
+                source: Source::Main,
+                path: path.clone(),
+                frames: 512,
+                sample_rate: 48_000,
+                timing: Default::default(),
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let take_row = visual.debug_bounds("recorded-take-0").unwrap().center();
+        visual.simulate_click(take_row, Modifiers::default());
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("take-waveform").unwrap();
+        let mut controls = Vec::new();
+        for selector in [
+            "take-audition",
+            "take-loop",
+            "take-snap",
+            "prepare-take-drag",
+        ] {
+            let control = visual.debug_bounds(selector).expect("take control");
+            assert!(control.size.width > px(19.0));
+            assert!(control.left() >= waveform.left() && control.right() <= waveform.right());
+            assert!(control.bottom() <= waveform.top());
+            assert!(controls.iter().all(|prior| !control.intersects(prior)));
+            controls.push(control);
+        }
+        let from = point(
+            waveform.left() + waveform.size.width * 0.25,
+            waveform.center().y,
+        );
+        let to = point(
+            waveform.left() + waveform.size.width * 0.75,
+            waveform.center().y,
+        );
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let deadline = crate::test_wait::hang_deadline();
+        let source = loop {
+            visual.run_until_parked();
+            if let Some(source) = visual.debug_bounds("take-excerpt-drag") {
+                break source.center();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "excerpt was not ready"
+            );
+            std::thread::yield_now();
+        };
+        let target = if mode == EditorMode::Arrangement {
+            bounds(&mut visual, format!("arrangement-lane-{}", track.value())).center()
+        } else {
+            let column = bounds(&mut visual, format!("session-track-{}", track.value()));
+            let row = visual.debug_bounds("session-scene-column").unwrap();
+            point(column.center().x, row.center().y)
+        };
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(source.x + px(14.0), source.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        receive_worker(&editor, cx);
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let (id, frames) =
+                selection(project, mode, track, scene).expect("drop created an audio clip");
+            assert_eq!(frames, 256);
+            let media = project.asset(id).unwrap().path();
+            assert_ne!(media, path);
+            let wav = hex_media::decode_wav_file(media, hex_media::Limits::new(4096, 512)).unwrap();
+            let expected: Vec<_> = (128..384)
+                .map(|index| [(8192 + index) as f32 / 32768.0; 2])
+                .collect();
+            assert_eq!(wav.audio().frames(), expected);
+        });
+        for (request, present) in [(Request::Undo, false), (Request::Redo, true)] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            receive_worker(&editor, cx);
+            editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(selection(project, mode, track, scene).is_some(), present);
+            });
+        }
+        let document = path.with_extension("hex");
+        for request in [
+            Request::SaveNew(document.clone()),
+            Request::Open(document.clone()),
+        ] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            receive_worker(&editor, cx);
+        }
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.document_path.as_deref(), Some(document.as_path()));
+            let (asset, frames) = selection(&state.project, mode, track, scene).unwrap();
+            assert_eq!(frames, 256);
+            assert!(state.project.asset(asset).unwrap().path().is_file());
+        });
+    }
+}
+
+#[gpui::test]
+fn released_sample_drop_keeps_target_through_delayed_worker_repaints(cx: &mut TestAppContext) {
+    for (mode, refuse) in [
+        (EditorMode::Arrangement, false),
+        (EditorMode::Session, false),
+        (EditorMode::Session, true),
+    ] {
+        let (handle, editor, track, scene, path) = fixture(cx);
+        editor.update(cx, |view, cx| {
+            view.mode = mode;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        begin_browser(&mut visual, &editor);
+        let (target, selector) = if mode == EditorMode::Arrangement {
+            (
+                bounds(&mut visual, format!("arrangement-lane-{}", track.value())).center(),
+                "clip-drop-preview",
+            )
+        } else {
+            let column = bounds(&mut visual, format!("session-track-{}", track.value()));
+            let row = visual.debug_bounds("session-scene-column").unwrap();
+            (
+                point(column.center().x, row.center().y),
+                "console-sample-drop-preview",
+            )
+        };
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let before = visual.debug_bounds(selector).expect("held target paint");
+        if refuse {
+            std::fs::remove_file(&path).unwrap();
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(&mut visual, |view, cx| {
+            assert!(view.active_browser_audio_drag.is_none());
+            assert!(view.pending_sample_drop.is_some());
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                if let Ok(event) = view.service.try_event() {
+                    if event.request_complete {
+                        assert_eq!(event.error.is_some(), refuse);
+                        cx.notify();
+                        break event;
+                    }
+                    view.receive(event);
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "sample import terminal"
+                );
+                std::thread::yield_now();
+            }
+        });
+        for _ in 0..2 {
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds(selector), Some(before));
+            visual.simulate_keystrokes("escape");
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            assert!(view.pending_sample_drop.is_none());
+            let project = &view.state.as_ref().unwrap().project;
+            if mode == EditorMode::Arrangement {
+                assert_eq!(project.track(track).unwrap().clips().len(), 1);
+            } else {
+                assert_eq!(project.session_cell(track, scene).is_some(), !refuse);
+            }
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(selector).is_none());
+    }
+}
+
+#[gpui::test]
+fn new_track_sample_drop_retires_after_its_terminal_and_accepts_another(cx: &mut TestAppContext) {
+    new_track_sample_drop_round_trip(cx, false, true);
+}
+
+#[gpui::test]
+fn warped_sample_drop_retires_after_its_terminal_and_accepts_another(cx: &mut TestAppContext) {
+    new_track_sample_drop_round_trip(cx, true, false);
+}
+
+fn new_track_sample_drop_round_trip(cx: &mut TestAppContext, auto_warp: bool, empty: bool) {
+    let (handle, editor, track, _, _) = fixture(cx);
+    if empty {
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::RemoveTrack(track))));
+        });
+        receive_worker(&editor, cx);
+    }
+    editor.update(cx, |view, cx| {
+        view.mode = EditorMode::Arrangement;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    if auto_warp {
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        let toggle = visual
+            .debug_bounds("auto warp imports")
+            .expect("import setting");
+        visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(matches!(
+                view.capture_audio_import_policy(Request::Import(PathBuf::from("/test.wav"))),
+                Ok(Request::ImportAudioBatch { .. })
+            ));
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+    }
+    begin_browser(&mut visual, &editor);
+    let target = if empty {
+        visual.debug_bounds("arrangement-content").unwrap().center()
+    } else {
+        let lane = bounds(&mut visual, format!("arrangement-lane-{}", track.value()));
+        point(lane.center().x, lane.origin.y + lane.size.height + px(4.0))
+    };
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let line = visual.debug_bounds("track-insert-preview");
+    assert_eq!(line.is_none(), empty);
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = editor.update(&mut visual, |view, cx| {
+        assert!(view.pending_sample_drop.is_some());
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = view.service.try_event() {
+                if event.request_complete {
+                    assert!(event.error.is_none());
+                    cx.notify();
+                    break event;
+                }
+                view.receive(event);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sample import terminal"
+            );
+            std::thread::yield_now();
+        }
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("track-insert-preview"), line);
+    let target_track = editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        assert!(view.pending_sample_drop.is_none());
+        let tracks = view.state.as_ref().unwrap().project.tracks();
+        assert_eq!(tracks.len(), if empty { 1 } else { 2 });
+        let target_track = tracks[0].id();
+        cx.notify();
+        target_track
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insert-preview").is_none());
+    begin_browser(&mut visual, &editor);
+    let lane = bounds(
+        &mut visual,
+        format!("arrangement-lane-{}", target_track.value()),
+    );
+    release(&mut visual, lane.center());
+    receive_worker(&editor, cx);
+    editor.read_with(cx, |view, _| {
+        assert!(view.pending_sample_drop.is_none());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(target_track)
+                .unwrap()
+                .clips()
+                .len(),
+            if empty { 2 } else { 1 }
+        );
+    });
 }

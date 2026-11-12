@@ -7,6 +7,8 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod capture;
+pub use capture::CaptureTempo;
 mod borrowed;
 pub(crate) use borrowed::CanonicalMidiTiming;
 mod breaks;
@@ -295,6 +297,10 @@ impl PreparedPeriodicSessionTempo {
         }
     }
 
+    pub(crate) const fn beat_range_raw(self) -> (u64, u64) {
+        (self.start_beat.raw(), self.end_beat.raw())
+    }
+
     #[cfg(test)]
     pub fn start_beat(self) -> BeatTime {
         self.start_beat
@@ -471,10 +477,11 @@ impl PeriodicSessionTempoView<'_> {
 
     fn scoped_local_inverse(&self, frame: u64) -> Result<BeatTime, PreparedTempoError> {
         let candidate = self.canonical.frame_to_beat(frame);
-        if let Ok(beat) = candidate {
-            if beat >= self.cycle.start_beat && beat < self.cycle.end_beat {
-                return Ok(beat);
-            }
+        if let Ok(beat) = candidate
+            && beat >= self.cycle.start_beat
+            && beat < self.cycle.end_beat
+        {
+            return Ok(beat);
         }
         let lower = self.canonical.beat_lower_bound_for_frame(frame)?;
         let upper_frame = frame.checked_add(1).ok_or(PreparedTempoError::FrameToBeat(

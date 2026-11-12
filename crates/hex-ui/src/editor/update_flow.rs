@@ -63,7 +63,8 @@ impl EditorView {
         cx.notify();
     }
 
-    fn cancel_update(&mut self, id: u64, cx: &Context<Self>) {
+    pub(super) fn cancel_update(&mut self, id: u64, cx: &Context<Self>) {
+        self.automation_close_preflight.cancel_update(id);
         if let Some(client) = cx.try_global::<crate::UpdateClient>() {
             let _ = client.send(UpdateCommand::Cancel(id));
         }
@@ -171,6 +172,7 @@ impl EditorView {
             request,
             Request::SaveCurrent
                 | Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
             return None;
@@ -203,6 +205,13 @@ impl EditorView {
         let request = match request {
             Request::SaveCurrent => Request::SaveCurrent,
             Request::SaveNew(path) => Request::SaveNew(path.clone()),
+            Request::SaveProjectAs {
+                path,
+                replace_existing,
+            } => Request::SaveProjectAs {
+                path: path.clone(),
+                replace_existing: *replace_existing,
+            },
             Request::SaveCurrentWithFormatUpgrade {
                 project_generation,
                 path,
@@ -348,6 +357,9 @@ impl EditorView {
     }
 
     pub(super) fn reconcile_update_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.automation_close_preflight.awaiting_update() {
+            return;
+        }
         let Some(ready) = self.update_flow.ready.take() else {
             return;
         };
@@ -380,8 +392,11 @@ impl EditorView {
                 && view.pending_open_path.is_none()
                 && !view.save_dialog_open
                 && !view.close_prompt_open
+                && !view.automation_close_preflight.blocks_update_approval()
                 && !window.is_pointer_dragging()
                 && !view.gain_recorder.blocks_edits()
+                && !view.native_automation_recorder.busy()
+                && !view.automation_take_recovery.unresolved()
                 && !view.midi_recorder.blocks_edits();
             let same_document = view.project_generation == generation
                 && view
@@ -412,6 +427,15 @@ impl EditorView {
                 view.cancel_update(id, cx);
                 view.error = Some("theme save in progress · update cancelled".into());
                 cx.notify();
+                return;
+            }
+            if !view.automation_close_preflight.update_safe(id) {
+                view.update_flow.ready = Some(ready);
+                if let Err(reason) = view.begin_update_automation_close(id, window, cx) {
+                    view.cancel_update(id, cx);
+                    view.error = Some(reason.into());
+                    cx.notify();
+                }
                 return;
             }
             view.cancel_browser_sample_playback();
@@ -447,6 +471,100 @@ mod tests {
         fn approve(self: Box<Self>) -> Result<(), String> {
             self.0.store(true, Ordering::SeqCst);
             Ok(())
+        }
+    }
+
+    struct Refusal;
+    impl crate::UpdateApproval for Refusal {
+        fn approve(self: Box<Self>) -> Result<(), String> {
+            Err("fixture helper refused".into())
+        }
+    }
+
+    #[gpui::test]
+    fn cancelled_blocked_and_refused_updates_release_custody_freeze(cx: &mut TestAppContext) {
+        for (blocked_custody, helper_refused) in [(false, false), (true, false), (false, true)] {
+            let service = Service::new(48_000, 32, 8_000_000).unwrap();
+            let deadline = crate::test_wait::hang_deadline();
+            let event = loop {
+                if let Ok(event) = service.try_event() {
+                    break event;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            let approved = Arc::new(AtomicBool::new(false));
+            let visual = cx.add_window(|_, _| Empty);
+            let handle: AnyWindowHandle = *visual;
+            let editor = cx
+                .update_window(handle, |_, window, cx| {
+                    let editor = window.replace_root(cx, |window, cx| {
+                        EditorView::new(window, cx, service, Err("offline fixture".into()))
+                    });
+                    editor.update(cx, |view, cx| {
+                        view.receive(event);
+                        let revision = view.state.as_ref().unwrap().revision;
+                        view.update_flow.phase = Phase::Preparing {
+                            id: 7,
+                            saved: None,
+                            discard: true,
+                            generation: view.project_generation,
+                            revision,
+                        };
+                        view.update_flow.ready = Some(UpdateReady {
+                            id: 7,
+                            approval: if helper_refused {
+                                Box::new(Refusal)
+                            } else {
+                                Box::new(Approval(approved.clone()))
+                            },
+                        });
+                        view.reconcile_update_ready(window, cx);
+                        cx.defer_in(window, move |view, _, cx| {
+                            assert!(view.automation_close_preflight.frozen());
+                            if blocked_custody || helper_refused {
+                                view.tick_automation_close(cx);
+                            } else {
+                                view.cancel_requested_update(cx);
+                                assert!(!view.automation_close_preflight.frozen());
+                            }
+                        });
+                    });
+                    editor
+                })
+                .unwrap();
+            cx.run_until_parked();
+            if blocked_custody || helper_refused {
+                let mut event = loop {
+                    if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
+                        break event;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                };
+                // Use the real ordered response and its request/revision identity;
+                // the Session owner separately covers each blocked custody state.
+                if blocked_custody {
+                    event
+                        .device_automation_take_complete
+                        .as_mut()
+                        .unwrap()
+                        .progress =
+                        hex_session::service::DeviceAutomationTakeProgress::CloseBlocked;
+                }
+                editor.update(cx, |view, cx| {
+                    view.receive(event);
+                    view.tick_automation_close(cx);
+                });
+                cx.run_until_parked();
+            }
+            assert!(!approved.load(Ordering::SeqCst));
+            assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
+            assert!(editor.read_with(cx, |view, _| !view.automation_close_preflight.frozen()));
+            assert!(editor.read_with(cx, |view, _| view.update_flow.ready.is_none()));
+            assert_eq!(cx.windows().len(), 1);
+            cx.update_window(handle, |_, window, _| window.remove_window())
+                .unwrap();
         }
     }
 
@@ -624,7 +742,25 @@ mod tests {
             });
         })
         .unwrap();
+        assert!(
+            !approved.load(Ordering::SeqCst),
+            "helper approval waits for custody read"
+        );
         cx.run_until_parked();
+        while !approved.load(Ordering::SeqCst) {
+            cx.update_window(handle, |_, _, cx| {
+                editor.update(cx, |view, cx| {
+                    view.tick(cx);
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(
+                Instant::now() < deadline,
+                "update custody read did not settle"
+            );
+            std::thread::yield_now();
+        }
         assert!(approved.load(Ordering::SeqCst));
         std::fs::remove_file(path).unwrap();
     }

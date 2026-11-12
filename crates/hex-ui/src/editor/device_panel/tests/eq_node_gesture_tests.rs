@@ -16,11 +16,143 @@ fn node_window(
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let start = plot(&mut visual, device, x, 0.5);
-    visual.simulate_click(start, Modifiers::default());
+    eq_double_click(&mut visual, start);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
     (handle, editor, root, device)
+}
+
+#[gpui::test]
+fn eq_graph_drag_remembers_the_latest_axis_for_arrangement_automation(cx: &mut TestAppContext) {
+    use hex_engine::eq::NodeParameter;
+    use hex_lattice_contract::DeviceAutomationTarget;
+
+    let (handle, editor, _root, device) = node_window(cx, 0.5);
+    let node = editor.read_with(cx, |view, _| read(view, device).nodes[0]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    let horizontal = plot(&mut visual, device, 0.65, 0.5);
+    let vertical = plot(&mut visual, device, 0.65, 0.68);
+    let modifiers = Modifiers::default();
+    visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    for (position, parameter) in [
+        (horizontal, NodeParameter::Frequency),
+        (vertical, NodeParameter::Gain),
+    ] {
+        visual.simulate_mouse_move(position, Some(MouseButton::Left), modifiers);
+        visual.update(|_, cx| {
+            let view = editor.read(cx);
+            assert!(!view.automation_view.enabled);
+            let target = view.automation_view.devices.main_target_for_test().unwrap();
+            assert_eq!(target.device, device);
+            assert_eq!(
+                target.kind,
+                DeviceAutomationTarget::Parameter(node.id.parameter(parameter).unwrap())
+            );
+        });
+    }
+    visual.simulate_mouse_up(vertical, MouseButton::Left, modifiers);
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.automation_view
+                .devices
+                .main_target_for_test()
+                .unwrap()
+                .kind,
+            DeviceAutomationTarget::Parameter(node.id.parameter(NodeParameter::Gain).unwrap())
+        );
+    });
+}
+
+#[gpui::test]
+fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAppContext) {
+    use crate::editor::worker_ui_fixture;
+    use hex_engine::PlaybackCommand;
+    use hex_engine::eq::{Node, NodeId, NodeParameter};
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    let node = NodeId::new(1).unwrap();
+    let gain = node.parameter(NodeParameter::Gain).unwrap();
+    let mut eq = EqState::default();
+    eq.add(Node::new(node, 1000.0, 0.0, 0).unwrap()).unwrap();
+    let insert = Command::InsertTrackWithDevice {
+        name: "eq source".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Effect,
+        state: eq.encode().unwrap(),
+    };
+    let mut model =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Track(track) = model.execute(insert.clone()).unwrap() else {
+        panic!("expected an audio track");
+    };
+    let device = model.project().track(track).unwrap().devices()[0].id();
+    let mut fixture = worker_ui_fixture::open(
+        cx,
+        vec![
+            insert,
+            Command::ReplaceDeviceAutomation {
+                device,
+                parameter: gain,
+                points: [0.25, 0.75]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| AutomationPoint {
+                        beat: BeatTime::from_raw(index as u64 * BeatTime::ONE.raw()),
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Linear,
+                    })
+                    .collect(),
+            },
+            Command::SetLoopRegion {
+                start: 0,
+                end: 96_000,
+                enabled: true,
+            },
+        ],
+    );
+    let editor = fixture.editor.clone();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let graph = editor.read_with(&visual, |view, _| eq_panel::graph_for_test(view, device));
+    let y = |visual: &VisualTestContext| {
+        graph.read_with(visual, |graph, _| {
+            graph.node_position(node.value()).unwrap()[1]
+        })
+    };
+    assert!((y(&visual) - 0.5).abs() < 0.001);
+    editor.update(&mut visual, |view, _| {
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+    });
+    for (blocks, expected) in [(1, 0.25), (374, 0.75)] {
+        for _ in 0..blocks {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            (y(&visual) - expected).abs() < 0.01,
+            "after {blocks} blocks: {}",
+            y(&visual)
+        );
+        assert_eq!(
+            editor.read_with(&visual, |view, _| read(view, device).nodes[0].gain_db),
+            0.0
+        );
+    }
 }
 
 #[gpui::test]
@@ -450,7 +582,7 @@ fn eq_two_cut_nodes_scroll_their_stable_parameters_and_preserve_other_nodes(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let right = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(right, Modifiers::default());
+    eq_double_click(&mut visual, right);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 2
     });
@@ -847,11 +979,19 @@ fn eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles(cx: &mut Tes
         let (handle, editor, _root, device) = node_window(cx, 0.02);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let bell = plot(&mut visual, device, 0.5, 0.5);
-        visual.simulate_click(bell, Modifiers::default());
+        eq_double_click(&mut visual, bell);
         pump_until(&editor, cx, |view| {
             settled(view) && read(view, device).nodes.len() == 2
         });
         visual.simulate_resize(size(px(880.0), px(650.0)));
+        visual.run_until_parked();
+        // Keep the graph's test points visible in the horizontally scrolled chain.
+        editor.update(cx, |view, cx| {
+            let scroll = &view.device_panel.chain_window.scroll;
+            assert!(scroll.max_offset().width > px(48.0));
+            scroll.set_offset(point(-scroll.max_offset().width / 2.0, px(0.0)));
+            cx.notify();
+        });
         visual.run_until_parked();
         let left = plot(&mut visual, device, 0.02, 0.5);
         let middle = plot(&mut visual, device, 0.5, 0.5);
@@ -1314,7 +1454,7 @@ fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let right = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(right, Modifiers::default());
+    eq_double_click(&mut visual, right);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 2
     });
@@ -1396,7 +1536,7 @@ fn four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos
     let mut visual = VisualTestContext::from_window(handle, cx);
     for (x, count) in [(0.98, 2), (0.5, 3)] {
         let p = plot(&mut visual, device, x, 0.5);
-        visual.simulate_click(p, Modifiers::default());
+        eq_double_click(&mut visual, p);
         pump_until(&editor, cx, |v| {
             settled(v) && read(v, device).nodes.len() == count
         });
@@ -1474,7 +1614,7 @@ fn four_review_queued_saturation_keeps_reversal_before_and_after_replay(cx: &mut
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1548,7 +1688,7 @@ fn four_review_cancel_and_later_blur_retire_queued_streams_without_committing_th
         let (handle, editor, _root, device) = node_window(cx, 0.02);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let b = plot(&mut visual, device, 0.98, 0.5);
-        visual.simulate_click(b, Modifiers::default());
+        eq_double_click(&mut visual, b);
         pump_until(&editor, cx, |v| {
             settled(v) && read(v, device).nodes.len() == 2
         });
@@ -1612,7 +1752,7 @@ fn four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue(
         let (handle, editor, _root, device) = node_window(cx, 0.02);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let b = plot(&mut visual, device, 0.98, 0.5);
-        visual.simulate_click(b, Modifiers::default());
+        eq_double_click(&mut visual, b);
         pump_until(&editor, cx, |v| {
             settled(v) && read(v, device).nodes.len() == 2
         });
@@ -1759,7 +1899,7 @@ fn four_review_noop_predecessor_preserves_successor_and_does_not_add_history(
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1846,7 +1986,7 @@ fn four_review_stream_capacity_refuses_whole_new_burst_and_preserves_accepted_hi
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1926,7 +2066,7 @@ fn four_review_stale_cancel_cannot_discard_a_newer_queued_stream(cx: &mut TestAp
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -2003,7 +2143,7 @@ fn four_review_escape_on_refused_overflow_stream_cancels_only_queued_context(
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -2056,7 +2196,7 @@ fn four_review_blurred_queue_cannot_readmit_a_late_old_begin(cx: &mut TestAppCon
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });

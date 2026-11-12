@@ -11,6 +11,8 @@
 //! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
 mod native_effect_storage;
+mod serial_effect_power;
+mod source_effect_stage;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -35,6 +37,8 @@ pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
+pub mod foreign_automation;
+
 pub mod midi_capture;
 mod source_routing;
 pub use source_routing::PreparedSourceRouting;
@@ -93,8 +97,11 @@ pub use audio_only_inputs::{
     ResidentSourceRefusal, StreamedSourceRefusal,
 };
 pub mod native_device_resources;
+/// The loaded Sampler's existing authored gain control.
+pub use hex_devices::sampler::catalog::GAIN as SAMPLER_GAIN_PARAMETER;
 mod owned_shared;
 mod pcm_arc;
+mod sparse_audio;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
@@ -102,19 +109,64 @@ pub use native_device_view::{
     is_sampler_configuration_history_on_control, native_device_catalog,
     native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response, patch_sampler_parameter_on_control,
-    sampler_parameter_active_on_control, sampler_parameter_value_on_control,
-    sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
+    native_effect_frequency_response, native_operator_filter_frequency_response,
+    patch_sampler_parameter_on_control, sampler_parameter_active_on_control,
+    sampler_parameter_value_on_control, sampler_replacement_template_on_control,
+    validate_sampler_replacement_on_control,
 };
+pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
+mod device_modulation;
+pub use device_modulation::foreign_modulation_target as project_vst3_modulation_target;
+pub use device_modulation::{
+    device_available_modulation_outputs, fm4_note_pressure_parameter_supported,
+    project_device_can_add_note_pressure, project_device_has_modulation_note_events,
+    project_device_host_gain_modulation_supported,
+    project_device_instrument_output_modulation_supported,
+    project_device_modulation_target_supported,
+};
+/// The authored aggregate note-gate ADSR settings.
+pub use hex_devices::modulation::adsr as adsr_modulator;
+/// The authored note-release attack, hold and decay settings.
+pub use hex_devices::modulation::ahd_release as ahd_release_modulator;
+/// Versioned, control-side settings for the built-in envelope follower.
+pub use hex_devices::modulation::audio_rate as audio_rate_modulator;
+/// The authored on/off source codec.
+pub use hex_devices::modulation::button as button_modulator;
+/// The authored pair of latched switches and its output identities.
+pub use hex_devices::modulation::buttons as buttons_modulator;
+pub use hex_devices::modulation::envelope_follower as follower_modulator;
+/// Versioned, control-side settings for the built-in LFO modulator.
+pub use hex_devices::modulation::lfo as lfo_modulator;
+/// Versioned settings and control identities for the four-output macro.
+pub use hex_devices::modulation::macro_four as macro_four_modulator;
+/// Versioned control-side settings for the built-in manual macro source.
+pub use hex_devices::modulation::macro_value as macro_modulator;
+/// Versioned Math settings and its two modulation destinations.
+pub use hex_devices::modulation::math as math_modulator;
+/// Versioned Mix settings and its three modulation destinations.
+pub use hex_devices::modulation::mix as mix_modulator;
+/// The authored note counter settings. The instrument supplies sample offsets.
+pub use hex_devices::modulation::note_counter as note_counter_modulator;
+/// The authored note-pressure source codec. Active readings belong to the voice.
+pub use hex_devices::modulation::note_pressure as note_pressure_modulator;
+/// The authored Ramp duration, direction, curve and loop settings.
+pub use hex_devices::modulation::ramp as ramp_modulator;
+/// The authored reusable random sample-and-hold source codec.
+pub use hex_devices::modulation::random_hold as random_modulator;
+/// Authored step pattern and free-running timing.
+pub use hex_devices::modulation::steps as steps_modulator;
+
 mod native_parameter_input;
 pub use device_automation::{
     DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
     native_device_automation_target_supported, native_parameter_automation_supported,
     native_parameter_input_target, project_device_automation_target_supported,
 };
-pub use native_parameter_input::NativeParameterApplication;
+// Host control values cross the existing prepared native-input API.
+pub use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+pub use native_parameter_input::{NativeParameterApplication, NativeParameterCapture};
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
@@ -126,6 +178,7 @@ mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
+pub use signal_graph::OutputLatency;
 #[cfg(feature = "instrument-test-support")]
 pub use signal_graph::PrintedBranchProbe;
 mod stream_demand;
@@ -163,7 +216,7 @@ impl PostNodeIdentity {
     }
 }
 
-pub use hex_lattice::{DeviceMeter, DevicePeaks, DynamicsMeter};
+pub use hex_lattice::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkSample};
 pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
 
 /// Borrowed stereo Main after master gain from a successful engine render.
@@ -248,12 +301,12 @@ pub(crate) fn render_streamed_page_span_captured(
     let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
-        if let Some((fade, fade_start)) = fade {
-            if let Some(frame) = timeline_frame.checked_add(offset as u64) {
-                let gain = fade.gain_at(frame.saturating_sub(fade_start));
-                sample[0] *= gain;
-                sample[1] *= gain;
-            }
+        if let Some((fade, fade_start)) = fade
+            && let Some(frame) = timeline_frame.checked_add(offset as u64)
+        {
+            let gain = fade.gain_at(frame.saturating_sub(fade_start));
+            sample[0] *= gain;
+            sample[1] *= gain;
         }
         if clip_gain != 1.0 {
             sample[0] *= clip_gain;
@@ -569,6 +622,7 @@ struct ClipMetadata {
     source_phase: u64,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
+    sparse: Option<Arc<SparseFrameMap>>,
 }
 impl Clip {
     /// The frame range outside which this clip never renders.
@@ -648,6 +702,7 @@ impl Clip {
                 source_phase: 0,
                 fade: Some(fade),
                 streamed: None,
+                sparse: None,
             }))
         };
         Ok(Self {
@@ -673,6 +728,7 @@ impl Clip {
             if phase == 0
                 && metadata.fade.is_none()
                 && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
                 && metadata.gain == 1.0
             {
                 self.metadata = None;
@@ -683,6 +739,7 @@ impl Clip {
                 source_phase: phase,
                 fade: None,
                 streamed: None,
+                sparse: None,
             }));
         }
         Ok(self)
@@ -696,6 +753,7 @@ impl Clip {
                 && metadata.source_phase == 0
                 && metadata.fade.is_none()
                 && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
             {
                 self.metadata = None;
             }
@@ -705,9 +763,50 @@ impl Clip {
                 source_phase: 0,
                 fade: None,
                 streamed: None,
+                sparse: None,
             }));
         }
         self
+    }
+
+    fn sparse_region(
+        audio: Audio,
+        sparse: Arc<SparseFrameMap>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+    ) -> Result<Self, Invalid> {
+        let end = start
+            .checked_add(duration)
+            .ok_or(Invalid("clip end overflow"))?;
+        let offset =
+            usize::try_from(source_offset).map_err(|_| Invalid("sparse audio offset overflow"))?;
+        let length =
+            usize::try_from(duration).map_err(|_| Invalid("sparse audio duration overflow"))?;
+        if length == 0
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > sparse.extent())
+            || audio.frames().len() != sparse.packed_len()
+        {
+            return Err(Invalid("clip region exceeds sparse audio"));
+        }
+        Ok(Self {
+            active: true,
+            audio: Some(audio),
+            start,
+            end,
+            looping: false,
+            source_offset: offset,
+            source_length: length,
+            metadata: Some(Box::new(ClipMetadata {
+                gain: 1.0,
+                source_phase: 0,
+                fade: None,
+                streamed: None,
+                sparse: Some(sparse),
+            })),
+        })
     }
 
     fn at(&self, position: u64, source_phase: u64) -> Frame {
@@ -735,7 +834,13 @@ impl Clip {
             }
         };
         self.audio.as_ref().map_or([0.0; 2], |audio| {
-            audio.frames[self.source_offset + source_offset as usize]
+            let index = self.source_offset + source_offset as usize;
+            if let Some(map) = self.metadata.as_ref().and_then(|m| m.sparse.as_ref()) {
+                return map
+                    .packed_index(index)
+                    .map_or([0.0; 2], |i| audio.frames[i]);
+            }
+            audio.frames[index]
         })
     }
 
@@ -858,6 +963,7 @@ impl Clip {
                 source_phase: 0,
                 fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
+                sparse: None,
             })),
         })
     }
@@ -887,6 +993,7 @@ pub struct Track {
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    foreign_instrument: Option<hex_lattice::PreparedRuntimeInstance>,
     tuning_identity: shared_analytic::TuningIdentity,
     instrument_bypassed: bool,
     instrument_input_gain: f32,
@@ -1055,6 +1162,11 @@ impl PreparedTrackMix {
         self.channel_gain
     }
 
+    pub(crate) fn with_channel_gain(mut self, gain: Frame) -> Self {
+        self.channel_gain = gain;
+        self
+    }
+
     pub fn muted(self) -> bool {
         self.muted
     }
@@ -1130,6 +1242,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            foreign_instrument: None,
             tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
@@ -1188,6 +1301,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            foreign_instrument: None,
             tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
@@ -1495,6 +1609,19 @@ impl Track {
             .as_ref()
             .map_or(self.mix, |envelope| envelope.mix_at(frame))
     }
+    pub(crate) fn gain_touch_target_at(&self, frame: u64) -> Option<gain_envelope::TouchTarget> {
+        self.gain_envelope.as_ref()?.touch_target_at(frame)
+    }
+    pub(crate) fn base_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.base_value_at(frame))
+    }
+    pub(crate) fn read_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
     }
@@ -1504,7 +1631,7 @@ impl Track {
     }
 
     pub(crate) fn has_instrument_source(&self) -> bool {
-        self.instrument.is_some()
+        self.instrument.is_some() || self.foreign_instrument.is_some()
     }
 
     pub(crate) fn with_midi_source_index(mut self, source: Option<usize>) -> Self {
@@ -1514,6 +1641,14 @@ impl Track {
             // MIDI bus at the destination instrument and applies its fader once.
             self.source_mix = PreparedTrackMix::identity();
         }
+        self
+    }
+
+    pub(crate) fn with_foreign_instrument(
+        mut self,
+        node: Option<hex_lattice::PreparedRuntimeInstance>,
+    ) -> Self {
+        self.foreign_instrument = node;
         self
     }
 
@@ -1530,6 +1665,9 @@ impl Track {
     /// `start_frame` anchors output[0]; transport is not changed. The range end is
     /// checked before any samples are added, so overflow leaves output untouched.
     pub fn render_additive(&self, start_frame: u64, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.foreign_instrument.is_some() {
+            return Err(Invalid("vst3 instrument render owner is unavailable"));
+        }
         self.require_volume_timing(None)?;
         if self.has_gain_automation() {
             return Err(Invalid("automated track requires project rendering"));
@@ -1774,6 +1912,15 @@ impl Track {
         output: &mut [Frame],
         pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        self.render_raw_audio_excluding(start, output, pages, [None; 2])
+    }
+    pub(crate) fn render_raw_audio_excluding<P: MediaPages + ?Sized>(
+        &self,
+        start: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        excluded: [Option<u64>; 2],
+    ) -> Result<(), Invalid> {
         let end = start
             .checked_add(output.len() as u64)
             .ok_or(Invalid("raw source range overflow"))?;
@@ -1784,6 +1931,7 @@ impl Track {
             pages,
             None,
             PreparedTrackMix::identity(),
+            excluded,
         );
         Ok(())
     }
@@ -1892,9 +2040,11 @@ impl Track {
             pages,
             capture,
             self.source_mix,
+            [None; 2],
         );
     }
 
+    #[allow(clippy::too_many_arguments)] // Existing mix/capture sinks with one fixed occurrence exclusion.
     fn render_audio_range_captured_with_mix<P: MediaPages + ?Sized>(
         &self,
         start_frame: u64,
@@ -1903,6 +2053,7 @@ impl Track {
         pages: Option<&mut P>,
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
+        excluded: [Option<u64>; 2],
     ) {
         if let Some(pages) = pages {
             self.render_audio_range_with_pages_captured_with_mix(
@@ -1912,6 +2063,7 @@ impl Track {
                 pages,
                 capture,
                 source_mix,
+                excluded,
             );
             return;
         }
@@ -1921,7 +2073,7 @@ impl Track {
             start_frame,
             end_frame,
             |clip| {
-                if !clip.is_streamed() {
+                if !clip.is_streamed() && !excluded.contains(&Some(clip.start)) {
                     self.render_resident_clip(
                         clip,
                         start_frame,
@@ -1980,9 +2132,11 @@ impl Track {
             pages,
             capture,
             self.source_mix,
+            [None; 2],
         );
     }
 
+    #[allow(clippy::too_many_arguments)] // Same track audio mix plus the borrowed page provider.
     fn render_audio_range_with_pages_captured_with_mix(
         &self,
         start_frame: u64,
@@ -1991,6 +2145,7 @@ impl Track {
         pages: &mut (impl MediaPages + ?Sized),
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
+        excluded: [Option<u64>; 2],
     ) {
         clip_index::visit(
             &self.clip_index,
@@ -1998,6 +2153,9 @@ impl Track {
             start_frame,
             end_frame,
             |clip| {
+                if excluded.contains(&Some(clip.start)) {
+                    return;
+                }
                 if !clip.is_streamed() {
                     self.render_resident_clip(
                         clip,
@@ -2049,6 +2207,25 @@ impl Track {
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
         let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
         let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if let Some(map) = metadata.and_then(|metadata| metadata.sparse.as_ref())
+            && let Some(audio) = clip.audio.as_ref()
+        {
+            let first = clip.source_offset + (span_start - clip.start) as usize;
+            map.visit(first..first + output_end - output_start, |root, packed| {
+                let from = output_start + (root.start - first);
+                for (offset, sample) in audio.frames()[packed].iter().copied().enumerate() {
+                    let index = from + offset;
+                    source_mix.add_captured(
+                        &mut output[index],
+                        sample.map(|channel| channel * clip_gain),
+                        capture
+                            .as_deref_mut()
+                            .and_then(|frames| frames.get_mut(index)),
+                    );
+                }
+            });
+            return;
+        }
         if fade.is_none()
             && clip_gain == 1.0
             && capture.is_none()
@@ -2319,6 +2496,8 @@ pub struct PreparedAudioClipView {
     pub offset: u64,
     pub length: u64,
     pub repeat: Option<PreparedAudioRepeat>,
+    /// Maps logical root frames to packed PCM for a non-repeating source.
+    pub sparse: Option<Arc<SparseFrameMap>>,
 }
 
 /// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.
@@ -2345,6 +2524,7 @@ pub struct Project {
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     main_device_chain: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    source_effects: Vec<source_effect_stage::PreparedSourceEffects>,
     // Final causal arrival after Main, separate from the pre-Main summing graph.
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
@@ -2451,6 +2631,7 @@ impl Project {
         Ok(Self {
             project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
             audio_clip_views: Vec::new(),
+            source_effects: Vec::new(),
             audible_end_frame: tracks
                 .iter()
                 .flat_map(|track| track.clips.iter().map(|clip| clip.end))
@@ -2707,6 +2888,7 @@ impl PreparedMasterGain {
 
 pub(crate) struct RendererRuntime {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    source_effects: source_effect_stage::SourceEffectStages,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
@@ -2715,10 +2897,34 @@ pub(crate) struct RendererRuntime {
 }
 impl RendererRuntime {
     pub(crate) fn new(project: &Project) -> Self {
+        Self::with_prepared_source_effects(project, &project.source_effects)
+    }
+
+    /// Offline control-side stage construction from the same source recipe
+    /// retained for Session playback.
+    fn with_prepared_source_effects(
+        project: &Project,
+        recipes: &[source_effect_stage::PreparedSourceEffects],
+    ) -> Self {
         let mut device_chains = Vec::new();
         let mut return_chains = Vec::new();
         let mut return_scratch = Vec::new();
         let mut runtime_error = None;
+        let source_effects =
+            match source_effect_stage::SourceEffectStages::prepare(project, recipes) {
+                Ok(stages) => stages,
+                Err(error) => {
+                    return Self {
+                        device_chains,
+                        source_effects: source_effect_stage::SourceEffectStages::default(),
+                        return_chains,
+                        main_chain: hex_lattice::NativeRuntimeChain::empty(),
+                        return_scratch,
+                        runtime_error: Some(error.0),
+                        compensation: None,
+                    };
+                }
+            };
         let main_chain = match project.new_main_device_runtime() {
             Ok(chain) => chain,
             Err(_) => {
@@ -2772,6 +2978,7 @@ impl RendererRuntime {
                         runtime_error = Some("return device allocation failed");
                         return Self {
                             device_chains,
+                            source_effects,
                             return_chains,
                             main_chain,
                             return_scratch,
@@ -2797,6 +3004,7 @@ impl RendererRuntime {
         }
         Self {
             device_chains,
+            source_effects,
             return_chains,
             main_chain,
             return_scratch,
@@ -2812,6 +3020,9 @@ impl RendererRuntime {
         for chain in &mut self.device_chains {
             chain.reset();
         }
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.return_chains {
             chain.reset();
         }
@@ -2825,6 +3036,7 @@ impl RendererRuntime {
         selection: Option<hex_lattice::ProcessorAuditionSelection>,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -2867,6 +3079,7 @@ impl RendererRuntime {
         selection: hex_lattice::ProcessorAuditionSelection,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -2908,6 +3121,7 @@ impl RendererRuntime {
         identity: crate::PostNodeIdentity,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,
@@ -2954,6 +3168,7 @@ impl RendererRuntime {
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.main_chain.has_stateful_processors()
+            || self.source_effects.has_stateful_processors()
             || self
                 .device_chains
                 .iter()
@@ -3186,6 +3401,13 @@ impl RendererRuntime {
         if let Some(message) = self.runtime_error {
             return Err(Invalid(message));
         }
+        if project
+            .tracks
+            .iter()
+            .any(|track| track.foreign_instrument.is_some())
+        {
+            return Err(Invalid("vst3 instrument render owner is unavailable"));
+        }
         if project.tracks.iter().any(|track| track.mutable_instrument) {
             return Err(Invalid(
                 "mutable instrument requires shared Session playback",
@@ -3218,6 +3440,9 @@ impl RendererRuntime {
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
+        for chain in self.source_effects.chains_mut() {
+            chain.begin_block();
+        }
         self.main_chain.begin_block();
         let has_return_routes = !project.return_buses.is_empty()
             || project.tracks.iter().any(|track| !track.sends.is_empty());
@@ -3245,6 +3470,9 @@ impl RendererRuntime {
             for chain in &mut self.device_chains {
                 chain.commit_block();
             }
+            for chain in self.source_effects.chains_mut() {
+                chain.commit_block();
+            }
             for chain in &mut self.return_chains {
                 chain.commit_block();
             }
@@ -3258,6 +3486,7 @@ impl RendererRuntime {
             let ordered = track.requires_ordered_processing();
             let render_direct_stateless_track = !stateful
                 && !ordered
+                && !self.source_effects.has_chain(index)
                 && !track.has_mutable_instrument()
                 && !track.has_gain_automation()
                 && !track.source_id().is_some_and(|source| {
@@ -3317,7 +3546,13 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(target);
                     }
                     track.apply_instrument_input_gain(target);
-                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                    self.source_effects.add_generator(
+                        project,
+                        index,
+                        start..end,
+                        target,
+                        volume_timing,
+                    )?;
                     track.apply_instrument_output_gain(target);
                     if stateful {
                         let chain = self
@@ -3351,7 +3586,13 @@ impl RendererRuntime {
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
-                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                    self.source_effects.add_generator(
+                        project,
+                        index,
+                        start..end,
+                        target,
+                        volume_timing,
+                    )?;
                 }
                 for (frame_index, (destination, source)) in output[offset..offset + count]
                     .iter_mut()
@@ -3381,6 +3622,9 @@ impl RendererRuntime {
         )
         .map_err(|_| Invalid("main effect runtime failed"))?;
         for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.commit_block();
         }
         self.main_chain.commit_block();
@@ -3440,11 +3684,10 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(rendered);
                     }
                     track.apply_instrument_input_gain(rendered);
-                    render_source_generators(
+                    self.source_effects.add_generator(
                         project,
                         track_index,
-                        start,
-                        end,
+                        start..end,
                         rendered,
                         volume_timing,
                     )?;
@@ -3481,11 +3724,10 @@ impl RendererRuntime {
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
-                    render_source_generators(
+                    self.source_effects.add_generator(
                         project,
                         track_index,
-                        start,
-                        end,
+                        start..end,
                         rendered,
                         volume_timing,
                     )?;
@@ -3595,6 +3837,7 @@ pub(crate) fn render_track_audio_raw<P: MediaPages + ?Sized>(
         pages,
         None,
         PreparedTrackMix::identity(),
+        [None; 2],
     );
 }
 
@@ -3664,6 +3907,7 @@ impl<'a> Renderer<'a> {
             .runtime
             .device_chains
             .iter_mut()
+            .chain(self.runtime.source_effects.chains_mut())
             .chain(self.runtime.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.runtime.main_chain))
         {
@@ -3938,6 +4182,7 @@ pub mod midi_template;
 mod mutable_instrument;
 mod prepared_revision;
 mod prepared_tempo;
+pub use prepared_tempo::CaptureTempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
@@ -3955,6 +4200,7 @@ pub use scalar_streamed::{
     read_scalar_values,
 };
 mod project_output;
+pub use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
     midi_clip_preview,
@@ -3972,6 +4218,7 @@ pub use playback::{
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
+pub use prepared_revision::foreign_programs::ForeignProgramFrontier;
 pub use prepared_tempo::{
     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap, SessionClockAnchor,
 };

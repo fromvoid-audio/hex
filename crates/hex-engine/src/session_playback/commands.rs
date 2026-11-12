@@ -54,6 +54,16 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// Validate PlayFrom without changing the running playback before a fade.
+    pub(crate) fn admits_play_from(&self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export || self.revision.requires_control_sampler_sources() {
+            self.admits_transport(&SessionPlaybackCommand::Seek(frame))?;
+            self.admits_transport(&SessionPlaybackCommand::Play)
+        } else {
+            self.play_from_coordinates(frame).map(|_| ())
+        }
+    }
+
     fn apply_admitted(
         &mut self,
         command: SessionPlaybackCommand,
@@ -71,6 +81,7 @@ impl SessionPlayback {
                     // cut below and rendered while paused. Only sampler-only
                     // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
+                    self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
                     self.monitor_source_releases |=
@@ -92,6 +103,7 @@ impl SessionPlayback {
                     }
                 }
                 self.playing = false;
+                self.browser_audition.voices = Default::default();
             }
             SessionPlaybackCommand::Stop => {
                 self.clear_gain_recording_override();
@@ -151,6 +163,8 @@ impl SessionPlayback {
     }
 
     fn stop_transport(&mut self) -> bool {
+        self.browser_audition.voices = Default::default();
+        self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
         self.playing = false;
         self.monitor_source_releases = false;
@@ -167,6 +181,9 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.release_order = 0;
         self.main_chain.reset();
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -289,6 +306,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+        self.browser_audition.voices = Default::default();
         self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
@@ -333,6 +351,7 @@ impl SessionPlayback {
     /// compensation epoch and mutable voices start empty. Allocation-free:
     /// existing owners are cleared or reset in place.
     pub(super) fn restart_audio_history(&mut self) {
+        self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;
         }
@@ -342,6 +361,9 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.release_order = 0;
         self.main_chain.reset();
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -362,6 +384,14 @@ impl SessionPlayback {
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.runtime.reset();
+        }
+    }
+
+    pub(crate) fn cut_retained_foreign_gates_from(&mut self, previous: &mut Self) {
+        // Exact source identity also proves the prepared generator index order.
+        if Arc::ptr_eq(&self.revision, &previous.revision) {
+            self.foreign_arrangement
+                .cut_retained_gates_from(&mut previous.foreign_arrangement);
         }
     }
 
@@ -716,14 +746,12 @@ impl SessionPlayback {
             for index in 0..self.routes.len() {
                 if self.routes[index].current_incarnation
                     != self.route_scratch[index].current_incarnation
-                {
-                    if let Some(runtime) = self
+                    && let Some(runtime) = self
                         .mutable_instruments
                         .get_mut(index)
                         .and_then(Option::as_mut)
-                    {
-                        runtime.cut_gate_deadlines_at(self.performance_frame);
-                    }
+                {
+                    runtime.cut_gate_deadlines_at(self.performance_frame);
                 }
             }
         }
@@ -783,6 +811,14 @@ impl SessionPlayback {
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
+        let has_clip_volume = match next_owner {
+            RouteOwner::Session { clip, .. } => self
+                .revision
+                .session()
+                .midi_clip(clip)
+                .is_some_and(|clip| clip.volume_program().is_some()),
+            _ => false,
+        };
         if next_owner != owner || matches!(target, RouteTarget::Session(_)) {
             self.check_shared_transition_capacity(index, next_owner, moment.target_frame, false)?;
         }
@@ -810,12 +846,19 @@ impl SessionPlayback {
             None
         };
         for destination in 0..self.route_scratch.len() {
-            if self.revision.arrangement().tracks()[destination]
-                .midi_source_index
-                .unwrap_or(destination)
-                != index
-            {
+            let track = &self.revision.arrangement().tracks()[destination];
+            if track.midi_source_index.unwrap_or(destination) != index {
                 continue;
+            }
+            if has_clip_volume
+                && track
+                    .foreign_instrument
+                    .as_ref()
+                    .is_some_and(|node| !node.bypassed)
+            {
+                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "console clip volume is unavailable for vst3 instruments",
+                ));
             }
             if !proven_current
                 && self.shared_source_runtime_index(destination).is_none()
@@ -1035,7 +1078,7 @@ impl SessionPlayback {
                                         audio_track,
                                         source_frame,
                                         self.revision.gain_recording_track(),
-                                        self.gain_recording_override,
+                                        self.live_gain.audible(),
                                     ),
                                     continuation: keep_current_source.then_some(
                                         SessionContinuation {
@@ -1149,7 +1192,7 @@ impl SessionPlayback {
                             audio_track,
                             source_frame,
                             self.revision.gain_recording_track(),
-                            self.gain_recording_override,
+                            self.live_gain.audible(),
                         );
                         let clip_gain = super::clip_gain::at_cut(
                             self,

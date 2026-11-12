@@ -295,16 +295,13 @@ pub(crate) fn apply(
     let mut found = 0_usize;
     let mut audio = 0_usize;
     for track in project.tracks() {
-        audio += track
+        let audio_in_track = track
             .clips()
             .iter()
             .filter(|clip| selected.contains(&clip.id()))
             .count();
-        found += track
-            .clips()
-            .iter()
-            .filter(|clip| selected.contains(&clip.id()))
-            .count();
+        audio += audio_in_track;
+        found += audio_in_track;
         found += track
             .midi_clips()
             .iter()
@@ -316,6 +313,24 @@ pub(crate) fn apply(
     }
     if edit.audio_only() && audio == 0 {
         return Err(Invalid("clip property requires a selected audio clip"));
+    }
+
+    // The validated selection is complete. Activation is a placement flag,
+    // so it cannot change row geometry or shared source content.
+    if let ClipEdit::Active { active } = edit {
+        for track in &mut project.tracks {
+            for clip in &mut track.content.audio_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+            for clip in &mut track.content.midi_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+        }
+        return Ok(Created::None);
     }
 
     let mut candidate = project.clone();
@@ -464,6 +479,8 @@ impl Command {
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
             | Self::UpdateMidiNotes { clip, .. }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, .. }
+            | Self::UpdateMidiNotesWithSourcePrefix { clip, .. }
             | Self::RemoveMidiNotes { clip, .. } => ClipCommandScope::FocusedSource { clip: *clip },
             Self::ConvertMidiClipToAudio { clip, .. }
             | Self::SplitClip { clip, .. }
@@ -520,6 +537,7 @@ impl Command {
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
+            | Self::GroupTimeRangeOrCreate(_)
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::DuplicateAliasClips(_)
@@ -529,7 +547,12 @@ impl Command {
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
-            Self::AddArrangementSection { .. }
+            Self::InitializeDevice(_)
+            | Self::AddArrangementLocator { .. }
+            | Self::MoveArrangementLocator { .. }
+            | Self::RenameArrangementLocator { .. }
+            | Self::RemoveArrangementLocator(_)
+            | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }
@@ -544,6 +567,9 @@ impl Command {
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
             | Self::DuplicateArrangementSectionAt { .. }
+            | Self::AppendArrangementSectionCopy { .. }
+            | Self::MoveArrangementSectionBeyondEnd { .. }
+            | Self::ReplaceArrangementSection { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
@@ -560,6 +586,7 @@ impl Command {
             | Self::ClearTrackGainEnvelope { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
+            | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
@@ -567,10 +594,17 @@ impl Command {
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
             | Self::LoadInstrument { .. }
+            | Self::ReplaceTrackInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::MoveNativeSourceDevice { .. }
+            | Self::ReparentDevice { .. }
+            | Self::InsertNestedDevice { .. }
+            | Self::SpliceDeviceAutomationTouch { .. }
+            | Self::SpliceVst3AutomationTouchGroup { .. }
+            | Self::ReplaceDeviceModulation { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
             | Self::ManualDeviceEdit { .. }
@@ -604,6 +638,8 @@ impl Command {
             | Self::PasteTracks { .. }
             | Self::PasteDevices { .. }
             | Self::RemoveDevices { .. }
+            | Self::MoveTrackDevices { .. }
+            | Self::ReorderDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
@@ -614,8 +650,10 @@ impl Command {
             | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
+            | Self::SetTrackTags { .. }
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }
@@ -629,7 +667,7 @@ impl Command {
             | Self::ClearLoopRegion
             | Self::AddAsset { .. }
             | Self::ImportDeviceAsset { .. }
-            | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Self::ImportDeviceAssetIntoNewInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
             | Self::RelinkAssets(..)

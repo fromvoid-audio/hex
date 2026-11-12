@@ -25,9 +25,13 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod browser_audition;
 mod candidate_storage;
+mod foreign_arrangement;
 mod midi_capture;
 mod mutable_checkpoint;
+mod render_work;
+mod track_fader;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
@@ -132,6 +136,9 @@ pub enum SessionPlaybackError {
     LatencyLayoutChanged,
     /// Active source history cannot be adopted by the replacement provider.
     SourceHistoryUnavailable,
+    /// The active detached receiver still owns effect history that must not
+    /// be replaced by a live reset/chase. The prior graph keeps rendering.
+    DetachedReceiverHistoryUnavailable,
     /// The exact foreign endpoint is still needed by an outgoing tail. A
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
@@ -185,7 +192,7 @@ impl SessionPlaybackError {
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
             }
-            Self::SourceHistoryUnavailable => {
+            Self::SourceHistoryUnavailable | Self::DetachedReceiverHistoryUnavailable => {
                 "source history cannot transfer live · previous audio continues"
             }
             Self::ForeignTailSourceBusy => {
@@ -430,6 +437,7 @@ enum RenderConstruction {
     Interactive,
     LinearExport,
     FiniteBounce,
+    FiniteForeignBounce,
 }
 /// Finite serial-effect drain admission horizon. Ten minutes admits useful
 /// chains of long-decay rooms without weakening processor-count or byte bounds.
@@ -472,13 +480,17 @@ pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
+    live_gain: gain_recording::LiveGain,
+    live_gain_scratch: gain_recording::LiveGain,
     // Optional control allocation; the callback mutates Copy contents only.
     native_parameter_state: Option<Box<native_parameter_input::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
+    render_work: render_work::Sampler,
     revision: Arc<PreparedRevision>,
     /// Graph-local section audition; expires when the source graph is replaced.
     pub(crate) transient_loop: Option<hex_project::LoopRegion>,
+    browser_audition: browser_audition::BrowserAudition,
     pub(crate) midi_admission: Option<crate::session_inventory::PreparedSessionMidiAdmission>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -492,6 +504,9 @@ pub struct SessionPlayback {
     stream_miss_fades: crate::StreamMissFades,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
+    track_faders: [track_fader::TrackFader; MAX_TRACKS],
+    track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
+    source_effects: crate::source_effect_stage::SourceEffectStages,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
@@ -501,6 +516,7 @@ pub struct SessionPlayback {
     meter_cells: Vec<meter_capture::Cell>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
+    foreign_arrangement: foreign_arrangement::ForeignArrangement,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     current_route_cut_scratch: Vec<Option<CurrentPendingCut>>,
@@ -601,6 +617,18 @@ impl SessionPlayback {
         &self,
         visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
     ) {
+        for node in self
+            .revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .filter_map(|track| track.foreign_instrument.as_ref())
+            .filter(|node| !node.bypassed)
+        {
+            if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = node.definition {
+                visit(facts.binding());
+            }
+        }
         let chains = self
             .device_chains
             .iter()
@@ -872,11 +900,15 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            live_gain: _,
+            live_gain_scratch: _,
             native_parameter_state: _,
             compensation,
             device_metering: _,
+            render_work: _,
             revision: _,
             transient_loop: _,
+            browser_audition: _,
             midi_admission: _,
             periodic_tempo: _,
             anchor: _,
@@ -887,6 +919,9 @@ impl SessionPlayback {
             source_voice_envelopes: _,
             routes: _,
             route_scratch: _,
+            track_faders: _,
+            track_fader_scratch: _,
+            source_effects: _, // retained by the Session container, not separately transferred
             device_chains,
             return_chains,
             main_chain,
@@ -895,6 +930,7 @@ impl SessionPlayback {
             meter_cells: _,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets: _,
             mutable_events: _,
             current_route_cut_scratch: _,
@@ -944,6 +980,7 @@ impl SessionPlayback {
         let moved_empty_main =
             !self.candidate_admission_open && main_chain.is_empty() && !main_present;
         if (!main_matches && !moved_empty_main)
+            || !foreign_arrangement.is_empty()
             || live_expression.is_some()
             || computer_keyboard.is_some()
         {
@@ -956,18 +993,17 @@ impl SessionPlayback {
             visit(1, index, owner.is_some())?;
         }
         for (index, owner) in mutable_instruments.iter().enumerate() {
-            if let Some(owner) = owner {
-                if self.revision.resource_scope.is_none()
+            if let Some(owner) = owner
+                && (self.revision.resource_scope.is_none()
                     || !owner.is_concrete_current_sampler()
                     || self
                         .revision
                         .arrangement()
                         .tracks()
                         .get(index)
-                        .is_none_or(|t| t.instrument_id != owner.expression_identity)
-                {
-                    return Err(crate::AudioStorageError::UnsupportedGraph);
-                }
+                        .is_none_or(|t| t.instrument_id != owner.expression_identity))
+            {
+                return Err(crate::AudioStorageError::UnsupportedGraph);
             }
             visit(2, index, owner.is_some())?;
         }
@@ -993,6 +1029,7 @@ impl SessionPlayback {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {
@@ -1071,6 +1108,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -1164,6 +1202,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -1202,6 +1241,7 @@ impl SessionPlayback {
     pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,
@@ -1344,7 +1384,9 @@ impl SessionPlayback {
             RenderConstruction::Interactive => {
                 preroll::arrangement_runtime_storage_preflight_bytes(revision)
             }
-            RenderConstruction::LinearExport | RenderConstruction::FiniteBounce => {
+            RenderConstruction::LinearExport
+            | RenderConstruction::FiniteBounce
+            | RenderConstruction::FiniteForeignBounce => {
                 preroll::linear_export_runtime_storage_preflight_bytes(revision)
             }
         };
@@ -1455,6 +1497,36 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         frames: u64,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_finite_bounce(
+            revision,
+            resources,
+            frames,
+            RenderConstruction::FiniteBounce,
+        )
+    }
+
+    /// Finite bounce whose caller supplies independently prepared foreign
+    /// processors for every render, including preroll and latency drain.
+    /// The processors receive authored automation on the Arrangement clock.
+    pub fn new_finite_arrangement_bounce_with_foreign(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        frames: u64,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_finite_bounce(
+            revision,
+            resources,
+            frames,
+            RenderConstruction::FiniteForeignBounce,
+        )
+    }
+
+    fn new_finite_bounce(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        frames: u64,
+        policy: RenderConstruction,
+    ) -> Result<Self, SessionPlaybackError> {
         if frames == 0 || frames > MAX_FINITE_BOUNCE_FRAMES {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "source bounce exceeds its finite frame limit",
@@ -1465,7 +1537,7 @@ impl SessionPlayback {
                 "sampler requires private offline export resources",
             ));
         }
-        Self::new_with_render_policy(revision, RenderConstruction::FiniteBounce, resources, None)
+        Self::new_with_render_policy(revision, policy, resources, None)
     }
 
     fn new_with_policy_scoped_and_loop(
@@ -1492,21 +1564,98 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy_and_source_effects(
+            revision,
+            policy,
+            resources,
+            transient_loop,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_source_effects(
+        revision: Arc<PreparedRevision>,
+        recipes: &[crate::source_effect_stage::PreparedSourceEffects],
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy_and_source_effects(
+            revision,
+            RenderConstruction::Interactive,
+            None,
+            None,
+            Some(recipes),
+        )
+    }
+
+    fn new_with_render_policy_and_source_effects(
+        revision: Arc<PreparedRevision>,
+        policy: RenderConstruction,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+        recipe_override: Option<&[crate::source_effect_stage::PreparedSourceEffects]>,
+    ) -> Result<Self, SessionPlaybackError> {
+        let arrangement = revision.arrangement();
+        let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        let lacks_foreign_renderer =
+            linear_arrangement_export && policy != RenderConstruction::FiniteForeignBounce;
+        let chain_has_foreign_automation = arrangement
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter().chain(&track.foreign_instrument))
+            .chain(
+                arrangement
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(arrangement.main_device_chain.iter())
+            .any(|device| device.automation.foreign().is_some());
+        if lacks_foreign_renderer
+            && (chain_has_foreign_automation || !revision.foreign_automation.is_empty())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "offline vst3 automation requires a private bounce renderer",
+            ));
+        }
+        if chain_has_foreign_automation
+            && transient_loop.is_some_and(|region| Some(region) != arrangement.loop_region())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 automation requires the prepared arrangement loop",
+            ));
+        }
+        if transient_loop.is_some() && !revision.foreign_automation.admits_loop(transient_loop) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "audition loop exceeds the prepared vst3 automation capacity",
+            ));
+        }
+        let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
+        if lacks_foreign_renderer && !foreign_arrangement.is_empty() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 instruments require interactive arrangement playback",
+            ));
+        }
         if revision.device_resource_scope != resources.map(|resources| resources.id()) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "device resource set differs from prepared revision",
             ));
         }
-        // Scoped linear export and every finite bounce reserve before allocation,
-        // then check the actual runtime below. Interactive budgets stay unchanged.
-        let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
-            || policy == RenderConstruction::FiniteBounce
-        {
+        // Linear export with scoped resources or source effects, and every finite bounce,
+        // reserve before allocation and check actual runtime storage below.
+        let linear_resource_allowance = if (linear_arrangement_export
+            && (resources.is_some() || !recipes.is_empty()))
+            || matches!(
+                policy,
+                RenderConstruction::FiniteBounce | RenderConstruction::FiniteForeignBounce
+            ) {
             Some(Self::linear_export_runtime_allowance(&revision)?)
         } else {
             None
         };
+        let source_effects =
+            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -1728,6 +1877,9 @@ impl SessionPlayback {
                 .map_err(SessionPlaybackError::from)?;
             let mut runtime = runtime;
             if let Some(runtime) = runtime.as_mut() {
+                if let Some(modulation) = revision.session().instrument_modulation(id) {
+                    runtime.install_modulation(modulation)?;
+                }
                 if track.source_id().is_some() && !revision.requires_control_sampler_sources() {
                     runtime.enable_source_live();
                 }
@@ -1877,6 +2029,9 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        if compensation.is_none() && !foreign_arrangement.is_empty() {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         // Resident Arrangement and eligible Session audio share this window.
         // Generic streamed providers retain their original per-frame lookups.
         let mut resident_source_scratch = Vec::new();
@@ -1889,29 +2044,19 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::Allocation)?;
             resident_source_scratch.resize(arrangement_tracks.len(), [[0.0; 2]; 256]);
         }
-        let scalar_automation = match revision.scalar_automation.as_ref() {
-            Some(_) => {
-                let input = revision
-                    .native_parameter_input_target()
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                let arrival = revision
-                    .arrangement()
-                    .signal_graph
-                    .as_ref()
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?
-                    .parameter_arrival(input)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                Some(Box::new(
-                    crate::scalar_automation::State::new(input, arrival)
-                        .map_err(|_| SessionPlaybackError::Allocation)?,
-                ))
-            }
-            None => None,
-        };
+        let scalar_automation = revision
+            .scalar_automation
+            .as_deref()
+            .map(crate::scalar_automation::StateSet::new)
+            .transpose()
+            .map_err(|_| SessionPlaybackError::Allocation)?
+            .map(Box::new);
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
-        let native_parameter_state = revision.native_parameter_input_target().map(|_| {
+        let native_parameter_state = (revision.native_parameter_input_target().is_some()
+            || scalar_automation.is_some())
+        .then(|| {
             Box::new(native_parameter_input::State {
                 scalar: scalar_automation,
                 ..Default::default()
@@ -1931,10 +2076,12 @@ impl SessionPlayback {
                 revision: &revision,
                 midi_admission: midi_admission.as_ref(),
                 analytic_import: &analytic_import,
+                source_effects: &source_effects,
                 device_chains: &device_chains,
                 return_chains: &return_chains,
                 return_effect_tails: &return_effect_tails,
                 mutable_instruments: &mutable_instruments,
+                foreign_arrangement: &foreign_arrangement,
                 tail_groups: &tail_groups,
                 tail_mutable_instruments: &tail_mutable_instruments,
                 routes: routes.capacity(),
@@ -1964,6 +2111,10 @@ impl SessionPlayback {
             }
         }
         let stream_miss_fades = crate::StreamMissFades::new(revision.arrangement().sample_rate());
+        let mut track_faders = [track_fader::TrackFader::new([1.0; 2]); MAX_TRACKS];
+        for (fader, track) in track_faders.iter_mut().zip(arrangement_tracks) {
+            *fader = track_fader::TrackFader::new(track.mix_at(0).channel_gain());
+        }
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
@@ -1973,11 +2124,15 @@ impl SessionPlayback {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,
+            live_gain: gain_recording::LiveGain::default(),
+            live_gain_scratch: gain_recording::LiveGain::default(),
             native_parameter_state,
             compensation,
             device_metering: false,
+            render_work: Default::default(),
             revision,
             transient_loop,
+            browser_audition: Default::default(),
             midi_admission,
             periodic_tempo,
             anchor: None,
@@ -1988,6 +2143,9 @@ impl SessionPlayback {
             stream_miss_fades,
             routes,
             route_scratch,
+            track_faders,
+            track_fader_scratch: track_faders,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,
@@ -1996,6 +2154,7 @@ impl SessionPlayback {
             meter_cells,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             current_route_cut_scratch,
@@ -2243,6 +2402,7 @@ impl SessionPlayback {
     /// render at least the full output-path latency and recheck before stopping.
     pub fn arrangement_bounce_is_quiescent(&self) -> bool {
         !self.has_active_arrangement_voices()
+            && !self.foreign_arrangement.has_held_notes()
             && self.releases.is_empty()
             && self
                 .mutable_instruments

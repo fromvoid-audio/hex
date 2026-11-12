@@ -1,14 +1,18 @@
 //! Shared compensated/typed-route path. Upstream latency and typed audio routes
-//! use single-frame routing. Serial Main-only latency retains batched upstream
+//! normally use single-frame routing. Independent resident audio tracks can
+//! batch native stages, faders and alignment. Serial Main-only latency retains batched upstream
 //! rendering; its stamps, Main processors and retained tails still advance one
 //! sample at a time through the same compensation owner.
 use super::*;
+use crate::compensation::{OriginWindow, TransportStamp};
 
 #[derive(Clone, Copy)]
 pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
     pub(super) audio: &'a [bool; MAX_TRACKS],
     pub(super) analytic: &'a [bool; MAX_TRACKS],
+    pub(super) stamps: Option<&'a [Option<TransportStamp>]>,
+    pub(super) aligned: &'a [bool; MAX_TRACKS],
 }
 
 impl SessionPlayback {
@@ -56,8 +60,14 @@ impl SessionPlayback {
             .zip(self.resident_source_scratch.iter_mut())
             .enumerate()
         {
+            let work_start = self.render_work.track(index);
             let output = &mut scratch[..frames];
             output.fill([0.0; 2]);
+            if !self.browser_audition.voices.for_track(route.id).is_empty() {
+                // The ordinary per-frame route consumes the live clip clock.
+                self.render_work.finish(work_start);
+                continue;
+            }
             if batch_analytic && self.revision.source_routing().is_shared(index) {
                 let track = self
                     .revision
@@ -114,6 +124,7 @@ impl SessionPlayback {
                     *analytic
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                    self.render_work.finish(work_start);
                     continue;
                 }
             }
@@ -179,6 +190,7 @@ impl SessionPlayback {
                             .get(index)
                             .is_some_and(Option::is_none)
                     {
+                        self.render_work.finish(work_start);
                         continue;
                     }
                     let midi = crate::session_inventory::EffectiveSessionMidi::new(
@@ -194,6 +206,7 @@ impl SessionPlayback {
                     if !prepared.instrument_enabled()
                         || prepared.instrument_template().is_event_source()
                     {
+                        self.render_work.finish(work_start);
                         continue;
                     }
                     let floor = self
@@ -241,6 +254,7 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
                     if !track.audio_content_enabled() {
                         *is_eligible = true;
+                        self.render_work.finish(work_start);
                         continue;
                     }
                     let prepared = self
@@ -267,40 +281,241 @@ impl SessionPlayback {
                 }
                 _ => {}
             }
+            self.render_work.finish(work_start);
         }
         Ok(())
     }
-    /// Publish one transport origin immediately before processing its Main
-    /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
+    /// Advance independent resident audio owners and their Main alignment
+    /// rings. The frame loop still pushes stamps and sums in its original order.
+    pub(super) fn align_resident_tracks(
+        &mut self,
+        arrangement_frame: u64,
+        frames: usize,
+        eligible: &[bool; MAX_TRACKS],
+        origins: Option<(&[Option<TransportStamp>], u32)>,
+        aligned: &mut [bool; MAX_TRACKS],
+    ) -> Result<(), SessionPlaybackError> {
+        aligned.fill(false);
+        let Some(compensation) = self.compensation.as_mut() else {
+            return Ok(());
+        };
+        if !compensation.graph.independent_main_routes() {
+            return Ok(());
+        }
+        arrangement_frame
+            .checked_add(frames as u64)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        for (index, ((route, scratch), aligned)) in self
+            .route_scratch
+            .iter()
+            .zip(&mut self.resident_source_scratch)
+            .zip(aligned)
+            .enumerate()
+        {
+            if !eligible[index]
+                || !matches!(route.owner, RouteOwner::Arrangement)
+                || self.revision.gain_recording_track() == Some(route.id)
+            {
+                continue;
+            }
+            let track = &self.revision.arrangement().tracks()[index];
+            let Some((edge, arrival)) = compensation.graph.resident_main_alignment(index) else {
+                continue;
+            };
+            if track.instrument_id.is_some() || track.instrument_position() != 0 {
+                continue;
+            }
+            let chain = &mut self.device_chains[index];
+            let native_origins = if chain.is_empty() {
+                None
+            } else {
+                let Some((incoming, _)) = origins.filter(|&(_, history_frames)| {
+                    // In this independent serial track, the fader arrival
+                    // bounds the lookback of every native device stage.
+                    arrival <= history_frames
+                        && track.device_chain.iter().all(|device| {
+                            !matches!(
+                                device.definition.as_ref(),
+                                Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                            )
+                        })
+                }) else {
+                    continue;
+                };
+                Some(OriginWindow {
+                    history: &compensation.delays,
+                    incoming,
+                    delay: arrival,
+                })
+            };
+            let work_start = self.render_work.track(index);
+            let samples = &mut scratch[..frames];
+            for frame in samples.iter_mut() {
+                // Match the two zero-valued merges in the scalar route.
+                frame[0] += 0.0;
+                frame[1] += 0.0;
+            }
+            track.apply_instrument_input_gain(samples);
+            for frame in samples.iter_mut() {
+                frame[0] += 0.0;
+                frame[1] += 0.0;
+            }
+            track.apply_instrument_output_gain(samples);
+            if let Some(origins) = native_origins.as_ref() {
+                for (stage, &node) in compensation.graph.tracks[index].devices.iter().enumerate() {
+                    let planned = &compensation.graph.plan.nodes()[node];
+                    let input = OriginWindow {
+                        delay: planned.input_arrival_frames,
+                        ..*origins
+                    };
+                    let output = OriginWindow {
+                        delay: planned.output_arrival_frames,
+                        ..*origins
+                    };
+                    crate::native_parameter_input::process_range_with_key(
+                        None,
+                        None,
+                        chain,
+                        stage..stage + 1,
+                        samples,
+                        0,
+                        Some(&input),
+                        Some(&output),
+                        planned.input_arrival_frames,
+                        planned.output_arrival_frames,
+                        &mut hex_lattice::RefuseForeign,
+                        None,
+                        &mut None,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                }
+            }
+            let fader = &mut self.track_fader_scratch[index];
+            let automated = track.has_gain_automation();
+            for (offset, frame) in samples.iter_mut().enumerate() {
+                let mix = if automated {
+                    let content = if let Some(origins) = native_origins.as_ref() {
+                        origins
+                            .stamp(offset)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?
+                            .arrangement_frame
+                    } else {
+                        arrangement_frame + offset as u64
+                    };
+                    track.mix_at(content)
+                } else {
+                    track.mix()
+                };
+                let mix = if automated {
+                    fader.follow(mix.channel_gain());
+                    mix
+                } else {
+                    mix.with_channel_gain(fader.next())
+                };
+                *frame = mix.apply_frame(*frame);
+            }
+            compensation
+                .edge_block(edge, samples)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            self.render_work.finish(work_start);
+            *aligned = true;
+        }
+        Ok(())
+    }
+    /// Return the contiguous running history available to independent stages.
+    /// A long delay on another track, such as a VST3 bridge, does not enlarge
+    /// the native batching window or exclude tracks with shorter arrivals.
+    pub(super) fn prepare_native_origin_window(
+        &self,
+        performance_frame: u64,
+        arrangement_frame: u64,
+        loop_pass: u64,
+        stamps: &mut [Option<TransportStamp>],
+    ) -> Result<Option<u32>, SessionPlaybackError> {
+        let Some(compensation) = self.compensation.as_ref() else {
+            return Ok(None);
+        };
+        if !compensation.graph.independent_main_routes()
+            || self
+                .native_parameter_state
+                .as_deref()
+                .is_some_and(|state| state.processing.is_some())
+            || self.tail_output_scratch.iter().any(|active| *active)
+            || self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active)
+        {
+            return Ok(None);
+        }
+        let lookback = compensation.graph.main_latency().min(256);
+        let history_frames = (0..lookback)
+            .take_while(|&delay| {
+                compensation
+                    .delays
+                    .stamp_at_delay(delay)
+                    .is_some_and(|stamp| stamp.transport_is_running)
+            })
+            .count() as u32;
+        for (offset, stamp) in stamps.iter_mut().enumerate() {
+            let performance = performance_frame
+                .checked_add(offset as u64)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let arrangement = arrangement_frame
+                .checked_add(offset as u64)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            *stamp = Some(self.compensated_stamp(performance, arrangement, loop_pass)?);
+        }
+        Ok(Some(history_frames))
+    }
+
+    fn compensated_stamp(
+        &self,
+        performance_frame: u64,
+        arrangement_frame: u64,
+        loop_pass: u64,
+    ) -> Result<TransportStamp, SessionPlaybackError> {
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
+        let beat = timing
+            .frame_to_beat(performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let session = self.revision.session();
+        let arrangement_beat = session.timing().frame_to_beat(arrangement_frame).ok();
+        Ok(TransportStamp {
+            tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
+            performance_frame,
+            transport_is_running: self.playing,
+            arrangement_frame,
+            loop_pass,
+            performance_beat_raw: beat.raw(),
+            arrangement_beat_raw: arrangement_beat.map(hex_project::BeatTime::raw),
+            meter: arrangement_beat.map(|beat| session.meter_map().meter_at(beat)),
+            cycle_beats_raw: self
+                .periodic_tempo_at(arrangement_frame)
+                .map(|cycle| cycle.beat_range_raw()),
+        })
+    }
+
+    /// Append a stamp immediately before consuming that frame. Pre-pushing
+    /// a whole window could overwrite the bounded delay history.
     pub(super) fn push_compensated_stamp(
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
         loop_pass: u64,
     ) -> Result<(), SessionPlaybackError> {
-        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
-        let beat = timing
-            .frame_to_beat(performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let stamp = self.compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        self.push_stamp(stamp)
+    }
+
+    fn push_stamp(&mut self, stamp: TransportStamp) -> Result<(), SessionPlaybackError> {
         self.compensation
             .as_mut()
             .ok_or(SessionPlaybackError::DeviceRuntime)?
             .delays
-            .push_transport_stamp(crate::compensation::TransportStamp {
-                tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
-                performance_frame,
-                transport_is_running: self.playing,
-                arrangement_frame,
-                loop_pass,
-                performance_beat_raw: beat.raw(),
-                arrangement_beat_raw: self
-                    .revision
-                    .session()
-                    .timing()
-                    .frame_to_beat(arrangement_frame)
-                    .ok()
-                    .map(|beat| beat.raw()),
-            })
+            .push_transport_stamp(stamp)
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(())
     }
@@ -318,7 +533,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
         resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let loop_fade = self
@@ -332,7 +547,13 @@ impl SessionPlayback {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        if let Some(stamp) =
+            resident_source.and_then(|batch| batch.stamps?.get(batch.index).copied().flatten())
+        {
+            self.push_stamp(stamp)?;
+        } else {
+            self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        }
         let grouped = self
             .compensation
             .as_ref()
@@ -372,8 +593,25 @@ impl SessionPlayback {
                 .owner_order[order];
             match owner {
                 crate::signal_graph::Owner::Track(index) => {
+                    let work_start = self.render_work.track(index);
                     let track = &self.revision.arrangement().tracks()[index];
                     let route = self.route_scratch[index];
+                    if let Some(batch) = resident_source.filter(|batch| batch.aligned[index]) {
+                        let main = self.resident_source_scratch[index][batch.index];
+                        self.compensation
+                            .as_mut()
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?
+                            .main[index] = main;
+                        if let Some(capture) = capture.as_mut() {
+                            capture.add_prepared_frame(
+                                owner,
+                                OutputCaptureId::Track(route.id),
+                                frame_offset,
+                                main,
+                            )?;
+                        }
+                        continue;
+                    }
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
@@ -418,7 +656,9 @@ impl SessionPlayback {
                                 arrangement_frame,
                                 &mut audio,
                                 pages.as_deref_mut(),
-                                SourceStage::Audio,
+                                SourceStage::audio(
+                                    self.browser_audition.voices.for_track(route.id),
+                                ),
                             )?;
                         }
                         // An ordinary arrangement audio track without a MIDI
@@ -488,6 +728,7 @@ impl SessionPlayback {
                                 &mut generator,
                                 &timing,
                                 true,
+                                None,
                             )?;
                         }
                         render_mutable_instrument_chunk(
@@ -507,6 +748,7 @@ impl SessionPlayback {
                                 performance_frame,
                                 arrangement_frame,
                                 arrangement_loop_pass: loop_pass,
+                                transient: None,
                                 chase_at_start: self.interactive_start_frame
                                     == Some(performance_frame),
                                 loop_region: if self.linear_arrangement_export {
@@ -518,6 +760,9 @@ impl SessionPlayback {
                             },
                             index,
                             &mut generator,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )?;
                     }
                     for release in &self.release_scratch {
@@ -538,6 +783,18 @@ impl SessionPlayback {
                     }
                     if !self.playing {
                         if self.source_input_receiver() == Some(index) {
+                            let parameter_context = instrument_automation::SourceAutomation::new(
+                                &self.revision,
+                                index,
+                                instrument_automation::Origin {
+                                    arrangement: Some(arrangement_frame),
+                                    performance: performance_frame,
+                                    pass: loop_pass,
+                                    running: false,
+                                },
+                                generator.len(),
+                            )?;
+                            let parameter_block = parameter_context.block();
                             source_live::render_source_live_input(
                                 self.computer_keyboard.as_mut().map(Box::as_mut),
                                 self.mutable_instruments[index].as_mut(),
@@ -548,6 +805,9 @@ impl SessionPlayback {
                                 &mut generator,
                                 &timing,
                                 false,
+                                parameter_block.as_ref().map(|values| {
+                                    values as &dyn hex_lattice::NativeParameterAutomation
+                                }),
                             )?;
                         } else if let Some(runtime) = self.mutable_instruments[index]
                             .as_mut()
@@ -566,6 +826,18 @@ impl SessionPlayback {
                                     timing.sample_rate(),
                                 )
                                 .map_err(|error| error.render_error())?;
+                            let parameter_context = instrument_automation::SourceAutomation::new(
+                                &self.revision,
+                                index,
+                                instrument_automation::Origin {
+                                    arrangement: Some(arrangement_frame),
+                                    performance: performance_frame,
+                                    pass: loop_pass,
+                                    running: false,
+                                },
+                                generator.len(),
+                            )?;
+                            let parameter_block = parameter_context.block();
                             runtime
                                 .process_source_segment(
                                     performance_frame,
@@ -576,6 +848,9 @@ impl SessionPlayback {
                                     Some(&source_clock),
                                     &hex_lattice::EMPTY_DEVICE_RESOURCES,
                                     None,
+                                    parameter_block.as_ref().map(|values| {
+                                        values as &dyn hex_lattice::NativeParameterAutomation
+                                    }),
                                 )
                                 .map_err(|error| error.render_error())?;
                         }
@@ -607,6 +882,57 @@ impl SessionPlayback {
                         .compensation
                         .as_mut()
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    if track.foreign_instrument.is_some() {
+                        let clock =
+                            crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(0));
+                        let mut wet = [[0.0; 2]];
+                        self.foreign_arrangement.render_frame(
+                            index,
+                            track,
+                            foreign_arrangement::FrameContext {
+                                performance: performance_frame,
+                                arrangement: arrangement_frame,
+                                loop_pass,
+                                playing: self.playing,
+                                chase: self.interactive_start_frame == Some(performance_frame),
+                            },
+                            foreign_arrangement::SessionRoute {
+                                route: effective_midi_route(
+                                    &self.revision,
+                                    &self.route_scratch,
+                                    index,
+                                )?,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                timing: &timing,
+                                spans: &mut self.spans,
+                            },
+                            &mut wet,
+                            &mut self.mutable_onsets,
+                            frame_offset,
+                            foreign,
+                            &clock,
+                        )?;
+                        generator[0][0] += wet[0][0];
+                        generator[0][1] += wet[0][1];
+                    }
+                    if self.source_effects.has_chain(index) {
+                        let clock =
+                            crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(0));
+                        self.source_effects
+                            .process_with_live_input(
+                                index,
+                                &mut generator,
+                                &clock,
+                                frame_offset,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                            )
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
                     let processed = compensation
                         .process_track_with_foreign(
                             index,
@@ -624,12 +950,33 @@ impl SessionPlayback {
                             external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    let override_gain = self
-                        .gain_recording_override
-                        .filter(|_| self.revision.gain_recording_track() == Some(route.id));
-                    let mixed = compensation
-                        .fader(track, index, override_gain, processed)
-                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let recording_track = self.revision.gain_recording_track() == Some(route.id);
+                    let override_gain = self.gain_recording_override.filter(|_| recording_track);
+                    let live_gain = if recording_track {
+                        compensation.fader_content_frame(index).and_then(|frame| {
+                            self.live_gain_scratch.next(
+                                track,
+                                frame,
+                                override_gain,
+                                self.revision.arrangement().sample_rate(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let mix = compensation.fader_mix(track, index, live_gain);
+                    let mixed = if let Some(mix) = mix {
+                        let fader = &mut self.track_fader_scratch[index];
+                        let mix = if track.has_gain_automation() || override_gain.is_some() {
+                            fader.follow(mix.channel_gain());
+                            mix
+                        } else {
+                            mix.with_channel_gain(fader.next())
+                        };
+                        mix.apply_frame(processed)
+                    } else {
+                        [0.0; 2]
+                    };
                     // Retired tails retain their old post-fader output; they do
                     // not re-enter current authored sends or feeds.
                     let routed = if let Some(detached) = detached.as_ref() {
@@ -641,7 +988,12 @@ impl SessionPlayback {
                         .route_track_output(index, routed)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(capture) = capture.as_mut() {
-                        capture.add(OutputCaptureId::Track(route.id), frame_offset, &[main])?;
+                        capture.add_prepared_frame(
+                            owner,
+                            OutputCaptureId::Track(route.id),
+                            frame_offset,
+                            main,
+                        )?;
                     }
                     for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len() {
                         let feed = &compensation.graph.tracks[index].audio_feeds[feed_index];
@@ -661,8 +1013,10 @@ impl SessionPlayback {
                         self.return_scratch[target][0][0] += sent[0];
                         self.return_scratch[target][0][1] += sent[1];
                     }
+                    self.render_work.finish(work_start);
                 }
                 crate::signal_graph::Owner::Return(index) => {
+                    let work_start = self.render_work.return_bus(index);
                     let compensation = self
                         .compensation
                         .as_mut()
@@ -672,9 +1026,9 @@ impl SessionPlayback {
                     let mut frame = self.return_scratch[index][0];
                     compensation
                         .effects_with_foreign(
-                            &compensation.graph.returns[index].devices,
+                            crate::signal_graph::Owner::Return(index),
+                            0..compensation.graph.returns[index].devices.len(),
                             &mut self.return_chains[index],
-                            0,
                             &mut frame,
                             frame_offset,
                             foreign,
@@ -716,8 +1070,14 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     self.return_scratch[index][0] = main;
                     if let Some(capture) = capture.as_mut() {
-                        capture.add(OutputCaptureId::Return(bus.id), frame_offset, &[main])?;
+                        capture.add_prepared_frame(
+                            owner,
+                            OutputCaptureId::Return(bus.id),
+                            frame_offset,
+                            main,
+                        )?;
                     }
+                    self.render_work.finish(work_start);
                 }
             }
         }
@@ -744,5 +1104,267 @@ impl SessionPlayback {
                 .render_chunk(output, frame_offset, capture, foreign)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal_graph::tests::fixture;
+
+    #[test]
+    fn compensated_clock_keeps_meter_and_cycle_across_the_actual_loop_wrap() {
+        use hex_project::{BeatTime, Command, Meter};
+
+        let start = 23_998;
+        let end = 24_002;
+        let mut f = fixture(&[&[]], 24_010);
+        let limiter = hex_lattice_contract::DeviceTypeId::from_static("hex.limiter");
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: crate::default_native_device_state(limiter).unwrap(),
+            })
+            .unwrap();
+        let seven_eight = Meter::new(7, 8).unwrap();
+        f.editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_ratio(1, 1).unwrap(),
+                meter: seven_eight,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::SetLoopRegion {
+                start,
+                end,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let timing = revision.session().timing();
+        let cycle = Some((
+            timing.frame_to_beat(start).unwrap().raw(),
+            timing.frame_to_beat(end).unwrap().raw(),
+        ));
+        let export = SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+        let export_stamp = export.compensated_stamp(start, start, 0).unwrap();
+        assert_eq!(
+            (export_stamp.meter, export_stamp.cycle_beats_raw),
+            (Some(Meter::COMMON_TIME), None)
+        );
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(start)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 5]).unwrap();
+        let history = &runtime.compensation.as_ref().unwrap().delays;
+        let wrapped = history.stamp_at_delay(0).unwrap();
+        assert_eq!((wrapped.arrangement_frame, wrapped.loop_pass), (start, 1));
+        assert_eq!(
+            (wrapped.meter, wrapped.cycle_beats_raw),
+            (Some(Meter::COMMON_TIME), cycle)
+        );
+        let before_wrap = history.stamp_at_delay(2).unwrap();
+        assert_eq!(
+            (before_wrap.arrangement_frame, before_wrap.loop_pass),
+            (24_000, 0)
+        );
+        assert_eq!(
+            (before_wrap.meter, before_wrap.cycle_beats_raw),
+            (Some(seven_eight), cycle)
+        );
+        runtime.apply(SessionPlaybackCommand::Seek(end)).unwrap();
+        runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+        let after_loop = runtime
+            .compensation
+            .as_ref()
+            .unwrap()
+            .delays
+            .stamp_at_delay(0)
+            .unwrap();
+        assert_eq!(
+            (after_loop.arrangement_frame, after_loop.cycle_beats_raw),
+            (end, None)
+        );
+    }
+
+    struct RefuseTrack(TrackId);
+
+    impl CaptureSink for RefuseTrack {
+        fn selects(&self, id: OutputCaptureId) -> bool {
+            id == OutputCaptureId::Track(self.0)
+        }
+
+        fn add(
+            &mut self,
+            id: OutputCaptureId,
+            offset: usize,
+            _: &[Frame],
+        ) -> Result<(), SessionPlaybackError> {
+            if self.selects(id) && offset == 13 {
+                Err(SessionPlaybackError::DeviceRuntime)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn resident_alignment_matches_scalar_automation_capture_seek_and_rollback() {
+        use hex_lattice_contract::{
+            DeviceAutomationTarget, DeviceTypeId, HostGain, NativeDeviceMetadata, ParameterValue,
+        };
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, GainInterpolation,
+            GainPoint,
+        };
+
+        let mut f = fixture(&[&[], &[], &[]], 333);
+        for audio in f.media.values_mut() {
+            *audio = crate::Audio::new(48_000, vec![[0.125, -0.375]; 333]).unwrap();
+        }
+        f.editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 49,
+                end: 313,
+                enabled: true,
+            })
+            .unwrap();
+        let wet = f.tracks[1];
+        for kind in ["hex.rattle", "hex.utility"] {
+            f.editor
+                .execute(hex_project::Command::InsertDevice {
+                    track: wet,
+                    before: None,
+                    state: crate::default_native_device_state(DeviceTypeId::from_static(kind))
+                        .unwrap(),
+                })
+                .unwrap();
+        }
+        // A long independent path must retain its scalar processing without
+        // forcing the short-arrival native track onto that path.
+        let limiter = &hex_devices::limiter::DEFINITION;
+        let limiter_state = limiter
+            .patch_parameter(
+                &limiter.default_state().unwrap(),
+                hex_devices::limiter::parameter::LOOKAHEAD,
+                ParameterValue::Choice(2),
+            )
+            .unwrap();
+        f.editor
+            .execute(hex_project::Command::InsertDevice {
+                track: f.tracks[2],
+                before: None,
+                state: limiter_state,
+            })
+            .unwrap();
+        let second_stage = f.editor.project().track(wet).unwrap().devices()[1].id();
+        let step = f.editor.project().tempo_map().frame_to_beat(170).unwrap();
+        f.editor
+            .execute(hex_project::Command::ReplaceDeviceAutomationTarget {
+                device: second_stage,
+                target: DeviceAutomationTarget::HostOutputGain,
+                points: [
+                    (BeatTime::ZERO, HostGain::ZERO),
+                    (step, HostGain::from_millidb(-3000).unwrap()),
+                ]
+                .into_iter()
+                .map(|(beat, gain)| AutomationPoint {
+                    beat,
+                    value: AutomationValue::new(gain.normalized()).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                })
+                .collect(),
+            })
+            .unwrap();
+        f.editor
+            .execute(hex_project::Command::ReplaceTrackGainEnvelope {
+                track: wet,
+                points: [(BeatTime::ZERO, 0.3), (step, 1.1)]
+                    .into_iter()
+                    .map(|(beat, gain)| GainPoint {
+                        incoming_gain: None,
+                        beat,
+                        gain,
+                        outgoing: GainInterpolation::Linear,
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(revision.arrangement().main_latency_frames(), 288);
+        let mut batched = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut batched, &mut scalar] {
+            runtime.track_faders[0].retarget([0.7, 0.2], 48_000);
+            runtime.set_device_metering(true);
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut warmup = [[0.0; 2]; 32];
+        let mut expected_warmup = warmup;
+        batched.render(&mut warmup).unwrap();
+        scalar.render(&mut expected_warmup).unwrap();
+        assert_eq!(warmup, expected_warmup);
+        assert_eq!(
+            batched
+                .prepare_native_origin_window(32, 32, 0, &mut [None; 4])
+                .unwrap(),
+            Some(32)
+        );
+        let mut output = [[9.0; 2]; 512];
+        assert_eq!(
+            batched.render_internal::<dyn MediaPages>(
+                &mut output,
+                None,
+                None,
+                Some(&mut RefuseTrack(wet)),
+                None,
+            ),
+            Err(SessionPlaybackError::DeviceRuntime)
+        );
+        assert_eq!(output, [[0.0; 2]; 512]);
+        let render = |runtime: &mut SessionPlayback, len| {
+            let mut out = vec![[0.0; 2]; len];
+            let mut track = out.clone();
+            let selection = [wet.value()];
+            let mut observer = |signal, offset, frames: &[Frame]| {
+                if signal == crate::ProjectSignal::Track(wet.value()) {
+                    track[offset..offset + frames.len()].copy_from_slice(frames);
+                }
+            };
+            let mut capture = crate::ProjectOutputTap::new(&selection, &mut observer).unwrap();
+            runtime
+                .render_internal::<dyn MediaPages>(&mut out, None, None, Some(&mut capture), None)
+                .unwrap();
+            (out, track)
+        };
+        for size in [1, 7, 256, 512] {
+            assert_eq!(render(&mut batched, size), render(&mut scalar, size));
+        }
+        assert_eq!(batched.track_faders[0], scalar.track_faders[0]);
+        assert_eq!(batched.arrangement_frame, scalar.arrangement_frame);
+        for runtime in [&mut batched, &mut scalar] {
+            runtime.apply(SessionPlaybackCommand::Seek(61)).unwrap();
+        }
+        for size in [9, 128, 256] {
+            assert_eq!(render(&mut batched, size), render(&mut scalar, size));
+        }
     }
 }

@@ -68,6 +68,7 @@ pub(super) fn retire_failed_finalize_barriers(
     while let Some(request) = deferred.pop_front() {
         match request {
             Request::SaveNew(_)
+            | Request::SaveProjectAs { .. }
             | Request::SaveCurrent
             | Request::SaveCurrentWithFormatUpgrade { .. } => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,
@@ -81,6 +82,7 @@ pub(super) fn retire_failed_finalize_barriers(
             Request::Undo
             | Request::Redo
             | Request::SaveDevicePreset { .. }
+            | Request::SaveDeviceDefault { .. }
             | Request::LoadDevicePreset { .. } => {}
             Request::Open(_)
             | Request::OpenWith { .. }
@@ -112,6 +114,12 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
+        if self.native_automation_recorder.busy() {
+            return Err("finish the current automation touch first");
+        }
         self.device_gesture
             .begin(self.project_generation, target, initial)?;
         Ok(())
@@ -124,6 +132,9 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         self.device_gesture
             .begin_pair(self.project_generation, device, first, second, initial)?;
         Ok(())
@@ -209,13 +220,40 @@ impl EditorView {
         ack: &hex_session::device_gesture::GestureAck,
         snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
     ) -> bool {
-        let terminal = matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel);
+        let committed_plugin = (ack.phase == GesturePhase::Commit
+            && ack.accepted
+            && !ack.preview_retained
+            && !ack.source_lost
+            && !self.owns_vst3_recording(ack.key))
+        .then(|| {
+            let active = self.device_gesture.snapshot()?;
+            (active.key == ack.key
+                && active.sequence == ack.sequence
+                && active.plugin_value.is_some()
+                && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
+            .then_some(active)
+        })
+        .flatten();
+        let terminal =
+            matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
+        let plugin = self.device_gesture.snapshot().is_some_and(|active| {
+            active.key == ack.key && matches!(active.target, GestureTarget::PluginParameter { .. })
+        });
         let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
         if !matched {
             self.refuse_effect_bus_barriers(
                 "effect insertion canceled · device acknowledgment did not match",
             );
             return false;
+        }
+        if let Some(snapshot) = committed_plugin {
+            self.accept_touched_vst3_commit(snapshot);
+        }
+        if plugin
+            && !ack.preview_retained
+            && (terminal || ack.phase == GesturePhase::Begin && !ack.accepted)
+        {
+            super::device_panel::vst3_parameters::refresh(self);
         }
         if terminal {
             self.settle_effect_bus_barriers(ack);
@@ -278,6 +316,9 @@ impl EditorView {
         }
         if self.device_gesture.snapshot().is_none() {
             return self.enqueue(request);
+        }
+        if !self.admit_independent_edit_with_local_draft(&request) {
+            return false;
         }
         if self.pending_requests.len() + self.device_gesture_barriers.len()
             >= super::UI_REQUEST_CAPACITY
@@ -356,16 +397,102 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
-        retire_deferred, retire_failed_finalize_barriers,
-    };
     use hex_session::service::Request;
-    use std::collections::VecDeque;
 
-    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn plugin_source_loss_on_change_releases_edits_and_refuses_deferred_save(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+        use hex_project::{Command, Created, Editor, Project};
+        use hex_session::device_gesture::{
+            GestureAck, GesturePhase, PluginParameterOrigin, PluginParameterValue,
+        };
+        use std::sync::Arc;
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track) = project
+            .execute(Command::AddTrack {
+                name: "plugin control".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Device(device) = project
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![1])
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            project.project().clone(),
+            Arc::default(),
+        );
+        editor.update(cx, |view, _| {
+            let key = view
+                .device_gesture
+                .begin_plugin(PluginParameterOrigin {
+                    context: hex_engine::AudioSourceContext {
+                        project_generation: view.project_generation,
+                        editor_revision: 0,
+                    },
+                    device,
+                    parameter: 0,
+                    page_first: 0,
+                    metadata_revision: 1,
+                    initial: PluginParameterValue::new(0.25).unwrap(),
+                })
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Begin,
+                sequence: 0,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+            let sequence = view
+                .device_gesture
+                .change_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            view.device_gesture.mark_submitted();
+            view.device_gesture_barriers.push_back(Request::SaveCurrent);
+            view.device_gesture_barriers
+                .push_back(Request::Edit(Command::AddTrack {
+                    name: "after lost source".into(),
+                }));
+            view.saving_project = true;
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Change,
+                sequence,
+                accepted: false,
+                preview_retained: false,
+                source_lost: true,
+                reason: Some("plugin source disappeared".into()),
+            }));
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(!view.saving_project);
+            assert!(view.device_gesture_barriers.is_empty());
+            assert_eq!(view.pending_requests.len(), 1);
+            assert!(matches!(
+                view.pending_requests.front(),
+                Some(Request::Edit(_))
+            ));
+        });
+    }
+
     #[gpui::test]
     fn retained_preview_refusal_keeps_edit_barrier_until_cancel(cx: &mut gpui::TestAppContext) {
         use hex_lattice_contract::ParameterValue;
@@ -402,6 +529,7 @@ mod tests {
                 sequence: 0,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             };
             assert!(view.acknowledge_device_gesture(&begin_ack));
@@ -416,6 +544,7 @@ mod tests {
                 sequence,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             }));
             let accepted = view.device_gesture.snapshot().unwrap();
@@ -436,6 +565,7 @@ mod tests {
                 sequence: terminal.sequence(),
                 accepted: false,
                 preview_retained: true,
+                source_lost: false,
                 reason: Some("audio publication queue full".into()),
             };
             assert!(view.acknowledge_device_gesture_with_snapshot(&refusal, Some(accepted)));
@@ -459,6 +589,7 @@ mod tests {
                 sequence: cancel.sequence(),
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             }));
             assert!(view.device_gesture.snapshot().is_none());
@@ -469,6 +600,16 @@ mod tests {
             ));
         });
     }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{
+        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
+        retire_deferred, retire_failed_finalize_barriers,
+    };
+    use hex_session::service::Request;
+    use std::collections::VecDeque;
 
     #[test]
     fn unrelated_event_does_not_retire_a_pending_begin_or_terminal() {
@@ -551,8 +692,43 @@ mod tests {
     #[test]
     fn failed_terminal_retires_finalize_barriers_and_keeps_open_and_edits_ordered() {
         let control = hex_session::service::ExportControl::default();
+        let mut project =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = project
+            .execute(hex_project::Command::AddTrack {
+                name: "default owner".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let hex_project::Created::Device(device) = project
+            .execute(hex_project::Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
         let mut deferred = VecDeque::from([
             Request::SaveCurrent,
+            Request::SaveDeviceDefault {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: 0,
+                    revision: 0,
+                    device,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                },
+                root: "default-data".into(),
+            },
             Request::TuningLibrary {
                 project_generation: 1,
                 revision: 2,
@@ -608,6 +784,7 @@ mod tests {
             sequence: 1,
             accepted: true,
             preview_retained: false,
+            source_lost: false,
             reason: None,
         }
     }

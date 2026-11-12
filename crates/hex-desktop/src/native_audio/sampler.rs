@@ -91,6 +91,7 @@ impl NativeAudioSink {
         add(held, self.edit_hold())
     }
     pub(super) fn opened_output(&mut self, mut output: WorkerPreparedOutput) {
+        self.relinquished_output_identity = None;
         self.plugins.fresh_output();
         // Both production and headless factories must acquire the existing
         // exclusive Lease. Successful fresh construction proves old retirement;
@@ -114,9 +115,10 @@ impl NativeAudioSink {
             })
         };
         if self.worker_owned_resident_graphs
-            && self.desired.as_ref().is_none_or(|source| {
-                source.audio_mode() == hex_session::DocumentAudioMode::Resident
-            })
+            && (self.replacement_output.is_some()
+                || self.desired.as_ref().is_none_or(|source| {
+                    source.audio_mode() == hex_session::DocumentAudioMode::Resident
+                }))
         {
             // The actual fresh Lease has already closed the old teardown frontier. Configure
             // generic graph ownership before either initial publication or Client exposure;
@@ -135,11 +137,12 @@ impl NativeAudioSink {
                             policy.resident_native.storage,
                         )
                         .map_err(str::to_owned)?;
-                    let domains = if self.plugins.wants_profile() {
-                        policy.plugins.domains(policy.ordinary_domains)?
-                    } else {
-                        policy.ordinary_domains
-                    };
+                    let domains =
+                        if self.plugins.wants_profile() && self.bridge_rate_mismatch.is_none() {
+                            policy.plugins.domains(policy.ordinary_domains)?
+                        } else {
+                            policy.ordinary_domains
+                        };
                     control
                         .configure_ordinary_streaming_on_control(
                             domains,
@@ -147,7 +150,9 @@ impl NativeAudioSink {
                             policy.ordinary_stream_metadata_bytes,
                         )
                         .map_err(str::to_owned)?;
-                    if let Err(error) = self.plugins.configure(control, policy.plugins) {
+                    if self.bridge_rate_mismatch.is_none()
+                        && let Err(error) = self.plugins.configure(control, policy.plugins)
+                    {
                         self.plugins.refuse_profile(error);
                     }
                     Ok(())
@@ -210,18 +215,16 @@ impl NativeAudioSink {
             PREFLIGHT.store(false, Release);
             state.preflight_slot = false;
         }
-        if was_draining {
-            if let Ok(policy) = &self.policy {
-                let control = Hold {
-                    retained_bytes: policy.control_backing_quote,
-                    construction_bytes: policy.control_backing_quote,
-                    ..Hold::default()
-                };
-                if self.output.is_some() {
-                    self.output_hold = add(self.output_hold, control);
-                } else if self.open_pending || self.opening.is_some() {
-                    self.retired_sampler_hold = add(self.retired_sampler_hold, control);
-                }
+        if was_draining && let Ok(policy) = &self.policy {
+            let control = Hold {
+                retained_bytes: policy.control_backing_quote,
+                construction_bytes: policy.control_backing_quote,
+                ..Hold::default()
+            };
+            if self.output.is_some() {
+                self.output_hold = add(self.output_hold, control);
+            } else if self.open_pending || self.opening.is_some() {
+                self.retired_sampler_hold = add(self.retired_sampler_hold, control);
             }
         }
         state.hold = Hold::default();
@@ -282,10 +285,8 @@ impl NativeAudioSink {
         if clean && !disturbed {
             self.resume_sampler_forwarding();
         }
-        if clean {
-            if let Some(state) = self.sampler.as_mut() {
-                state.phase = Phase::Refused;
-            }
+        if clean && let Some(state) = self.sampler.as_mut() {
+            state.phase = Phase::Refused;
         }
         if disturbed {
             self.relinquish_output();
@@ -591,16 +592,16 @@ impl NativeAudioSink {
     }
     pub(super) fn shutdown_sampler(&mut self) {
         self.shutdown_edit();
-        if !self.clean_preflight() {
-            if let Some(state) = self.sampler.as_mut() {
-                // The exclusive preflight slot remains closed until process exit.
-                // Failed owner cleanup is never retried by a destructor.
-                let mut quarantine = FAILED_PREFLIGHT
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if quarantine.is_none() {
-                    *quarantine = state.cell.take();
-                }
+        if !self.clean_preflight()
+            && let Some(state) = self.sampler.as_mut()
+        {
+            // The exclusive preflight slot remains closed until process exit.
+            // Failed owner cleanup is never retried by a destructor.
+            let mut quarantine = FAILED_PREFLIGHT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if quarantine.is_none() {
+                *quarantine = state.cell.take();
             }
         }
     }

@@ -1,9 +1,10 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
 //! Selection is view state: `selected` drives the footer controls and a
-//! marquee `group` holds a multi-selection. A blank press creates a node;
-//! shift-drag draws a marquee, and shift-cmd toggles its hits. Shift-press on
-//! a node adds it to the group. Dragging a grouped
+//! marquee `group` holds a multi-selection. A blank click clears selection,
+//! a blank drag draws a marquee, and a double-click creates a node. Holding
+//! the second press lets the user position it. Shift-cmd toggles marquee hits.
+//! Shift-press on a node adds it to the group. Dragging a grouped
 //! node moves the group as one parameter-snapshot gesture, and removal deletes
 //! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
@@ -21,6 +22,7 @@ use hex_widgets::{
 mod axes;
 mod gestures;
 mod group_move;
+mod state_edit;
 use group_move::{frequency_from_x, q_from_y};
 mod node_geometry;
 use node_geometry::{creation_kind, node_position};
@@ -164,7 +166,7 @@ pub(super) fn render_body(
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
-            graph.set_marquee_enabled(true, cx);
+            graph.set_blank_marquee_enabled(true, cx);
             graph.set_backspace_removal(true);
             graph
         });
@@ -336,11 +338,11 @@ pub(super) fn render_body(
                 index as u8 == bank,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                        p.bank = index as u8;
-                        p.group.clear();
-                    }
+                if finalize_controls(view, cx)
+                    && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+                {
+                    p.bank = index as u8;
+                    p.group.clear();
                 }
                 cx.notify();
             })),
@@ -440,7 +442,7 @@ pub(super) fn render_body(
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click to add a node · option-drag to place and shape · shift-drag to select",
+            "double-click to add · hold second click to drag · drag empty space to select",
         ));
     }
     let body = bottom;
@@ -603,6 +605,17 @@ fn submit(
     else {
         return;
     };
+    let Some(entry) = project.device(device) else {
+        return;
+    };
+    let (state, automation) = match state_edit::prepare(entry, &expected, state) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            view.device_panel.message = Some(format!("eq edit refused · {error}"));
+            cx.notify();
+            return;
+        }
+    };
     let reserved_ids = if reserve == 0 {
         0
     } else {
@@ -612,6 +625,7 @@ fn submit(
     };
     view.enqueue_device_barrier(Request::Edit(
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation,
             device,
             expected_state: expected,
             expected_variant,
@@ -696,13 +710,14 @@ fn response_model(
     let (bank, selected, group) = selection;
     let mut authored = state.encode().ok()?;
     for parameter in &device_view.parameters {
-        let effective = effective_parameter_value(
+        let effective = super::eq_automation::effective_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            parameter.value,
+            device_view.type_id,
+            parameter,
         );
         if effective != parameter.value {
             authored = hex_engine::patch_native_device_parameter_for_class(
@@ -1134,7 +1149,9 @@ fn handle_event(
     let (selected, bank) = (panel.selected, panel.bank);
     let group = panel.group.clone();
     if event.phase == ResponseGraphPhase::Remove {
-        if panel.creation.is_some() || current(view, device).as_ref() != Some(&panel.authored_state)
+        if view.selection_delete_blocked()
+            || panel.creation.is_some()
+            || current(view, device).as_ref() != Some(&panel.authored_state)
         {
             return;
         }
@@ -1192,16 +1209,16 @@ fn handle_event(
             }
         }
         ResponseGraphPhase::Select => {
-            if finalize_controls(view, cx) {
-                if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                    selection::select_node(
-                        &mut p.selected,
-                        &mut p.group,
-                        &mut p.collapse,
-                        id,
-                        event.modifiers.shift,
-                    );
-                }
+            if finalize_controls(view, cx)
+                && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+            {
+                selection::select_node(
+                    &mut p.selected,
+                    &mut p.group,
+                    &mut p.collapse,
+                    id,
+                    event.modifiers.shift,
+                );
             }
         }
         ResponseGraphPhase::Begin => {
@@ -1209,9 +1226,9 @@ fn handle_event(
                 p.collapse = None;
             }
             if group.len() > 1 && group.contains(&id) {
-                gestures::group_event(view, device, &group, event);
+                gestures::group_event(view, cx, device, *node, &group, event);
             } else {
-                gestures::paired_event(view, device, *node, event);
+                gestures::paired_event(view, cx, device, *node, event);
             }
         }
         ResponseGraphPhase::Change | ResponseGraphPhase::Commit | ResponseGraphPhase::Cancel => {
@@ -1221,9 +1238,9 @@ fn handle_event(
                 .get(&device)
                 .is_some_and(|p| p.group_drag.is_some())
             {
-                gestures::group_event(view, device, &group, event);
+                gestures::group_event(view, cx, device, *node, &group, event);
             } else {
-                gestures::paired_event(view, device, *node, event);
+                gestures::paired_event(view, cx, device, *node, event);
             }
         }
         _ => {}
@@ -1390,7 +1407,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

@@ -3,6 +3,8 @@ use super::*;
 use crate::plugin_worker::native_tests::original_instance;
 use std::{fs, path::PathBuf, process::Command};
 mod controller;
+mod editor_pcm;
+mod parameter_change;
 mod stopped;
 
 fn fixture_child(fault: u32, name: &str) -> bool {
@@ -62,7 +64,7 @@ fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
         slot.take_terminal(),
         Some(Err(StateCaptureRefusal::StillChanging))
     ));
-    assert!(slot.phase == Phase::Idle && slot.refusal.is_none());
+    assert!(slot.phase == Phase::Idle);
     assert!(
         slot.take_terminal().is_none(),
         "a terminal is consumed once"
@@ -70,18 +72,21 @@ fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
     // The freed mailbox admits the next operation and carries real bytes.
     slot.ordinal = 5;
     slot.phase = Phase::Requested;
-    let mut payload = Payload {
-        len: 2,
-        ..Payload::default()
-    };
-    payload.bytes[..2].copy_from_slice(&[7, 9]);
+    let payload = NativeDeviceState::new(
+        hex_plugin_state::TYPE_ID,
+        hex_plugin_state::STATE_VERSION,
+        vec![9; 150_545],
+    )
+    .unwrap();
+    let original = payload.clone();
     slot.complete(5, Ok(payload)).unwrap();
     let Some(Ok(captured)) = slot.take_terminal() else {
         panic!("captured bytes")
     };
-    assert_eq!(&captured.bytes[..captured.len], &[7, 9]);
-    // Completing an idle slot is a protocol fault, not a silent overwrite.
-    assert!(slot.complete(5, Ok(payload)).is_err());
+    assert_eq!(captured, original);
+    assert!(captured.shares_payload_storage_with(&original));
+    // Completing an idle slot is a protocol fault.
+    assert!(slot.complete(5, Ok(original)).is_err());
 }
 
 fn trace_path() -> PathBuf {
@@ -190,6 +195,46 @@ fn actual_worker_edit_receipts_preserve_gestures_and_revoke_with_source() {
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
 }
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_idle_editor_poll_applies_a_burst_without_advancing_audio() {
+    const NAME: &str = "plugin_worker::capture::tests::actual_idle_editor_poll_applies_a_burst_without_advancing_audio";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit editor burst while transport is idle",
+    )
+    .unwrap();
+    let mut edits = Vec::new();
+    let until = Instant::now() + Duration::from_secs(2);
+    while edits.len() < 14 {
+        match owner.poll_recovery_edits_on_control(true) {
+            Ok(Some(batch)) => edits.extend_from_slice(batch.edits.as_slice()),
+            Ok(None) | Err("native edit observation is busy") => {}
+            Err(error) => panic!("idle editor poll failed: {error}"),
+        }
+        assert!(Instant::now() < until, "idle editor burst must drain");
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 14);
+    assert!(edits.iter().all(|edit| edit.first_frame == 0));
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    let request = begin(&mut owner);
+    let captured = complete(&mut owner, &request);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
 fn wait_held() {
     let until = Instant::now() + Duration::from_secs(2);
     loop {
@@ -321,30 +366,6 @@ fn actual_worker_capture_preserves_pair_storage_and_exact_operation() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_worker_capture_projection_failure_releases_exact_operation() {
-    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
-    let first = begin(&mut owner);
-    let until = Instant::now() + Duration::from_secs(2);
-    loop {
-        match owner.poll_state_capture_using(&first, |_| Err("fixture allocation refusal")) {
-            Ok(NativeWorkerCaptureProgress::Pending) => {
-                assert!(Instant::now() < until);
-                thread::yield_now();
-            }
-            Err("fixture allocation refusal") => break,
-            result => panic!("unexpected capture result: {result:?}"),
-        }
-    }
-    refused(&mut owner, &first);
-    let next = begin(&mut owner);
-    complete(&mut owner, &next);
-    callback_block(&owner, &mut callback, 0);
-    let retired = owner.retire_on_control().unwrap();
-    assert!(retired.failure.is_none() && retired.native.status.success());
-}
-
-#[test]
-#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_worker_capture_held_sdk_keeps_callback_pcm_and_revocation_wins() {
     if fixture_child(
         71,
@@ -447,6 +468,10 @@ fn actual_worker_capture_failure_retains_original_error_and_native_reap() {
     }
     let retired = owner.retire_on_control().unwrap();
     assert!(matches!(retired.failure, Some(Error::Worker(6))));
+    let diagnostic = owner.take_failure_diagnostic_on_control().unwrap();
+    assert!(diagnostic.contains("exchange=control bundle=\"processing.vst3\""));
+    assert!(diagnostic.contains("worker code 6"));
+    assert!(owner.take_failure_diagnostic_on_control().is_none());
     assert!(!retired.native.status.success() && retired.native.terminal.is_none());
     assert!(owner.owns_callback(&callback));
 }
