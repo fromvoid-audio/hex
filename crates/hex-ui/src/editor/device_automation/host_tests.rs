@@ -856,7 +856,7 @@ fn selected_beats(visual: &VisualTestContext, editor: &Entity<EditorView>) -> Ve
             .devices
             .selected
             .as_ref()
-            .map(|selected| selected.beats.clone())
+            .map(|selected| selected.keys.iter().map(|key| key.beat).collect())
             .unwrap_or_default()
     })
 }
@@ -2267,4 +2267,81 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
     });
     assert!(lane_points(&visual, &editor, device, other).is_empty());
     assert_eq!(lane_points(&visual, &editor, device, target), duplicate);
+}
+
+#[gpui::test]
+fn same_grid_line_keeps_both_points_and_either_can_move_again(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let target = DeviceAutomationTarget::Parameter(ParameterId::from_static(1));
+    let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
+    let points = [(1, 0.8), (3, 0.2)].map(|(quarters, value)| AutomationPoint {
+        beat: beat(quarters),
+        value: AutomationValue::new(value).unwrap(),
+        outgoing: AutomationInterpolation::Linear,
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: points.to_vec(),
+            }))
+        );
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Quarter;
+    });
+    pump(&mut visual, &editor);
+    header_assign(&mut visual, &editor, owner, target);
+    let fraction = |visual: &VisualTestContext, quarters| {
+        editor.read_with(visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let frame = state
+                .project
+                .tempo_map()
+                .beat_to_frame(beat(quarters))
+                .unwrap();
+            view.visible_viewport(state.timeline_frames)
+                .fraction(frame)
+                .unwrap()
+        })
+    };
+    let first_x = fraction(&visual, 1);
+    let right_x = fraction(&visual, 3);
+    let from = lane_value_point(&mut visual, device, target, right_x, 0.2);
+    let to = lane_value_point(&mut visual, device, target, first_x, 0.2);
+    let mut joined = points;
+    joined[1].beat = joined[0].beat;
+    let modifiers = Modifiers::default();
+    visual.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), modifiers);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.automation_view.devices.draft.as_ref().unwrap().points,
+            joined
+        );
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.automation_view
+                .devices
+                .pending
+                .as_ref()
+                .unwrap()
+                .points,
+            joined
+        );
+    });
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), joined);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), joined);
+    lane_drag(&mut visual, to, from, modifiers);
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
 }

@@ -1632,3 +1632,30 @@ fn host_gain_reads_preserve_unrounded_frames_and_existing_linear_precedence() {
     expected(&with_held, 1, held.normalized());
     expected(&with_held, 5, held.normalized());
 }
+
+#[test]
+fn native_automation_ramps_to_the_incoming_point_and_jumps_at_the_shared_beat() {
+    let descriptor = descriptor();
+    let program = PreparedParameterAutomation::new(
+        vec![ParameterAutomationLane {
+            descriptor,
+            semantics: semantics(),
+            points: 0..4,
+        }],
+        [(0, 0.0), (20, 1.0), (20, 0.25), (40, 0.75)]
+            .map(|(beat_raw, normalized)| ParameterAutomationPoint {
+                beat_raw,
+                normalized,
+                step: false,
+            })
+            .to_vec(),
+    )
+    .unwrap();
+    let block = program.block(Some(&Clock), 42);
+    for (offset, expected) in [(10, 5.0), (20, 3.0), (30, 5.0)] {
+        assert_eq!(
+            block.value_at(descriptor.id, offset),
+            Some(ParameterValue::Float(expected))
+        );
+    }
+}

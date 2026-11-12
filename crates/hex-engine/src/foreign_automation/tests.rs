@@ -765,3 +765,47 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
     };
     assert!(Program::prepare_source(&[], wrong, &tempo, profile).is_err());
 }
+
+#[test]
+fn vst3_shared_beat_emits_the_incoming_ramp_then_the_jump() {
+    use AutomationInterpolation::Linear;
+    let tempo = tempo();
+    let lane = lane(
+        0,
+        vec![
+            point(BeatTime::ZERO, 0.0, Linear),
+            point(BeatTime::ONE, 1.0, Linear),
+            point(BeatTime::ONE, 0.25, Linear),
+            point(BeatTime::from_quarters(2).unwrap(), 0.75, Linear),
+        ],
+    );
+    let capability = ParameterCapability {
+        id: 0,
+        steps: 0,
+        normalized_base_bits: 0,
+    };
+    let program = Program::prepare(
+        &[lane],
+        CLASS,
+        &[capability],
+        &tempo,
+        QuantumProfile::arbitrary(8, 2),
+    )
+    .unwrap()
+    .unwrap();
+    let output = render(
+        &program,
+        &[3997, 3998, 3999, 4000, 4001, 4002].map(Some),
+        &[],
+    );
+    for (point, (frame, value)) in output.iter().zip([
+        (0, 3997.0 / 4000.0),
+        (2, 3999.0 / 4000.0),
+        (3, 0.25),
+        (5, 0.25 + 1.0 / 8000.0),
+    ]) {
+        assert_eq!(point.frame, frame);
+        assert!((point.normalized - value).abs() < 1e-12);
+    }
+    assert_eq!(output.len(), 4);
+}

@@ -140,9 +140,11 @@ pub(in crate::editor) fn rows(
                     .selected
                     .as_ref()
                     .filter(|selected| selected.target == target)
-                    .and_then(|selected| match selected.beats.as_slice() {
-                        [beat] => points.iter().find(|point| point.beat == *beat).copied(),
-                        _ => None,
+                    .filter(|selected| selected.keys.len() == 1)
+                    .and_then(|selected| {
+                        (0..points.len())
+                            .find(|&index| selected.contains(target, PointKey::at(points, index)))
+                            .map(|index| points[index])
                     })
             })
             .map_or(live, |point| point.value.get());
@@ -309,18 +311,22 @@ fn plot(
                             section.end,
                             |point| frame(point.beat),
                         );
+                        let first_index = range.start;
                         let points = all_points.get(range).unwrap_or_default();
                         if let Some(first) = points.first() {
                             let selected = lanes.selected.as_ref();
                             let paths = super::plot_geometry::reduce(
-                                points.iter().filter_map(|value| {
+                                points.iter().enumerate().filter_map(|(index, value)| {
                                     let position = xy(value.beat, value.value.get())?;
                                     Some(super::plot_geometry::PlotPoint {
                                         x: f32::from(position.x),
                                         y: f32::from(position.y),
                                         step: value.outgoing == AutomationInterpolation::Step,
                                         selected: selected.is_some_and(|selected| {
-                                            selected.contains(target, value.beat)
+                                            selected.contains(
+                                                target,
+                                                PointKey::at(all_points, first_index + index),
+                                            )
                                         }),
                                     })
                                 }),
@@ -658,35 +664,42 @@ impl EditorView {
         let pos = [f32::from(event.position.x), f32::from(event.position.y)];
         let hit = points
             .iter()
-            .find(|value| {
-                point_position(&state.project, viewport, rect, value)
-                    .is_some_and(|[x, y]| (x - pos[0]).abs() <= 6.0 && (y - pos[1]).abs() <= 6.0)
+            .enumerate()
+            .filter_map(|(index, value)| {
+                let [x, y] = point_position(&state.project, viewport, rect, value)?;
+                let dx = (x - pos[0]).abs();
+                let dy = (y - pos[1]).abs();
+                (dx <= 6.0 && dy <= 6.0).then_some((index, dx * dx + dy * dy))
             })
-            .copied();
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(index, _)| index);
         let revision = state.revision;
         let previous = lanes.selected.clone();
         let previous_range = lanes.range;
         let grid = self
             .snap_grid
             .with_platform_modifier(event.modifiers.platform);
-        if let Some(hit) = hit {
+        if let Some(grabbed) = hit {
+            let hit = points[grabbed];
+            let initial_key = PointKey::at(points, grabbed);
             // Pressing a selected point (or Shift) moves the whole selection.
-            let mut beats = previous
+            let mut keys = previous
                 .as_ref()
-                .map(|selected| selected.beats_in(target).to_vec())
+                .filter(|selected| selected.target == target)
+                .map(|selected| selected.keys.clone())
                 .unwrap_or_default();
-            let grouped = event.modifiers.shift || beats.contains(&hit.beat);
-            if !grouped {
-                beats.clear();
+            if !event.modifiers.shift && !keys.contains(&initial_key) {
+                keys.clear();
             }
-            beats.push(hit.beat);
-            let Some(selection) = Selection::new(target, beats) else {
+            keys.push(initial_key);
+            let Some(selection) = Selection::new(target, keys) else {
                 return false;
             };
-            let (group, rest) = points
-                .iter()
-                .partition(|point| selection.contains(target, point.beat));
-            let collapse = !event.modifiers.shift && selection.beats.len() > 1;
+            let (group, rest) =
+                points.iter().copied().enumerate().partition(|(index, _)| {
+                    selection.contains(target, PointKey::at(points, *index))
+                });
+            let collapse = !event.modifiers.shift && selection.keys.len() > 1;
             let points = points.to_vec();
             if !self.capture_device_automation_pointer(target, window, cx) {
                 return false;
@@ -699,6 +712,8 @@ impl EditorView {
                 points,
                 group,
                 rest,
+                grabbed,
+                initial_key,
                 collapse,
                 initial: hit,
                 point: hit,
@@ -713,20 +728,28 @@ impl EditorView {
                 return false;
             }
             let index = points.partition_point(|point| point.beat < value.beat);
-            let rest = points.to_vec();
-            let mut points = rest.clone();
+            let mut points = points.to_vec();
             points.insert(index, value);
+            let initial_key = PointKey::at(&points, index);
+            let rest = points
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .collect();
             if !self.capture_device_automation_pointer(target, window, cx) {
                 return false;
             }
             self.automation_view.devices.range = None;
-            self.automation_view.devices.selected = Some(Selection::one(target, value.beat));
+            self.automation_view.devices.selected = Some(Selection::one(target, initial_key));
             self.automation_view.devices.draft = Some(Draft {
                 target,
                 revision,
                 points,
-                group: vec![value],
+                group: vec![(index, value)],
                 rest,
+                grabbed: index,
+                initial_key,
                 collapse: false,
                 initial: value,
                 point: value,
@@ -867,7 +890,7 @@ impl EditorView {
         if released && let Some(draft) = self.automation_view.devices.draft.take() {
             if draft.collapse && draft.point == draft.initial {
                 self.automation_view.devices.selected =
-                    Some(Selection::one(target, draft.initial.beat));
+                    Some(Selection::one(target, draft.initial_key));
             }
             self.commit_device_automation(draft.target, draft.points, cx);
         }
@@ -905,8 +928,8 @@ impl EditorView {
     }
 
     /// Moves the pressed point to the pointer and the rest of its group by the
-    /// same beat/value delta. A move that would collide with an unselected
-    /// point or cross beat zero keeps the previous candidate.
+    /// same beat/value delta. Two points may meet at a beat in their original
+    /// order. A third point or a move before beat zero keeps the last preview.
     fn move_device_automation_pointer(&mut self, pos: [f32; 2], free: bool) {
         let Some(draft) = self.automation_view.devices.draft.as_ref() else {
             return;
@@ -945,10 +968,16 @@ impl EditorView {
         point.outgoing = draft.initial.outgoing;
         let beat_delta = i128::from(point.beat.raw()) - i128::from(draft.initial.beat.raw());
         let value_delta = point.value.get() - draft.initial.value.get();
-        let mut moved = Vec::with_capacity(draft.group.len());
-        for original in &draft.group {
-            if original.beat == draft.initial.beat {
-                moved.push(point);
+        let mut candidate = Vec::with_capacity(draft.points.len());
+        candidate.extend(
+            draft
+                .rest
+                .iter()
+                .map(|&(index, point)| (index, point, false)),
+        );
+        for &(index, original) in &draft.group {
+            if index == draft.grabbed {
+                candidate.push((index, point, true));
                 continue;
             }
             let Some(beat) = u64::try_from(i128::from(original.beat.raw()) + beat_delta)
@@ -963,28 +992,36 @@ impl EditorView {
             else {
                 return;
             };
-            moved.push(AutomationPoint {
-                beat,
-                value,
-                outgoing: original.outgoing,
-            });
+            candidate.push((
+                index,
+                AutomationPoint {
+                    beat,
+                    value,
+                    outgoing: original.outgoing,
+                },
+                true,
+            ));
         }
-        if moved
-            .iter()
-            .any(|moved| draft.rest.iter().any(|rest| rest.beat == moved.beat))
+        candidate.sort_unstable_by_key(|(index, point, _)| (point.beat, *index));
+        if candidate
+            .windows(3)
+            .any(|run| run[0].1.beat == run[2].1.beat)
         {
             return;
         }
-        let mut points = draft.rest.clone();
-        points.extend_from_slice(&moved);
-        points.sort_unstable_by_key(|point| point.beat);
+        let points: Vec<_> = candidate.iter().map(|(_, point, _)| *point).collect();
+        let keys = candidate
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, moved))| *moved)
+            .map(|(index, _)| PointKey::at(&points, index))
+            .collect();
         let target = draft.target;
         if let Some(draft) = &mut self.automation_view.devices.draft {
             draft.points = points;
             draft.point = point;
         }
-        self.automation_view.devices.selected =
-            Selection::new(target, moved.iter().map(|point| point.beat).collect());
+        self.automation_view.devices.selected = Selection::new(target, keys);
     }
 }
 
