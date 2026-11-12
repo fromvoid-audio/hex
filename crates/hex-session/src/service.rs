@@ -1721,6 +1721,7 @@ impl Service {
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             solo_views,
+            duplicate_views,
             export_events: export_event_rx,
             export_busy,
             shutdown,
