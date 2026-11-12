@@ -624,6 +624,44 @@ impl Render for EditorView {
         let console_drag_entity = cx.entity();
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
+        let key_context = if super::device_panel::picker_is_open(self) {
+            "hex_device_picker_root"
+        } else if self.changelog.is_open() {
+            "hex_changelog"
+        } else if self.track_name.is_editing() {
+            "hex_track_name hex_text_editing"
+        } else if self.clip_name_edit.is_some() || self.sections.naming() || self.locators.naming()
+        {
+            "hex_clip_name hex_text_editing"
+        } else if self.tuning.open {
+            "hex_tuning"
+        } else if self.theme_settings.open {
+            "hex_theme_settings"
+        } else if self.controller_input_is_open() {
+            "hex_controller_input"
+        } else if self.context_menu.is_some() {
+            "hex_context_menu"
+        } else if self.project_tempo_editing(cx) {
+            "hex_project_tempo_editor hex_text_editing"
+        } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
+            "hex_gain_numeric_editor"
+        } else if self.mode == super::EditorMode::Arrangement
+            && self.automation_view.enabled
+            && self.focus.is_focused(window)
+        {
+            "hex_editor hex_arrangement_automation"
+        } else if self.mode == super::EditorMode::Arrangement
+            && self.automation_view.enabled
+            && self.track_header_focused(window)
+        {
+            "hex_editor hex_automation_track_header"
+        } else {
+            self.browser_key_context(window, cx)
+        };
+        let mut key_context = gpui::KeyContext::parse(key_context).unwrap_or_default();
+        if self.has_arrangement_sections() {
+            key_context.add("hex_arrangement_sections");
+        }
         div()
             // Pointer presses leave the idle poll cadence before any handler runs.
             .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
@@ -658,42 +696,7 @@ impl Render for EditorView {
             .child(self.project_spectrum_pointer_events(cx))
             .child(self.clip_detail_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if super::device_panel::picker_is_open(self) {
-                "hex_device_picker_root"
-            } else if self.changelog.is_open() {
-                "hex_changelog"
-            } else if self.track_name.is_editing() {
-                "hex_track_name hex_text_editing"
-            } else if self.clip_name_edit.is_some()
-                || self.sections.naming()
-                || self.locators.naming()
-            {
-                "hex_clip_name hex_text_editing"
-            } else if self.tuning.open {
-                "hex_tuning"
-            } else if self.theme_settings.open {
-                "hex_theme_settings"
-            } else if self.controller_input_is_open() {
-                "hex_controller_input"
-            } else if self.context_menu.is_some() {
-                "hex_context_menu"
-            } else if self.project_tempo_editing(cx) {
-                "hex_project_tempo_editor hex_text_editing"
-            } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
-                "hex_gain_numeric_editor"
-            } else if self.mode == super::EditorMode::Arrangement
-                && self.automation_view.enabled
-                && self.focus.is_focused(window)
-            {
-                "hex_editor hex_arrangement_automation"
-            } else if self.mode == super::EditorMode::Arrangement
-                && self.automation_view.enabled
-                && self.track_header_focused(window)
-            {
-                "hex_editor hex_automation_track_header"
-            } else {
-                self.browser_key_context(window, cx)
-            })
+            .key_context(key_context)
             // The canonical source handle may leave the viewport while its
             // resize preview remains active. Keep the same captured payload's
             // latest pointer on this stable root, not a virtualized child.
@@ -868,6 +871,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.section_loop_key_down(event, window) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if !view.time_selection_key_down(event, window, cx)
                     && !view.tuning_audition_down(event, window, cx)
                     && !view.clip_gain_key_down(event, cx)
@@ -877,6 +884,11 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.section_loop_key_up(event, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.drag_bounce_key_up(event) {
                     cx.notify();
                 }

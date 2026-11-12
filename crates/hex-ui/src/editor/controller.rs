@@ -2371,6 +2371,7 @@ impl EditorView {
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
             self.time_selection_key_held = false;
+            self.section_loop_key = Default::default();
             self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
