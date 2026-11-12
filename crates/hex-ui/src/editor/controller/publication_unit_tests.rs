@@ -322,7 +322,7 @@ fn clip_preview_requires_exact_applied_revision_and_current_gesture() {
         },
         gesture: 9,
         sequence: 3,
-        track,
+        destination: hex_session::service::ClipMovePreviewDestination::Existing(track),
         position: hex_project::ClipGroupPosition::Audio(240),
         mode: hex_session::service::ArrangementMoveMode::Move,
     };

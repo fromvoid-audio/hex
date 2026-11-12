@@ -70,8 +70,9 @@ mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
 pub use clip_audition::{
-    ArrangementMoveAudition, ArrangementMoveMode, ArrangementPlayStartAudition,
-    ArrangementStretchAudition, ClipMovePreviewIdentity, PlayStartEdit,
+    ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
+    ArrangementPlayStartAudition, ArrangementStretchAudition, ClipMovePreviewDestination,
+    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit,
 };
 mod publication_wait;
 mod resident_audio;
@@ -638,8 +639,8 @@ pub enum Request {
         revision: u64,
         command: Command,
     },
-    /// Existing-track drag release, bound to the gesture's source. Only clip
-    /// move/copy commands are accepted; unrelated worker activity may precede it,
+    /// Existing clip drag release, bound to the gesture's source. Existing and
+    /// new-track move/copy commands are accepted; unrelated work may precede it,
     /// but an intervening canonical edit must refuse rather than retarget it.
     MoveExistingClips {
         project_generation: u64,
@@ -3045,6 +3046,14 @@ fn run_worker(
                             && !plugin_recording.pending(),
                     )
                 });
+                // Cancelling a preview can prepare a new canonical audio owner.
+                if let Some(snapshot) = resident_snapshot.as_ref()
+                    && compiled
+                        .as_ref()
+                        .is_some_and(|(_, prepared)| !Arc::ptr_eq(prepared, &snapshot.prepared))
+                {
+                    compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                }
                 return audio_sink::ControlPoll {
                     pending,
                     ..Default::default()
@@ -4207,6 +4216,10 @@ fn run_worker(
                     | Command::MoveMidiClipWithOverwrite { .. }
                     | Command::CopyClipTo { .. }
                     | Command::CopyMidiClipTo { .. }
+                    | Command::MoveClipToNewTrack { .. }
+                    | Command::MoveMidiClipToNewTrack { .. }
+                    | Command::CopyClipToNewTrack { .. }
+                    | Command::CopyMidiClipToNewTrack { .. }
                     | Command::DuplicateAliasClipToNewTrack { .. } => true,
                     Command::MoveClipsWithOverwrite { clips, .. }
                     | Command::DuplicateAliasClipsAt { clips, .. } => {

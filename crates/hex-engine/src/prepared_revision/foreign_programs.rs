@@ -18,6 +18,11 @@ pub enum ForeignProgramFrontier {
 }
 
 impl PreparedRevision {
+    /// Whether the Arrangement can advance a retained worker's program key.
+    pub fn has_arrangement_foreign_programs(&self) -> bool {
+        nodes(&self.arrangement).any(|node| node.automation.foreign().is_some())
+    }
+
     /// Preserve programs needed to finish the original worker's open quantum.
     /// Call before sharing/publication, using the actual preceding revision.
     /// `received` must query that exact worker. Unknown/Empty conservatively
@@ -31,7 +36,7 @@ impl PreparedRevision {
         if !self.foreign_automation.is_empty() || !previous.foreign_automation.is_empty() {
             return Err(Invalid("legacy foreign program history is unsupported"));
         }
-        if nodes(&self.arrangement).any(|node| node.automation.foreign().is_some()) {
+        if self.has_arrangement_foreign_programs() {
             self.arrangement
                 .retain_foreign_programs(&previous.arrangement, &mut received)?;
         }

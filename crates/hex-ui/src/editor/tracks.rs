@@ -1524,7 +1524,7 @@ impl EditorView {
         }
         if self
             .applied_clip_preview
-            .is_some_and(|(_, applied)| applied.track == track_id)
+            .is_some_and(|(_, applied)| applied.destination.existing_track() == Some(track_id))
             && let Some((_, frame)) = self.audible_clip_move_anchor()
             && let Some(position) = viewport.fraction(frame)
         {

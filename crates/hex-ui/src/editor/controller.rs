@@ -6168,7 +6168,9 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 gesture: 13,
                 sequence: 2,
-                track: canonical.project.tracks()[0].id(),
+                destination: hex_session::service::ClipMovePreviewDestination::Existing(
+                    canonical.project.tracks()[0].id(),
+                ),
                 position: hex_project::ClipGroupPosition::Audio(1_000),
                 mode: hex_session::service::ArrangementMoveMode::Move,
             };

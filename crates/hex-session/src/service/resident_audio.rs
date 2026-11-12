@@ -16,6 +16,9 @@ pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
+    /// Exact context used to prepare this graph. A retained overlay based on an
+    /// older editor revision may still need accounting while it is rebased.
+    pub(super) prepared_context: hex_engine::AudioSourceContext,
     pub(super) prepared: Arc<PreparedRevision>,
     pub(super) resources: PreparedDeviceResources,
     pub(super) inputs: RuntimeInputs,
@@ -323,9 +326,17 @@ impl Inputs<'_> {
         } else {
             prepared
         };
-        let prepared = match self.current {
-            Some(current) => prepared
-                .with_foreign_program_history_from(&current.prepared, |binding| {
+        // A queued preview can already own a newer program received by the
+        // worker. Keep its history while preparing the canonical edit.
+        let predecessor = self.current.map(|current| {
+            self.admission
+                .preview
+                .filter(|preview| preview.follows(current))
+                .map_or(current, |preview| &preview.snapshot)
+        });
+        let prepared = match predecessor {
+            Some(previous) => prepared
+                .with_foreign_program_history_from(&previous.prepared, |binding| {
                     sink.received_foreign_program_on_control(binding)
                 })?,
             None => prepared,
@@ -335,6 +346,7 @@ impl Inputs<'_> {
             None => prepared,
         };
         let snapshot = Snapshot {
+            prepared_context: context,
             file_sources,
             resources,
             prepared: Arc::new(prepared),
@@ -1950,6 +1962,37 @@ impl Session {
         })?;
         Ok(prepared)
     }
+    /// Restore canonical audio as a successor to a preview that may have
+    /// advanced a foreign worker. The older canonical graph can lack the
+    /// program of an unfinished quantum.
+    pub(super) fn restore_resident_preview_with_foreign_programs(
+        &self,
+        current: &Snapshot,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = Inputs {
+            native_parameter_input: current.prepared.native_parameter_input_target(),
+            ..self.resident_seek_inputs(admission, Some(current), None)?
+        };
+        let project = self.project();
+        let mut snapshot = inputs.prepare_with_gain(
+            project,
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            current.prepared.gain_recording_track(),
+            None,
+            context,
+            None,
+        )?;
+        inputs.publish(&mut snapshot, project, sink, context)?;
+        Ok(snapshot)
+    }
+
     pub(super) fn prepare_resident_gain_recording(
         &self,
         track: hex_project::TrackId,
@@ -3966,6 +4009,7 @@ pub(super) mod tests {
                     )
                     .unwrap();
                 let captured = Snapshot {
+                    prepared_context: current.prepared_context,
                     file_sources: current.file_sources.clone(),
                     prepared: Arc::clone(&current.prepared),
                     resources: current.resources.capture_on_control(bytes).unwrap(),
