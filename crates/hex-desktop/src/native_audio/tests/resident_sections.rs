@@ -802,6 +802,14 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
             source_period[((start + index as u64) % loop_frames % 64) as usize]
         })
     };
+    // A looped section launch now follows the same canonical loop edit as
+    // the L-held UI gesture; wait for its publication before launching.
+    event = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: loop_frames,
+        enabled: true,
+    }));
+    (applied, _) = h.applied(applied);
     let mut intent = h.seek_intent(2, event.state.revision, None, None);
     intent.destination_frame = 0;
     intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
