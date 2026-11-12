@@ -1078,12 +1078,13 @@ pub(super) struct PendingOutcome {
 impl PendingOutcome {
     pub(super) fn finish_recovery(
         &mut self,
+        metric: &'static str,
         elapsed: Duration,
         result: Result<Option<PathBuf>, String>,
         failure: Option<Arc<super::RecoveryFailure>>,
     ) {
         if self.diagnostic.is_some() {
-            self.recovery_timing = Some(("paste_recovery_us", elapsed));
+            self.recovery_timing = Some((metric, elapsed));
         }
         match result {
             Ok(Some(_)) => {

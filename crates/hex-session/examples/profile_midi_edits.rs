@@ -115,9 +115,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(arg) if arg == "--duplicate-no-recovery" => return profile_duplicate_service(false),
         Some(arg) if arg == "--paste-recovery" => return profile_paste_service(true),
         Some(arg) if arg == "--paste-no-recovery" => return profile_paste_service(false),
+        Some(arg) if arg == "--switch-recovery" => return profile_switch_service(true),
+        Some(arg) if arg == "--switch-no-recovery" => return profile_switch_service(false),
         Some(_) => {
             return Err(
-                "expected --recovery, --no-recovery, --duplicate-recovery, --duplicate-no-recovery, --paste-recovery, or --paste-no-recovery".into(),
+                "expected --recovery, --no-recovery, --duplicate-recovery, --duplicate-no-recovery, --paste-recovery, --paste-no-recovery, --switch-recovery, or --switch-no-recovery".into(),
             );
         }
         None => {}
@@ -732,4 +734,173 @@ fn next_terminal(service: &Service) -> Result<Event, Box<dyn Error>> {
             return Ok(event);
         }
     }
+}
+
+/// Measure queued switches on the actual control worker; this is not native UI or audio timing.
+fn profile_switch_service(recovery: bool) -> Result<(), Box<dyn Error>> {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    use std::sync::{Arc, Mutex};
+    let project = fixture()?;
+    let (profile, opened) = WorkerProfile::open(&project, recovery)?;
+    let service = &profile.service;
+    let track = opened.state.project.tracks()[0].id();
+    let mut revision = opened.state.revision;
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&records);
+    service.set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+        if let Some(request) = event
+            .request
+            .filter(|request| request.operation == Some("toggle_mute"))
+            && let Ok(mut records) = sink.lock()
+        {
+            records.push((
+                request.request_id,
+                event.stage,
+                Instant::now(),
+                event.details.clone(),
+                event.details_truncated,
+            ));
+        }
+    })))?;
+    let started_run = Instant::now();
+    for iteration in 0..4 {
+        records
+            .lock()
+            .map_err(|_| "diagnostic lock poisoned")?
+            .clear();
+        let started = Instant::now();
+        submit(service, Request::Edit(Command::ToggleMute(track)))?;
+        submit(service, Request::Edit(Command::ToggleMute(track)))?;
+        let mut observed = [None, None];
+        let mut terminals = Vec::new();
+        let until = started + Duration::from_secs(5);
+        while terminals.len() < 2 {
+            if Instant::now() >= until || started_run.elapsed() >= Duration::from_secs(20) {
+                return Err("queued switch measurement timed out".into());
+            }
+            loop {
+                match service.try_track_switch_view() {
+                    Ok(view) => {
+                        if view.project_generation == 1 {
+                            for (index, slot) in observed.iter_mut().enumerate() {
+                                if view.previous_revision == revision + index as u64
+                                    && view.revision == view.previous_revision + 1
+                                {
+                                    *slot = Some(started.elapsed().as_micros());
+                                }
+                            }
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            match service.try_event() {
+                Ok(event) => {
+                    verify_event(&event)?;
+                    if event.request_complete {
+                        terminals.push(event);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => thread::yield_now(),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if terminals[0].state.revision != revision + 1
+            || terminals[1].state.revision != revision + 2
+            || !terminals[0]
+                .state
+                .project
+                .track(track)
+                .ok_or("track missing")?
+                .muted()
+            || terminals[1]
+                .state
+                .project
+                .track(track)
+                .ok_or("track missing")?
+                .muted()
+        {
+            return Err("switch states or ordering differ".into());
+        }
+        profile.verify_journal(&terminals[1].state.project)?;
+        let rows = records.lock().map_err(|_| "diagnostic lock poisoned")?;
+        let ids: Vec<_> = rows
+            .iter()
+            .filter_map(|(id, stage, _, _, _)| {
+                matches!(stage, DiagnosticStage::SubmitAttempt).then_some(*id)
+            })
+            .collect();
+        if ids.len() != 2 {
+            return Err("switch diagnostic submissions differ".into());
+        }
+        for (index, id) in ids.iter().enumerate() {
+            let find = |predicate: fn(&DiagnosticStage) -> bool| {
+                rows.iter()
+                    .find(|(candidate, stage, _, _, _)| candidate == id && predicate(stage))
+            };
+            let submit = find(|stage| matches!(stage, DiagnosticStage::SubmitAttempt))
+                .ok_or("missing submit")?;
+            let begin = find(|stage| matches!(stage, DiagnosticStage::WorkerBegin { .. }))
+                .ok_or("missing worker begin")?;
+            let outcome = find(|stage| {
+                matches!(
+                    stage,
+                    DiagnosticStage::OutcomeReady {
+                        request_complete: true,
+                        error: false,
+                        ..
+                    }
+                )
+            })
+            .ok_or("missing outcome")?;
+            if outcome.4 {
+                return Err("switch diagnostics were truncated".into());
+            }
+            let recovery_us = outcome
+                .3
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("track_switch_recovery_us="));
+            if recovery && recovery_us.is_none() {
+                return Err("missing recovery timing".into());
+            }
+            println!(
+                "switch recovery={recovery} iteration={iteration} request={} submit_to_worker_us={} worker_to_outcome_us={} track_switch_recovery_us={} pair_start_to_headless_view_us={}",
+                index + 1,
+                begin.2.duration_since(submit.2).as_micros(),
+                outcome.2.duration_since(begin.2).as_micros(),
+                recovery_us.unwrap_or("not-recorded"),
+                observed[index].map_or_else(|| "not-observed".into(), |n| n.to_string())
+            );
+        }
+        drop(rows);
+        submit(service, Request::Undo)?;
+        if !next_terminal(service)?
+            .state
+            .project
+            .track(track)
+            .ok_or("track missing")?
+            .muted()
+        {
+            return Err("first Undo did not restore mute".into());
+        }
+        submit(service, Request::Undo)?;
+        let undone = next_terminal(service)?;
+        if undone
+            .state
+            .project
+            .track(track)
+            .ok_or("track missing")?
+            .muted()
+        {
+            return Err("second Undo did not restore unmuted".into());
+        }
+        revision += 4;
+        profile.verify_journal(&undone.state.project)?;
+    }
+    println!(
+        "switch workload: 100 tracks, 6400 notes, {} document bytes, 48000 hz, 1 warmup and 3 measured pairs; observer enabled; headless view is not native paint or audio",
+        profile.document_bytes
+    );
+    profile.close()
 }
