@@ -1325,6 +1325,7 @@ mod tests {
                     EditorContextAction::ClipFlavor { .. }
                         | EditorContextAction::ClipAlias(_)
                         | EditorContextAction::AdaptiveGrid { .. }
+                        | EditorContextAction::WaveformDecibels { .. }
                 )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
