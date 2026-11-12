@@ -2736,7 +2736,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_contributor_unmute_does_not_double_a_releasing_voice() {
+    fn shared_contributor_unmute_restores_held_voice_without_doubling() {
         on_control(|| {
             let mut f = fixture();
             let device = f
@@ -2748,7 +2748,7 @@ mod tests {
                 .unwrap();
             let mut state =
                 hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
-            state.envelope.release_seconds = 1.0;
+            state.envelope.release_seconds = 0.2;
             let replacement = state
                 .to_native()
                 .unwrap()
@@ -2784,6 +2784,8 @@ mod tests {
                     );
                 }
             }
+            unmuted.render(&mut [[0.0; 2]; 1800]).unwrap();
+            check_pcm(&mut unmuted, 1843, 8, 0.5);
         });
     }
 
