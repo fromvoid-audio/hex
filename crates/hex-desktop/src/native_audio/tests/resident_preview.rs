@@ -2043,11 +2043,14 @@ impl ResidentHarness {
         Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
     }
     pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+        Self::with_recovery_at_rate(frame_limit, recovery, 48_000)
+    }
+    pub(super) fn with_recovery_at_rate(frame_limit: u64, recovery: PathBuf, rate: u32) -> Self {
         Self::with_plugin_fixture(
             frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             None,
             None,
             None,
