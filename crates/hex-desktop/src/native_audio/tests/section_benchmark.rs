@@ -179,6 +179,19 @@ fn timed(
 ) -> Result<(Event, Sample), String> {
     outcomes.lock().unwrap().clear();
     let previous = applied(h);
+    let expected = match &request {
+        Request::EditArrangementSection {
+            project_generation,
+            revision,
+            ..
+        } => revision
+            .checked_add(1)
+            .map(|editor_revision| AudioSourceContext {
+                project_generation: *project_generation,
+                editor_revision,
+            }),
+        _ => None,
+    };
     let started = Instant::now();
     h.service
         .submit(request)
@@ -188,8 +201,16 @@ fn timed(
         h.pump();
         h.render();
         if installed.is_none()
-            && h.submitted
-                .is_some_and(|(revision, _)| revision > previous && applied(h) == revision)
+            && h.audio.as_ref().is_some_and(|audio| {
+                audio
+                    .status()
+                    .and_then(|status| status.recording_source())
+                    .is_some_and(|source| {
+                        source.audio_revision > previous
+                            && Some(source.context) == expected
+                            && audio.control.output_identity() == Some(source.output_identity)
+                    })
+            })
         {
             installed = Some(started.elapsed());
         }
