@@ -348,7 +348,9 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
         )
         .unwrap(),
     );
-    let cache = Rc::new(RefCell::new(WaveformGeometryCache::default()));
+    let cache = Rc::new(crate::editor::waveform_geometry::WaveformViewCache::new(
+        Rc::new(RefCell::new(WaveformGeometryCache::default())),
+    ));
     for height in [
         CLIP_NAME_HEIGHT - 1.0,
         CLIP_NAME_HEIGHT,
@@ -416,6 +418,86 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
                 }
             }
         }
+    }
+}
+
+#[gpui::test]
+fn waveform_scale_is_applied_to_canonical_and_preview_paints(cx: &mut TestAppContext) {
+    use crate::editor::waveform::WaveformAmplitudeScale;
+    use crate::editor::waveform_geometry::{
+        WaveformGeometryCache, WaveformMapping, WaveformViewCache,
+    };
+    use gpui::{point, prelude::*, px, size};
+    use hex_project::{Command, Created, Editor, Project};
+    use hex_session::{CachedPeak, CachedWaveform};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    let peak = CachedPeak {
+        min: -0.1,
+        max: 0.1,
+    };
+    let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "scale".into(),
+            path: "scale.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("imported clip")
+    };
+    let clip = editor.project().clip(clip).unwrap().clone();
+    let shared = Rc::new(RefCell::new(WaveformGeometryCache::default()));
+    let arrangement = Rc::new(WaveformViewCache::new(Rc::clone(&shared)));
+    let detail = Rc::new(WaveformViewCache::new(shared));
+    let visual = cx.add_empty_window();
+    let paint = |visual: &mut gpui::VisualTestContext,
+                 cache: &Rc<WaveformViewCache>,
+                 mapping: WaveformMapping| {
+        cache.borrow_mut().clear();
+        visual.draw(
+            point(px(0.0), px(0.0)),
+            size(px(200.0), px(80.0)),
+            |_, _| {
+                gpui::div()
+                    .relative()
+                    .w(px(200.0))
+                    .h(px(80.0))
+                    .children([super::waveform_canvas(
+                        Arc::clone(&waveform),
+                        mapping,
+                        0,
+                        100,
+                        Some(Rc::clone(cache)),
+                        None,
+                        crate::theme::color(crate::theme::PaletteRole::Waveform),
+                    )])
+                    .into_element()
+            },
+        );
+        cache.borrow().painted_waveforms().back().unwrap().ordinates[0]
+    };
+    let canonical = || WaveformMapping::Clip {
+        clip: clip.clone(),
+        timeline_origin: 0,
+        fade: None,
+    };
+    let preview = || WaveformMapping::Prepared {
+        timeline_origin: 0,
+        root_offset: 0,
+        gain: hex_project::ClipGain::UNITY,
+    };
+    for mapping in [canonical(), preview()] {
+        let linear = paint(visual, &arrangement, mapping.clone());
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Decibel);
+        let expanded = paint(visual, &arrangement, mapping.clone());
+        assert!(expanded.0 < linear.0 && expanded.1 > linear.1);
+        assert_eq!(paint(visual, &detail, mapping.clone()), linear);
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Linear);
+        assert_eq!(paint(visual, &arrangement, mapping), linear);
     }
 }
 
