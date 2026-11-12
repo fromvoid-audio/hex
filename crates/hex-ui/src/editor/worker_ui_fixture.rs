@@ -58,6 +58,16 @@ pub(super) fn open_with_section_support(
     audition_ready: bool,
     section_fixture: bool,
 ) -> WorkerUiFixture {
+    open_with_section_and_recovery(cx, commands, audition_ready, section_fixture, None)
+}
+
+pub(super) fn open_with_section_and_recovery(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+    audition_ready: bool,
+    section_fixture: bool,
+    recovery: Option<std::path::PathBuf>,
+) -> WorkerUiFixture {
     let serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
@@ -87,7 +97,7 @@ pub(super) fn open_with_section_support(
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         8_000_000,
-        None,
+        recovery,
         super::recovery::tests::worker_fixture_sink(
             output,
             events,
