@@ -665,6 +665,143 @@ fn analyzed_tone(
 }
 
 #[gpui::test]
+fn eq_spectrum_follows_the_installed_graph_during_pending_and_refused_publications(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::audio_admission::ProjectRevision;
+    use hex_audio::prepared::PublicationPolicy;
+    use hex_engine::{AudioSourceContext, PreparedRevision, SineTable, playback::Playback};
+
+    let _guard = status_fixture_guard();
+    let (service, state, track, device) = fixture(false);
+    let prepared = PreparedRevision::prepare(
+        &state.project,
+        &Default::default(),
+        Arc::new(SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let project_revision = state.revision;
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    let (mut output, mut backend) = headless_status_output();
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            Playback::try_from_prepared_with_session(Arc::new(prepared)).unwrap(),
+            PublicationPolicy::InheritRuntime,
+            AudioSourceContext {
+                project_generation: generation,
+                editor_revision: project_revision,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        backend
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+            .audio_revision,
+        revision
+    );
+    let client = output.take_client().unwrap();
+    let project = ProjectRevision {
+        generation,
+        revision: project_revision,
+    };
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "guarded eq spectrum fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audio_admission.canonical_revision(project);
+        view.audio_admission.applied(project, revision);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let desired = |cx: &TestAppContext| {
+        editor.read_with(cx, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .spectrum_desired()
+                .unwrap()
+        })
+    };
+    let original = desired(cx);
+    assert_eq!(original.activation_floor, revision);
+    let graph = editor.read_with(cx, |view, _| eq_panel::graph_for_test(view, device));
+
+    let mut previous = Vec::new();
+    for (refused, amplitude) in [(false, 0.05), (true, 0.4)] {
+        let captured_at = std::time::Instant::now();
+        let pair = analyzed_tone(original, 440.0, amplitude, captured_at);
+        editor.update(cx, |view, cx| {
+            if refused {
+                view.audio_admission
+                    .rejected(project, revision + 1, "fixture refusal");
+            } else {
+                view.audio_admission.published(project, revision + 1);
+            }
+            view.device_panel.eq_spectrum.test_now = Some(captured_at);
+            view.device_panel
+                .spectrum_results
+                .insert(original.token, pair);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            desired(cx),
+            original,
+            "publication state cannot change the audible tap"
+        );
+        let curve = graph.read_with(cx, |graph, _| {
+            let [output, input] = graph.analyzer_layers();
+            let output = output.expect("installed graph still produces a fresh spectrum");
+            assert_eq!(Some(output), input);
+            output.to_vec()
+        });
+        assert_ne!(curve, previous, "the spectrum keeps updating");
+        previous = curve;
+    }
+
+    let toggle = visual
+        .debug_bounds(selector("eq8-spectrum", device))
+        .unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    let enabled = desired(cx);
+    assert_ne!(enabled.token, original.token);
+    assert_eq!(
+        enabled.activation_floor, revision,
+        "new taps use the installed source"
+    );
+}
+
+#[gpui::test]
 fn both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing(
     cx: &mut TestAppContext,
 ) {
