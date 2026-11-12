@@ -3070,6 +3070,78 @@ pub(super) mod tests {
         }
     }
 
+    #[test]
+    fn project_sample_placement_publishes_or_refuses_before_commit() {
+        let observed = Arc::new(Observed::default());
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            1024,
+            None,
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap();
+        let receive = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        receive();
+        let files = sampler_export::tests::Files::new(false);
+        service
+            .submit(Request::Import(files.source().to_owned()))
+            .unwrap();
+        let imported = receive();
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        let track = imported.state.project.tracks()[0].id();
+        let asset = imported.state.project.assets().next().unwrap().id();
+        let request = |revision| Request::InsertProjectSample {
+            project_generation: 0,
+            revision,
+            asset,
+            track,
+            start: 32,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: Some(hex_engine::playback::BrowserAuditionTiming {
+                grid: hex_project::ResolvedInputGrid::off(),
+                transport_epoch: 0,
+            }),
+        };
+        let accepted_before = observed.accepted.lock().unwrap().len();
+        service.submit(request(imported.state.revision)).unwrap();
+        let placed = receive();
+        assert!(placed.error.is_none(), "{:?}", placed.error);
+        assert_eq!(placed.state.project.assets().count(), 1);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted_before + 1);
+        observed.refuse.store(true, Ordering::Release);
+        service.submit(request(placed.state.revision)).unwrap();
+        let refused = receive();
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fixture publication refused"))
+        );
+        assert_eq!(refused.state.project, placed.state.project);
+        assert_eq!(refused.state.revision, placed.state.revision);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted_before + 1);
+    }
+
     // Exercise the real default-stack canonical worker: factories and Playback are constructed
     // there, never in an enlarged fixture thread or UI event. Final publication refusal must
     // preserve the prior authoring/history state while the old private pending owner survives.
@@ -3296,6 +3368,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3780,7 +3853,7 @@ pub(super) mod tests {
                             gain_recording_track: None,
                             requires_preroll: false,
                         },
-                        ResidentPublicationPolicy::SectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
                             fence: ResidentFreshRuntimeFence {
                                 output_identity: 1,
                                 active_audio_revision: 1,
@@ -3865,6 +3938,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3978,6 +4052,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,

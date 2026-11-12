@@ -1,6 +1,6 @@
-//! Explicit piano selection intent, arbitrated through the existing keyboard input owner.
-//! Only pointer/keyboard selection actions capture a bank. Paint, ACK and project load
-//! never do. Preparation remains a bounded Session request; engine owns the finite gate.
+//! Explicit piano selection and edit audition through the existing keyboard input owner.
+//! Edit previews audition only after their own accepted receipt installs the result.
+//! Preparation remains a bounded Session request; the engine owns the finite gate.
 use super::EditorView;
 use hex_engine::computer_keyboard::{ComputerKeyboardInput, MAX_NOTE_AUDITION_NOTES};
 use hex_project::{ClipId, TrackId};
@@ -62,6 +62,7 @@ impl Selection {
 }
 impl EditorView {
     pub(super) fn cancel_midi_audition(&mut self) {
+        self.cancel_pending_midi_edit_audition();
         self.midi_audition.clear();
         if self
             .computer_keyboard
@@ -77,6 +78,9 @@ impl EditorView {
     /// Hardware keeps the same admitted route across the focus handoff.
     pub(super) fn blur_computer_keyboard(&mut self, window: &gpui::Window) {
         let entering_piano_roll = self.midi_focus.is_focused(window);
+        if !entering_piano_roll {
+            self.cancel_pending_midi_edit_audition();
+        }
         let pending = if entering_piano_roll {
             self.midi_audition.pending.take()
         } else {
@@ -165,6 +169,7 @@ impl EditorView {
             notes,
             len,
         });
+        self.wake_poll();
     }
     pub(super) fn cancel_marquee_audition(
         &mut self,

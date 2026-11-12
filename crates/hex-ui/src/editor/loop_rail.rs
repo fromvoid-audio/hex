@@ -5,8 +5,7 @@ use gpui::{
     Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, canvas, div, prelude::*, px, relative, rgb,
 };
-use hex_project::{Command, LoopRegion};
-use hex_session::service::Request;
+use hex_project::LoopRegion;
 
 mod pending;
 
@@ -14,6 +13,7 @@ mod pending;
 pub(super) struct PendingLoop {
     generation: u64,
     region: LoopRegion,
+    toggle: bool,
     remaining: Option<usize>,
     // Selection intent for automatic focus after a successful section-loop ACK.
     focus_intent: Option<u64>,
@@ -297,7 +297,7 @@ impl EditorView {
             return true;
         }
         if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
-            let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
+            self.toggle_loop();
             return true;
         }
         if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {

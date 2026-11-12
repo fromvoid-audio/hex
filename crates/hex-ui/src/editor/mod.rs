@@ -46,6 +46,7 @@ mod cpu_meter;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
+mod elapsed_time;
 mod history_playback;
 mod leftover_recovery;
 #[cfg(test)]
@@ -821,7 +822,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
-    solo_observation: Option<hex_session::service::SoloViewObservation>,
+    track_switch_observation: Option<hex_session::service::TrackSwitchViewObservation>,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
@@ -971,6 +972,7 @@ pub(super) struct EditorView {
     track_clipboard_context: Option<(u64, u64)>,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    committed_paste_view: Option<Arc<ViewState>>,
     group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
@@ -1625,7 +1627,7 @@ impl EditorView {
         let mut view = Self {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
-            solo_observation: None,
+            track_switch_observation: None,
             audio,
             retired_action_outcomes: None,
             retired_action_message: None,
@@ -1763,6 +1765,7 @@ impl EditorView {
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            committed_paste_view: None,
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             close_prompt_open: false,
@@ -2078,7 +2081,10 @@ impl EditorView {
             .map_or(0, |region| region.start())
     }
 
-    fn observe_solo_view(&mut self, view: hex_session::service::SoloViewObservation) -> bool {
+    fn observe_track_switch_view(
+        &mut self,
+        view: hex_session::service::TrackSwitchViewObservation,
+    ) -> bool {
         if view.project_generation != self.project_generation
             || self
                 .state
@@ -2088,12 +2094,12 @@ impl EditorView {
         {
             return false;
         }
-        self.solo_observation = Some(view);
+        self.track_switch_observation = Some(view);
         true
     }
 
-    fn displayed_solo(&self, track: TrackId, canonical: bool) -> bool {
-        self.solo_observation
+    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+        self.track_switch_observation
             .as_ref()
             .filter(|view| {
                 view.project_generation == self.project_generation
@@ -2105,10 +2111,10 @@ impl EditorView {
             .and_then(|view| {
                 view.tracks
                     .iter()
-                    .find(|(id, _)| *id == track)
-                    .map(|(_, soloed)| *soloed)
+                    .find(|switches| switches.track == track.id())
+                    .map(|switches| (switches.muted, switches.soloed))
             })
-            .unwrap_or(canonical)
+            .unwrap_or_else(|| (track.muted(), track.soloed()))
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {

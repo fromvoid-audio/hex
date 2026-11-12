@@ -1365,8 +1365,10 @@ pub(super) fn request(value: &Request) -> Description {
             asset,
             track,
             start,
+            warp,
+            audition_timing,
         } => {
-            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start]; omitted="")
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
         }
         Request::ReorderTracks {
             project_generation,

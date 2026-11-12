@@ -3,11 +3,11 @@ use gpui::{Modifiers, TestAppContext, VisualTestContext};
 use std::sync::Arc;
 
 #[gpui::test]
-fn solo_observation_paints_without_installing_project_and_rejects_stale_scope(
+fn track_switch_observation_paints_without_installing_project_and_rejects_stale_scope(
     cx: &mut TestAppContext,
 ) {
-    use hex_session::service::SoloViewObservation;
-    let (project, first, second, _) = audio_project();
+    use hex_session::service::{TrackSwitchState, TrackSwitchViewObservation};
+    let (project, first, _, _) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -20,11 +20,15 @@ fn solo_observation_paints_without_installing_project_and_rejects_stale_scope(
     let selector = Box::leak(format!("track-solo-{}", first.value()).into_boxed_str());
     let before = visual.rendered_background(selector);
     editor.update(&mut visual, |view, cx| {
-        assert!(view.observe_solo_view(SoloViewObservation {
+        assert!(view.observe_track_switch_view(TrackSwitchViewObservation {
             project_generation: generation,
             previous_revision: revision,
             revision: revision + 1,
-            tracks: vec![(first, true), (second, false)],
+            tracks: vec![TrackSwitchState {
+                track: first,
+                muted: false,
+                soloed: true,
+            }],
         }));
         assert!(
             !view
@@ -42,16 +46,22 @@ fn solo_observation_paints_without_installing_project_and_rejects_stale_scope(
     let after = visual.rendered_background(selector);
     assert_ne!(before, after);
     editor.update(&mut visual, |view, cx| {
-        assert!(view.displayed_solo(first, false));
-        assert!(!view.observe_solo_view(SoloViewObservation {
+        let track = view.state.as_ref().unwrap().project.track(first).unwrap();
+        assert_eq!(view.displayed_track_switches(track), (false, true));
+        assert!(!view.observe_track_switch_view(TrackSwitchViewObservation {
             project_generation: generation + 1,
             previous_revision: revision,
             revision: revision + 1,
-            tracks: vec![(first, false)],
+            tracks: vec![TrackSwitchState {
+                track: first,
+                muted: false,
+                soloed: false,
+            }],
         }));
-        assert!(view.displayed_solo(first, false));
+        let track = view.state.as_ref().unwrap().project.track(first).unwrap();
+        assert_eq!(view.displayed_track_switches(track), (false, true));
         view.project_generation += 1;
-        assert!(!view.displayed_solo(first, false));
+        assert_eq!(view.displayed_track_switches(track), (false, false));
         cx.notify();
     });
     visual.run_until_parked();
@@ -570,7 +580,9 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
 }
 
 #[gpui::test]
-fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mut TestAppContext) {
+fn track_switch_clicks_paint_before_the_terminal_and_solo_preserves_selection(
+    cx: &mut TestAppContext,
+) {
     use gpui::AppContext;
     use hex_project::{Command, TrackId};
     use hex_session::service::{Event, Request, Service};
@@ -605,6 +617,28 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
                 "flush: hang guard expired"
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    fn observe_switch(editor: &gpui::Entity<super::EditorView>, visual: &mut VisualTestContext) {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let observed = editor.update(&mut *visual, |view, cx| {
+                if let Ok(observation) = view.service.try_track_switch_view() {
+                    let accepted = view.observe_track_switch_view(observation);
+                    cx.notify();
+                    accepted
+                } else {
+                    false
+                }
+            });
+            if observed {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "track switch observation missing"
+            );
+            std::thread::yield_now();
         }
     }
     cx.update(super::bind_editor_keys);
@@ -680,35 +714,23 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
     let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
     let solo = bounds(&mut visual, "track-solo", tracks[0]);
     visual.simulate_click(solo.center(), Modifiers::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-    loop {
-        let observed = editor.update(&mut visual, |view, cx| {
-            if let Ok(observation) = view.service.try_solo_view() {
-                let accepted = view.observe_solo_view(observation);
-                cx.notify();
-                accepted
-            } else {
-                false
-            }
-        });
-        if observed {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "solo observation missing"
-        );
-        std::thread::yield_now();
-    }
+    observe_switch(&editor, &mut visual);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.displayed_solo(tracks[0], false));
-        assert!(view.displayed_solo(tracks[2], false));
-        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        let state = view.state.as_ref().unwrap();
+        for id in [tracks[0], tracks[2]] {
+            assert_eq!(
+                view.displayed_track_switches(state.project.track(id).unwrap()),
+                (false, true)
+            );
+        }
+        assert_eq!(state.revision, revision);
     });
     flush(&editor, cx);
     check([true, false, true], cx);
-    editor.read_with(cx, |view, _| assert!(view.solo_observation.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.track_switch_observation.is_none())
+    });
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().revision, revision + 1)
     });
@@ -737,4 +759,48 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
     );
     flush(&editor, cx);
     check([true; 3], cx);
+    for (mode, prefix, muted) in [
+        (super::EditorMode::Arrangement, "track-mute", true),
+        (super::EditorMode::Session, "console-track-mute", false),
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            view.set_mode(mode);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(format!("{prefix}-{}", tracks[0].value()).into_boxed_str());
+        let before = visual
+            .rendered_background(selector)
+            .expect("track activator paints");
+        let hit = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(hit, Modifiers::default());
+        visual.simulate_mouse_move(
+            gpui::point(gpui::px(-1.0), gpui::px(-1.0)),
+            None,
+            Modifiers::default(),
+        );
+        observe_switch(&editor, &mut visual);
+        visual.run_until_parked();
+        let after = visual.rendered_background(selector).unwrap();
+        let (background, _) = super::track_gain::activator_colors(!muted);
+        assert_eq!(after, gpui::rgb(background).into());
+        assert_ne!(before, after);
+        editor.read_with(&visual, |view, _| {
+            let track = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(tracks[0])
+                .unwrap();
+            assert_eq!(track.muted(), !muted, "terminal has not been installed");
+            assert_eq!(view.displayed_track_switches(track), (muted, true));
+        });
+        flush(&editor, cx);
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_background(selector), Some(after));
+        editor.read_with(&visual, |view, _| {
+            assert!(view.track_switch_observation.is_none())
+        });
+    }
 }
