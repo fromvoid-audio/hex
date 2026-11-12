@@ -978,6 +978,9 @@ pub(super) struct EditorView {
     /// The latest held move intent; only an exact callback revision can make it audible.
     expected_clip_preview: Option<hex_session::service::ClipMovePreviewIdentity>,
     applied_clip_preview: Option<(u64, hex_session::service::ClipMovePreviewIdentity)>,
+    // Once a move has been submitted, a callback may outrun its metadata even
+    // after input is canceled. Keep conservative revision tracking until reset.
+    clip_preview_may_apply: bool,
     close_prompt_open: bool,
     automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
@@ -1054,6 +1057,8 @@ pub(super) struct EditorView {
     midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
     midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
+    clip_move_audition: Option<drag::MoveAudition>,
+    clip_move_gesture: u64,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     pending_sample_drop: Option<pending_sample_drop::PendingSampleDrop>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1777,6 +1782,7 @@ impl EditorView {
             pending_clip_move: None,
             expected_clip_preview: None,
             applied_clip_preview: None,
+            clip_preview_may_apply: false,
             close_prompt_open: false,
             automation_close_preflight: Default::default(),
             export_pending: false,
@@ -1858,6 +1864,8 @@ impl EditorView {
             midi_visible_notes: Default::default(),
             midi_tile_images: Default::default(),
             active_clip_drag: None,
+            clip_move_audition: None,
+            clip_move_gesture: 0,
             active_browser_audio_drag: None,
             pending_sample_drop: None,
             active_native_device_drag: None,

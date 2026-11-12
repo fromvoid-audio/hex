@@ -40,6 +40,14 @@ pub(super) fn open(
     cx: &mut TestAppContext,
     commands: Vec<hex_project::Command>,
 ) -> WorkerUiFixture {
+    open_with_audition_readiness(cx, commands, false)
+}
+
+pub(super) fn open_with_audition_readiness(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+    audition_ready: bool,
+) -> WorkerUiFixture {
     let serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
@@ -66,7 +74,7 @@ pub(super) fn open(
         16,
         8_000_000,
         None,
-        super::recovery::tests::worker_fixture_sink(output, events),
+        super::recovery::tests::worker_fixture_sink(output, events, audition_ready),
         reservation,
     )
     .unwrap();
