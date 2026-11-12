@@ -319,6 +319,36 @@ impl EditorView {
         drag.cursor_position().map(|(_, frame)| frame)
     }
 
+    /// Show the callback-confirmed anchor for the held gesture. Never infer an
+    /// audible position from a submitted pointer target.
+    pub(super) fn audible_clip_move_anchor(&self) -> Option<(hex_project::TrackId, u64)> {
+        let drag = self.active_clip_drag.as_ref()?;
+        let (audio_revision, applied) = self.applied_clip_preview?;
+        let desired = self.expected_clip_preview?;
+        let state = self.state.as_ref()?;
+        if !self.drag_start_is_current(drag)
+            || self
+                .audio_status()?
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                != audio_revision
+            || applied.context != desired.context
+            || applied.context.project_generation != self.project_generation
+            || applied.context.editor_revision != state.revision
+            || applied.gesture != desired.gesture
+            || applied.sequence > desired.sequence
+        {
+            return None;
+        }
+        let frame = match applied.position {
+            hex_project::ClipGroupPosition::Audio(frame) => frame,
+            hex_project::ClipGroupPosition::Midi(beat) => {
+                state.project.tempo_map().beat_to_frame(beat).ok()?
+            }
+        };
+        Some((applied.track, frame))
+    }
+
     pub(super) fn pending_clip_move_matches(&self, request: &Request) -> bool {
         self.pending_clip_move
             .as_ref()

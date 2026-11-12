@@ -1163,7 +1163,7 @@ impl EditorView {
             visible_change |= self.retire_audio_preserving_gain_take();
         }
         visible_change |= self.poll_update(cx);
-        self.sync_held_clip_move_audition();
+        visible_change |= self.sync_held_clip_move_audition();
         self.sync_held_stretch_audition();
         self.sync_held_play_start_audition();
         visible_change |= self.poll_browser_sample_playback();
@@ -1813,16 +1813,18 @@ impl EditorView {
                 })
             };
             if candidate.clip_preview_identity.is_some() {
-                self.applied_clip_preview = (source == AppliedCandidateSource::Current)
+                let actual = (source == AppliedCandidateSource::Current)
                     .then(|| {
                         candidate
                             .clip_preview_identity
                             .map(|identity| (applied, identity))
                     })
                     .flatten();
-                self.audible_playback = None;
+                visible_change |= self.applied_clip_preview != actual;
+                self.applied_clip_preview = actual;
+                visible_change |= self.audible_playback.take().is_some();
             } else if source == AppliedCandidateSource::Current {
-                self.applied_clip_preview = None;
+                visible_change |= self.applied_clip_preview.take().is_some();
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(
                         candidate.project_generation,
