@@ -444,8 +444,7 @@ mod tests {
         fs::write(occupied.join("existing"), b"keep").unwrap();
         let error = folder
             .publish(&Project::new(48_000).unwrap(), || false)
-            .err()
-            .expect("occupied destination must fail");
+            .expect_err("occupied destination must fail");
         assert!(
             error
                 .to_string()
@@ -462,8 +461,7 @@ mod tests {
         let stage = folder.root().to_path_buf();
         let error = folder
             .publish(&Project::new(48_000).unwrap(), || true)
-            .err()
-            .expect("cancelled save must fail");
+            .expect_err("cancelled save must fail");
         assert!(
             error
                 .to_string()
