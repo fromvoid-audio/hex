@@ -1,6 +1,7 @@
 //! Native-source references attached to the existing ordinary publication.
 //! The original graph/return carrier owns this move-only attachment; it never
 //! owns a native worker, endpoint, sampler bank or constructor claim.
+use super::references::NativeReferenceFailure;
 use super::*;
 
 pub(in crate::candidate_custody::eligible) struct ReferenceCounts {
@@ -66,7 +67,7 @@ impl CandidateRoot {
     pub(crate) fn retain_ordinary_native_sources(
         &self,
         playback: &hex_engine::playback::Playback,
-    ) -> Result<Option<OrdinaryNativeReferences>, &'static str> {
+    ) -> Result<Option<OrdinaryNativeReferences>, NativeReferenceFailure> {
         if playback.foreign_nodes_on_control().next().is_none() {
             return Ok(None);
         }
@@ -79,7 +80,7 @@ impl CandidateRoot {
             .map_err(|_| "native graph preparation is busy")?;
         let mut bank = lock(&self.0.eligible.bank);
         if bank.closing || bank.ordinary.is_none() {
-            return Err("ordinary native source root is closing or unavailable");
+            return Err("ordinary native source root is closing or unavailable".into());
         }
         let references = bank
             .sources
@@ -89,7 +90,7 @@ impl CandidateRoot {
         }
         let counts = &mut bank.publication.ordinary_native;
         if counts.graphs >= counts.capacity || counts.graphs == usize::MAX {
-            return Err("ordinary native graph reference capacity exceeded");
+            return Err("ordinary native graph reference capacity exceeded".into());
         }
         // The graph count bounds every per-source count. Validate every row
         // before changing any; synchronous refusal preserves the same graph.
@@ -99,7 +100,7 @@ impl CandidateRoot {
             .enumerate()
             .any(|(index, count)| references.contains(index) && *count >= counts.capacity)
         {
-            return Err("ordinary native source reference capacity exceeded");
+            return Err("ordinary native source reference capacity exceeded".into());
         }
         counts.graphs += 1;
         for (index, count) in counts.sources.iter_mut().enumerate() {
