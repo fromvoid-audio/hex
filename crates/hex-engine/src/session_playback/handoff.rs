@@ -4814,9 +4814,9 @@ impl SessionPlayback {
         // All refusal checks precede these scalar ledger cuts. Keep each old
         // runtime/DSP owner, including tails from earlier publications; release
         // only proofs whose exact clip has become inactive in the candidate.
+        let mute_changes = shared_sources::contributor_mute_changes(previous, self);
         let revision = &self.revision;
         let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
-        let mute_changes = shared_sources::contributor_mute_changes(&previous.revision, revision);
         // Ordinary onset suppressions cannot shorten a held gate. Check for
         // admitted cuts once instead of searching the whole list for each proof.
         let has_gate_cutoffs = self

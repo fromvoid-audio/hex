@@ -1464,6 +1464,38 @@ impl PreparedRevision {
                 .is_some_and(|(old, new)| old == new)
     }
 
+    /// Conservative callback-side source proof with bounded state comparison.
+    pub(crate) fn retained_source_configuration_matches_on_callback(
+        &self,
+        candidate: &Self,
+        source: hex_project::SourceId,
+    ) -> bool {
+        fn instrument(
+            revision: &PreparedRevision,
+            source: hex_project::SourceId,
+        ) -> Option<&PreparedDeviceIdentity> {
+            revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .enumerate()
+                .find(|(index, _)| revision.source_routing.source(*index) == Some(source))
+                .and_then(|(_, track)| track.canonical_track_id())
+                .and_then(|track| revision.mutable_track_revision(track))
+                .and_then(|track| track.instrument.as_ref())
+        }
+        self.arrangement.shared_contexts().tuning_identity()
+            == candidate.arrangement.shared_contexts().tuning_identity()
+            && instrument(self, source)
+                .zip(instrument(candidate, source))
+                .is_some_and(|(old, new)| {
+                    old.id == new.id
+                        && old.parent == new.parent
+                        && old.bypassed == new.bypassed
+                        && old.state.processing_eq_on_callback(&new.state)
+                })
+    }
+
     pub(crate) fn mutable_track_topology_matches(&self, other: &Self, track: TrackId) -> bool {
         let Some(old) = self.mutable_track_revision(track) else {
             return false;
@@ -1820,6 +1852,22 @@ impl PreparedRevision {
                 .any(|old| old.canonical_track_id() == Some(track)),
             _ => false,
         }
+    }
+
+    /// A callback-side proof must refuse large inventories before comparing them.
+    pub(crate) fn bounded_mutable_arrangement_sources_match(
+        &self,
+        candidate: &Self,
+        track: TrackId,
+        maximum: usize,
+    ) -> bool {
+        self.mutable_track_revision(track)
+            .zip(candidate.mutable_track_revision(track))
+            .is_some_and(|(old, new)| {
+                old.arrangement_midi_sources.len() <= maximum
+                    && new.arrangement_midi_sources.len() <= maximum
+                    && self.mutable_arrangement_sources_match(candidate, track)
+            })
     }
 
     fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {

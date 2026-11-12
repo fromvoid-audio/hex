@@ -15,6 +15,7 @@ pub(crate) type VolumeLookup<'a> = dyn FnMut(
         MutableOccurrenceSignature,
         u64,
         usize,
+        bool,
     ) -> Result<Option<VolumeSlice>, MutableInstrumentRuntimeError>
     + 'a;
 impl VolumeSlice {
@@ -150,7 +151,12 @@ pub(super) fn gains_for_segment(
             None
         } else {
             match lookup.as_mut() {
-                Some(f) => f(proof.signature, start, frames)?,
+                Some(f) => f(
+                    proof.signature,
+                    start,
+                    frames,
+                    proof.contributor_fade.is_some(),
+                )?,
                 None => None,
             }
         };
@@ -350,8 +356,12 @@ impl MutableInstrumentTrackRuntime {
                 if delta > 0 {
                     count = count.min(usize::try_from(delta).unwrap_or(usize::MAX));
                 } else if let Some(lookup) = lookup.as_mut()
-                    && let Some(slice) =
-                        lookup(MutableOccurrenceSignature::new(onset), performance, count)?
+                    && let Some(slice) = lookup(
+                        MutableOccurrenceSignature::new(onset),
+                        performance,
+                        count,
+                        false,
+                    )?
                 {
                     count = count.min(slice.remaining(count)?);
                 }
@@ -361,7 +371,12 @@ impl MutableInstrumentTrackRuntime {
                     continue;
                 }
                 if let Some(lookup) = lookup.as_mut()
-                    && let Some(slice) = lookup(proof.signature, performance, count)?
+                    && let Some(slice) = lookup(
+                        proof.signature,
+                        performance,
+                        count,
+                        proof.contributor_fade.is_some(),
+                    )?
                 {
                     count = count.min(slice.remaining(count)?);
                 }
