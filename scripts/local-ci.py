@@ -47,6 +47,16 @@ def _read_policy_source(path: Path) -> bytes:
         os.close(directory)
 
 
+# A direct invocation must witness the bytes it executes before it can reserve
+# custody. Source-backed programmatic loaders already install this witness.
+if __name__ == "__main__" and "_DELIVERY_RUNNER_SOURCE_SHA256" not in globals():
+    _direct_path = ROOT / "scripts/local-ci.py"
+    _direct_source = _read_policy_source(_direct_path)
+    _DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(_direct_source).hexdigest()
+    exec(compile(_direct_source, str(_direct_path), "exec", dont_inherit=True), globals())
+    raise SystemExit("local CI entry point did not exit")
+
+
 _PLAN_SPEC = importlib.util.spec_from_file_location("hex_ci_plan", Path(__file__).with_name("ci_plan.py"))
 if _PLAN_SPEC is None or _PLAN_SPEC.loader is None:
     raise RuntimeError("local CI planner unavailable")
@@ -1481,7 +1491,7 @@ class LocalCiRunner:
             result = subprocess.run(
                 command,
                 cwd=self.root,
-                env=self.env,
+                env=(self.env if reservation is None else dict(self.env, CARGO_CACHE_RUSTC_INFO="0")),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1675,7 +1685,7 @@ class LocalCiRunner:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
 
-    def _claim_fresh_dev_owner(self, reservation: FreshTargetReservation) -> None:
+    def _claim_fresh_dev_owner(self, reservation: FreshTargetReservation) -> dict[str, int]:
         """Publish existing dev schema and consume a pre-metadata reservation.
 
         The caller captures Git identity and dependency inputs before claiming.
@@ -1716,6 +1726,7 @@ class LocalCiRunner:
             if failure := reservation._finish(transfer_lock=True):
                 raise TargetCacheError(failure)
             self.target_owner_claimed = True
+            return {"device": pinned.st_dev, "inode": pinned.st_ino}
         except BaseException:
             try:
                 if failure := reservation.close():
@@ -1748,7 +1759,45 @@ class LocalCiRunner:
                 "and test executables have exhibited launch stalls; choose a fresh APFS "
                 "CARGO_TARGET_DIR and rerun normal local CI. The target and previous owner were preserved")
 
+    def _prepare_fresh_target_cache(self, reservation: FreshTargetReservation) -> bool:
+        """Capture normal dev provenance before publishing the reserved owner."""
+        target = Path(reservation._target)
+        try:
+            reservation.revalidate(str(target))
+            was_absent = reservation._absent
+            self._check_target_filesystem(target)
+            dependency_inputs = self._dependency_context()
+            if (self._release_metadata.get("target_directory") != str(target)
+                    or self._release_metadata.get("workspace_root") != str(self.root)):
+                raise TargetCacheError("dependency metadata changed the reserved Cargo target or workspace")
+            self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
+            if (not self._capture_repository_state("fresh_locked_tree")
+                    or self.summary["fresh_locked_tree"] != self.summary["start_tree"]):
+                raise TargetCacheError("source changed before fresh target admission")
+            self._dependency_inputs = dependency_inputs
+            identity = self._claim_fresh_dev_owner(reservation)
+            self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = dependency_inputs["sha256"]
+            self.summary["target_cache"] = {
+                "action": "claim-fresh",
+                "previous_workspace_owner": None,
+                "current_workspace_owner": {key: self.git_identity[key]
+                                            for key in ("workspace_root", "git_common_dir")},
+                "target_identity_before": None if was_absent else identity,
+                "target_identity": identity,
+                "cleanup_argv": None,
+                "cleanup_status": "not_needed",
+                "lock_path": str(self.target_lock.path),
+                "lock_acquired": True,
+                "dependency_inputs": dependency_inputs,
+            }
+            return True
+        except (TargetCacheError, OSError, ValueError) as error:
+            self.summary["target_cache_error"] = str(error)
+            return False
+
     def _prepare_target_cache(self) -> bool:
+        if self._cargo_reservation is not None:
+            return self._prepare_fresh_target_cache(self._cargo_reservation)
         if self.cargo_identity is None or self.git_identity is None:
             self.summary["target_cache_error"] = "Cargo or Git identity is unavailable"
             return False
@@ -1957,8 +2006,10 @@ class LocalCiRunner:
 
     def _release_scope(self) -> list[dict[str, str]]:
         """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
+        metadata_env = (self.env if self._cargo_reservation is None
+                        else dict(self.env, CARGO_CACHE_RUSTC_INFO="0"))
         result = command_output(
-            ["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], self.root, self.env
+            ["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], self.root, metadata_env
         )
         if result.returncode != 0:
             raise TargetCacheError(f"release package metadata failed: {result.stderr.strip()}")
@@ -2848,7 +2899,18 @@ class LocalCiRunner:
             details.append("freeze the intended candidate and rerun its required plan before qualification")
         print(self._diagnostic_text("\n".join(details + report_note)), file=stream, flush=True)
 
-    def run(self) -> int:
+    def run(self, *, reservation: FreshTargetReservation | None = None) -> int:
+        if reservation is None:
+            return self._run(None)
+        with reservation:
+            if self.target_lock is not None or self.adopt_target or self.resume_report is not None:
+                raise TargetCacheError("fresh target cannot adopt, resume, or replace held custody")
+            try:
+                return self._run(reservation)
+            finally:
+                self._cargo_reservation = None
+
+    def _run(self, reservation: FreshTargetReservation | None) -> int:
         self.summary["native_acceptance_opt_in"] = bool(
             ci_plan.python_tests.native_acceptance_inputs(self.env))
         self.output_dir.mkdir(parents=True, exist_ok=False)
@@ -2901,7 +2963,9 @@ class LocalCiRunner:
                     or ci_plan.runtime_inputs(self.root) != self.plan["runtime_inputs"]):
                 self.summary.update(status="failed", exit_code=2,
                                     metadata_error="resolved plan source/inputs changed or are dirty")
-            elif any(self._uses_cargo_target(step) for step in self.steps) and not self._resolve_cargo_identity():
+            elif any(self._uses_cargo_target(step) for step in self.steps) and not (
+                    self._resolve_cargo_identity() if reservation is None
+                    else self._resolve_cargo_identity(reservation)):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not resolve exact Cargo workspace and target identity"
@@ -3155,11 +3219,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="assert sole ownership of an unowned Cargo target and clean only this workspace's dev artifacts",
     )
+    parser.add_argument("--fresh-target", action="store_true",
+                        help="reserve an explicit absent or empty CARGO_TARGET_DIR before Cargo metadata")
     parser.add_argument("--prepare-changelog", action="store_true",
                         help="generate notes before freezing source, then exit without running sealed checks")
     parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
     parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
     arguments = parser.parse_args(argv)
+    if arguments.fresh_target and (arguments.quick or arguments.adopt_target
+                                   or arguments.resume_report or arguments.prepare_changelog):
+        parser.error("--fresh-target cannot combine with quick, adoption, resume or changelog preparation")
     if arguments.resume_report and (arguments.reuse_report or arguments.adopt_target
                                     or arguments.quick or arguments.profile == "edit"
                                     or arguments.prepare_changelog):
@@ -3179,13 +3248,38 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
     if (error := cli_policy_error(ROOT)) is not None:
         parser.error("cannot bind CLI planner source: " + error)
+    if not arguments.fresh_target:
+        return _run_cli(arguments, parser, None)
+    target = os.environ.get("CARGO_TARGET_DIR")
+    if not target:
+        parser.error("--fresh-target requires an explicit absolute CARGO_TARGET_DIR")
+    try:
+        with FreshTargetReservation.acquire(ROOT, target, {"operation": "fresh-dev-cli"}) as reservation:
+            return _run_cli(arguments, parser, reservation)
+    except TargetCacheError as error:
+        parser.error(str(error))
+
+
+def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> int:
     mode = "quick" if arguments.quick else "full"
     plan = None
     if arguments.profile in {"merge", "edit", "health"} or arguments.base or arguments.source:
         if arguments.quick or not arguments.profile or not arguments.base or not arguments.source:
             parser.error("scoped profiles require --profile, --base and --source; cannot combine --quick")
         try:
-            metadata = json.loads(command_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], ROOT, dict(os.environ)).stdout)
+            metadata_env = dict(os.environ)
+            if reservation is not None:
+                reservation.revalidate(reservation._target)
+                metadata_env["CARGO_CACHE_RUSTC_INFO"] = "0"
+            metadata_result = command_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], ROOT, metadata_env)
+            if reservation is not None:
+                if metadata_result.returncode != 0:
+                    raise TargetCacheError(f"reserved planner metadata failed: {metadata_result.stderr.strip()}")
+            metadata = json.loads(metadata_result.stdout)
+            if reservation is not None:
+                reservation.revalidate(metadata["target_directory"])
+                if metadata["workspace_root"] != str(ROOT):
+                    raise TargetCacheError("planner metadata changed the reserved Cargo workspace")
             if (error := cli_policy_error(ROOT)) is not None:
                 raise ValueError("CLI planner changed before resolution: " + error)
             plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
@@ -3200,7 +3294,7 @@ def main(argv: list[str] | None = None) -> int:
                                               lib=arguments.lib, test=arguments.test)
                 plan.pop("plan_sha256")
                 plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
-        except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+        except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError, TargetCacheError) as error:
             parser.error(f"cannot resolve conservative check plan: {error}")
         mode = arguments.profile
     elif arguments.profile and arguments.quick:
@@ -3220,9 +3314,9 @@ def main(argv: list[str] | None = None) -> int:
         carry_report=arguments.carry_report,
         over_budget_reason=arguments.over_budget_reason,
     )
-    runner._cli_policy_bound = True
+    runner._cli_policy_bound = reservation is None
     try:
-        exit_code = runner.run()
+        exit_code = runner.run() if reservation is None else runner.run(reservation=reservation)
     except FileExistsError:
         print(f"run output already exists: {runner.output_dir}", file=sys.stderr)
         return 2
