@@ -181,9 +181,13 @@ cargo test -p hex-ui --features ui-test-support --lib --locked
 cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
 ```
 
-Other `hex-ui` tests have not yet been classified into separate tiers; in
-particular, the real-window receipt and delayed-acknowledgement tests remain in
-the `ui-test-support` library suite.
+Run `cargo test -p hex-ui --tests --locked` for the default library and
+default standalone unit targets. The six `ui-unit-tier` targets above complete
+the unit tier. The two `ui-test-support` invocations form the integration tier,
+including rendered focus and shortcuts, pending-edit receipts, delayed
+acknowledgement repaint, and open/save flows. For each tier, time the combined
+setup and test execution with compilation measured separately. The unit limit
+is 30 seconds and the integration limit is three minutes.
 
 Plans containing self-tests run the existing changelog, architecture, dependency,
 UI/layout and formatting checks first, once each, before Python self-tests and

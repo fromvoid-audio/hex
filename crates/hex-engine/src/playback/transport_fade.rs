@@ -12,9 +12,9 @@
 //! Play from a paused, nonzero position. Play from frame zero keeps its first
 //! transient.
 //!
-//! A declicked transport Seek while playing fades out the same way at the old
-//! position, applies the jump at the fade end and ramps in over `F` frames at
-//! the target. The reported position runs on from the command frame through
+//! A declicked Seek (transport or Session) or PlayFrom while playing fades out
+//! at the old position, applies the original action at the fade end and ramps
+//! in over `F` frames at the target. The reported position runs on from the command frame through
 //! the fade and is the seek target from the fade end onward; the completion
 //! reports the old position's audible end.
 //!
@@ -49,9 +49,13 @@ pub(crate) fn fades_out(action: PlaybackAction) -> bool {
     )
 }
 
-/// Transport seeks, which fade out, jump and ramp back in while playing.
+/// Discontinuities that fade out, jump and ramp back in while playing.
 pub(crate) fn seeks(action: PlaybackAction) -> bool {
-    matches!(action, PlaybackAction::Transport(PlaybackCommand::Seek(_)))
+    matches!(
+        action,
+        PlaybackAction::Transport(PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_))
+            | PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(_))
+    )
 }
 
 /// Pause actions, whose paused output ramps back in after the fade.
@@ -80,6 +84,8 @@ enum Pending {
     SessionPause,
     SessionStop,
     Seek(u64),
+    SessionSeek(u64),
+    PlayFrom(u64),
 }
 
 impl Pending {
@@ -92,6 +98,12 @@ impl Pending {
             }
             PlaybackAction::Session(crate::SessionPlaybackCommand::Stop) => Some(Self::SessionStop),
             PlaybackAction::Transport(PlaybackCommand::Seek(frame)) => Some(Self::Seek(frame)),
+            PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(frame)) => {
+                Some(Self::SessionSeek(frame))
+            }
+            PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => {
+                Some(Self::PlayFrom(frame))
+            }
             _ => None,
         }
     }
@@ -103,6 +115,10 @@ impl Pending {
             Self::SessionPause => PlaybackAction::Session(crate::SessionPlaybackCommand::Pause),
             Self::SessionStop => PlaybackAction::Session(crate::SessionPlaybackCommand::Stop),
             Self::Seek(frame) => PlaybackAction::Transport(PlaybackCommand::Seek(frame)),
+            Self::SessionSeek(frame) => {
+                PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(frame))
+            }
+            Self::PlayFrom(frame) => PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)),
         }
     }
 }

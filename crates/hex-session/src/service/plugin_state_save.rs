@@ -1,4 +1,4 @@
-//! Project projections of captured native state for Save and offline bounce.
+//! Project projections of captured native state for Save, bounce and track duplication.
 //! Session validates complete project state and provider/binary identity without
 //! owning SDK instances. These snapshots never change canonical state or history.
 use super::*;
@@ -22,9 +22,10 @@ pub struct PluginStateCaptureInput<'a> {
     pub(super) project: &'a Project,
     pub(super) context: hex_engine::AudioSourceContext,
     pub(super) cancellation: &'a RequestCancellation,
-    /// When bouncing, only the projected graph's devices need capture. The
-    /// project above is still canonical, so bindings resolve to live owners.
-    pub(super) bounce_devices: Option<&'a BTreeMap<u64, ProcessorChainOwner>>,
+    /// Optional set of target device IDs. The canonical project still
+    /// resolves the actual hosted owner, even when a selected track only
+    /// contributes MIDI to a shared instrument.
+    pub(super) device_filter: Option<&'a BTreeMap<u64, ProcessorChainOwner>>,
 }
 impl PluginStateCaptureInput<'_> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -59,7 +60,7 @@ impl PluginStateCaptureInput<'_> {
         let mut device = |owner, device: &hex_project::Device| -> Result<(), String> {
             if device.state().type_id() == hex_plugin_state::TYPE_ID
                 && self
-                    .bounce_devices
+                    .device_filter
                     .is_none_or(|devices| devices.contains_key(&device.id().value()))
             {
                 visit(owner, device.id().value(), device.state())?;
@@ -100,7 +101,7 @@ pub(super) fn project_for_save_with_capture(
             project: session.project(),
             context,
             cancellation,
-            bounce_devices: None,
+            device_filter: None,
         })?,
         None => Vec::new(),
     };
@@ -108,6 +109,69 @@ pub(super) fn project_for_save_with_capture(
         return Err("project save cancelled".into());
     }
     project_with_captures(project, captures)
+}
+
+/// Freeze the selected tracks from a temporary projection of their live
+/// plug-in state. The original canonical track and its runtime stay owned by
+/// the existing edit transaction, including when capture or paste is refused.
+pub(super) fn capture_tracks_for_duplicate(
+    project: &Project,
+    tracks: &hex_project::TrackSelectionIds,
+    without_clips: bool,
+    context: hex_engine::AudioSourceContext,
+    cancellation: &RequestCancellation,
+    audio: Option<&mut (dyn WorkerAudioSink + 'static)>,
+) -> Result<hex_project::TrackClipboard, String> {
+    let capture_tracks = |project: &Project| {
+        project
+            .capture_tracks(tracks, without_clips)
+            .map_err(|error| error.to_string())
+    };
+    let Some(audio) = audio else {
+        return capture_tracks(project);
+    };
+    let expanded = project
+        .expand_track_selection(tracks)
+        .map_err(|error| error.to_string())?;
+    let mut devices = BTreeMap::new();
+    for id in expanded.ids() {
+        let track = project
+            .track(*id)
+            .ok_or("selected track no longer exists")?;
+        for device in track.devices().iter().chain(track.instrument()) {
+            if device.state().type_id() == hex_plugin_state::TYPE_ID {
+                devices.insert(device.id().value(), ProcessorChainOwner::Track(id.value()));
+            }
+        }
+    }
+    if devices.is_empty() {
+        return capture_tracks(project);
+    }
+    if cancellation.is_cancelled() {
+        return Err("track duplication cancelled".into());
+    }
+    let captures = audio.capture_plugin_states(PluginStateCaptureInput {
+        project,
+        context,
+        cancellation,
+        device_filter: Some(&devices),
+    })?;
+    if cancellation.is_cancelled() {
+        return Err("track duplication cancelled".into());
+    }
+    if captures.is_empty() {
+        return capture_tracks(project);
+    }
+    if captures
+        .iter()
+        .any(|capture| !devices.contains_key(&capture.device_id))
+    {
+        return Err("captured vst3 device is outside the track selection".into());
+    }
+    let projected = project_with_captures(project.clone(), captures)?
+        .with_offline_assets(project.offline_assets())
+        .map_err(|error| error.to_string())?;
+    capture_tracks(&projected)
 }
 
 /// Refresh only the isolated graph's processors, using the actual live
@@ -139,7 +203,7 @@ pub(super) fn project_for_bounce_with_capture(
             ..isolated.context
         },
         cancellation,
-        bounce_devices: Some(&devices),
+        device_filter: Some(&devices),
     })?;
     if cancellation.is_cancelled() {
         return Err("bounce cancelled".into());

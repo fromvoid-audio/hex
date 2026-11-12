@@ -14,8 +14,8 @@ use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
 use hex_session::service::{
-    DeviceClipboardAction, DevicePreviewIdentity, Event, Request, SubmitError,
-    TrackClipboardAction, ViewState,
+    ArrangementEditViewKind, DeviceClipboardAction, DevicePreviewIdentity, Event, Request,
+    SubmitError, TrackClipboardAction, ViewState,
 };
 use hex_session::tuning_gesture::TuningLibraryOperation;
 use std::{
@@ -242,7 +242,7 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        self.recovery.fail();
+        super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -1117,9 +1117,17 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_automation_close(cx);
-        if let Ok(view) = self.service.try_solo_view() {
-            visible_change |= self.observe_solo_view(view);
+        if let Ok(view) = self.service.try_track_switch_view() {
+            visible_change |= self.observe_track_switch_view(view);
         }
+        let paste_view = match self.service.try_arrangement_edit_view() {
+            Ok(view) if matches!(view.kind, ArrangementEditViewKind::Paste) => Some(view),
+            Ok(view) => {
+                visible_change |= self.observe_duplicate_view(view);
+                None
+            }
+            Err(_) => None,
+        };
         visible_change |= self.poll_retired_action_outcomes();
         if self.retired_action_outcomes.is_none()
             && self.audio.as_ref().is_some_and(|audio| {
@@ -1130,6 +1138,7 @@ impl EditorView {
         }
         visible_change |= self.poll_update(cx);
         self.sync_held_stretch_audition();
+        self.sync_held_play_start_audition();
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_native_automation_recording();
@@ -1207,8 +1216,11 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
+                    visible_change |= self.locators.clear_adds();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.committed_paste_view.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_loop();
@@ -1233,6 +1245,10 @@ impl EditorView {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
+        }
+        // Earlier terminals may have been queued when this paste committed.
+        if let Some(view) = paste_view {
+            visible_change |= self.observe_paste_view(view);
         }
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
@@ -1281,6 +1297,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_device_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_locator_adds();
         visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
@@ -1396,12 +1413,12 @@ impl EditorView {
                 self.prepared_seek
                     .as_ref()
                     .filter(|seek| Some(seek.request_id) == pending.seek_request_id)
-                    .and_then(|seek| seek.kind.section())
+                    .and_then(|seek| seek.kind.quantization())
                     .map_or(
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
-                        |section| PublicationPolicy::InstallSectionWhenReady {
+                        |quantization| PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
-                            quantization: section.quantization,
+                            quantization,
                         },
                     )
             } else if pending.install_fresh_runtime {
@@ -1794,7 +1811,7 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            self.recovery.fail();
+            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2281,11 +2298,11 @@ impl EditorView {
             return None;
         }
         if self
-            .solo_observation
+            .track_switch_observation
             .as_ref()
             .is_some_and(|view| event.project_replaced || event.state.revision >= view.revision)
         {
-            self.solo_observation = None;
+            self.track_switch_observation = None;
         }
         if event.request_complete && event.error.is_some() {
             self.cancel_new_preparation();
@@ -2325,9 +2342,13 @@ impl EditorView {
             .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
-        self.midi_drag_request_complete(&event);
+        let midi_edit_audition = self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
+        if event.project_replaced {
+            self.pending_requests
+                .retain(|request| self.locators.queued_add_frame(request).is_none());
+        }
         self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
         self.clip_activation_complete(&event);
@@ -2370,7 +2391,7 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            self.recovery.fail();
+            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;
@@ -2601,12 +2622,13 @@ impl EditorView {
             event.project_replaced,
             resize_owns_viewport,
         );
-        if event.project_replaced {
+        let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
-        } else if !event.gesture_request && !event.tuning_gesture_request {
-            self.move_time_selection_complete(&event);
-        }
+            0
+        } else {
+            self.move_time_selection_complete(&event)
+        };
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -2649,6 +2671,14 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
         self.complete_device_duplicate(&event);
+        if event.project_replaced
+            || self
+                .committed_paste_view
+                .as_ref()
+                .is_some_and(|view| event.state.revision >= view.revision)
+        {
+            self.committed_paste_view = None;
+        }
         self.state = Some(event.state);
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
@@ -3254,7 +3284,14 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
-        self.apply_created_note_selection(created_note_selection);
+        use super::midi_pending_drag::EditAudition;
+        let clip = self.detail_clip_id();
+        let audition_created =
+            matches!(midi_edit_audition, Some(EditAudition::Created(id)) if clip == Some(id));
+        self.apply_created_note_selection(created_note_selection, audition_created);
+        if matches!(midi_edit_audition, Some(EditAudition::Moved(id)) if clip == Some(id)) {
+            self.audition_midi_selection();
+        }
         self.apply_completed_midi_step(midi_step_complete);
         if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
             self.install_drop_cursor(cursor);
@@ -3262,6 +3299,7 @@ impl EditorView {
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
+        self.continue_time_duplicate(time_duplicate_repeats);
         successfully_opened_path
     }
 
@@ -3424,7 +3462,12 @@ impl EditorView {
         true
     }
 
-    fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+    /// Enqueue a request with any import policy already captured.
+    pub(super) fn enqueue_request(
+        &mut self,
+        request: Request,
+        duplicate_continuation: bool,
+    ) -> bool {
         self.wake_poll();
         if matches!(&request, Request::QueryPluginParameters(_)) {
             // The panel owns retryable read intent. A full/busy service must
@@ -3796,6 +3839,9 @@ impl EditorView {
             self.pending_requests.push_back(request);
             return true;
         }
+        if let Some(kind) = self.recoverable_graph_edit(&request) {
+            return self.recover_before_graph_edit(kind, request);
+        }
         if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 < UI_REQUEST_CAPACITY
@@ -3945,6 +3991,7 @@ impl EditorView {
 
     pub(super) fn cancel_duplicate_chain(&mut self) {
         self.duplicate_intent.cancel_chain();
+        self.cancel_time_duplicate_repeats();
     }
 
     pub(super) fn zoom_timeline(&mut self, inward: bool) {

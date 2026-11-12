@@ -251,24 +251,39 @@ impl Drop for OperatorTabBrowser {
 }
 
 #[gpui::test]
-fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits(
+fn operator_tab_browser_bootstrap_with_saved_places_excludes_unrelated_cached_media(
     cx: &mut TestAppContext,
 ) {
-    operator_tab_cycle(cx, false);
+    let (service, state, track, _) = operator_navigation_tests::operator_fixture();
+    let browser = OperatorTabBrowser::new(true);
+    let (handle, editor) = browser.window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.browser
+                .places
+                .contains(&browser.root.join("saved-place")),
+            "configured saved-place root remains available"
+        );
+    });
+    // The exact catalog comparison proves saved media is included and the stale
+    // unrelated cache entry stays excluded, without repeating the focus walk.
+    browser.assert_bounded(&editor, cx);
 }
 
 #[gpui::test]
-fn operator_tab_cycle_with_saved_places_excludes_unrelated_cached_media(cx: &mut TestAppContext) {
-    operator_tab_cycle(cx, true);
-}
-
-fn operator_tab_cycle(cx: &mut TestAppContext, saved_places: bool) {
+fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits(
+    cx: &mut TestAppContext,
+) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
     let original = state.project.clone();
     let revision = state.revision;
-    let browser = OperatorTabBrowser::new(saved_places);
+    let browser = OperatorTabBrowser::new(false);
     let (handle, editor) = browser.window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());

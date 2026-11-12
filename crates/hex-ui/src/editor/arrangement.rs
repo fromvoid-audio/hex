@@ -7,6 +7,9 @@ use gpui::{
     ScrollWheelEvent, Window, canvas, div, list, point, prelude::*, px, relative, rgb,
 };
 
+// Two readable rows leave room for the existing cursor triangles at the foot.
+const ARRANGEMENT_RULER_HEIGHT: f32 = 36.0;
+
 impl EditorView {
     pub(super) fn begin_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
         let Some(state) = self.state.as_ref() else {
@@ -482,9 +485,9 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
-                            // An open menu paints above this body; its rows
-                            // own the press, never a section or range gesture.
+                            // Foreground controls own the press while open.
                             if view.context_menu.is_some()
+                                || view.theme_settings.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return (false, false);
@@ -1028,17 +1031,44 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
-        let labels = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left_0()
-            .right_0()
+        let elapsed = div()
+            .debug_selector(|| "arrangement-elapsed-row".into())
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children(
+                super::elapsed_time::ruler_ticks(
+                    state.project.sample_rate(),
+                    viewport,
+                    ruler_width,
+                )
+                .into_iter()
+                .filter_map(|tick| {
+                    let x = viewport.fraction(tick.frame)?;
+                    super::timeline_strip::ruler_tick(x, tick.label, false, false, false).map(
+                        |tick_view| {
+                            tick_view
+                                .pb_0()
+                                .line_height(px(11.0))
+                                .debug_selector(move || {
+                                    format!("elapsed-ruler-tick-{}", tick.frame)
+                                })
+                        },
+                    )
+                }),
+            );
+        let beats = div()
+            .debug_selector(|| "arrangement-beat-row".into())
+            .relative()
+            .flex_1()
+            .min_h_0()
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
                     .filter_map(|tick| {
-                        let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
+                        let x = viewport.fraction(tick.frame)?;
                         super::timeline_strip::ruler_tick(
                             x,
                             tick.label,
@@ -1047,10 +1077,18 @@ impl EditorView {
                             tick.fragmentary_bar,
                         )
                         .map(|tick_view| {
-                            tick_view.debug_selector(move || format!("ruler-tick-{}", tick.frame))
+                            tick_view
+                                .line_height(px(11.0))
+                                .debug_selector(move || format!("ruler-tick-{}", tick.frame))
                         })
                     }),
             );
+        let labels = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .children([elapsed, beats]);
         let entity = cx.entity();
         let seek_viewport = viewport;
         let cells = div()
@@ -1169,6 +1207,7 @@ impl EditorView {
                 cx,
             ));
         super::timeline_strip::ruler_surface()
+            .h(px(ARRANGEMENT_RULER_HEIGHT))
             .debug_selector(|| "arrangement-time-ruler".into())
             .flex()
             .items_center()
