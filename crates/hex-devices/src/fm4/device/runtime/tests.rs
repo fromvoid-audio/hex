@@ -480,7 +480,10 @@ fn occurrence_gain_is_applied_after_original_velocity_law_and_released_ids_retir
     let note = source.prepare_note(60, 23).unwrap();
     let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
     let resources = BorrowedDeviceResources(&[]);
-    let gain = NativeInstrumentOccurrenceGain::new(8, 0.25, 0.75, 32, 0).unwrap();
+    let gain = NativeInstrumentOccurrenceGain::new(8, 0.25, 0.75, 32, 0)
+        .unwrap()
+        .with_attenuation(1.0, 0.25, 32, 0)
+        .unwrap();
     pair.begin_block();
     let mut frames = [[0.0; 2]; 32];
     pair.process_block_with_clock_and_occurrence_gains(
@@ -499,8 +502,10 @@ fn occurrence_gain_is_applied_after_original_velocity_law_and_released_ids_retir
     .unwrap();
     pair.commit_block();
     for (age, actual) in frames.iter().enumerate() {
+        let clip_gain = 0.25 + 0.5 * age as f64 / 32.0;
+        let attenuation = 1.0 - 0.75 * age as f64 / 32.0;
         let expected = (f64::from(note.sample(age as u64, 12, &resources)[0])
-            * gain.value_at_offset(age as u64)) as f32;
+            * (clip_gain * attenuation)) as f32;
         assert_eq!(*actual, [expected; 2]);
     }
     assert!(pair.committed_is_quiescent());
