@@ -417,6 +417,462 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_time_range_copies_commit_while_first_checkpoint_is_held() {
+        check_consecutive_time_range_copies(false);
+    }
+
+    #[test]
+    fn consecutive_time_range_copies_preserve_conflicting_recovery_bytes() {
+        check_consecutive_time_range_copies(true);
+    }
+
+    fn check_consecutive_time_range_copies(conflict: bool) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-range-copy-queue-{}-{conflict}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        let track = prepare_paste(&service);
+        let initial_revision = sources.lock().unwrap().last().unwrap().editor_revision;
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        for start in [0, 24_000] {
+            let range = hex_project::TimeRange::new(vec![track], start, start + 24_000).unwrap();
+            service
+                .submit(Request::Edit(Command::CopyTimeRangeTo {
+                    range,
+                    track,
+                    frame: start + 24_000,
+                }))
+                .unwrap();
+            if start == 0 {
+                entered.recv_timeout(Duration::from_millis(500)).unwrap();
+                if conflict {
+                    std::fs::write(&path, b"another writer's journal").unwrap();
+                }
+            }
+        }
+        let until = Instant::now() + Duration::from_millis(180);
+        let second_applied = loop {
+            if sources
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|source| source.editor_revision == initial_revision + 2)
+            {
+                break true;
+            }
+            if Instant::now() >= until {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        release.send(()).unwrap();
+        assert!(
+            second_applied,
+            "second copy must commit while first checkpoint is held"
+        );
+        let first = next(&service);
+        let second = next(&service);
+        assert_eq!(first.state.revision, initial_revision + 1);
+        assert_eq!(second.state.revision, initial_revision + 2);
+        let revisions: Vec<_> = sources
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|context| context.editor_revision > initial_revision)
+            .map(|context| context.editor_revision)
+            .collect();
+        assert_eq!(revisions, [initial_revision + 1, initial_revision + 2]);
+        if conflict {
+            assert!(first.recovery_failure.is_some() && second.recovery_failure.is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
+        } else {
+            assert!(first.error.is_none() && second.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *second.state.project
+            );
+        }
+        assert_eq!(
+            second
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            3
+        );
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            next(&service)
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            next(&service)
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            1
+        );
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(
+            next(&service)
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(
+            next(&service)
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            3
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn committed_second_time_copy_survives_consumer_closure() {
+        check_time_copy_custody_on_exit(true);
+    }
+
+    #[test]
+    fn committed_second_time_copy_survives_shutdown() {
+        check_time_copy_custody_on_exit(false);
+    }
+
+    fn check_time_copy_custody_on_exit(close_consumer: bool) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-time-copy-exit-{}-{close_consumer}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        let track = prepare_paste(&service);
+        let initial_revision = sources.lock().unwrap().last().unwrap().editor_revision;
+        let mut expected =
+            hex_project::Editor::new(hex_storage::load_journal(&path).unwrap(), 16).unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        for start in [0, 24_000] {
+            let make = || Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], start, start + 24_000).unwrap(),
+                track,
+                frame: start + 24_000,
+            };
+            expected.execute(make()).unwrap();
+            service.submit(Request::Edit(make())).unwrap();
+            if start == 0 {
+                entered.recv_timeout(Duration::from_millis(500)).unwrap();
+            }
+        }
+        let until = Instant::now() + Duration::from_millis(180);
+        while sources
+            .lock()
+            .unwrap()
+            .last()
+            .is_none_or(|context| context.editor_revision != initial_revision + 2)
+        {
+            assert!(
+                Instant::now() < until,
+                "second copy source was not acknowledged"
+            );
+            std::thread::yield_now();
+        }
+        if close_consumer {
+            let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let replacement = super::super::diagnostics::EventReceiver::new(
+                receiver,
+                Arc::clone(&service.diagnostics),
+            );
+            drop(std::mem::replace(&mut service.events, replacement));
+        } else {
+            assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while !service
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            assert!(Instant::now() < until, "service did not stop");
+            std::thread::yield_now();
+        }
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *expected.project()
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn time_range_copy_checkpoint_fences_save() {
+        check_time_copy_document_fence(false);
+    }
+
+    #[test]
+    fn time_range_copy_checkpoint_fences_open() {
+        check_time_copy_document_fence(true);
+    }
+
+    fn check_time_copy_document_fence(open: bool) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-time-copy-document-{}-{open}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let journal = directory.join("untitled.hex-journal");
+        let target = directory.join("other.hex");
+        let other = Project::new(48_000).unwrap();
+        if open {
+            hex_storage::save_new(&target, &other).unwrap();
+        }
+        let service = Service::with_recovery(48_000, 16, 8_000_000, journal.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let mut expected =
+            hex_project::Editor::new(hex_storage::load_journal(&journal).unwrap(), 16).unwrap();
+        let command = || Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 0, 24_000).unwrap(),
+            track,
+            frame: 24_000,
+        };
+        expected.execute(command()).unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((journal.clone(), entered_tx, release_rx));
+        service.submit(Request::Edit(command())).unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service
+            .submit(if open {
+                Request::Open(target.clone())
+            } else {
+                Request::SaveNew(target.clone())
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(60);
+        while Instant::now() < until {
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            if !open {
+                assert!(!target.exists());
+            }
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        let copied = next(&service);
+        assert!(copied.error.is_none());
+        assert_eq!(*copied.state.project, *expected.project());
+        let terminal = next(&service);
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        if open {
+            assert!(terminal.project_replaced);
+            assert_eq!(*terminal.state.project, other);
+            assert_eq!(
+                hex_storage::load_journal(&journal).unwrap(),
+                *expected.project()
+            );
+        } else {
+            assert!(terminal.save_complete);
+            assert_eq!(hex_storage::load(&target).unwrap(), *expected.project());
+        }
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn third_time_copy_waits_for_the_single_checkpoint_slot() {
+        use std::time::{Duration, Instant};
+        let directory =
+            std::env::temp_dir().join(format!("hex-time-copy-full-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        let track = prepare_paste(&service);
+        let initial = sources.lock().unwrap().last().unwrap().editor_revision;
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        for start in [0, 24_000] {
+            service
+                .submit(Request::Edit(Command::CopyTimeRangeTo {
+                    range: hex_project::TimeRange::new(vec![track], start, start + 24_000).unwrap(),
+                    track,
+                    frame: start + 24_000,
+                }))
+                .unwrap();
+            if start == 0 {
+                entered.recv_timeout(Duration::from_millis(500)).unwrap();
+            }
+        }
+        let until = Instant::now() + Duration::from_millis(180);
+        while sources
+            .lock()
+            .unwrap()
+            .last()
+            .is_none_or(|context| context.editor_revision != initial + 2)
+        {
+            assert!(Instant::now() < until, "second copy did not commit");
+            std::thread::yield_now();
+        }
+        service
+            .submit(Request::Edit(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], 48_000, 72_000).unwrap(),
+                track,
+                frame: 72_000,
+            }))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(60);
+        while Instant::now() < until {
+            assert_eq!(
+                sources.lock().unwrap().last().unwrap().editor_revision,
+                initial + 2
+            );
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        let first = next(&service);
+        let second = next(&service);
+        let third = next(&service);
+        assert!(first.error.is_none() && second.error.is_none() && third.error.is_none());
+        assert_eq!(
+            (
+                first.state.revision,
+                second.state.revision,
+                third.state.revision
+            ),
+            (initial + 1, initial + 2, initial + 3)
+        );
+        assert_eq!(
+            third.state.project.track(track).unwrap().midi_clips().len(),
+            4
+        );
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *third.state.project
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn track_switch_waits_for_pending_time_copy_checkpoint() {
+        use std::time::Duration;
+        let directory =
+            std::env::temp_dir().join(format!("hex-time-copy-mute-fence-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], 0, 24_000).unwrap(),
+                track,
+                frame: 24_000,
+            }))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(matches!(
+            service.try_track_switch_view(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let first = next(&service);
+        let second = next(&service);
+        assert!(first.error.is_none() && second.error.is_none());
+        assert_eq!(
+            first.state.project.track(track).unwrap().midi_clips().len(),
+            2
+        );
+        assert!(second.state.project.track(track).unwrap().muted());
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second.state.project
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn consecutive_track_mutes_commit_while_first_checkpoint_is_held() {
         check_consecutive_track_mutes(false);
     }
