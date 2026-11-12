@@ -16,11 +16,7 @@ pub(super) struct ChainWindow {
 
 impl ChainWindow {
     pub(super) fn prepare(&mut self, devices: &[(DeviceId, f32)]) {
-        self.prepare_with_prefix(devices, 0.0);
-    }
-
-    pub(super) fn prepare_with_prefix(&mut self, devices: &[(DeviceId, f32)], prefix: f32) {
-        let mut left = DEVICE_CHAIN_PADDING + prefix;
+        let mut left = DEVICE_CHAIN_PADDING;
         let cards: Vec<_> = devices
             .iter()
             .map(|(id, width)| {
@@ -254,9 +250,6 @@ mod tests {
         assert_eq!(f32::from(chain.scroll.offset().x), -307.0);
         chain.prepare(&[(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)]);
         assert_eq!(f32::from(chain.scroll.offset().x), -160.0);
-        chain.prepare_with_prefix(&[(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)], 131.0);
-        assert_eq!(chain.cards[0].1, 134.0);
-        assert_eq!(f32::from(chain.scroll.offset().x), -291.0);
         chain.width.set(100.0);
         assert!(chain.visible(ids[0], None), "unknown IDs are conservative");
         assert!(!chain.visible(ids[2], None));
