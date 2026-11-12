@@ -1349,11 +1349,12 @@ impl EditorView {
                         .as_ref()
                         .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
                         .map(|metadata| {
-                            super::waveform::waveform_source_segment_view(
+                            super::waveform::waveform_source_segment_view_cached(
                                 Arc::clone(&metadata.waveform),
                                 start,
                                 visible_start,
                                 visible_end,
+                                std::rc::Rc::clone(&self.waveform_geometry_cache),
                                 crate::theme::color(crate::theme::PaletteRole::Waveform),
                             )
                         }),

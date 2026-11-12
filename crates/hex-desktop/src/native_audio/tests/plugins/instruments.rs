@@ -4,6 +4,7 @@ use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
 mod section_edit;
+mod track_duplicate;
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]

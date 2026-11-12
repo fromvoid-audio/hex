@@ -4,11 +4,11 @@
 use super::*;
 use crate::editor::{
     waveform,
-    waveform_geometry::{WaveformGeometryCache, WaveformMapping},
+    waveform_geometry::{WaveformMapping, WaveformViewCache},
 };
 use hex_project::{AudioDomainClock, AudioEventPlacementPreview, AudioEvents, Clip, TempoMap};
 use hex_session::{CachedWaveform, service::ViewState};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 /// The accepted peak source is frozen with the model query. An unrelated actor
 /// event can install new summaries while this edit still awaits its own receipt.
@@ -214,7 +214,7 @@ impl Preview {
         event: u64,
         first: u64,
         end: u64,
-        cache: Rc<RefCell<WaveformGeometryCache>>,
+        cache: Rc<WaveformViewCache>,
         ink: u32,
     ) -> Option<gpui::Div> {
         use gpui::prelude::*;

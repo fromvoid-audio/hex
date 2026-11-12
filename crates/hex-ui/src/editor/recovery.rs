@@ -1,11 +1,33 @@
 //! Output lifecycle admission and graph/cursor restoration, without canonical edits.
-use super::EditorView;
+use super::{
+    EditorView,
+    drag::BrowserDropDestination,
+    pending_sample_drop::PendingSampleDrop,
+    recovery_state::{DeferredEditKind, DeferredGraphEdit, RecoveryState},
+};
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
+use hex_engine::{AudioSourceContext, NativeDeviceClass};
+use hex_session::service::{NativeDeviceDropSource, Request};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "recovery_tests.rs"]
 pub(in crate::editor) mod tests;
+
+/// Drop the released preview only if it still belongs to the deferred import.
+pub(super) fn clear_recovery(
+    recovery: &mut RecoveryState,
+    sample_drop: &mut Option<PendingSampleDrop>,
+) {
+    if recovery
+        .deferred_edit
+        .as_ref()
+        .is_some_and(|edit| edit.kind == DeferredEditKind::SampleDrop)
+    {
+        *sample_drop = None;
+    }
+    recovery.fail();
+}
 
 impl EditorView {
     pub(super) fn has_resident_vst3(&self) -> bool {
@@ -32,6 +54,145 @@ impl EditorView {
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.stopped_playback_restore.is_none()
             && !self.degraded_plugins.is_empty()
+    }
+
+    pub(super) fn recoverable_graph_edit(&self, request: &Request) -> Option<DeferredEditKind> {
+        if !self.has_degraded_vst3_output() && self.recovery.deferred_edit.is_none() {
+            return None;
+        }
+        if matches!(
+            self.sample_drop_target(),
+            Some(
+                BrowserDropDestination::ExistingTrack { .. }
+                    | BrowserDropDestination::NewTrack { .. }
+            )
+        ) && self.pending_sample_drop_matches(request)
+        {
+            return Some(DeferredEditKind::SampleDrop);
+        }
+        matches!(
+            request,
+            Request::DropBrowserDeviceOnArrangement {
+                class: NativeDeviceClass::Effect,
+                ..
+            } | Request::DropNativeDevice {
+                source: NativeDeviceDropSource::Browser {
+                    class: NativeDeviceClass::Effect,
+                    ..
+                },
+                ..
+            } | Request::AddNativeDevice {
+                class: NativeDeviceClass::Effect,
+                ..
+            }
+        )
+        .then_some(DeferredEditKind::NativeEffect)
+    }
+
+    /// Hold one admitted edit through the fresh graph and cursor. The sample
+    /// request already carries the policy captured at its original drop.
+    pub(super) fn recover_before_graph_edit(
+        &mut self,
+        kind: DeferredEditKind,
+        request: Request,
+    ) -> bool {
+        if self.recovery.generation().is_some() {
+            self.error = Some("audio recovery pending · wait before editing".into());
+            return false;
+        }
+        if self.edit_pending() || self.pending_restart_request.is_some() {
+            self.error = Some("finish the current edit before restarting audio".into());
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let context = AudioSourceContext {
+            project_generation: self.project_generation,
+            editor_revision: state.revision,
+        };
+        let current = match &request {
+            Request::DropBrowserDeviceOnArrangement {
+                project_generation,
+                revision,
+                ..
+            }
+            | Request::DropNativeDevice {
+                project_generation,
+                revision,
+                ..
+            } => {
+                (*project_generation, *revision)
+                    == (context.project_generation, context.editor_revision)
+            }
+            Request::AddNativeDevice { track, .. } => state.project.track(*track).is_some(),
+            _ => kind == DeferredEditKind::SampleDrop && self.pending_sample_drop_matches(&request),
+        };
+        if !current {
+            self.error = Some("edit canceled · project changed".into());
+            return false;
+        }
+
+        let playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(Acquire));
+        self.recover_audio();
+        if self.recovery.generation().is_none() {
+            return false;
+        }
+        self.recovery.deferred_edit = Some(DeferredGraphEdit {
+            kind,
+            context,
+            request: Box::new(request),
+        });
+        if playing {
+            self.defer_play_until_audio_recovers();
+        }
+        self.status = match kind {
+            DeferredEditKind::NativeEffect => "restarting audio · device will be added when ready",
+            DeferredEditKind::SampleDrop => "restarting audio · sample will be imported when ready",
+        }
+        .into();
+        true
+    }
+
+    fn submit_recovered_graph_edit(&mut self) {
+        let Some(pending) = self.recovery.deferred_edit.take() else {
+            return;
+        };
+        let sample_drop = pending.kind == DeferredEditKind::SampleDrop;
+        if sample_drop && !self.pending_sample_drop_matches(&pending.request) {
+            return;
+        }
+        let accepted = if pending.context.project_generation != self.project_generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != pending.context.editor_revision)
+        {
+            self.error = Some("edit canceled · project changed during audio recovery".into());
+            false
+        } else if sample_drop && self.edit_pending() {
+            // Legacy imports use FIFO destinations. A worker edit without an
+            // installed reply can already have changed the captured revision.
+            self.error =
+                Some("sample drop canceled · project work pending during audio recovery".into());
+            false
+        } else if self.has_degraded_vst3_output() {
+            self.error = Some("plug-in failed during audio recovery · edit was canceled".into());
+            false
+        } else {
+            self.enqueue_request(*pending.request, false)
+        };
+        if accepted {
+            self.status = if sample_drop {
+                "importing sample to arrangement".into()
+            } else {
+                "adding device".into()
+            };
+        } else if sample_drop {
+            self.pending_sample_drop = None;
+        }
     }
 
     pub(super) fn defer_play_until_audio_recovers(&mut self) {
@@ -91,7 +252,7 @@ impl EditorView {
         };
         self.offline_cursor = position;
         if !self.retire_audio_preserving_gain_take() {
-            self.recovery.fail();
+            clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
             return;
         }
         self.clear_audio_accounting();
@@ -259,6 +420,7 @@ impl EditorView {
             self.pending_recovery_generation = None;
             self.status = "audio ready · stopped".into();
             self.error = None;
+            self.submit_recovered_graph_edit();
             return true;
         }
         false
@@ -267,7 +429,7 @@ impl EditorView {
     pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
         let error = error.into();
         self.offline_cursor = self.cursor_position();
-        self.recovery.fail();
+        clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;

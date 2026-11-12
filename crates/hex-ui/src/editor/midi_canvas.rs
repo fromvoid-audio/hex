@@ -37,15 +37,11 @@ impl EditorView {
         _window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let selected = self.detail_clip_id()?;
-        let length = self
-            .state
-            .as_ref()?
-            .project
-            .midi_source(selected)?
-            .source_length()
-            .raw();
-        let owner = (self.project_generation, selected);
+        let state = std::sync::Arc::clone(self.state.as_ref()?);
+        let clip_id = self.detail_clip_id()?;
+        let source = state.project.midi_source(clip_id)?;
+        let clip_len = source.source_length();
+        let owner = (self.project_generation, clip_id);
         if self.piano_view_clip != Some(owner) {
             self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
@@ -60,12 +56,11 @@ impl EditorView {
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_pitch_wheel_accum = 0.0;
             self.piano_beat_start = 0;
-            self.piano_beat_span =
-                BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
+            self.piano_beat_span = BeatTime::from_raw(super::midi_scene::fit_span(
+                clip_len.raw(),
+                BeatTime::ONE.raw(),
+            ));
         }
-        let state = std::sync::Arc::clone(self.state.as_ref()?);
-        let clip_id = self.detail_clip_id()?;
-        let source = state.project.midi_source(clip_id)?;
         let arrangement = state.project.midi_clip(clip_id);
         let revision = state.revision;
         let generation = self.project_generation;
@@ -76,7 +71,6 @@ impl EditorView {
                 clip.arrangement_length().raw()
             }),
         );
-        let clip_len = source.source_length();
         let beat_start = self.piano_beat_start;
         let beat_span = self.piano_beat_span;
         let pitch_low = self.piano_pitch_low;
@@ -93,7 +87,7 @@ impl EditorView {
             pitch_rows,
         };
         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
-        let draw_overwrite = match self.midi_overwrite_preview(source) {
+        let draw_overwrite = match self.midi_overwrite_preview() {
             Ok(preview) => preview,
             Err(error) => {
                 self.error = Some(error.to_string().into());
@@ -113,10 +107,33 @@ impl EditorView {
             .unwrap_or_else(|| self.midi_selection.shared_ids());
         let draw_primary = self.midi_selection.primary();
         let selection_epoch = self.midi_selection.epoch();
-        let preview = self
-            .displayed_midi_note_gesture()
-            .map(|gesture| gesture.preview);
-        let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
+        let displayed_note = self.displayed_midi_note_gesture();
+        let selected_note_data = selected.and_then(|id| {
+            if let Some(gesture) = displayed_note.filter(|gesture| gesture.note == id) {
+                return Some((
+                    gesture.preview.pitch,
+                    i128::from(gesture.preview.start) - i128::from(gesture.source_prefix),
+                    gesture.preview.duration,
+                    gesture.velocity,
+                ));
+            }
+            if let Some(note) = scene.note(id) {
+                return Some((
+                    note.pitch,
+                    i128::from(note.start),
+                    note.duration,
+                    note.velocity,
+                ));
+            }
+            notes.iter().find(|note| note.id() == id).map(|note| {
+                (
+                    note.pitch(),
+                    i128::from(note.start().raw()),
+                    note.duration().raw(),
+                    note.velocity(),
+                )
+            })
+        });
         let status = if let Some((first, last)) = self.midi_time_selection_bounds() {
             format!(
                 "time {}–{}b · cmd+d duplicate",
@@ -136,33 +153,12 @@ impl EditorView {
                         beat_label(beat_span.raw())
                     )
                 },
-                |note| {
-                    let data = preview.filter(|_| selected == Some(note.id()));
-                    let (pitch, start, duration) = data.map_or_else(
-                        || {
-                            (
-                                note.pitch(),
-                                i128::from(note.start().raw()),
-                                note.duration().raw(),
-                            )
-                        },
-                        |item| {
-                            (
-                                item.pitch,
-                                i128::from(item.start)
-                                    - i128::from(
-                                        self.displayed_midi_note_gesture()
-                                            .map_or(0, |g| g.source_prefix),
-                                    ),
-                                item.duration,
-                            )
-                        },
-                    );
+                |(pitch, start, duration, velocity)| {
                     format!(
                         "p{pitch} · t{} · g{} · v{}",
                         beat_label(start),
                         beat_label(duration),
-                        note.velocity()
+                        velocity
                     )
                 },
             )
@@ -170,9 +166,8 @@ impl EditorView {
 
         let canvas_scene = std::sync::Arc::clone(&scene);
         let draw_selected = selected_ids;
-        let draw_preview = self
-            .displayed_midi_note_gesture()
-            .map(|gesture| (gesture.note, gesture.preview, gesture.source_prefix));
+        let draw_preview =
+            displayed_note.map(|gesture| (gesture.note, gesture.preview, gesture.source_prefix));
         let draw_group = self
             .displayed_midi_group_gesture()
             .map(|gesture| (gesture.shared_originals(), gesture.clone()));
@@ -1860,6 +1855,9 @@ impl EditorView {
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
+        if ruler {
+            self.sync_held_play_start_audition();
+        }
         let pan = self.midi_pan.gesture.take().is_some();
         let marquee = self.cancel_all_midi_marquees();
         let velocity = self.midi_velocity.cancel_value_state();
@@ -1879,26 +1877,6 @@ impl EditorView {
             || group
             || stroke
             || marquee
-    }
-
-    fn midi_note_gesture_current(
-        &self,
-        gesture: &midi_drag::NoteGesture,
-        mut context: midi_drag::GestureContext,
-    ) -> bool {
-        let Some(clip) = context.selected_clip else {
-            return false;
-        };
-        context.pending = self.edit_pending();
-        let clip_contains_note = self.state.as_ref().is_some_and(|state| {
-            state.revision == context.revision
-                && state
-                    .project
-                    .midi_source(clip)
-                    .is_some_and(|midi| midi.notes().iter().any(|note| note.id() == gesture.note))
-        });
-        context.clip_contains_note = clip_contains_note;
-        context.generation == self.project_generation && midi_drag::is_current(gesture, context)
     }
 
     fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> impl IntoElement {

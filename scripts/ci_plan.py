@@ -213,6 +213,7 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/update.rs": ("update::tests::cancelled_ready_cannot_block_or_replace_a_new_request",),
     "src/context_menu.rs": ("context_menu::tests::",),
     "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/header.rs": ("editor::header::tests::",),
@@ -254,6 +255,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
+    "src/editor_backend.rs": ("editor_backend::tests::",),
+    "src/editor/truncated_import.rs": ("editor::truncated_import::unit_tests::",),
     "src/editor/timeline_strip.rs": ("editor::timeline_strip::tests::",),
     "src/editor/shortcut_tests.rs": ("editor::shortcut_tests::",),
     "src/editor/scrub_tests.rs": ("editor::scrub::tests::latest_target_replaces_moves_and_release_survives_an_in_flight_destination",),
@@ -514,6 +517,9 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor_backend::": (
+        "editor::recovery::tests::explicit_play_from_recovers_degraded_vst3_at_the_requested_frame",
+    ),
     "editor::shortcut_tests::": (
         "editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus",
     ),

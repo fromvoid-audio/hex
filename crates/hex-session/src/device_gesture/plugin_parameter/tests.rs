@@ -502,7 +502,10 @@ fn refused_commit_keeps_acknowledged_final_preview_until_exact_cancel() {
     client.finish_plugin(final_value).unwrap();
     let commit = client.next_request().unwrap();
     client.mark_submitted();
-    let refused = machine.handle_prepared(&mut session, commit, Some(&prepared), 9, &mut prepare);
+    let mut refused =
+        machine.handle_prepared(&mut session, commit, Some(&prepared), 9, &mut prepare);
+    machine.retire_unpublished_native_terminal(&mut refused.ack);
+    assert!(machine.retire_native_on_restart().is_none());
     assert!(!refused.ack.accepted && refused.ack.preview_retained);
     assert_eq!(machine.snapshot().unwrap().plugin_value, Some(final_value));
     assert!(client.acknowledge_with_snapshot(&refused.ack, machine.snapshot()));
