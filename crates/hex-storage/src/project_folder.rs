@@ -5,6 +5,7 @@
 use crate::{ReplaceWarning, SaveNewOutcome, StorageError, files, publication, replacement};
 use hex_project::Project;
 use std::{
+    fmt,
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
@@ -14,6 +15,33 @@ use std::{
 const MARKER: &str = ".hex-project";
 pub const SAMPLES: &str = "samples";
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct StageRetained {
+    path: PathBuf,
+    source: StorageError,
+}
+
+impl fmt::Display for StageRetained {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} · staging path {} was not removed by hex · inspect it before using or removing it",
+            self.source,
+            crate::text::verbatim(self.path.display())
+        )
+    }
+}
+
+impl std::error::Error for StageRetained {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn stage_retained(path: PathBuf, source: StorageError) -> StorageError {
+    StorageError::Io(io::Error::other(StageRetained { path, source }))
+}
 
 /// Return the marked parent of a project document, if it has one.
 pub fn root_for_document(path: &Path) -> io::Result<Option<&Path>> {
@@ -104,10 +132,7 @@ impl Destination {
             fs::create_dir(stage.join(SAMPLES))
         })();
         if let Err(error) = initialized {
-            return Err(StorageError::ProjectStageRetained {
-                path: folder.staging,
-                source: Box::new(error.into()),
-            });
+            return Err(stage_retained(folder.staging, error.into()));
         }
         Ok(Self::Folder(folder))
     }
@@ -161,10 +186,7 @@ impl NewFolder {
                 });
             Ok(outcome)
         })();
-        result.map_err(|source| StorageError::ProjectStageRetained {
-            path: self.staging,
-            source: Box::new(source),
-        })
+        result.map_err(|source| stage_retained(self.staging, source))
     }
 }
 
