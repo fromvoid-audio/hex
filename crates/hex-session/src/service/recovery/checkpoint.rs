@@ -543,6 +543,454 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_locator_adds_commit_while_first_checkpoint_is_held() {
+        check_consecutive_locator_adds(false);
+    }
+
+    #[test]
+    fn consecutive_locator_adds_preserve_conflicting_recovery_bytes() {
+        check_consecutive_locator_adds(true);
+    }
+
+    fn check_consecutive_locator_adds(conflict: bool) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-locator-queue-{}-{conflict}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let initial = next(&service).state.revision;
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::AddArrangementLocator {
+                frame: 24_000,
+            }))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        if conflict {
+            std::fs::write(&path, b"another writer's journal").unwrap();
+        }
+        service
+            .submit(Request::Edit(Command::AddArrangementLocator {
+                frame: 48_000,
+            }))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second_applied = loop {
+            if sources
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|source| source.editor_revision == initial + 2)
+            {
+                break true;
+            }
+            if Instant::now() >= until {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        release.send(()).unwrap();
+        assert!(
+            second_applied,
+            "second locator must commit while first checkpoint is held"
+        );
+        let first = next(&service);
+        let second = next(&service);
+        assert_eq!(
+            (first.state.revision, second.state.revision),
+            (initial + 1, initial + 2)
+        );
+        let (
+            Some(Created::ArrangementLocator(first_id)),
+            Some(Created::ArrangementLocator(second_id)),
+        ) = (first.created, second.created)
+        else {
+            panic!("missing created locator identity")
+        };
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            second
+                .state
+                .project
+                .arrangement_locator(first_id)
+                .unwrap()
+                .frame(),
+            24_000
+        );
+        assert_eq!(
+            second
+                .state
+                .project
+                .arrangement_locator(second_id)
+                .unwrap()
+                .frame(),
+            48_000
+        );
+        if conflict {
+            assert!(first.recovery_failure.is_some() && second.recovery_failure.is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
+        } else {
+            assert!(first.error.is_none() && second.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *second.state.project
+            );
+        }
+        for (request, count) in [
+            (Request::Undo, 1),
+            (Request::Undo, 0),
+            (Request::Redo, 1),
+            (Request::Redo, 2),
+        ] {
+            service.submit(request).unwrap();
+            assert_eq!(
+                next(&service).state.project.arrangement_locators().len(),
+                count
+            );
+        }
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn locator_worker_fixture(
+        label: &str,
+    ) -> (
+        Service,
+        PathBuf,
+        PathBuf,
+        Arc<std::sync::Mutex<Vec<hex_engine::AudioSourceContext>>>,
+        u64,
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("hex-locator-{label}-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let revision = next(&service).state.revision;
+        (service, directory, path, sources, revision)
+    }
+
+    fn hold_locator_checkpoint(
+        path: &Path,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.to_owned(), entered_tx, release_rx));
+        (entered, release)
+    }
+
+    fn submit_locator(service: &Service, frame: u64) {
+        service
+            .submit(Request::Edit(Command::AddArrangementLocator { frame }))
+            .unwrap();
+    }
+
+    fn wait_locator_revision(
+        sources: &std::sync::Mutex<Vec<hex_engine::AudioSourceContext>>,
+        revision: u64,
+    ) {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(180);
+        while !sources
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|source| source.editor_revision == revision)
+        {
+            assert!(
+                std::time::Instant::now() < until,
+                "locator source was not acknowledged"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn locator_checkpoint_bounds_third_add_and_preserves_duplicate_noop() {
+        use std::time::{Duration, Instant};
+        let (service, directory, path, sources, initial) = locator_worker_fixture("bound");
+        let (entered, release) = hold_locator_checkpoint(&path);
+        submit_locator(&service, 24_000);
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        submit_locator(&service, 48_000);
+        wait_locator_revision(&sources, initial + 2);
+        submit_locator(&service, 72_000);
+        let until = Instant::now() + Duration::from_millis(30);
+        while Instant::now() < until {
+            assert!(
+                !sources
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|source| source.editor_revision == initial + 3)
+            );
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        for revision in initial + 1..=initial + 3 {
+            let event = next(&service);
+            assert_eq!(event.state.revision, revision);
+            assert!(matches!(
+                event.created,
+                Some(Created::ArrangementLocator(_))
+            ));
+            assert!(event.error.is_none());
+        }
+        submit_locator(&service, 72_000);
+        let duplicate = next(&service);
+        assert!(!matches!(
+            duplicate.created,
+            Some(Created::ArrangementLocator(_))
+        ));
+        assert_eq!(duplicate.state.project.arrangement_locators().len(), 3);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *duplicate.state.project
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn duplicate_locator_during_checkpoint_keeps_one_identity_and_undo() {
+        use std::time::Duration;
+        let (service, directory, path, _, _) = locator_worker_fixture("duplicate");
+        let (entered, release) = hold_locator_checkpoint(&path);
+        submit_locator(&service, 24_000);
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        submit_locator(&service, 24_000);
+        assert!(
+            service
+                .events
+                .recv_timeout(Duration::from_millis(30))
+                .is_err()
+        );
+        release.send(()).unwrap();
+        let first = next(&service);
+        let Some(Created::ArrangementLocator(id)) = first.created else {
+            panic!("missing created locator")
+        };
+        let duplicate = next(&service);
+        assert!(!matches!(
+            duplicate.created,
+            Some(Created::ArrangementLocator(_))
+        ));
+        assert_eq!(duplicate.state.project.arrangement_locators().len(), 1);
+        assert!(duplicate.state.project.arrangement_locator(id).is_some());
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *duplicate.state.project
+        );
+        service.submit(Request::Undo).unwrap();
+        assert!(
+            next(&service)
+                .state
+                .project
+                .arrangement_locators()
+                .is_empty()
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn committed_locators_survive_consumer_closure() {
+        check_locator_custody(true);
+    }
+
+    #[test]
+    fn committed_locators_survive_shutdown() {
+        check_locator_custody(false);
+    }
+
+    fn check_locator_custody(close_consumer: bool) {
+        use std::time::{Duration, Instant};
+        let (mut service, directory, path, sources, initial) =
+            locator_worker_fixture(if close_consumer { "closed" } else { "shutdown" });
+        let mut expected =
+            hex_project::Editor::new(hex_storage::load_journal(&path).unwrap(), 16).unwrap();
+        let (entered, release) = hold_locator_checkpoint(&path);
+        for frame in [24_000, 48_000] {
+            expected
+                .execute(Command::AddArrangementLocator { frame })
+                .unwrap();
+            submit_locator(&service, frame);
+            if frame == 24_000 {
+                entered.recv_timeout(Duration::from_millis(500)).unwrap();
+            }
+        }
+        wait_locator_revision(&sources, initial + 2);
+        if close_consumer {
+            let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let replacement = super::super::diagnostics::EventReceiver::new(
+                receiver,
+                Arc::clone(&service.diagnostics),
+            );
+            drop(std::mem::replace(&mut service.events, replacement));
+        } else {
+            assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while !service
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            assert!(Instant::now() < until, "service did not stop");
+            std::thread::yield_now();
+        }
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *expected.project()
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn locator_checkpoint_fences_save_and_open() {
+        use std::time::{Duration, Instant};
+        for open in [false, true] {
+            let (service, directory, path, _, _) =
+                locator_worker_fixture(if open { "open" } else { "save" });
+            let target = directory.join("other.hex");
+            let other = Project::new(48_000).unwrap();
+            if open {
+                hex_storage::save_new(&target, &other).unwrap();
+            }
+            let (entered, release) = hold_locator_checkpoint(&path);
+            submit_locator(&service, 24_000);
+            entered.recv_timeout(Duration::from_millis(500)).unwrap();
+            service
+                .submit(if open {
+                    Request::Open(target.clone())
+                } else {
+                    Request::SaveNew(target.clone())
+                })
+                .unwrap();
+            let until = Instant::now() + Duration::from_millis(30);
+            while Instant::now() < until {
+                assert!(matches!(
+                    service.try_event(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                if !open {
+                    assert!(!target.exists());
+                }
+                std::thread::yield_now();
+            }
+            release.send(()).unwrap();
+            let added = next(&service);
+            assert!(matches!(
+                added.created,
+                Some(Created::ArrangementLocator(_))
+            ));
+            let terminal = next(&service);
+            assert!(terminal.error.is_none());
+            if open {
+                assert!(terminal.project_replaced);
+                assert_eq!(*terminal.state.project, other);
+                assert_eq!(
+                    hex_storage::load_journal(&path).unwrap(),
+                    *added.state.project
+                );
+            } else {
+                assert!(terminal.save_complete);
+                assert_eq!(hex_storage::load(&target).unwrap(), *added.state.project);
+            }
+            drop(service);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn locator_checkpoint_fences_mixed_edits() {
+        use std::time::{Duration, Instant};
+        let (service, directory, path, sources, initial) = locator_worker_fixture("mixed");
+        let (entered, release) = hold_locator_checkpoint(&path);
+        submit_locator(&service, 24_000);
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "later".into(),
+            }))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(30);
+        while Instant::now() < until {
+            assert!(
+                !sources
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|source| source.editor_revision == initial + 2)
+            );
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        assert!(matches!(
+            next(&service).created,
+            Some(Created::ArrangementLocator(_))
+        ));
+        let later = next(&service);
+        assert!(matches!(later.created, Some(Created::Track(_))));
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *later.state.project
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn consecutive_time_range_copies_commit_while_first_checkpoint_is_held() {
         check_consecutive_time_range_copies(false);
     }

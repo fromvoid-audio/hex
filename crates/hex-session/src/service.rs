@@ -2536,6 +2536,7 @@ enum DeferredRecoveryKind {
     Paste,
     TrackSwitch,
     TimeRangeCopy,
+    LocatorAdd,
 }
 
 impl DeferredRecoveryKind {
@@ -2544,6 +2545,7 @@ impl DeferredRecoveryKind {
             Self::Paste => "paste_recovery_us",
             Self::TrackSwitch => "track_switch_recovery_us",
             Self::TimeRangeCopy => "duplicate_recovery_us",
+            Self::LocatorAdd => "locator_recovery_us",
         }
     }
 }
@@ -2554,6 +2556,9 @@ fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecoveryKind> {
             Some(DeferredRecoveryKind::Paste)
         }
         Request::Edit(Command::CopyTimeRangeTo { .. }) => Some(DeferredRecoveryKind::TimeRangeCopy),
+        Request::Edit(Command::AddArrangementLocator { .. }) => {
+            Some(DeferredRecoveryKind::LocatorAdd)
+        }
         Request::Edit(
             Command::Mute { .. }
             | Command::ToggleMute(_)
@@ -9289,6 +9294,12 @@ fn run_worker(
             Some(DeferredRecoveryKind::TrackSwitch)
         } else if time_range_copy && canonical_changed && error.is_none() {
             Some(DeferredRecoveryKind::TimeRangeCopy)
+        } else if locator_add
+            && canonical_changed
+            && error.is_none()
+            && matches!(created, Some(Created::ArrangementLocator(_)))
+        {
+            Some(DeferredRecoveryKind::LocatorAdd)
         } else {
             None
         };
