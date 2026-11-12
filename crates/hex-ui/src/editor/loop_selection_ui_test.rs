@@ -1347,7 +1347,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.sections.selected_ids(), &[ids[1]])
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_key(&mut visual);
     let own = editor.update(&mut visual, |v, _| next(&v.service));
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
@@ -1369,7 +1369,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
             "section loop supplies the play start"
         );
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_key(&mut visual);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -1384,7 +1384,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
         assert!(v.arrangement_focus.projection.enabled);
     });
     choose_loop_section(&mut visual, 2, false);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_key(&mut visual);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(&*v.arrangement_focus_ranges(), &[(144_000, 168_000)]);
@@ -1394,7 +1394,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     editor.read_with(&visual, |v, _| {
         assert!(!v.arrangement_focus.projection.enabled)
     });
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_key(&mut visual);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -1404,7 +1404,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     });
     choose_loop_section(&mut visual, 0, false);
     choose_loop_section(&mut visual, 2, true);
-    visual.simulate_keystrokes("l");
+    crate::editor::section_launch::test_tap_loop_key(&mut visual);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.arrangement_focus.projection.enabled);
@@ -1439,7 +1439,7 @@ fn section_loop_focus_ignores_changed_selection_and_refused_or_replaced_terminal
         let (editor, mut visual, _ids, _files) = section_loop_fixture(cx);
         choose_loop_section(&mut visual, 1, false);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         let mut own = editor.update(&mut visual, |v, _| next(&v.service));
         match case {
             "selection" => {

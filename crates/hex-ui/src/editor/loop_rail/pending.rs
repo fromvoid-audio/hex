@@ -105,8 +105,12 @@ impl EditorView {
         }
     }
 
-    pub(in crate::editor) fn submit_section_launch_loop(&mut self, launch: SectionLaunch) {
-        self.submit_loop_preview(self.project_generation, launch.region);
+    pub(in crate::editor) fn submit_section_launch_loop(
+        &mut self,
+        launch: SectionLaunch,
+        region: LoopRegion,
+    ) {
+        self.submit_loop_preview(self.project_generation, region);
         if let Some(pending) = self.pending_loop.as_mut() {
             pending.launch = Some(launch);
         }

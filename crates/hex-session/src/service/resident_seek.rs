@@ -25,9 +25,7 @@ fn preparation_mode(
         (ResidentSeekHistory::Preserve, None) => {
             Ok(ArrangementSeekMode::HistoryPreservingInteractive)
         }
-        (ResidentSeekHistory::Fresh, Some(section)) => {
-            Ok(ArrangementSeekMode::SectionLoop(section.region))
-        }
+        (ResidentSeekHistory::Fresh, Some(section)) => Ok(section.mode()),
         (ResidentSeekHistory::Fresh, None) => Ok(ArrangementSeekMode::Interactive),
     }
 }
@@ -174,11 +172,11 @@ impl Lane {
             return Err("seek target changed or was cancelled".into());
         }
         if intent.section.is_some_and(|section| {
-            !section.region.enabled()
+            !section.matches_loop(session.project().loop_region())
                 || section.region.start() != intent.destination_frame
                 || !intent.start_playing
         }) {
-            return Err("section launch requires its exact enabled loop start".into());
+            return Err("section launch requires its exact start and loop state".into());
         }
         if intent.locator_quantization.is_some()
             && (intent.history != ResidentSeekHistory::Fresh
@@ -211,6 +209,7 @@ impl Lane {
             .ok_or("resident resource reservation unavailable")?;
         let runtime = intent
             .section
+            .filter(|section| section.region.enabled())
             .map_or_else(
                 || hex_engine::SessionPlayback::interactive_runtime_allowance(&selected.prepared),
                 |section| {
@@ -272,6 +271,7 @@ impl Lane {
             .checked_add(
                 intent
                     .section
+                    .filter(|section| section.region.enabled())
                     .map_or_else(
                         || {
                             hex_engine::SessionPlayback::interactive_runtime_allowance(

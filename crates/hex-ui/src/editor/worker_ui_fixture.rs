@@ -168,7 +168,7 @@ mod tests {
     use std::sync::atomic::Ordering::Acquire;
 
     #[gpui::test]
-    fn section_button_uses_visible_loop_and_space_pauses_the_callback(cx: &mut TestAppContext) {
+    fn section_button_plays_once_and_l_click_uses_the_visible_loop(cx: &mut TestAppContext) {
         cx.update(super::super::bind_editor_keys);
         let start = BeatTime::from_quarters(2).unwrap();
         let end = BeatTime::from_quarters(3).unwrap();
@@ -198,8 +198,17 @@ mod tests {
         });
         visual.run_until_parked();
         let button = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(button, Modifiers::default());
+        fixture.editor.update(&mut visual, |view, _| {
+            assert!(view.section_launch_waiting());
+            assert!(view.pending_loop_region().is_none());
+            assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+            view.cancel_section_launch_wait();
+        });
+        crate::editor::section_launch::test_section_loop_key(&mut visual, true);
         visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
+        crate::editor::section_launch::test_section_loop_key(&mut visual, false);
         visual.run_until_parked();
         let pending_bar = visual.debug_bounds("loop-rail-range").unwrap();
         fixture.editor.read_with(&visual, |view, _| {
@@ -296,23 +305,51 @@ mod tests {
             assert!(status.playing.load(Acquire));
             assert!((region.start()..region.end()).contains(&status.position.load(Acquire)));
         });
-        visual.simulate_keystrokes("cmd-l");
+        let button = visual.debug_bounds(selector).unwrap().center();
+        visual.update(|window, cx| {
+            fixture.editor.update(cx, |view, cx| {
+                view.computer_keyboard.enabled = true;
+                view.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_move(
+            gpui::point(gpui::px(1.0), gpui::px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        crate::editor::section_launch::test_section_loop_key(&mut visual, true);
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(view.computer_keyboard.physical_notes().count(), 1);
+        });
+        visual.simulate_click(button, Modifiers::default());
+        crate::editor::section_launch::test_section_loop_key(&mut visual, false);
+        fixture.editor.update(&mut visual, |view, _| {
+            assert_eq!(view.computer_keyboard.physical_notes().count(), 0);
+            assert!(view.section_launch_waiting());
+            assert!(view.pending_loop_region().is_none());
+            view.cancel_section_launch_wait();
+            view.computer_keyboard.enabled = false;
+        });
+
+        visual.simulate_click(button, Modifiers::default());
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-            let disabled = fixture.editor.update(&mut visual, |view, cx| {
+            let installed = fixture.editor.update(&mut visual, |view, cx| {
                 view.tick(cx);
                 let state = view.state.as_ref().unwrap();
-                state
-                    .project
-                    .loop_region()
-                    .is_some_and(|loop_region| !loop_region.enabled())
-                    && view.applied_project_revision() == Some(state.revision)
+                state.project.loop_region()
+                    == Some(LoopRegion::new(region.start(), region.end(), false).unwrap())
+                    && !view.section_launch_waiting()
+                    && view.prepared_seek.is_none()
+                    && view.latched_seek_intent.is_none()
             });
-            if disabled {
+            if installed {
                 break;
             }
-            assert!(Instant::now() < deadline, "disabled loop was not applied");
+            assert!(Instant::now() < deadline, "one-shot launch was not applied");
             std::thread::yield_now();
         }
         for _ in 0..400 {
@@ -320,7 +357,8 @@ mod tests {
         }
         fixture.editor.read_with(&visual, |view, _| {
             let status = view.audio_status().unwrap();
-            assert!(status.position.load(Acquire) >= region.end());
+            assert_eq!(status.position.load(Acquire), region.end());
+            assert!(!status.playing.load(Acquire));
         });
         fixture.finish(cx);
     }
