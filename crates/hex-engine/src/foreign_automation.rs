@@ -68,10 +68,48 @@ impl QuantumProfile {
         frames: u16,
         region: Option<hex_project::LoopRegion>,
     ) -> Self {
-        let mut profile = Self::arrangement(frames, region);
-        profile.max_runs = profile.max_runs.max(frames.min(9));
-        profile.max_traversals = profile.max_traversals.max(frames.min(2));
-        profile
+        Self::arrangement(frames, region).with_one_wrap()
+    }
+
+    fn with_one_wrap(mut self) -> Self {
+        self.max_runs = self.max_runs.max(self.frames.min(9));
+        self.max_traversals = self.max_traversals.max(self.frames.min(2));
+        self
+    }
+
+    /// The unchanged marker's wrap budget covers toggles in both directions.
+    /// A new full-quantum range can also start from an unmarked linear graph or
+    /// replace a disabled marker with an earlier, nonoverlapping range.
+    /// Successive admitted replacements move the range left, so a wrap into
+    /// any older range starts at or beyond the new end. No second traversal
+    /// can arrive from that origin. Short and overlapping replacements still
+    /// need a new epoch because delayed origins may contain an earlier wrap.
+    pub fn keeps_effect_epoch(
+        frames: Option<u16>,
+        before: Option<hex_project::LoopRegion>,
+        after: Option<hex_project::LoopRegion>,
+    ) -> bool {
+        if before == after {
+            return true;
+        }
+        let Some(after) = after else {
+            return false;
+        };
+        if before
+            .is_some_and(|before| before.start() == after.start() && before.end() == after.end())
+        {
+            return true;
+        }
+        let Some(frames) = frames.filter(|frames| *frames != 0).map(u64::from) else {
+            return false;
+        };
+        after.enabled()
+            && after.end() - after.start() >= frames
+            && before.is_none_or(|before| {
+                !before.enabled()
+                    && before.end() - before.start() >= frames
+                    && after.end() <= before.start()
+            })
     }
 
     fn point_bounds(self, interior: usize) -> (usize, usize) {
@@ -394,11 +432,10 @@ impl Program {
             let profile = QuantumProfile::for_arrangement_instrument(frames, region);
             return Self::prepare_source(lanes, source, tempo, profile);
         }
-        if let Some(region) = region.filter(|region| !region.enabled()) {
-            // A loop disable leaves old origins in the compensation rings.
-            // The same-bounds handoff retains that worker, so its new program
-            // must also accept the old region's wraps until those rings drain.
-            let retained = QuantumProfile::arrangement_with_loop(frames, Some(region));
+        if region.is_none_or(|region| !region.enabled()) {
+            // Disabling retains delayed old loop origins. Enabling a loop may
+            // add a wrap while the original worker still has a partial quantum.
+            let retained = QuantumProfile::arrangement_with_loop(frames, region).with_one_wrap();
             match Self::prepare_source(lanes, source, tempo, retained) {
                 // A project already saved with its loop disabled can contain
                 // denser automation than an enabled loop could have admitted.
