@@ -8,7 +8,8 @@ type CheckpointGate = (
     std::sync::mpsc::Receiver<()>,
 );
 #[cfg(test)]
-static CHECKPOINT_GATE: std::sync::Mutex<Vec<CheckpointGate>> = std::sync::Mutex::new(Vec::new());
+pub(super) static CHECKPOINT_GATE: std::sync::Mutex<Vec<CheckpointGate>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(super) fn wait_at_checkpoint(path: &Path) {
@@ -413,6 +414,294 @@ mod tests {
                 .unwrap()
                 .muted
         );
+    }
+
+    #[test]
+    fn consecutive_track_mutes_commit_while_first_checkpoint_is_held() {
+        check_consecutive_track_mutes(false);
+    }
+
+    #[test]
+    fn consecutive_track_mutes_preserve_conflicting_recovery_bytes() {
+        check_consecutive_track_mutes(true);
+    }
+
+    fn check_consecutive_track_mutes(conflict: bool) {
+        use std::time::{Duration, Instant};
+        let directory =
+            std::env::temp_dir().join(format!("hex-mute-queue-{}-{conflict}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        struct SwitchSink(Arc<std::sync::Mutex<Vec<(hex_engine::AudioSourceContext, Vec<bool>)>>>);
+        impl WorkerAudioSink for SwitchSink {
+            fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+                Ok(48_000)
+            }
+            fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+                self.0.lock().unwrap().push((
+                    source.context(),
+                    source
+                        .project_metadata()
+                        .tracks()
+                        .iter()
+                        .map(|track| track.muted())
+                        .collect(),
+                ));
+            }
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+        }
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SwitchSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let track = next(&service).state.project.tracks()[0].id();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_track_switch_view().unwrap();
+        assert!(
+            first
+                .tracks
+                .iter()
+                .find(|item| item.track == track)
+                .unwrap()
+                .muted
+        );
+        let foreign = b"other writer's journal";
+        if conflict {
+            std::fs::write(&path, foreign).unwrap();
+        }
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_track_switch_view() {
+                break Some(view);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_millis(180);
+        let source_applied = loop {
+            if let Some(view) = second.as_ref()
+                && sources.lock().unwrap().iter().any(|(context, states)| {
+                    context.editor_revision == view.revision && states == &[false]
+                })
+            {
+                break true;
+            }
+            if Instant::now() >= until {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        release.send(()).unwrap();
+        let second = second.expect("second mute must commit while the first checkpoint is held");
+        assert_eq!(second.previous_revision, first.revision);
+        assert!(
+            !second
+                .tracks
+                .iter()
+                .find(|item| item.track == track)
+                .unwrap()
+                .muted
+        );
+        assert!(
+            source_applied,
+            "second mute's canonical audio source must be acknowledged before release"
+        );
+        let first_terminal = next(&service);
+        let second_terminal = next(&service);
+        assert_eq!(first_terminal.state.revision, first.revision);
+        assert_eq!(second_terminal.state.revision, second.revision);
+        if conflict {
+            assert!(
+                first_terminal.recovery_failure.is_some()
+                    && second_terminal.recovery_failure.is_some()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), foreign);
+        } else {
+            assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *second_terminal.state.project
+            );
+        }
+        service.submit(Request::Undo).unwrap();
+        assert!(next(&service).state.project.track(track).unwrap().muted());
+        service.submit(Request::Undo).unwrap();
+        assert!(!next(&service).state.project.track(track).unwrap().muted());
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn committed_second_mute_survives_event_consumer_closure() {
+        check_mute_custody_on_exit(true);
+    }
+
+    #[test]
+    fn committed_second_mute_survives_shutdown() {
+        check_mute_custody_on_exit(false);
+    }
+
+    fn check_mute_custody_on_exit(close_consumer: bool) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-mute-exit-{}-{close_consumer}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let sources = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(SourceSink(Arc::clone(&sources))),
+        )
+        .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let initial = Arc::clone(&next(&service).state.project);
+        let track = initial.tracks()[0].id();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let _first = service.try_track_switch_view().unwrap();
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second = loop {
+            if let Ok(view) = service.try_track_switch_view() {
+                break view;
+            }
+            assert!(Instant::now() < until, "second mute did not commit");
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_millis(180);
+        while sources
+            .lock()
+            .unwrap()
+            .last()
+            .is_none_or(|context| context.editor_revision != second.revision)
+        {
+            assert!(Instant::now() < until, "second source was not acknowledged");
+            std::thread::yield_now();
+        }
+        if close_consumer {
+            let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let replacement = super::super::diagnostics::EventReceiver::new(
+                receiver,
+                Arc::clone(&service.diagnostics),
+            );
+            drop(std::mem::replace(&mut service.events, replacement));
+        } else {
+            assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while !service
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            assert!(Instant::now() < until, "service did not stop");
+            std::thread::yield_now();
+        }
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(hex_storage::load_journal(&path).unwrap(), *initial);
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn paste_waits_for_pending_track_switch_checkpoint() {
+        use std::time::Duration;
+        let directory =
+            std::env::temp_dir().join(format!("hex-mute-paste-fence-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let track = prepare_paste(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 48_000,
+            })
+            .unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(matches!(
+            service.try_arrangement_edit_view(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let first = next(&service);
+        let second = next(&service);
+        assert!(first.error.is_none() && second.error.is_none());
+        assert!(first.state.project.track(track).unwrap().muted());
+        assert_eq!(
+            second
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *second.state.project
+        );
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1825,11 +2114,13 @@ mod tests {
             );
         }
         let retained = service.try_track_switch_view().unwrap();
+        assert_eq!(retained.first_previous_revision, added.state.revision);
+        assert_eq!(retained.revision, added.state.revision + 2);
         assert!(
             retained
                 .tracks
                 .iter()
-                .any(|switch| switch.track == track && switch.soloed)
+                .any(|switch| switch.track == track && !switch.soloed)
         );
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();
     }

@@ -2636,6 +2636,8 @@ pub(super) mod tests {
         native_parameter_input: Mutex<Option<hex_engine::NativeParameterInputTarget>>,
         native_capture_playing: AtomicBool,
         keyboard_peak: Mutex<f32>,
+        render_for_switch_test: AtomicBool,
+        switch_peaks: Mutex<Vec<(u64, f32)>>,
         keyboard_publications: AtomicUsize,
         effect_compilations: AtomicUsize,
         plugin_preparations: AtomicUsize,
@@ -2802,6 +2804,20 @@ pub(super) mod tests {
                             .flatten()
                             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
                     }
+                    if self.observed.render_for_switch_test.load(Ordering::Acquire) {
+                        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+                        let mut pcm = [[0.0; 2]; 256];
+                        playback.render(&mut pcm).unwrap();
+                        let peak = pcm
+                            .iter()
+                            .flatten()
+                            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                        self.observed
+                            .switch_peaks
+                            .lock()
+                            .unwrap()
+                            .push((metadata.context.editor_revision, peak));
+                    }
                     self.observed
                         .publications
                         .lock()
@@ -2875,6 +2891,133 @@ pub(super) mod tests {
             observed: Arc::new(Observed::default()),
             pending: None,
         })
+    }
+
+    #[test]
+    fn held_checkpoint_allows_ordered_resident_mute_audio() {
+        use std::time::Instant;
+        let files = sampler_export::tests::Files::new(false);
+        let path = files.source();
+        let samples = vec![12000_i16; 4096];
+        let data = (samples.len() * 2) as u32;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&(36 + data).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+        let journal = path.parent().unwrap().join("untitled.hex-journal");
+        let observed = Arc::new(Observed::default());
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(2)
+            .unwrap();
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            8_000_000,
+            Some(journal.clone()),
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        .checked_add(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+                        .unwrap(),
+                },
+                max_scan_frames: 8_000_000,
+            },
+        )
+        .unwrap();
+        let next = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        next();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let track = next().state.project.tracks()[0].id();
+        service
+            .submit(Request::ImportToTrack {
+                path: path.to_path_buf(),
+                track,
+                start: 0,
+            })
+            .unwrap();
+        assert!(next().error.is_none());
+        observed
+            .render_for_switch_test
+            .store(true, Ordering::Release);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        super::super::recovery::install_checkpoint_gate(journal.clone(), entered_tx, release_rx);
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_track_switch_view().unwrap();
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(300);
+        let second = loop {
+            if let Ok(view) = service.try_track_switch_view() {
+                break Some(view);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_millis(300);
+        let peaks = loop {
+            let peaks = observed.switch_peaks.lock().unwrap().clone();
+            if second
+                .as_ref()
+                .is_some_and(|view| peaks.iter().any(|(revision, _)| *revision == view.revision))
+                || Instant::now() >= until
+            {
+                break peaks;
+            }
+            std::thread::yield_now();
+        };
+        release.send(()).unwrap();
+        let second = second.expect("second mute must commit before checkpoint release");
+        let muted = peaks
+            .iter()
+            .find(|(revision, _)| *revision == first.revision)
+            .expect("first prepared audio")
+            .1;
+        let unmuted = peaks
+            .iter()
+            .find(|(revision, _)| *revision == second.revision)
+            .expect("second prepared audio")
+            .1;
+        assert_eq!(muted, 0.0);
+        assert!(
+            unmuted > 0.01,
+            "unmuted prepared graph must render audible signal, got {unmuted}"
+        );
+        assert!(next().error.is_none() && next().error.is_none());
     }
 
     #[test]

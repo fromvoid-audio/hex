@@ -2530,6 +2530,37 @@ fn control_lanes_pending(seek: Option<&resident_seek::Lane>, export: &ExportLane
     seek.is_some_and(resident_seek::Lane::pending) || export.pending()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeferredRecoveryKind {
+    Paste,
+    TrackSwitch,
+}
+
+impl DeferredRecoveryKind {
+    fn metric(self) -> &'static str {
+        match self {
+            Self::Paste => "paste_recovery_us",
+            Self::TrackSwitch => "track_switch_recovery_us",
+        }
+    }
+}
+
+fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecoveryKind> {
+    match request {
+        Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. } => {
+            Some(DeferredRecoveryKind::Paste)
+        }
+        Request::Edit(
+            Command::Mute { .. }
+            | Command::ToggleMute(_)
+            | Command::ToggleTracksMute(_)
+            | Command::ToggleSolo { .. }
+            | Command::ToggleSoloTracks { .. },
+        ) => Some(DeferredRecoveryKind::TrackSwitch),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 fn run_worker(
     mut session: Session,
@@ -2798,7 +2829,8 @@ fn run_worker(
     let mut native_automation_take = native_automation_recording::Lane::default();
     let mut plugin_recording = plugin_recording::State::default();
     let mut recording_barrier = recording_barrier::State::default();
-    let mut pending_recovery_outcome: Option<audio_sink::PendingOutcome> = None;
+    let mut pending_recovery_outcome: Option<(DeferredRecoveryKind, audio_sink::PendingOutcome)> =
+        None;
     // Both ordinary and recovery-delayed terminals use the same bounded
     // backpressure/control polling path.
     macro_rules! deliver_outcome {
@@ -2883,9 +2915,9 @@ fn run_worker(
     }
     macro_rules! finish_pending_recovery {
         () => {
-            if let Some(mut outcome) = pending_recovery_outcome.take() {
+            if let Some((kind, mut outcome)) = pending_recovery_outcome.take() {
                 let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
-                outcome.finish_recovery(elapsed, result, recovery_tracker.failure());
+                outcome.finish_recovery(kind.metric(), elapsed, result, recovery_tracker.failure());
                 if !deliver_outcome!(outcome) {
                     return;
                 }
@@ -3029,13 +3061,10 @@ fn run_worker(
             }
         },
     ) {
-        // Only one later paste may commit while a checkpoint owns the journal.
-        // Every other request, including lifecycle operations, fences it first.
-        if pending_recovery_outcome.is_some()
-            && !matches!(
-                &queued.request,
-                Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. }
-            )
+        // One later edit of the same kind may commit while a checkpoint owns
+        // the journal. Other requests fence it first, including mixed edit kinds.
+        if let Some((kind, _)) = pending_recovery_outcome.as_ref()
+            && deferred_recovery_kind(&queued.request) != Some(*kind)
         {
             finish_pending_recovery!();
         }
@@ -3161,16 +3190,8 @@ fn run_worker(
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
-        let track_switch_request = matches!(
-            &request,
-            Request::Edit(
-                Command::Mute { .. }
-                    | Command::ToggleMute(_)
-                    | Command::ToggleTracksMute(_)
-                    | Command::ToggleSolo { .. }
-                    | Command::ToggleSoloTracks { .. }
-            )
-        );
+        let request_recovery_kind = deferred_recovery_kind(&request);
+        let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
         let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
         let arrangement_paste = matches!(
             &request,
@@ -9252,59 +9273,72 @@ fn run_worker(
                 state: Arc::downgrade(&state),
             });
         }
-        let mut defer_recovery = false;
-        let stage_recovery = pending_recovery_outcome.is_some()
-            && committed_arrangement_paste
-            && unsaved
-            && revision != revision_before_request;
-        if pending_recovery_outcome.is_some() && !stage_recovery {
+        let committed_recovery_kind = if committed_arrangement_paste {
+            Some(DeferredRecoveryKind::Paste)
+        } else if committed_track_switch {
+            Some(DeferredRecoveryKind::TrackSwitch)
+        } else {
+            None
+        };
+        let eligible =
+            committed_recovery_kind.filter(|_| unsaved && revision != revision_before_request);
+        let mut defer_recovery = None;
+        let stage_recovery = eligible.filter(|kind| {
+            pending_recovery_outcome
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == kind)
+        });
+        if pending_recovery_outcome.is_some() && stage_recovery.is_none() {
             finish_pending_recovery!();
         }
-        if !stage_recovery && let Some(untitled_path) = recovery.as_deref() {
-            let journal_result =
-                if committed_arrangement_paste && unsaved && revision != revision_before_request {
-                    events.measure_recovery("paste_recovery_us", || {
-                        recovery_tracker
-                            .start_async(recovery::RecoveryContext {
-                                session: &session,
-                                base: media_base.as_deref(),
-                                document: document.as_ref(),
-                                untitled: untitled_path,
-                                journal: &mut journal,
-                                generation: project_generation,
-                            })
-                            .map(|started| {
-                                defer_recovery = started;
-                                None
-                            })
-                    })
-                } else {
-                    let mut maintain_recovery = || {
-                        recovery_tracker.maintain(
-                            recovery::RecoveryContext {
-                                session: &session,
-                                base: media_base.as_deref(),
-                                document: document.as_ref(),
-                                untitled: untitled_path,
-                                journal: &mut journal,
-                                generation: project_generation,
-                            },
-                            unsaved,
-                            revision != revision_before_request,
-                        )
-                    };
-                    if committed_arrangement_duplicate.is_some()
-                        || (time_range_copy && canonical_changed && error.is_none())
-                    {
-                        events.measure_recovery("duplicate_recovery_us", maintain_recovery)
-                    } else if committed_arrangement_paste {
-                        events.measure_recovery("paste_recovery_us", maintain_recovery)
-                    } else if committed_track_switch {
-                        events.measure_recovery("track_switch_recovery_us", maintain_recovery)
-                    } else {
-                        maintain_recovery()
-                    }
+        if stage_recovery.is_none()
+            && let Some(untitled_path) = recovery.as_deref()
+        {
+            let journal_result = if let Some(kind) = eligible {
+                events.measure_recovery(kind.metric(), || {
+                    recovery_tracker
+                        .start_async(recovery::RecoveryContext {
+                            session: &session,
+                            base: media_base.as_deref(),
+                            document: document.as_ref(),
+                            untitled: untitled_path,
+                            journal: &mut journal,
+                            generation: project_generation,
+                        })
+                        .map(|started| {
+                            if started {
+                                defer_recovery = Some(kind);
+                            }
+                            None
+                        })
+                })
+            } else {
+                let mut maintain_recovery = || {
+                    recovery_tracker.maintain(
+                        recovery::RecoveryContext {
+                            session: &session,
+                            base: media_base.as_deref(),
+                            document: document.as_ref(),
+                            untitled: untitled_path,
+                            journal: &mut journal,
+                            generation: project_generation,
+                        },
+                        unsaved,
+                        revision != revision_before_request,
+                    )
                 };
+                if committed_arrangement_duplicate.is_some()
+                    || (time_range_copy && canonical_changed && error.is_none())
+                {
+                    events.measure_recovery("duplicate_recovery_us", maintain_recovery)
+                } else if committed_arrangement_paste {
+                    events.measure_recovery("paste_recovery_us", maintain_recovery)
+                } else if committed_track_switch {
+                    events.measure_recovery("track_switch_recovery_us", maintain_recovery)
+                } else {
+                    maintain_recovery()
+                }
+            };
             match journal_result {
                 Ok(Some(_)) => {
                     status =
@@ -9639,14 +9673,21 @@ fn run_worker(
             active_tuning_gesture: tuning_gesture.snapshot(),
             tuning_library,
         });
-        if stage_recovery {
+        if let Some(kind) = stage_recovery {
             // Acknowledge this committed source before waiting for the older
             // checkpoint, while retaining both ordered terminals on control.
-            let previous = pending_recovery_outcome.take().map(|mut previous| {
-                let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
-                previous.finish_recovery(elapsed, result, recovery_tracker.failure());
-                previous
-            });
+            let previous = pending_recovery_outcome
+                .take()
+                .map(|(previous_kind, mut previous)| {
+                    let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
+                    previous.finish_recovery(
+                        previous_kind.metric(),
+                        elapsed,
+                        result,
+                        recovery_tracker.failure(),
+                    );
+                    previous
+                });
             let started = std::time::Instant::now();
             let result = if let Some(untitled_path) = recovery.as_deref() {
                 recovery_tracker.start_async(recovery::RecoveryContext {
@@ -9669,9 +9710,10 @@ fn run_worker(
                 return;
             }
             match result {
-                Ok(true) => pending_recovery_outcome = Some(outcome),
+                Ok(true) => pending_recovery_outcome = Some((kind, outcome)),
                 Ok(false) => {
                     outcome.finish_recovery(
+                        kind.metric(),
                         started.elapsed(),
                         Ok(None),
                         recovery_tracker.failure(),
@@ -9682,6 +9724,7 @@ fn run_worker(
                 }
                 Err(reason) => {
                     outcome.finish_recovery(
+                        kind.metric(),
                         started.elapsed(),
                         Err(reason),
                         recovery_tracker.failure(),
@@ -9691,8 +9734,8 @@ fn run_worker(
                     }
                 }
             }
-        } else if defer_recovery {
-            pending_recovery_outcome = Some(outcome);
+        } else if let Some(kind) = defer_recovery {
+            pending_recovery_outcome = Some((kind, outcome));
         } else if !deliver_outcome!(outcome) {
             return;
         }
