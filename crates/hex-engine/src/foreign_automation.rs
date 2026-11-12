@@ -18,6 +18,8 @@ pub(crate) mod candidate;
 mod touch;
 
 const MAX_QUANTUM_FRAMES: u16 = 256;
+const AUTOMATION_POINT_LIMIT: Invalid =
+    Invalid("vst3 automation exceeds the per-quantum point limit");
 
 pub use hex_lattice::ForeignParameterCapability as ParameterCapability;
 
@@ -46,11 +48,13 @@ impl QuantumProfile {
     /// Start with one run, allow the seven SDK timing cuts, and bound loop
     /// wraps by their minimum spacing.
     pub(crate) fn arrangement(frames: u16, region: Option<hex_project::LoopRegion>) -> Self {
-        let wraps = region
-            .filter(|region| region.enabled())
-            .map_or(0, |region| {
-                u64::from(frames.saturating_sub(1)).div_ceil(region.end() - region.start())
-            });
+        Self::arrangement_with_loop(frames, region.filter(|region| region.enabled()))
+    }
+
+    fn arrangement_with_loop(frames: u16, region: Option<hex_project::LoopRegion>) -> Self {
+        let wraps = region.map_or(0, |region| {
+            u64::from(frames.saturating_sub(1)).div_ceil(region.end() - region.start())
+        });
         Self {
             frames,
             max_runs: (8 + wraps).min(u64::from(frames)) as u16,
@@ -378,6 +382,38 @@ impl ForeignProcessors for WithPrograms<'_> {
 }
 
 impl Program {
+    fn prepare_arrangement_source(
+        lanes: &[DeviceAutomation],
+        source: hex_lattice::ForeignAutomationSource<'_>,
+        tempo: &TempoMap,
+        region: Option<hex_project::LoopRegion>,
+        instrument: bool,
+    ) -> Result<Option<Self>, Invalid> {
+        let frames = source.quantum_frames;
+        if instrument {
+            let profile = QuantumProfile::for_arrangement_instrument(frames, region);
+            return Self::prepare_source(lanes, source, tempo, profile);
+        }
+        if let Some(region) = region.filter(|region| !region.enabled()) {
+            // A loop disable leaves old origins in the compensation rings.
+            // The same-bounds handoff retains that worker, so its new program
+            // must also accept the old region's wraps until those rings drain.
+            let retained = QuantumProfile::arrangement_with_loop(frames, Some(region));
+            match Self::prepare_source(lanes, source, tempo, retained) {
+                // A project already saved with its loop disabled can contain
+                // denser automation than an enabled loop could have admitted.
+                Err(AUTOMATION_POINT_LIMIT) => {}
+                result => return result,
+            }
+        }
+        Self::prepare_source(
+            lanes,
+            source,
+            tempo,
+            QuantumProfile::arrangement(frames, region),
+        )
+    }
+
     fn prepare_source(
         lanes: &[DeviceAutomation],
         source: hex_lattice::ForeignAutomationSource<'_>,
@@ -514,9 +550,7 @@ impl Program {
             arrangement_budget += arrangement_points;
             physical_budget += physical_points;
             if arrangement_budget > MAX_POINTS {
-                return Err(Invalid(
-                    "vst3 automation exceeds the per-quantum point limit",
-                ));
+                return Err(AUTOMATION_POINT_LIMIT);
             }
             prepared.push(Lane { id, knots, overlay });
         }

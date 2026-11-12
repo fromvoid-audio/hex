@@ -1,5 +1,5 @@
 //! Canonical VST3 lanes for Arrangement preparation.
-use super::{Knot, Lane, Program, QuantumProfile};
+use super::{Knot, Lane, Program};
 use crate::{AudioStorageError as Error, Invalid};
 use hex_lattice::{DevicePreparationContext, NativeDeviceRegistry, ProcessorInstanceIdentity};
 use hex_lattice_contract::DeviceAutomationTarget;
@@ -140,13 +140,14 @@ pub(crate) fn prepare_device(
         };
     };
     let revision = source.revision;
-    let profile = if processor.is_instrument_profile() {
-        QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
-    } else {
-        QuantumProfile::arrangement(source.quantum_frames, region)
-    };
-    let program = Program::prepare_source(device.automation(), source, tempo, profile)
-        .map_err(PreparationError::Program)?;
+    let program = Program::prepare_arrangement_source(
+        device.automation(),
+        source,
+        tempo,
+        region,
+        processor.is_instrument_profile(),
+    )
+    .map_err(PreparationError::Program)?;
     let Some(program) = program else {
         return Ok(None);
     };
