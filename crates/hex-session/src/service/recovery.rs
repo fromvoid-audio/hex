@@ -6,6 +6,80 @@ mod checkpoint_worker;
 pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
+/// A test-only, bounded hold of one private recovery checkpoint.
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub struct HeldCheckpoint {
+    path: PathBuf,
+    entered: std::sync::mpsc::Receiver<()>,
+    has_entered: bool,
+    release: Option<std::sync::mpsc::SyncSender<()>>,
+}
+
+#[cfg(feature = "recovery-checkpoint-test-support")]
+static HELD_CHECKPOINT_PATHS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(feature = "recovery-checkpoint-test-support")]
+impl HeldCheckpoint {
+    pub fn try_entered(&mut self) -> Result<(), std::sync::mpsc::TryRecvError> {
+        self.entered.try_recv()?;
+        self.has_entered = true;
+        Ok(())
+    }
+
+    /// A disconnected receiver means the bounded hold timed out or was removed.
+    pub fn release(mut self) -> Result<(), std::sync::mpsc::TrySendError<()>> {
+        if !self.has_entered {
+            return Err(std::sync::mpsc::TrySendError::Disconnected(()));
+        }
+        match self.release.take() {
+            Some(release) => release.try_send(()),
+            None => Err(std::sync::mpsc::TrySendError::Disconnected(())),
+        }
+    }
+}
+
+#[cfg(feature = "recovery-checkpoint-test-support")]
+impl Drop for HeldCheckpoint {
+    fn drop(&mut self) {
+        let mut paths = HELD_CHECKPOINT_PATHS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut gates = checkpoint::CHECKPOINT_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates.retain(|(path, _, _)| path != &self.path);
+        paths.retain(|path| path != &self.path);
+    }
+}
+
+/// Register one uniquely scoped checkpoint hold; no default build exposes it.
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub fn hold_next_checkpoint(path: PathBuf) -> Result<HeldCheckpoint, &'static str> {
+    let mut paths = HELD_CHECKPOINT_PATHS
+        .lock()
+        .map_err(|_| "checkpoint test paths unavailable")?;
+    let mut gates = checkpoint::CHECKPOINT_GATE
+        .lock()
+        .map_err(|_| "checkpoint test gates unavailable")?;
+    if paths.len() >= 8
+        || gates.len() >= 8
+        || paths.contains(&path)
+        || gates.iter().any(|(existing, _, _)| existing == &path)
+    {
+        return Err("checkpoint test gate capacity or path conflict");
+    }
+    let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+    let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+    gates.push((path.clone(), entered_tx, release_rx));
+    paths.push(path.clone());
+    Ok(HeldCheckpoint {
+        path,
+        entered,
+        has_entered: false,
+        release: Some(release),
+    })
+}
+
 #[cfg(test)]
 pub(super) fn install_checkpoint_gate(
     path: PathBuf,
@@ -760,7 +834,7 @@ impl PreparedCheckpoint {
             untitled,
             image,
         } = self;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
         checkpoint::wait_at_checkpoint(&path);
         let project = image.materialize()?;
         if journal
@@ -904,6 +978,18 @@ fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(feature = "recovery-checkpoint-test-support")]
+    #[test]
+    fn test_checkpoint_gate_releases_registration_and_rejects_unentered_release() {
+        let path = PathBuf::from("hex-test-checkpoint-gate-registration");
+        let first = hold_next_checkpoint(path.clone()).unwrap();
+        assert!(hold_next_checkpoint(path.clone()).is_err());
+        drop(first);
+        let second = hold_next_checkpoint(path.clone()).unwrap();
+        assert!(second.release().is_err());
+        assert!(hold_next_checkpoint(path).is_ok());
+    }
 
     #[test]
     fn prepared_checkpoint_keeps_snapshot_and_journal_custody_when_moved() {

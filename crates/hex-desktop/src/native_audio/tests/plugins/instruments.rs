@@ -5,6 +5,7 @@ use hex_project::BeatTime;
 
 mod automation_start;
 mod section_edit;
+mod section_recovery;
 mod track_duplicate;
 
 #[test]
@@ -777,6 +778,13 @@ fn paced_automation_and_parameter_polling_preserve_the_worker() {
     instrument_entrypoint(InstrumentWorkflow::PacedMonitoring);
 }
 
+/// Five independently hosted instruments share one paced graph callback.
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_five_instruments_with_automation_and_polling() {
+    instrument_entrypoint(InstrumentWorkflow::PacedFive);
+}
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
@@ -993,6 +1001,7 @@ enum InstrumentWorkflow {
     AuthoringAcrossPlay,
     PacedAuthoring,
     PacedMonitoring,
+    PacedFive,
     Takeover,
 }
 
@@ -1001,9 +1010,14 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
         workflow,
-        InstrumentWorkflow::PacedAuthoring | InstrumentWorkflow::PacedMonitoring
+        InstrumentWorkflow::PacedAuthoring
+            | InstrumentWorkflow::PacedMonitoring
+            | InstrumentWorkflow::PacedFive
     );
-    let monitor = matches!(workflow, InstrumentWorkflow::PacedMonitoring);
+    let monitor = matches!(
+        workflow,
+        InstrumentWorkflow::PacedMonitoring | InstrumentWorkflow::PacedFive
+    );
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
@@ -1095,7 +1109,13 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         panic!("midi track");
     };
     (applied, _) = harness.applied(applied);
-    let (clip_length, note_duration) = if takeover || paced {
+    let (clip_length, note_duration) = if paced {
+        // Keep the instrument sounding through the optional long stress run.
+        (
+            BeatTime::from_quarters(1024).unwrap(),
+            BeatTime::from_quarters(1024).unwrap(),
+        )
+    } else if takeover {
         // The headless control driver can render far faster than wall time
         // while waiting for SDK work. Keep its held note alive throughout
         // these operations without adding processing to the test.
@@ -1220,6 +1240,60 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    let instrument = project_track.instrument().unwrap().id();
+    if matches!(workflow, InstrumentWorkflow::PacedFive) {
+        for index in 1..5 {
+            let added = harness.run(Request::Edit(Command::AddMidiTrack {
+                name: format!("synth {index}"),
+            }));
+            let Some(Created::Track(track)) = added.created else {
+                panic!("midi track");
+            };
+            (applied, _) = harness.applied(applied);
+            let placed = harness.run(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: clip_length,
+            }));
+            let Some(Created::Clip(clip)) = placed.created else {
+                panic!("midi clip");
+            };
+            (applied, _) = harness.applied(applied);
+            let note = harness.run(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: note_duration,
+                pitch,
+                channel,
+                velocity: 112,
+            }));
+            (applied, _) = harness.applied(applied);
+            let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+            insertion.selection = installed_selection(
+                &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+                installed.as_ref().unwrap(),
+                hex_plugin_catalog::PluginRole::Instrument,
+            );
+            harness
+                .service
+                .submit(Request::InsertPluginEffect(insertion))
+                .unwrap();
+            let event = terminal(&mut harness);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(event.plugin_effect_complete[0].accepted);
+            assert_eq!(
+                event
+                    .state
+                    .project
+                    .tracks()
+                    .iter()
+                    .filter(|track| track.instrument().is_some())
+                    .count(),
+                index + 1
+            );
+            (applied, _) = harness.applied(applied);
+        }
+    }
     if matches!(workflow, InstrumentWorkflow::AuthoringAcrossPlay) {
         automation_start::verify(
             &mut harness,
@@ -1239,12 +1313,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     if paced {
-        verify_paced_instrument_authoring(
-            &mut harness,
-            project_track.instrument().unwrap().id(),
-            applied,
-            monitor,
-        );
+        verify_paced_instrument_authoring(&mut harness, instrument, applied, monitor);
         return;
     }
     if shared_authoring {
@@ -1795,22 +1864,53 @@ fn verify_paced_instrument_authoring(
     let mut query_yielded = 0_u64;
     let mut revision = context.editor_revision;
     let mut max_lateness = Duration::ZERO;
+    let mut previous_callback = None;
+    let mut recent_callbacks = [(0_u32, 0_u128, 0_u128, 0_u128); 8];
     let mut peak = 0.0_f32;
     let mut tail_peak = 0.0_f32;
-    for block in 0..600_u32 {
+    // The short default remains useful for routine feedback. The original
+    // report failed after tens of thousands of blocks, so permit an explicit
+    // longer stress run without lengthening ordinary checks.
+    let blocks = std::env::var("HEX_TEST_VST3_PACED_BLOCKS")
+        .map(|value| value.parse::<u32>().expect("paced block count"))
+        .unwrap_or(600);
+    assert!(
+        (600..=100_000).contains(&blocks),
+        "paced block count out of range"
+    );
+    let burst_delay = std::env::var("HEX_TEST_VST3_BURST_MILLIS")
+        .map(|value| value.parse::<u64>().expect("burst delay"))
+        .unwrap_or(0);
+    assert!(burst_delay <= 25, "burst delay out of range");
+    for block in 0..blocks {
         let deadline = start + period * block;
         if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
             std::thread::sleep(delay);
         }
+        if burst_delay != 0 && block != 0 && block % 100 == 0 {
+            std::thread::sleep(Duration::from_millis(burst_delay));
+        }
         harness.pump();
-        max_lateness = max_lateness.max(Instant::now().saturating_duration_since(deadline));
+        let callback_start = Instant::now();
+        let late = callback_start.saturating_duration_since(deadline);
+        let gap = previous_callback.map_or(Duration::ZERO, |previous| {
+            callback_start.duration_since(previous)
+        });
+        previous_callback = Some(callback_start);
+        max_lateness = max_lateness.max(late);
         let frames = harness.render_plugin_block();
+        recent_callbacks[block as usize % 8] = (
+            block,
+            late.as_micros(),
+            gap.as_micros(),
+            callback_start.elapsed().as_micros(),
+        );
         let block_peak = frames
             .into_iter()
             .flatten()
             .fold(0.0_f32, |value, sample| value.max(sample.abs()));
         peak = peak.max(block_peak);
-        if block >= 550 {
+        if block >= blocks - 50 {
             tail_peak = tail_peak.max(block_peak);
         }
         if monitor && query_pending.is_none() && (30..500).contains(&block) && block % 25 == 0 {
@@ -1901,9 +2001,10 @@ fn verify_paced_instrument_authoring(
         }
         assert!(
             harness.degraded_devices.is_empty(),
-            "vst endpoint degraded after block {block}, maximum lateness {:?}: {:?}",
+            "vst endpoint degraded after block {block}, maximum lateness {:?}: {:?}; recent (block, late_us, gap_us, render_us)={recent_callbacks:?}; worker failure={:?}",
             max_lateness,
-            harness.degraded_devices
+            harness.degraded_devices,
+            *harness.plugin_failure.lock().unwrap()
         );
         let status = harness.audio.as_ref().unwrap().status().unwrap();
         if block >= 50 {
@@ -1958,7 +2059,7 @@ fn verify_paced_instrument_authoring(
         "instrument must remain audible after editing"
     );
     println!(
-        "paced_vst3 rate={} blocks=600 edits={completed} applied={applied} max_late_us={} peak={peak} tail_peak={tail_peak}",
+        "paced_vst3 rate={} blocks={blocks} edits={completed} applied={applied} max_late_us={} peak={peak} tail_peak={tail_peak}",
         harness.audio.as_ref().unwrap().sample_rate,
         max_lateness.as_micros()
     );
