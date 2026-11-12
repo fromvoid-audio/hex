@@ -978,12 +978,21 @@ fn h_enabled_keyboard_owns_note_69_and_release_while_pending_edits_block_overvie
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("m");
     let before = editor.read_with(&visual, |view, _| view.worker_requests_pending);
-    visual.simulate_keystrokes("t");
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("t").unwrap(),
+        is_held: false,
+    });
     editor.read_with(&visual, |view, _| {
         assert_eq!(
             view.worker_requests_pending, before,
             "MIDI note must not add a track"
         );
+        let notes: Vec<_> = view.computer_keyboard.physical_notes().collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].pitch, 66);
+    });
+    visual.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse("t").unwrap(),
     });
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("h").unwrap(),
