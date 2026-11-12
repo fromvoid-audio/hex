@@ -2617,6 +2617,7 @@ enum DeferredRecoveryKind {
     Paste,
     TrackSwitch,
     TimeRangeCopy,
+    SectionCopy,
     LocatorAdd,
 }
 
@@ -2625,7 +2626,7 @@ impl DeferredRecoveryKind {
         match self {
             Self::Paste => "paste_recovery_us",
             Self::TrackSwitch => "track_switch_recovery_us",
-            Self::TimeRangeCopy => "duplicate_recovery_us",
+            Self::TimeRangeCopy | Self::SectionCopy => "duplicate_recovery_us",
             Self::LocatorAdd => "locator_recovery_us",
         }
     }
@@ -2637,6 +2638,9 @@ fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecoveryKind> {
             Some(DeferredRecoveryKind::Paste)
         }
         Request::Edit(Command::CopyTimeRangeTo { .. }) => Some(DeferredRecoveryKind::TimeRangeCopy),
+        Request::EditArrangementSection { command, .. } if is_section_copy(command) => {
+            Some(DeferredRecoveryKind::SectionCopy)
+        }
         Request::Edit(Command::AddArrangementLocator { .. }) => {
             Some(DeferredRecoveryKind::LocatorAdd)
         }
@@ -2649,6 +2653,16 @@ fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecoveryKind> {
         ) => Some(DeferredRecoveryKind::TrackSwitch),
         _ => None,
     }
+}
+
+fn is_section_copy(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::DuplicateArrangementSection(_)
+            | Command::DuplicateArrangementSectionAt { .. }
+            | Command::AppendArrangementSectionCopy { .. }
+            | Command::ReplaceArrangementSection { copy: true, .. }
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
@@ -3323,18 +3337,15 @@ fn run_worker(
             &request,
             Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. }
         );
-        let arrangement_duplicate = matches!(
+        let section_copy = matches!(
             &request,
-            Request::DuplicateClips { .. }
-                | Request::DuplicateAliasClips { .. }
-                | Request::EditArrangementSection {
-                    command: Command::DuplicateArrangementSection(_)
-                        | Command::DuplicateArrangementSectionAt { .. }
-                        | Command::AppendArrangementSectionCopy { .. }
-                        | Command::ReplaceArrangementSection { copy: true, .. },
-                    ..
-                }
+            Request::EditArrangementSection { command, .. } if is_section_copy(command)
         );
+        let arrangement_duplicate = section_copy
+            || matches!(
+                &request,
+                Request::DuplicateClips { .. } | Request::DuplicateAliasClips { .. }
+            );
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -9571,6 +9582,8 @@ fn run_worker(
             Some(DeferredRecoveryKind::TrackSwitch)
         } else if time_range_copy && canonical_changed && error.is_none() {
             Some(DeferredRecoveryKind::TimeRangeCopy)
+        } else if section_copy && committed_arrangement_duplicate.is_some() {
+            Some(DeferredRecoveryKind::SectionCopy)
         } else if locator_add
             && canonical_changed
             && error.is_none()

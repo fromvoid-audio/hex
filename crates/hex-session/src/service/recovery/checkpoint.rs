@@ -1950,6 +1950,166 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_section_copies_stage_while_first_checkpoint_is_held() {
+        for variant in 0..4 {
+            check_consecutive_section_copies(false, variant);
+        }
+    }
+
+    #[test]
+    fn consecutive_section_copies_preserve_conflicting_recovery_bytes() {
+        check_consecutive_section_copies(true, 0);
+    }
+
+    fn check_consecutive_section_copies(conflict: bool, variant: u8) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-section-copy-stage-{}-{conflict}-{variant}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let initial = next(&service);
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "intro".into(),
+                    start: hex_project::BeatTime::ZERO,
+                    end: hex_project::BeatTime::ONE,
+                    color: hex_project::ElementColor::Cyan,
+                },
+            })
+            .unwrap();
+        let first_section = next(&service);
+        let Some(Created::ArrangementSection(section)) = first_section.created else {
+            panic!("section")
+        };
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: first_section.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "outro".into(),
+                    start: hex_project::BeatTime::ONE,
+                    end: hex_project::BeatTime::from_quarters(2).unwrap(),
+                    color: hex_project::ElementColor::Cyan,
+                },
+            })
+            .unwrap();
+        let before = next(&service);
+        let Some(Created::ArrangementSection(target)) = before.created else {
+            panic!("target")
+        };
+        let initial_revision = before.state.revision;
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        let duplicate = |revision| Request::EditArrangementSection {
+            project_generation: 0,
+            revision,
+            command: Command::DuplicateArrangementSection(section),
+        };
+        let first_command = match variant {
+            0 => Command::DuplicateArrangementSection(section),
+            1 => Command::DuplicateArrangementSectionAt {
+                section,
+                target,
+                after: true,
+            },
+            2 => Command::AppendArrangementSectionCopy {
+                section,
+                start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                gap_name: "gap".into(),
+                gap_color: hex_project::ElementColor::Cyan,
+            },
+            3 => Command::ReplaceArrangementSection {
+                source: section,
+                target,
+                copy: true,
+            },
+            _ => panic!("unknown section-copy variant"),
+        };
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial_revision,
+                command: first_command,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_arrangement_edit_view().unwrap();
+        let first_state = first.state.upgrade().unwrap();
+        assert_eq!(first_state.revision, initial_revision + 1);
+        if conflict {
+            std::fs::write(&path, b"another writer's journal").unwrap();
+        }
+        service.submit(duplicate(initial_revision + 1)).unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second_state = loop {
+            if let Ok(view) = service.try_arrangement_edit_view()
+                && let Some(state) = view.state.upgrade()
+                && state.revision == initial_revision + 2
+            {
+                break Some(state);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let second_state =
+            second_state.expect("second section copy must commit before checkpoint release");
+        let final_count = if variant == 3 { 3 } else { 4 };
+        assert_eq!(
+            second_state.project.arrangement_sections().len(),
+            final_count
+        );
+        let first_terminal = next(&service);
+        let second_terminal = next(&service);
+        assert_eq!(first_terminal.state.revision, initial_revision + 1);
+        assert_eq!(second_terminal.state.revision, initial_revision + 2);
+        if conflict {
+            assert!(first_terminal.recovery_failure.is_some());
+            assert!(second_terminal.recovery_failure.is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
+        } else {
+            assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *second_terminal.state.project
+            );
+        }
+        service.submit(duplicate(initial_revision)).unwrap();
+        let stale = next(&service);
+        assert!(stale.error.is_some());
+        assert_eq!(stale.state.revision, initial_revision + 2);
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            next(&service).state.project.arrangement_sections().len(),
+            final_count - 1
+        );
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(
+            next(&service).state.project.arrangement_sections().len(),
+            final_count
+        );
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn section_copy_view_precedes_the_durable_terminal() {
         let directory = std::env::temp_dir().join(format!(
             "hex-section-copy-checkpoint-{}",
@@ -2010,16 +2170,22 @@ mod tests {
             service.try_event(),
             Err(std::sync::mpsc::TryRecvError::Empty)
         ));
+        // Undo is a different operation and must stay behind journal custody.
+        service.submit(Request::Undo).unwrap();
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         release.send(()).unwrap();
         let committed = next(&service);
         assert!(committed.request_complete && committed.error.is_none());
         assert!(Arc::ptr_eq(&visible, &committed.state));
+        let undone_event = next(&service);
         assert_eq!(
             hex_storage::load_journal(&path).unwrap(),
-            *committed.state.project
+            *undone_event.state.project
         );
-        service.submit(Request::Undo).unwrap();
-        let mut undone = next(&service).state.project.snapshot();
+        let mut undone = undone_event.state.project.snapshot();
         let before = before.state.project.snapshot();
         undone.next_id = before.next_id;
         assert_eq!(undone, before);
