@@ -167,6 +167,16 @@ impl hex_lattice::ForeignProcessors for NativeEffectWindow<'_> {
     ) -> Result<(), hex_lattice_contract::DeviceContractError> {
         self.process_segment_with_notes(node, offset, frames, &[], &[], clock)
     }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.process_segment_with_notes(node, offset, frames, parameters, &[], clock)
+    }
     fn process_segment_with_notes(
         &mut self,
         node: hex_lattice::ForeignProcessorNode<'_>,

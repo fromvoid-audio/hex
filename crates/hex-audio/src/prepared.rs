@@ -3652,19 +3652,21 @@ impl Callback {
                         }
                         previous.clear_stream_roles(&mut self.domain_pages);
                     }
-                    // A fresh seek keeps its reconstructed transport/DSP
-                    // history. Carry only the transient click toggle after
-                    // every fence/cancellation refusal has been excluded.
+                    // A fresh seek keeps its reconstructed transport and
+                    // internal DSP. Retained workers still need their gate
+                    // identities after the final fence/cancellation decision.
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
                             | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(previous) =
-                        self.active.as_ref().and_then(ActivePublication::legacy)
+                        self.active.as_mut().and_then(ActivePublication::legacy_mut)
                         && next.control_context_generation == previous.control_context_generation
                     {
                         next.playback
                             .inherit_metronome_for_fresh_seek(&previous.playback);
+                        next.playback
+                            .cut_retained_foreign_gates_for_fresh_seek(&mut previous.playback);
                     }
                     if let Some(previous) =
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
@@ -4496,7 +4498,7 @@ impl Callback {
         }
         let recording = self.sample_recording.observation();
         if !node_observed && !project_observed && recording.is_none() {
-            return self.render_unobserved(output);
+            return self.render_unobserved(output, capture_offset);
         }
         if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
@@ -4572,10 +4574,12 @@ impl Callback {
             None
         };
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
-            .native_sources
-            .has_endpoints()
-            .then_some(&mut self.native_sources);
+        let has_endpoints = self.native_sources.has_endpoints();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut foreign_window = NativeEffectWindow::new(&mut self.native_sources, capture_offset);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> =
+            has_endpoints.then_some(&mut foreign_window);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let foreign = None;
         if let Some(mut active) = self
@@ -4647,18 +4651,27 @@ impl Callback {
         Ok(())
     }
 
-    fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    fn render_unobserved(
+        &mut self,
+        output: &mut [Frame],
+        capture_offset: usize,
+    ) -> Result<(), Invalid> {
         if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
-            .native_sources
-            .has_endpoints()
-            .then_some(&mut self.native_sources);
+        let has_endpoints = self.native_sources.has_endpoints();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut foreign_window = NativeEffectWindow::new(&mut self.native_sources, capture_offset);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> =
+            has_endpoints.then_some(&mut foreign_window);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let foreign = None;
+        let foreign = {
+            let _ = capture_offset;
+            None
+        };
         if let Some(mut active) = self
             .active
             .as_mut()
