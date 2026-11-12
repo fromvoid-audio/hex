@@ -6271,53 +6271,6 @@ mod sampler_native_ui_protocol_tests {
                 return;
             }
 
-            // Deliver a callback refusal before its protected worker metadata.
-            let control = output.publication.control().unwrap();
-            let fence = control.capture_fresh_runtime_fence().unwrap();
-            let rejected = control
-                .publish_with_policy_and_context_generation(
-                    hex_engine::playback::Playback::try_from_prepared_with_device_resources(
-                        Arc::clone(&prepared),
-                        &resources,
-                    )
-                    .unwrap(),
-                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
-                    context.project_generation,
-                )
-                .unwrap();
-            assert_eq!(
-                control.cancel_fresh_runtime_publication(rejected),
-                hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
-            );
-            backend.render(&mut [[0.0; 2]; 64]).unwrap();
-            view.tick(cx);
-            assert_eq!(view.observed_rejected_revision, rejected);
-            view.audio_admission.canonical_revision(
-                super::super::audio_admission::ProjectRevision {
-                    generation: context.project_generation,
-                    revision: canonical.revision,
-                },
-            );
-            view.retain_publication_observation(
-                context,
-                output_identity,
-                crate::EditorPublicationState::ResidentSubmitted {
-                    audio_revision: rejected,
-                    observation: Arc::clone(&observation),
-                    metadata,
-                },
-            );
-            view.tick(cx);
-            assert!(matches!(
-                view.audio_admission.current().unwrap().state,
-                super::super::audio_admission::AdmissionState::Rejected(_)
-            ));
-            assert!(view.playback_candidates.is_empty());
-            assert_eq!(
-                view.audible_playback.as_ref().unwrap().audio_revision,
-                canonical_revision
-            );
-
             // A real metadata-only comparison retains the old source context. A subsequent
             // runtime publication uses the current authored revision and must not wait forever.
             view.device_gesture.reset();
@@ -6381,9 +6334,9 @@ mod sampler_native_ui_protocol_tests {
                 .control()
                 .unwrap()
                 .publish_with_policy_and_context_generation(
-                    hex_engine::playback::Playback::try_from_prepared_with_session(
-                        runtime_prepared,
-                    )
+                    hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(
+                        &runtime_prepared,
+                    ))
                     .unwrap(),
                     PublicationPolicy::InheritRuntime,
                     context.project_generation,
@@ -6395,7 +6348,7 @@ mod sampler_native_ui_protocol_tests {
                 output_identity,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: runtime_revision,
-                    observation: runtime_observation,
+                    observation: Arc::clone(&runtime_observation),
                     metadata,
                 },
             );
@@ -6414,6 +6367,48 @@ mod sampler_native_ui_protocol_tests {
                 runtime_revision
             );
             assert_eq!(view.applied_project_revision, Some(authored.revision));
+
+            // Deliver a callback refusal before its protected worker metadata.
+            let control = output.publication.control().unwrap();
+            control.reclaim();
+            let fence = control.capture_fresh_runtime_fence().unwrap();
+            let rejected = control
+                .publish_with_policy_and_context_generation(
+                    hex_engine::playback::Playback::try_from_prepared_with_session(
+                        runtime_prepared,
+                    )
+                    .unwrap(),
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                    context.project_generation,
+                )
+                .unwrap();
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(rejected),
+                hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(view.observed_rejected_revision, rejected);
+            view.retain_publication_observation(
+                runtime_context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: rejected,
+                    observation: runtime_observation,
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(matches!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Rejected(_)
+            ));
+            assert!(view.playback_candidates.is_empty());
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                runtime_revision
+            );
+
             view.audio = None;
         });
         backend.close();
