@@ -836,7 +836,7 @@ impl EditorView {
             || self.export_dialog_open
     }
 
-    fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
+    pub(super) fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
         let Some(end) = range.end().checked_add(range.duration()) else {
             self.error = Some("duplicated time range would overflow".into());
             return;

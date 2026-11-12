@@ -243,7 +243,11 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+        super::recovery::clear_recovery(
+            &mut self.recovery,
+            &mut self.pending_sample_drop,
+            &mut self.pending_time_range_move,
+        );
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -1928,7 +1932,11 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2512,7 +2520,11 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;

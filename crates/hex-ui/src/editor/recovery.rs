@@ -18,6 +18,7 @@ pub(in crate::editor) mod tests;
 pub(super) fn clear_recovery(
     recovery: &mut RecoveryState,
     sample_drop: &mut Option<PendingSampleDrop>,
+    time_move: &mut Option<super::time_selection::PendingTimeRangeMove>,
 ) {
     if recovery
         .deferred_edit
@@ -25,6 +26,13 @@ pub(super) fn clear_recovery(
         .is_some_and(|edit| edit.kind == DeferredEditKind::SampleDrop)
     {
         *sample_drop = None;
+    }
+    if recovery
+        .deferred_edit
+        .as_ref()
+        .is_some_and(|edit| edit.kind == DeferredEditKind::TimeDuplicate)
+    {
+        *time_move = None;
     }
     recovery.fail();
 }
@@ -59,6 +67,9 @@ impl EditorView {
     pub(super) fn recoverable_graph_edit(&self, request: &Request) -> Option<DeferredEditKind> {
         if !self.has_degraded_vst3_output() && self.recovery.deferred_edit.is_none() {
             return None;
+        }
+        if self.pending_time_duplicate_matches(request) {
+            return Some(DeferredEditKind::TimeDuplicate);
         }
         if matches!(
             self.sample_drop_target(),
@@ -126,7 +137,11 @@ impl EditorView {
                     == (context.project_generation, context.editor_revision)
             }
             Request::AddNativeDevice { track, .. } => state.project.track(*track).is_some(),
-            _ => kind == DeferredEditKind::SampleDrop && self.pending_sample_drop_matches(&request),
+            _ => match kind {
+                DeferredEditKind::SampleDrop => self.pending_sample_drop_matches(&request),
+                DeferredEditKind::TimeDuplicate => self.pending_time_duplicate_matches(&request),
+                DeferredEditKind::NativeEffect => false,
+            },
         };
         if !current {
             self.error = Some("edit canceled · project changed".into());
@@ -151,6 +166,9 @@ impl EditorView {
         self.status = match kind {
             DeferredEditKind::NativeEffect => "restarting audio · device will be added when ready",
             DeferredEditKind::SampleDrop => "restarting audio · sample will be imported when ready",
+            DeferredEditKind::TimeDuplicate => {
+                "restarting audio · time will be duplicated when ready"
+            }
         }
         .into();
         true
@@ -161,7 +179,10 @@ impl EditorView {
             return;
         };
         let sample_drop = pending.kind == DeferredEditKind::SampleDrop;
-        if sample_drop && !self.pending_sample_drop_matches(&pending.request) {
+        let time_duplicate = pending.kind == DeferredEditKind::TimeDuplicate;
+        if (sample_drop && !self.pending_sample_drop_matches(&pending.request))
+            || (time_duplicate && !self.pending_time_duplicate_matches(&pending.request))
+        {
             return;
         }
         let accepted = if pending.context.project_generation != self.project_generation
@@ -172,11 +193,10 @@ impl EditorView {
         {
             self.error = Some("edit canceled · project changed during audio recovery".into());
             false
-        } else if sample_drop && self.edit_pending() {
-            // Legacy imports use FIFO destinations. A worker edit without an
-            // installed reply can already have changed the captured revision.
-            self.error =
-                Some("sample drop canceled · project work pending during audio recovery".into());
+        } else if (sample_drop || time_duplicate) && self.edit_pending() {
+            // A worker edit without an installed reply can already have
+            // changed the captured revision for these unversioned requests.
+            self.error = Some("edit canceled · project work pending during audio recovery".into());
             false
         } else if self.has_degraded_vst3_output() {
             self.error = Some("plug-in failed during audio recovery · edit was canceled".into());
@@ -187,11 +207,15 @@ impl EditorView {
         if accepted {
             self.status = if sample_drop {
                 "importing sample to arrangement".into()
+            } else if time_duplicate {
+                "duplicating time".into()
             } else {
                 "adding device".into()
             };
         } else if sample_drop {
             self.pending_sample_drop = None;
+        } else if time_duplicate {
+            self.pending_time_range_move = None;
         }
     }
 
@@ -252,7 +276,11 @@ impl EditorView {
         };
         self.offline_cursor = position;
         if !self.retire_audio_preserving_gain_take() {
-            clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             return;
         }
         self.clear_audio_accounting();
@@ -430,7 +458,11 @@ impl EditorView {
     pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
         let error = error.into();
         self.offline_cursor = self.cursor_position();
-        clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+        clear_recovery(
+            &mut self.recovery,
+            &mut self.pending_sample_drop,
+            &mut self.pending_time_range_move,
+        );
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;

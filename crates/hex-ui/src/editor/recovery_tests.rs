@@ -233,11 +233,34 @@ fn degraded_sample_drop_releases_the_preview_on_failed_or_stale_recovery(
     graph_edit_recovery(cx, EditFixture::NewTrackSample, EditRecovery::Failed);
 }
 
+#[gpui::test]
+fn degraded_time_duplicate_waits_for_recovery_and_rejects_stale_or_failed_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::TimeDuplicate,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::TimeDuplicate,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::TimeDuplicate,
+        EditRecovery::ProjectEditPending,
+    );
+    graph_edit_recovery(cx, EditFixture::TimeDuplicate, EditRecovery::Failed);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EditFixture {
     Effect,
     ExistingTrackSample,
     NewTrackSample,
+    TimeDuplicate,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -291,14 +314,38 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
     };
     next(&service);
     let add_track = |name: &str| Request::Edit(Command::AddTrack { name: name.into() });
-    service.submit(add_track("target")).unwrap();
+    service
+        .submit(if edit == EditFixture::TimeDuplicate {
+            Request::Edit(Command::AddMidiTrack {
+                name: "target".into(),
+            })
+        } else {
+            add_track("target")
+        })
+        .unwrap();
     let first = next(&service);
     let target = first.state.project.tracks()[0].id();
     service.submit(add_track("other")).unwrap();
     let ready = next(&service).state;
     let other = ready.project.tracks()[1].id();
+    let ready = if edit == EditFixture::TimeDuplicate {
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track: target,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_raw(4 << 32),
+            }))
+            .unwrap();
+        next(&service).state
+    } else {
+        ready
+    };
     let revision = ready.revision;
-    let sample = (edit != EditFixture::Effect).then(|| {
+    let sample = matches!(
+        edit,
+        EditFixture::ExistingTrackSample | EditFixture::NewTrackSample
+    )
+    .then(|| {
         let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
         let path = files.wav("recovery.wav", 48_000, 512);
         (files, path)
@@ -396,6 +443,16 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             assert_eq!(v.sample_drop_target(), Some(destination));
             v.set_auto_warp_imports_for_test(false);
             v.track_defaults.set_test_state(0.5, false, true);
+        } else if edit == EditFixture::TimeDuplicate {
+            let range = hex_project::TimeRange::new(vec![target], 0, 96_000).unwrap();
+            v.time_selection = Some(super::super::time_selection::TimeSelection {
+                anchor_track: Some(target),
+                end_track: Some(target),
+                anchor_frame: 0,
+                end_frame: 96_000,
+            });
+            v.start_time_duplicate(range, 0);
+            assert!(v.pending_time_range_move.is_some());
         } else {
             assert!(v.enqueue_device_barrier(request()));
         }
@@ -435,6 +492,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             v.fail_audio_recovery("fixture audio recovery failed");
             assert!(v.recovery.deferred_edit.is_none());
             assert!(v.pending_sample_drop.is_none());
+            assert!(v.pending_time_range_move.is_none());
             assert!(v.service.try_event().is_err());
             assert_eq!(v.state.as_ref().unwrap().revision, revision);
         }
@@ -472,6 +530,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         if outcome == EditRecovery::ProjectChanged {
             assert!(v.service.try_event().is_err());
             assert!(v.pending_sample_drop.is_none());
+            assert!(v.pending_time_range_move.is_none());
             assert!(
                 v.error
                     .as_deref()
@@ -482,6 +541,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         if outcome == EditRecovery::ProjectEditPending {
             assert!(v.pending_sample_drop.is_none());
+            assert!(v.pending_time_range_move.is_none());
             assert_eq!(v.worker_requests_pending, 1, "only the intervening edit");
             assert!(v.error.as_deref().unwrap().contains("project work pending"));
             let changed = next(&v.service);
@@ -504,6 +564,9 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         assert_eq!(added.state.revision, revision + 1);
         let project = &added.state.project;
         match edit {
+            EditFixture::TimeDuplicate => {
+                assert_eq!(project.track(target).unwrap().midi_clips().len(), 2);
+            }
             EditFixture::Effect => {
                 let devices = project.track(target).unwrap().devices();
                 assert_eq!(devices.len(), 1);
@@ -546,6 +609,21 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         v.receive(added);
         assert!(v.pending_sample_drop.is_none());
         assert!(v.service.try_event().is_err(), "no repeated insertion");
+        if edit == EditFixture::TimeDuplicate {
+            v.service.submit(Request::Undo).unwrap();
+            let undone = next(&v.service);
+            assert_eq!(undone.state.revision, revision + 2);
+            assert_eq!(
+                undone
+                    .state
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .midi_clips()
+                    .len(),
+                1
+            );
+        }
     });
     editor.update(cx, |v, _| assert!(v.retire_audio_preserving_gain_take()));
     drop(fresh_backend);
