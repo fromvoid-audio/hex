@@ -1362,7 +1362,7 @@ impl WorkerEvents {
             .ok_or_else(|| "audio adapter unavailable".to_owned())?
             .restart_audio(project_generation, request_id)
     }
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
             audio.poll();
         }
