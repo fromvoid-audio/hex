@@ -430,6 +430,25 @@ pub(super) fn waveform_source_segment_view(
     )
 }
 
+pub(super) fn waveform_source_segment_view_cached(
+    waveform: Arc<CachedWaveform>,
+    timeline_origin: u64,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<WaveformViewCache>,
+    ink: u32,
+) -> Div {
+    waveform_canvas(
+        waveform,
+        WaveformMapping::Source { timeline_origin },
+        visible_start,
+        visible_end,
+        Some(cache),
+        None,
+        ink,
+    )
+}
+
 pub(super) fn waveform_source_segment_gain_view_cached(
     waveform: Arc<CachedWaveform>,
     timeline_origin: u64,
@@ -457,6 +476,15 @@ pub(super) fn waveform_source_segment_gain_view_cached(
 pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>, ink: u32) -> Div {
     let end = u64::try_from(waveform.source_frames()).unwrap_or(u64::MAX);
     waveform_source_segment_view(waveform, 0, 0, end, ink)
+}
+
+pub(super) fn waveform_summary_view_cached(
+    waveform: Arc<CachedWaveform>,
+    cache: Rc<WaveformViewCache>,
+    ink: u32,
+) -> Div {
+    let end = u64::try_from(waveform.source_frames()).unwrap_or(u64::MAX);
+    waveform_source_segment_view_cached(waveform, 0, 0, end, cache, ink)
 }
 
 pub(super) fn waveform_canvas(

@@ -502,6 +502,68 @@ fn waveform_scale_is_applied_to_canonical_and_preview_paints(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn arrangement_drag_waveform_helpers_follow_view_scale(cx: &mut TestAppContext) {
+    use crate::editor::waveform::WaveformAmplitudeScale;
+    use crate::editor::waveform_geometry::{WaveformGeometryCache, WaveformViewCache};
+    use gpui::{point, prelude::*, px, size};
+    use hex_session::{CachedPeak, CachedWaveform};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    let peak = CachedPeak {
+        min: -0.1,
+        max: 0.1,
+    };
+    let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+    let shared = Rc::new(RefCell::new(WaveformGeometryCache::default()));
+    let arrangement = Rc::new(WaveformViewCache::new(Rc::clone(&shared)));
+    let other_view = Rc::new(WaveformViewCache::new(shared));
+    let visual = cx.add_empty_window();
+    let paint =
+        |cache: &Rc<WaveformViewCache>, summary: bool, visual: &mut gpui::VisualTestContext| {
+            cache.borrow_mut().clear();
+            visual.draw(
+                point(px(0.0), px(0.0)),
+                size(px(200.0), px(80.0)),
+                |_, _| {
+                    let ink = crate::theme::color(crate::theme::PaletteRole::Waveform);
+                    let waveform = if summary {
+                        super::waveform_summary_view_cached(
+                            Arc::clone(&waveform),
+                            Rc::clone(cache),
+                            ink,
+                        )
+                    } else {
+                        super::waveform_source_segment_view_cached(
+                            Arc::clone(&waveform),
+                            0,
+                            0,
+                            100,
+                            Rc::clone(cache),
+                            ink,
+                        )
+                    };
+                    gpui::div()
+                        .relative()
+                        .w(px(200.0))
+                        .h(px(80.0))
+                        .children([waveform])
+                        .into_element()
+                },
+            );
+            cache.borrow().painted_waveforms().back().unwrap().ordinates[0]
+        };
+    for summary in [false, true] {
+        let linear = paint(&arrangement, summary, visual);
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Decibel);
+        let expanded = paint(&arrangement, summary, visual);
+        assert!(expanded.0 < linear.0 && expanded.1 > linear.1);
+        assert_eq!(paint(&other_view, summary, visual), linear);
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Linear);
+        assert_eq!(paint(&arrangement, summary, visual), linear);
+    }
+}
+
+#[gpui::test]
 fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
     use crate::theme::{self, ClipWaveformBackground};
     let (_files, handle, editor, track, clip) = fixture(cx, false);
