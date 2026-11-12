@@ -260,7 +260,7 @@ pub(super) fn view(
                 clip,
                 clip.start(),
                 clip.start() + clip.duration(),
-                std::rc::Rc::clone(&view.waveform_geometry_cache),
+                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                 waveform_ink,
             ),
         ));
@@ -338,7 +338,7 @@ pub(super) fn view(
                 first..end,
                 window.gain,
                 false,
-                std::rc::Rc::clone(&view.waveform_geometry_cache),
+                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                 waveform_ink,
             );
             canvas_region = canvas_region.child(

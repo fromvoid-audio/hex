@@ -269,7 +269,7 @@ pub(in crate::editor) fn view(
                         ..visible_end.saturating_sub(pasted.frame_start),
                     clip.gain(),
                     true,
-                    std::rc::Rc::clone(&view.waveform_geometry_cache),
+                    std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                     ink,
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -279,7 +279,7 @@ pub(in crate::editor) fn view(
                 event.id,
                 visible_start,
                 visible_end,
-                std::rc::Rc::clone(&view.waveform_geometry_cache),
+                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                 ink,
             ) {
                 element = element.child(waveform);
@@ -315,7 +315,7 @@ pub(in crate::editor) fn view(
                         source_root + (visible_start - start)..source_root + (visible_end - start),
                         clip.gain(),
                         true,
-                        std::rc::Rc::clone(&view.waveform_geometry_cache),
+                        std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                         ink,
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -329,7 +329,7 @@ pub(in crate::editor) fn view(
                         &clip,
                         source_frame,
                         end_frame,
-                        std::rc::Rc::clone(&view.waveform_geometry_cache),
+                        std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                         ink,
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),

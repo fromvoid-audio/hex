@@ -45,6 +45,38 @@ impl Drop for ReferenceStereo {
 const MAX_CACHED_WAVEFORM_ENTRIES: usize = 512;
 const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
 
+/// A view's scale and its shared, bounded geometry store.
+#[derive(Default)]
+pub(super) struct WaveformViewCache {
+    geometry: std::rc::Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    amplitude_scale: std::cell::Cell<WaveformAmplitudeScale>,
+}
+
+impl WaveformViewCache {
+    pub(super) fn new(geometry: std::rc::Rc<std::cell::RefCell<WaveformGeometryCache>>) -> Self {
+        Self {
+            geometry,
+            amplitude_scale: std::cell::Cell::new(WaveformAmplitudeScale::default()),
+        }
+    }
+
+    pub(super) fn amplitude_scale(&self) -> WaveformAmplitudeScale {
+        self.amplitude_scale.get()
+    }
+
+    pub(super) fn set_amplitude_scale(&self, scale: WaveformAmplitudeScale) {
+        self.amplitude_scale.set(scale);
+    }
+}
+
+impl std::ops::Deref for WaveformViewCache {
+    type Target = std::cell::RefCell<WaveformGeometryCache>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.geometry
+    }
+}
+
 /// UI-owned LRU of ready-to-paint waveform geometry. Entries retain their source
 /// Arc, so pointer identity cannot be reused while an entry is resident.
 #[derive(Default)]
@@ -441,6 +473,7 @@ fn waveform_geometry_key(
     }
 }
 
+#[cfg(test)]
 pub(super) fn prepare_waveform_geometry(
     waveform: &CachedWaveform,
     mapping: &WaveformMapping,
@@ -465,7 +498,7 @@ pub(super) fn prepare_waveform_geometry(
     )
 }
 
-fn prepare_waveform_geometry_with_scale(
+pub(super) fn prepare_waveform_geometry_with_scale(
     waveform: &CachedWaveform,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<WaveformGeometry> {

@@ -1,6 +1,8 @@
 use super::*;
+use crate::editor::waveform_geometry::WaveformGeometryCache;
 use hex_project::{Command, Created, Editor, Project};
 use hex_session::{CachedPeak, CachedWaveform};
+use std::cell::RefCell;
 
 fn fixture() -> (Editor, hex_project::ClipId) {
     let mut editor = Editor::new(Project::new(44_100).unwrap(), 32).unwrap();
