@@ -148,6 +148,8 @@ pub mod preset;
 mod project_rate;
 mod recovery;
 pub use project_rate::ProjectSampleRate;
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub use recovery::{HeldCheckpoint, hold_next_checkpoint};
 #[cfg(test)]
 mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
@@ -10002,6 +10004,13 @@ fn run_worker(
             let previous = pending_recovery_outcome
                 .take()
                 .map(|(previous_kind, mut previous)| {
+                    // The callback may apply the successor while the older
+                    // checkpoint owns the journal. Keep its control-side
+                    // fence progressing without acknowledging either outcome.
+                    while recovery_tracker.async_waiting() {
+                        events.poll();
+                        std::thread::sleep(stopped_arrangement::FENCE_POLL);
+                    }
                     let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
                     previous.finish_recovery(
                         previous_kind.metric(),
