@@ -3436,6 +3436,9 @@ impl Callback {
                 } else {
                     None
                 };
+                let fenced_restart =
+                    matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                        && next.playback.live_restart_requested();
                 let prepared = next.streams.as_mut().map(|streams| {
                     streams.prepare_install(
                         &mut next.playback,
@@ -3444,10 +3447,27 @@ impl Callback {
                         self.stream_pending_play.is_some(),
                         self.stream_prefix,
                         frames.unwrap_or(0),
+                        fenced_restart,
                     )
                 });
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        // Page planning may span callbacks. Revalidate the
+                        // actual fence before promoting its protected pages.
+                        if let PublicationPolicy::InheritUnderArrangement(token) = next.policy
+                            && self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready
+                        {
+                            if let Some(streams) = next.streams.as_mut() {
+                                streams.cancel_install(&mut self.domain_pages);
+                            }
+                            self.reject_publication(
+                                next.revision,
+                                PlaybackHandoffRejection::RuntimeFenceChanged,
+                            );
+                            self.return_graph(next);
+                            self.status.publication_pending.store(false, Release);
+                            return;
+                        }
                         self.trace_audio(
                             AudioDiagnosticKind::PublicationPrepared,
                             next.revision,
@@ -3550,8 +3570,6 @@ impl Callback {
                             .explicit_control_context
                             .then_some(previous.control_context_generation);
                         if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
-                            && next.streams.is_none()
-                            && previous.streams.is_none()
                             && next.playback.live_restart_requested()
                         {
                             next.playback.try_restart_runtime_under_arrangement_fence(

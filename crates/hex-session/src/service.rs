@@ -71,7 +71,7 @@ pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
 pub use clip_audition::{
     ArrangementMoveAudition, ArrangementMoveMode, ArrangementPlayStartAudition,
-    ArrangementStretchAudition, PlayStartEdit,
+    ArrangementStretchAudition, ClipMovePreviewIdentity, PlayStartEdit,
 };
 mod publication_wait;
 mod resident_audio;
@@ -4951,6 +4951,7 @@ fn run_worker(
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
+                                        clip_preview: None,
                                         context,
                                         device_preview: None,
                                         tuning_preview: None,
@@ -8554,6 +8555,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
                                     editor_revision: revision,
@@ -8620,6 +8622,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.expression = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
                                     editor_revision: revision,
@@ -8742,6 +8745,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.audition = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
                                     editor_revision: revision,
@@ -8882,6 +8886,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.keyboard = Some((track, Arc::clone(&input)));
                             let metadata = ResidentPublicationMetadata {
+                                clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
                                     editor_revision: revision,
@@ -9009,6 +9014,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                clip_preview: None,
                                 context,
                                 device_preview: None,
                                 tuning_preview: None,

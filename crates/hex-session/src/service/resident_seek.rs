@@ -429,6 +429,7 @@ impl Lane {
                         sink,
                         admission,
                         ResidentPublicationMetadata {
+                            clip_preview: None,
                             context,
                             device_preview: job.intent.device_preview,
                             tuning_preview: job.intent.tuning_preview,

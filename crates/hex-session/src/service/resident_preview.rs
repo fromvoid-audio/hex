@@ -35,6 +35,9 @@ impl Preview {
             _ => None,
         }
     }
+    pub(super) fn clip_move_identity(&self) -> Option<ClipMovePreviewIdentity> {
+        self.clip_target()?.move_identity()
+    }
     pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
         DeviceResourceAdmission::prepared_on_control(
             &self.snapshot.resources,
@@ -66,6 +69,10 @@ fn metadata(
     prepared: &PreparedRevision,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
+        clip_preview: identity.as_ref().and_then(|id| match id {
+            Identity::Clip(target) => target.move_identity(),
+            _ => None,
+        }),
         context,
         device_preview: identity.as_ref().and_then(|id| match id {
             Identity::Device(id) => Some(*id),
@@ -345,6 +352,7 @@ pub(super) fn publish_inputs(
         .ok_or(SessionError::Invalid("preview input metadata overflow"))?;
     metadata.device_preview = overlay.device_identity();
     metadata.tuning_preview = overlay.tuning_identity();
+    metadata.clip_preview = overlay.clip_move_identity();
     metadata.requires_preroll = overlay
         .snapshot
         .prepared

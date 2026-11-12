@@ -29,6 +29,10 @@ pub struct ArrangementPlayStartAudition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrangementMoveAudition {
     pub context: hex_engine::AudioSourceContext,
+    /// Gesture identity and monotonically increasing target sequence, supplied
+    /// by the control-side caller; neither is an audio application receipt.
+    pub gesture: u64,
+    pub sequence: u64,
     pub clips: Arc<[ClipId]>,
     pub anchor: ClipId,
     pub track: hex_project::TrackId,
@@ -47,7 +51,23 @@ pub enum ArrangementMoveMode {
     AliasCopy,
 }
 
+/// Scalar correlation for one submitted clip-move preview. The actual
+/// callback audio revision and output identity remain separate witnesses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipMovePreviewIdentity {
+    pub context: hex_engine::AudioSourceContext,
+    pub gesture: u64,
+    pub sequence: u64,
+}
+
 impl ArrangementMoveAudition {
+    pub fn identity(&self) -> ClipMovePreviewIdentity {
+        ClipMovePreviewIdentity {
+            context: self.context,
+            gesture: self.gesture,
+            sequence: self.sequence,
+        }
+    }
     pub(super) fn valid(&self) -> bool {
         !self.clips.is_empty()
             && self.clips.len() <= hex_project::MAX_CLIPS
@@ -186,6 +206,13 @@ impl Target {
         }
     }
 
+    pub(super) fn move_identity(&self) -> Option<ClipMovePreviewIdentity> {
+        match self {
+            Self::Move(target) => Some(target.identity()),
+            _ => None,
+        }
+    }
+
     pub(super) fn command(&self) -> Command {
         match self {
             Self::Stretch(target) => Command::StretchAudioClipEdge {
@@ -247,7 +274,9 @@ impl Target {
         match (self, other) {
             (Self::Stretch(a), Self::Stretch(b)) => a.clip == b.clip && a.edge == b.edge,
             (Self::PlayStart(a), Self::PlayStart(b)) => a.edit.clip() == b.edit.clip(),
-            (Self::Move(a), Self::Move(b)) => a.anchor == b.anchor && a.clips == b.clips,
+            (Self::Move(a), Self::Move(b)) => {
+                a.gesture == b.gesture && a.anchor == b.anchor && a.clips == b.clips
+            }
             _ => false,
         }
     }
@@ -507,6 +536,8 @@ mod tests {
                 project_generation: 3,
                 editor_revision: 7,
             },
+            gesture: 1,
+            sequence: 1,
             anchor: clips[0],
             clips: clips.into(),
             track,
@@ -533,6 +564,9 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&first.clips, &retained.clips));
         assert!(a.same_gesture(&b));
+        let mut other_gesture = moved.clone();
+        other_gesture.gesture += 1;
+        assert!(!a.same_gesture(&Target::Move(other_gesture)));
         let mut other = moved.clone();
         other.context.editor_revision += 1;
         assert!(!a.same_gesture(&Target::Move(other)));

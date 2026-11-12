@@ -2558,6 +2558,22 @@ impl Playback {
         next.preview_stream_handoff_with_scope(old, maximum_frames, playing, visit, true)
             .map_err(PlaybackHandoffError::Session)
     }
+    pub(crate) fn preview_ordinary_fenced_restart(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        if !self.live_restart_requested() {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
+        next.preview_stream_handoff_with_policy(old, maximum_frames, playing, visit, true, true)
+            .map_err(PlaybackHandoffError::Session)
+    }
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
     pub fn render_with_pages<P: MediaPages>(
