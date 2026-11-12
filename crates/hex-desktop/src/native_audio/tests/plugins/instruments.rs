@@ -3,9 +3,13 @@ use super::*;
 use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
+mod automation_start;
+mod section_edit;
+mod track_duplicate;
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
-fn native_vst3_instrument_bounces_to_new_track() {
+fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_BOUNCE_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
     if std::env::var_os(CHILD).is_none() {
@@ -15,7 +19,9 @@ fn native_vst3_instrument_bounces_to_new_track() {
             .args(["--exact", &test, "--ignored", "--nocapture"])
             .env(CHILD, "1");
         if installed.is_none() {
-            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "127");
+            child
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+                .env("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET", "1");
         }
         let result = child.output().unwrap();
         assert!(
@@ -46,15 +52,18 @@ fn native_vst3_instrument_bounces_to_new_track() {
         )
     };
     let rate = if installed.is_some() { 44_100 } else { 48_000 };
-    let mut harness = ResidentHarness::with_plugins_at_rate_and_catalog(
+    let recovery = files.0.join("recovery");
+    std::fs::create_dir(&recovery).unwrap();
+    let mut harness = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
         host(),
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
         }),
         rate,
-        catalog,
         2_000_000,
+        catalog,
+        recovery.join("bounce.hex-journal"),
     );
     assert!(harness.next().error.is_none());
     let (applied, _) = harness.applied(0);
@@ -102,6 +111,33 @@ fn native_vst3_instrument_bounces_to_new_track() {
         .unwrap()
         .state()
         .clone();
+    if installed.is_none() {
+        let original = hex_plugin_state::decode(&state).unwrap().component.unwrap();
+        assert_eq!(f32::from_le_bytes(original[8..12].try_into().unwrap()), 1.0);
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        // Send a live note so the fixture selects a preset internally. The
+        // canonical project still contains the insertion-time default.
+        let live_peak = (0..6)
+            .flat_map(|_| render_completed_block(&harness))
+            .flatten()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        assert!(live_peak > 0.001, "the instrument must sound before bounce");
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Pause)
+            .unwrap();
+        render_completed_block(&harness);
+    }
     let control = hex_export::ExportControl::default();
     harness
         .service
@@ -151,19 +187,140 @@ fn native_vst3_instrument_bounces_to_new_track() {
     if installed.is_none() {
         let first = hex_export::FLOAT32_WAV_HEADER_BYTES as usize;
         let sample = f32::from_le_bytes(wav[first..first + 4].try_into().unwrap());
+        let expected = 100.0 / 127.0 * 0.5;
         assert!(
-            sample > 0.001,
-            "offline bridge latency must be trimmed: {sample}"
+            (sample - expected).abs() < 1e-6,
+            "the compensated bounce must start with the live preset: {sample} vs {expected}"
         );
     }
-    harness.applied(applied);
+    let (applied, _) = harness.applied(applied);
     assert_eq!(
         harness.plugin_progress.lock().unwrap().binding,
         Some(binding)
     );
+
+    let before = Arc::clone(&bounced.state.project);
+    let baked = super::super::resident_sections::run_callback(
+        &mut harness,
+        Request::BounceArrangement {
+            project_generation: 0,
+            revision: bounced.state.revision,
+            target: hex_project::BounceTarget::Track(track),
+            in_place: true,
+            adoption: hex_project::BounceAdoption::NewTracks,
+            control: hex_export::ExportControl::default(),
+        },
+    );
+    assert!(baked.error.is_none(), "{:?}", baked.error);
+    let (applied, _) = harness.applied(applied);
+    assert_eq!(baked.state.revision, bounced.state.revision + 1);
+    let project = &baked.state.project;
+    let baked_track = project.track(track).unwrap();
+    assert!(baked_track.instrument().is_none());
+    assert!(baked_track.midi_clips().is_empty());
+    assert_eq!(baked_track.clips().len(), 1);
+    let asset = project.asset(baked_track.clips()[0].asset()).unwrap();
+    let actual = std::fs::read(asset.path()).unwrap();
+    let header = hex_export::FLOAT32_WAV_HEADER_BYTES as usize;
+    if installed.is_none() {
+        assert_eq!(
+            &actual[header..header + 256 * 8],
+            &wav[header..header + 256 * 8],
+            "both bounce commands preserve the same compensated onset"
+        );
+    } else {
+        assert!(
+            actual[header..]
+                .chunks_exact(4)
+                .any(|sample| { f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.001 })
+        );
+    }
+    let undo = super::super::resident_sections::run_callback(&mut harness, Request::Undo);
+    assert!(undo.error.is_none(), "{:?}", undo.error);
+    let (applied, _) = harness.applied(applied);
+    super::offline_bounce::assert_undone(&undo.state.project, &before);
+    let redo = super::super::resident_sections::run_callback(&mut harness, Request::Redo);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    harness.applied(applied);
+    assert_eq!(redo.state.project, baked.state.project);
 }
 
-fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
+pub(super) fn replay_reopened_instrument(
+    h: &mut ResidentHarness,
+    path: &std::path::Path,
+    device: hex_project::DeviceId,
+    blocks: usize,
+) -> Vec<[f32; 2]> {
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.service.submit(Request::Open(path.to_owned())).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let opened = loop {
+        h.pump();
+        h.render_worker_step();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.project_replaced {
+                break event;
+            }
+        }
+        assert!(Instant::now() < deadline, "replay open did not complete");
+    };
+    let first_applied =
+        super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
+    let type_id = opened
+        .state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .type_id();
+    let foreign_ready = |h: &ResidentHarness| {
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.value(), type_id)
+            == Some(true)
+    };
+    if !foreign_ready(h) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !foreign_ready(h) {
+            h.pump();
+            h.render_worker_step();
+            if let Ok(event) = h.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "restored SDK source unavailable: {:?}; {:?}",
+                h.unavailable,
+                h.plugin_progress.lock().unwrap()
+            );
+        }
+        h.applied(first_applied);
+    }
+    assert_eq!(
+        opened.state.project.as_ref(),
+        &hex_storage::load(path).unwrap()
+    );
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.value(), type_id),
+        Some(true)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = Vec::with_capacity(blocks * 256);
+    for _ in 0..blocks {
+        pcm.extend(render_completed_block(h));
+    }
+    pcm
+}
+
+pub(super) fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
     let frames = harness.render_plugin_block();
     let deadline = Instant::now() + Duration::from_millis(800);
     // Session's optional diagnostic is sampled on a different control cadence.
@@ -640,6 +797,7 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
             "author",
             "author_empty",
             "idle",
+            "idle_empty",
             "refused",
         ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -803,6 +961,9 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                 case.as_str(),
                 "session_record"
                     | "session_record_changed"
+                    | "session_first_lane"
+                    | "session_first_lane_with_other"
+                    | "session_first_lane_stop"
                     | "session_barriers"
                     | "session_save"
                     | "session_barrier_undo"
@@ -812,6 +973,11 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                     | "session_stop"
                     | "session_refused"
                     | "session_recover"
+                    | "session_writer_failure"
+                    | "session_writer_adopt"
+                    | "session_writer_keep_apply"
+                    | "session_writer_refusal"
+                    | "session_writer_source_lost"
                     | "session_cancel"
                     | "session_empty"
             ))
@@ -824,6 +990,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 enum InstrumentWorkflow {
     Playback,
     Authoring,
+    AuthoringAcrossPlay,
     PacedAuthoring,
     PacedMonitoring,
     Takeover,
@@ -905,6 +1072,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             host(),
             presentation,
             rate,
+            8192,
             files.0.canonicalize().unwrap().join("plugin-catalog.json"),
             files
                 .0
@@ -1026,6 +1194,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             ),
             destination: PluginEffectDestination::Instrument(track),
             before: None,
+            track_device_name: None,
             control: Arc::new(PluginEffectControl::default()),
         }
     } else {
@@ -1051,6 +1220,14 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    if matches!(workflow, InstrumentWorkflow::AuthoringAcrossPlay) {
+        automation_start::verify(
+            &mut harness,
+            project_track.instrument().unwrap().id(),
+            applied,
+        );
+        return;
+    }
     if takeover {
         verify_instrument_takeover(
             &mut harness,
@@ -1193,6 +1370,49 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         );
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
         println!("instrument hardware tap rate={rate} frames={audible_frames}");
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOn {
+                    channel: 0,
+                    pitch,
+                    velocity: 93,
+                },
+            )
+            .unwrap();
+        let held_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(held_peak > 0.001);
+        keys.trigger_live_note_audition_on_control(&[(pitch, 37)], 256)
+            .unwrap();
+        let combined_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            combined_peak > held_peak * 1.25,
+            "preview and controller sound together"
+        );
+        let after_preview = pcm_peak(render_completed_block(&harness));
+        assert!(
+            (after_preview - held_peak).abs() < 0.0001,
+            "only the preview expires"
+        );
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOff {
+                    channel: 0,
+                    pitch,
+                    velocity: 41,
+                },
+            )
+            .unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        assert!(queue.same_current_activation(activation));
     }
     // Stop advancing at frame 64 of the copied quantum. Play must carry its
     // new context inside that same worker block.
@@ -1448,6 +1668,68 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             render_completed_block(&harness);
         }
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+
+        // Return to the authored Arrangement, then seek out of a held note.
+        // The worker's copied output must release it after its bridge latency.
+        send(
+            &mut harness,
+            SessionPlaybackCommand::BackToArrangement {
+                quantization: Immediate,
+            },
+        );
+        render_completed_block(&harness);
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let held_peak = (0..8)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            held_peak > 0.001,
+            "the authored note must be held before seeking"
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Seek(48_000))
+            .unwrap();
+        for _ in 0..6 {
+            render_completed_block(&harness);
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                render_completed_block(&harness),
+                [[0.0; 2]; 256],
+                "seek must release the held SDK gate"
+            );
+        }
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.position.load(Acquire) >= 48_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let fresh_peak = (0..8)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            fresh_peak > 0.001,
+            "a fresh authored note must sound after seek"
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
     }
 }
 
@@ -1976,10 +2258,18 @@ fn verify_instrument_takeover(
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
     let author = matches!(case.as_str(), "author" | "author_empty");
-    let reading = !matches!(case.as_str(), "unread" | "empty" | "renew");
-    let playing = case != "idle";
+    let idle_unlaned = case == "idle_empty";
+    let first_lane = matches!(
+        case.as_str(),
+        "session_first_lane" | "session_first_lane_with_other" | "session_first_lane_stop"
+    );
+    let stop_recording = matches!(case.as_str(), "session_stop" | "session_first_lane_stop");
+    let reading =
+        !first_lane && !matches!(case.as_str(), "unread" | "empty" | "renew" | "idle_empty");
+    let playing = !matches!(case.as_str(), "idle" | "idle_empty");
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let mut original_binding = None;
     let class = if case == "author_empty" {
         hex_plugin_state::decode(original.device(device).unwrap().state())
             .unwrap()
@@ -1994,7 +2284,9 @@ fn verify_instrument_takeover(
             request_id: 11,
             page_first: None,
         }));
-        let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+        let result = h.next().plugin_parameters.unwrap();
+        original_binding = result.source;
+        let rows = result.rows.unwrap();
         assert_eq!(rows.len(), 2);
         rows.iter()
             .find(|r| r.id == 7)
@@ -2005,8 +2297,15 @@ fn verify_instrument_takeover(
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if matches!(case.as_str(), "empty" | "renew" | "author_empty")
-            || id == 7 && (!reading || author)
+        if matches!(
+            case.as_str(),
+            "empty"
+                | "renew"
+                | "author_empty"
+                | "idle_empty"
+                | "session_first_lane"
+                | "session_first_lane_stop"
+        ) || id == 7 && (!reading || author)
         {
             continue;
         }
@@ -2184,10 +2483,7 @@ fn verify_instrument_takeover(
                     status.native_parameter_source(playing),
                     status.render_fault_snapshot()
                 );
-                assert!(
-                    !ack.source_lost || case == "session_stop",
-                    "{case}: {ack:?}"
-                );
+                assert!(!ack.source_lost || stop_recording, "{case}: {ack:?}");
                 assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
             }
@@ -2200,7 +2496,7 @@ fn verify_instrument_takeover(
                 [3, 5, 117, 1, 130][fragment % 5],
                 playing
                     && case != "delivery_retire"
-                    && case != "session_stop"
+                    && !stop_recording
                     && !case.starts_with("touch_close_"),
                 &case,
                 Some(&request),
@@ -2229,6 +2525,281 @@ fn verify_instrument_takeover(
         let binding = h.plugin_progress.lock().unwrap().binding;
         client.begin_plugin_recording(origin).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        #[cfg(feature = "recording-fault-test-support")]
+        if matches!(
+            case.as_str(),
+            "session_writer_failure"
+                | "session_writer_adopt"
+                | "session_writer_keep_apply"
+                | "session_writer_refusal"
+                | "session_writer_source_lost"
+        ) {
+            use hex_session::service::automation_draft::{DraftProvenance, Vst3CaptureTarget};
+            use hex_session::service::{
+                DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
+                DeviceAutomationTakeScope, DeviceCaptureTarget,
+            };
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let applied_source = status.recording_source().unwrap();
+            let scope = DeviceAutomationTakeScope {
+                target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
+                    device,
+                    parameter: 7,
+                    class,
+                    binding: binding.unwrap(),
+                }),
+                stamp: DraftProvenance {
+                    sample_rate: 48_000,
+                    output_identity: applied_source.output_identity,
+                    project_generation: origin.context.project_generation,
+                    editor_revision: origin.context.editor_revision,
+                    audio_revision: applied_source.audio_revision,
+                    transport_epoch: status.transport_epoch.load(Acquire),
+                    gesture_serial: client.snapshot().unwrap().key.token,
+                },
+            };
+            let armed = h.run(Request::DeviceAutomationTake {
+                request_id: 491,
+                scope,
+                action: Action::InjectWriterFailure,
+            });
+            assert!(armed.error.is_none(), "{:?}", armed.error);
+            assert_eq!(
+                armed.device_automation_take_complete.unwrap().progress,
+                Progress::Appended
+            );
+            client
+                .change_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            send(h, &mut client, true);
+            client.finish_plugin(origin.initial).unwrap();
+            let failed = send(h, &mut client, false);
+            assert_eq!(failed.state.project.as_ref(), &before);
+            let directory = recovery_directory.unwrap().join("automation-drafts");
+            let paths = std::fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths.len(), 1);
+            let original = std::fs::read(&paths[0]).unwrap();
+            let copy = paths[0].with_extension("recovery-copy");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let started = super::automation::edit_with_running_callback(
+                    h,
+                    Request::DeviceAutomationTake {
+                        request_id: 492,
+                        scope,
+                        action: Action::CopyFailedPlugin {
+                            destination: copy.clone(),
+                            max_events: 16,
+                        },
+                    },
+                );
+                if let Some(reason) = started.error {
+                    assert!(
+                        reason.contains("no failed device automation custody")
+                            || reason.contains("vst3 recovery custody is incomplete")
+                            || reason.contains("vst3 recovery requires a quiescent gesture"),
+                        "{reason}"
+                    );
+                    assert!(
+                        Instant::now() < deadline,
+                        "writer custody was not handed off: {reason}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    started.device_automation_take_complete.unwrap().progress,
+                    Progress::Pending
+                );
+                break;
+            }
+            let receipt = loop {
+                let event = super::automation::edit_with_running_callback(
+                    h,
+                    Request::DeviceAutomationTake {
+                        request_id: 493,
+                        scope,
+                        action: Action::PollFailedCopy,
+                    },
+                );
+                assert!(event.error.is_none(), "{:?}", event.error);
+                match event.device_automation_take_complete.unwrap().progress {
+                    Progress::Pending => assert!(Instant::now() < deadline),
+                    Progress::VerifiedCopy { path, receipt } => {
+                        assert_eq!(path, copy);
+                        use hex_session::service::PluginParameterObservation as Observation;
+                        use hex_storage::automation_draft::DraftTerminal;
+                        let originals = crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS.lock().unwrap().clone();
+                        let points = originals
+                            .iter()
+                            .filter(|event| matches!(event, Observation::Delivered(_)))
+                            .count();
+                        assert!(points > 0);
+                        assert_eq!(receipt.events(), points as u64);
+                        let restored = originals.iter().find_map(|event| match event {
+                            Observation::Restored(delivery) => Some(delivery.application.origin),
+                            _ => None,
+                        });
+                        assert_eq!(
+                            receipt.terminal(),
+                            restored.map_or(DraftTerminal::Interrupted, DraftTerminal::Finished)
+                        );
+                        break receipt;
+                    }
+                    other => panic!("unexpected recovery copy: {other:?}"),
+                }
+            };
+            assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+            assert_eq!(h.service.try_event().ok().and_then(|e| e.error), None);
+            let mut discovered = super::automation::edit_with_running_callback(
+                h,
+                Request::QueryFailedPluginAutomation { request_id: 493 },
+            );
+            assert!(discovered.error.is_none(), "{:?}", discovered.error);
+            let discovery = discovered.device_automation_take_complete.take().unwrap();
+            assert_eq!(discovery.request_id, 493);
+            assert_eq!(
+                discovery.progress,
+                Progress::FailedPluginCustody {
+                    scope: Box::new(scope),
+                    path: std::fs::canonicalize(&paths[0]).unwrap(),
+                }
+            );
+            if case != "session_writer_failure" {
+                use hex_storage::automation_draft::DraftTerminal;
+                assert!(
+                    matches!(receipt.terminal(), DraftTerminal::Finished(_)),
+                    "actual restoration is required for adoption: {:?}",
+                    receipt.terminal()
+                );
+                let copy_bytes = std::fs::read(&copy).unwrap();
+                let keep_then_apply = case == "session_writer_keep_apply";
+                if keep_then_apply {
+                    let kept = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 494,
+                            scope,
+                            action: Action::KeepFailedPluginCopy {
+                                path: copy.clone(),
+                                receipt,
+                                max_events: 16,
+                            },
+                        },
+                    );
+                    assert!(kept.error.is_none(), "{:?}", kept.error);
+                    assert_eq!(
+                        kept.device_automation_take_complete.unwrap().progress,
+                        Progress::CopyKept(copy.clone())
+                    );
+                    assert_eq!(kept.state.project.as_ref(), &before);
+                }
+                let adopt = |request_id| {
+                    if keep_then_apply {
+                        Request::RecoverDeviceAutomationTake {
+                            request_id,
+                            context: origin.context,
+                            target: scope.target.draft_target(),
+                            expected: scope.stamp,
+                            path: copy.clone(),
+                            identity: hex_session::service::AutomationRecoveryFileIdentity::Copy(
+                                receipt,
+                            ),
+                        }
+                    } else {
+                        Request::DeviceAutomationTake {
+                            request_id,
+                            scope,
+                            action: Action::AdoptFailedPluginCopy { max_events: 16 },
+                        }
+                    }
+                };
+                if case == "session_writer_source_lost" {
+                    h.audio.as_ref().unwrap().control.stop();
+                    h.render_plugin_block();
+                    let refused = super::automation::edit_with_running_callback(h, adopt(494));
+                    assert!(refused.error.is_some());
+                    assert_eq!(refused.state.project.as_ref(), &before);
+                    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                    assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                    let inspected = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 495,
+                            scope,
+                            action: Action::InspectFailedPluginCopy,
+                        },
+                    );
+                    assert!(
+                        matches!(inspected.device_automation_take_complete.unwrap().progress, Progress::VerifiedCopy { receipt: found, .. } if found == receipt)
+                    );
+                    return;
+                }
+                if case == "session_writer_refusal" {
+                    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+                    let refused = super::automation::edit_with_running_callback(h, adopt(494));
+                    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+                    assert!(refused.error.is_some());
+                    assert_eq!(refused.state.project.as_ref(), &before);
+                    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                    let inspected = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 495,
+                            scope,
+                            action: Action::InspectFailedPluginCopy,
+                        },
+                    );
+                    assert!(
+                        matches!(inspected.device_automation_take_complete.unwrap().progress, Progress::VerifiedCopy { receipt: found, .. } if found == receipt)
+                    );
+                }
+                let committed = super::automation::edit_with_running_callback(h, adopt(496));
+                assert!(committed.error.is_none(), "{:?}", committed.error);
+                assert_eq!(
+                    committed.device_automation_take_complete.unwrap().progress,
+                    Progress::Committed
+                );
+                assert_ne!(committed.state.project.as_ref(), &before);
+                let after = committed.state.project.clone();
+                assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                let mut cleared = super::automation::edit_with_running_callback(
+                    h,
+                    Request::QueryFailedPluginAutomation { request_id: 498 },
+                );
+                assert!(cleared.error.is_none(), "{:?}", cleared.error);
+                let cleared = cleared.device_automation_take_complete.take().unwrap();
+                assert_eq!(cleared.request_id, 498);
+                assert_eq!(cleared.progress, Progress::FailedPluginUnavailable);
+                let duplicate = super::automation::edit_with_running_callback(h, adopt(497));
+                assert!(duplicate.error.is_some());
+                assert_eq!(duplicate.state.project, after);
+                let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+                assert!(undone.error.is_none(), "{:?}", undone.error);
+                assert_eq!(undone.state.project.as_ref(), &before);
+                let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+                assert!(redone.error.is_none(), "{:?}", redone.error);
+                assert_eq!(redone.state.project, after);
+                if keep_then_apply {
+                    let path = directory.join("applied.hex");
+                    let saved = super::automation::edit_with_running_callback(
+                        h,
+                        Request::SaveNew(path.clone()),
+                    );
+                    assert!(saved.error.is_none(), "{:?}", saved.error);
+                    assert_eq!(hex_storage::load(path).unwrap(), *after);
+                }
+            }
+            return;
+        }
+        #[cfg(not(feature = "recording-fault-test-support"))]
+        assert!(
+            !case.starts_with("session_writer_"),
+            "fixture feature is required"
+        );
         if case == "session_empty" {
             client.finish_plugin(origin.initial).unwrap();
             let empty = send(h, &mut client, true);
@@ -2242,7 +2813,7 @@ fn verify_instrument_takeover(
             assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
             assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
         }
-        if case == "session_stop" {
+        if stop_recording {
             let before_stop = h
                 .audio
                 .as_ref()
@@ -2467,7 +3038,7 @@ fn verify_instrument_takeover(
             assert!((peak(h) - baseline).abs() < 0.0001);
             return;
         }
-        let final_value = if case == "session_record_changed" {
+        let final_value = if case == "session_record_changed" || first_lane {
             PluginParameterValue::new(0.75).unwrap()
         } else {
             origin.initial
@@ -2496,23 +3067,30 @@ fn verify_instrument_takeover(
             assert_eq!(paths.len(), 1);
             let path = paths[0].clone();
             let original = std::fs::read(&path).unwrap();
-            // Durable header data are sufficient; the caller does not retain or
-            // reconstruct the old SDK worker binding to request recovery.
-            let (target, expected) = {
-                let reader = hex_storage::automation_draft::DraftReader::open(
-                    &path,
-                    hex_storage::automation_draft::DraftReadLimits {
-                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
-                    },
-                )
-                .unwrap();
-                (reader.target(), reader.provenance())
+            let inspected = super::automation::edit_with_running_callback(
+                h,
+                Request::InspectSealedAutomationRecovery {
+                    request_id: 400,
+                    path: path.clone(),
+                },
+            );
+            assert!(inspected.error.is_none(), "{:?}", inspected.error);
+            assert_eq!(inspected.state.project.as_ref(), &before);
+            assert_eq!(inspected.state.revision, origin.context.editor_revision);
+            let DeviceAutomationTakeProgress::SealedFile(selected) =
+                inspected.device_automation_take_complete.unwrap().progress
+            else {
+                panic!("publication refusal did not leave a selectable finished take");
             };
+            assert_eq!(selected.path, path);
             let request = |request_id| Request::RecoverDeviceAutomationTake {
                 request_id,
-                target,
-                expected,
-                path: path.clone(),
+                target: selected.target,
+                expected: selected.provenance,
+                path: selected.path.clone(),
+                identity: hex_session::service::AutomationRecoveryFileIdentity::Sealed(
+                    selected.identity,
+                ),
                 context: origin.context,
             };
             h.service.submit(request(401)).unwrap();
@@ -2577,7 +3155,16 @@ fn verify_instrument_takeover(
         let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
         let lane = result.automation_target(target).unwrap();
         assert!(lane.is_reading());
-        assert_eq!(lane.points, prior.automation_target(target).unwrap().points);
+        if first_lane {
+            assert!(prior.automation_target(target).is_none());
+            assert!(
+                lane.points.is_empty(),
+                "a first take must not invent a base knot"
+            );
+        } else {
+            assert_eq!(lane.points, prior.automation_target(target).unwrap().points);
+        }
+        assert_eq!(lane.vst3_class, Some(class));
         assert_eq!(lane.touch.len(), 1);
         assert_eq!(
             lane.touch[0]
@@ -2593,7 +3180,7 @@ fn verify_instrument_takeover(
         );
         assert!(
             (peak(h) - baseline).abs() < 0.0001,
-            "release resumes reading with the held MIDI gate"
+            "release resumes the prior value with the held MIDI gate"
         );
         let undone = super::automation::edit_with_running_callback(h, Request::Undo);
         assert!(undone.error.is_none(), "{:?}", undone.error);
@@ -2673,73 +3260,11 @@ fn verify_instrument_takeover(
             .unwrap();
         let reference_path = files.0.join("independent-delivered-steps.hex");
         hex_storage::save_new(&reference_path, reference.project()).unwrap();
-        let blocks = usize::try_from(end_frame.unwrap() / 256 + 8).unwrap();
+        let end_frame = end_frame.expect("a committed take has an actual restored output witness");
+        let blocks = usize::try_from(end_frame / 256 + 8).unwrap();
         assert!(blocks < 512, "bounded signed replay fixture");
-        let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
-            let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-            h.service.submit(Request::Open(path.to_owned())).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let opened = loop {
-                h.pump();
-                h.render_worker_step();
-                if let Ok(event) = h.service.try_event() {
-                    assert!(event.error.is_none(), "{:?}", event.error);
-                    if event.project_replaced {
-                        break event;
-                    }
-                }
-                assert!(Instant::now() < deadline, "replay open did not complete");
-            };
-            let first_applied =
-                super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
-            let foreign_ready = |h: &ResidentHarness| {
-                h.submitted_observation().unwrap().foreign_processor(
-                    device.value(),
-                    before.device(device).unwrap().state().type_id(),
-                ) == Some(true)
-            };
-            if !foreign_ready(h) {
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while !foreign_ready(h) {
-                    h.pump();
-                    h.render_worker_step();
-                    if let Ok(event) = h.service.try_event() {
-                        assert!(event.error.is_none(), "{:?}", event.error);
-                    }
-                    assert!(
-                        Instant::now() < deadline,
-                        "restored SDK source unavailable: {:?}; {:?}",
-                        h.unavailable,
-                        h.plugin_progress.lock().unwrap()
-                    );
-                }
-                h.applied(first_applied);
-            }
-            assert_eq!(
-                opened.state.project.as_ref(),
-                &hex_storage::load(path).unwrap()
-            );
-            assert_eq!(
-                h.submitted_observation().unwrap().foreign_processor(
-                    device.value(),
-                    before.device(device).unwrap().state().type_id()
-                ),
-                Some(true)
-            );
-            h.audio
-                .as_mut()
-                .unwrap()
-                .control
-                .command(PlaybackCommand::Play)
-                .unwrap();
-            let mut pcm = Vec::with_capacity(blocks * 256);
-            for _ in 0..blocks {
-                pcm.extend(render_completed_block(h));
-            }
-            pcm
-        };
-        let expected = replay(h, &reference_path);
-        let actual = replay(h, &path);
+        let expected = replay_reopened_instrument(h, &reference_path, device, blocks);
+        let actual = replay_reopened_instrument(h, &path, device, blocks);
         assert_eq!(expected.len(), actual.len());
         let error = expected
             .iter()
@@ -2883,6 +3408,42 @@ fn verify_instrument_takeover(
         1.0,
         "the other authored DSP value must not replace its canonical base"
     );
+    if idle_unlaned {
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let source = h.submitted.unwrap().1.context;
+        let mut serial = 17;
+        let after = super::installed_edits::query(h, device, Some(0), &mut serial);
+        assert_eq!(after.query.context, source);
+        assert_eq!(
+            after
+                .rows
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == 7)
+                .unwrap()
+                .normalized,
+            0.5
+        );
+        assert!(original_binding.is_some());
+        assert_ne!(
+            after.source, original_binding,
+            "fixture must replace the worker"
+        );
+        assert!(after.source.is_some());
+        let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project.as_ref(), &before);
+        h.applied(applied);
+        return;
+    }
     if playing {
         assert!(
             (peak(h) - baseline * 2.0).abs() < 0.0001,

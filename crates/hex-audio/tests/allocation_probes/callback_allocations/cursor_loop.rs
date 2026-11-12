@@ -114,23 +114,39 @@ fn event_fade_pcm_publication_seek_stop_and_shutdown_allocate_and_free_nothing_i
     control
         .command(PlaybackCommand::PlayFrom(12))
         .map_err(|_| "fade seek failed")?;
+    // The queued seek first fades the old position over 128 frames. Only
+    // eight source frames remain there; their clip fade and transport fade
+    // both apply before the target begins its independent fade-in.
+    let mut transition = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut transition);
+    for (index, frame) in transition.iter().enumerate() {
+        let clip_gain = match index {
+            0..=4 => 1.0,
+            5 => 2.0 / 3.0,
+            6 => 1.0 / 3.0,
+            _ => 0.0,
+        };
+        let gain = clip_gain * (127 - index) as f32 / 128.0;
+        assert_eq!(*frame, [gain; 2], "old frame {index}");
+    }
     measured_block(&mut callback, &mut output);
-    assert_eq!(
-        output,
-        [
-            [1.0; 2],
-            [2.0 / 3.0; 2],
-            [1.0 / 3.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2]
-        ]
-    );
+    for (index, frame) in output.iter().enumerate() {
+        let clip_gain = match index {
+            0 => 1.0,
+            1 => 2.0 / 3.0,
+            2 => 1.0 / 3.0,
+            _ => 0.0,
+        };
+        assert_eq!(
+            *frame,
+            [clip_gain * (index + 1) as f32 / 128.0; 2],
+            "target frame {index}"
+        );
+    }
     control
         .command(PlaybackCommand::Stop)
         .map_err(|_| "fade stop failed")?;
+    measured_block(&mut callback, &mut transition);
     measured_block(&mut callback, &mut output);
     assert_eq!(output, [[0.0; 2]; 8]);
     control.request_shutdown();
@@ -211,8 +227,9 @@ fn selection_crossfade_publication_seek_stop_and_retirement_are_callback_allocat
             (at + 1) as f32 / 16.0
         } else if at < 10 {
             let progress = (at - 6) as f64 / 3.0;
-            (at + 1) as f32 / 16.0 * (1.0 - progress) as f32
-                + (at - 2) as f32 / 16.0 * progress as f32
+            let incoming_gain = progress * progress * (3.0 - 2.0 * progress);
+            (at + 1) as f32 / 16.0 * (1.0 - incoming_gain) as f32
+                + (at - 2) as f32 / 16.0 * incoming_gain as f32
         } else {
             (at - 2) as f32 / 16.0
         };

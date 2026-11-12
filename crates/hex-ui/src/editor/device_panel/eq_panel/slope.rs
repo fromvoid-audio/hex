@@ -4,7 +4,7 @@ pub(super) fn advance(value: u32, delta: i32) -> u32 {
     (i64::from(value) + i64::from(delta)).clamp(0, 3) as u32
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 

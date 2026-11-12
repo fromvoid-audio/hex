@@ -19,14 +19,10 @@ impl Plugins {
             if check_cancel(cancellation).is_err() {
                 return ForeignProgramFrontier::Unknown;
             }
-            match control.try_native_source_received_program_on_control(binding) {
-                Ok(Some(received)) if received.binding == binding => {
-                    return received.program.map_or(
-                        ForeignProgramFrontier::Empty,
-                        ForeignProgramFrontier::Program,
-                    );
-                }
-                Ok(None) | Err("native preparation is busy" | "native source is busy")
+            match control.try_native_source_program_frontier_on_control(binding) {
+                Ok(frontier) if frontier != ForeignProgramFrontier::Unknown => return frontier,
+                Ok(ForeignProgramFrontier::Unknown)
+                | Err("native preparation is busy" | "native source is busy")
                     if std::time::Instant::now() < deadline =>
                 {
                     poll_control(control);
@@ -76,8 +72,12 @@ impl Plugins {
                         })
                 };
                 if superseded {
-                    self.sources[index].accepted = false;
-                    self.sources[index].retiring = true;
+                    let old = &mut self.sources[index];
+                    old.accepted = false;
+                    old.retiring = true;
+                    // The old helper still owns the actual editor. Ask it to
+                    // detach before Root is asked to retire this source.
+                    old.editor_transfer = old.editor_open;
                 }
             }
         }
@@ -94,13 +94,13 @@ impl Plugins {
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<Binding>, String> {
         let owner = destination.owner();
-        let retain_instrument = destination.is_instrument()
+        let mut retain_instrument = destination.is_instrument()
             && (self.restore.is_some()
                 || control
                     .status
                     .playing
                     .load(std::sync::atomic::Ordering::Acquire));
-        let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+        let authored = requested_selection(input, device)?;
         let mut changed_state = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
@@ -114,8 +114,15 @@ impl Plugins {
                 control.plugin_callback_quantum_on_control(),
             );
             previous.visit_plugin_devices(|old_owner, old_device, old| {
-                changed_state |= old_device == device
-                    && (old_owner.owner() != owner || !old.processing_eq(state));
+                if old_device == device {
+                    let same_processor = old_owner.owner() == owner && old.processing_eq(state);
+                    changed_state |= !same_processor;
+                    // Play can reach the callback after preparation has begun.
+                    // A lane-only edit can keep the existing instrument in either
+                    // transport state because its processor configuration is equal.
+                    retain_instrument |=
+                        destination.is_instrument() && old_owner == destination && same_processor;
+                }
                 Ok(())
             })?;
         }
@@ -125,10 +132,7 @@ impl Plugins {
             if source.project_generation != input.context().project_generation
                 || source.owner != owner
                 || source.device != device
-                || !match &source.authored {
-                    Some(armed) => armed.covers(authored.as_ref()),
-                    None => authored.is_none(),
-                }
+                || !source_covers_selection(source.authored.as_ref(), authored.as_ref())
                 || source.retiring
                 || (input.preparing_edit()
                     && !source.accepted
@@ -183,7 +187,7 @@ impl Plugins {
         {
             return Ok(());
         }
-        let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+        let authored = requested_selection(input, device)?;
         let identity = Hosting::saved_identity_on_control(state)?;
         // Resolve code only: provider identity is class + binary hashes, not a
         // path or another device's instance (hex-plugin-state owns that contract).
@@ -283,6 +287,7 @@ impl Plugins {
             queued: false,
             observes_latency: false,
             editor_open: false,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
@@ -312,7 +317,7 @@ impl Plugins {
                 control,
                 source,
             )?;
-            self.poll(output, desired.map(|source| source.context()));
+            self.poll(output, desired);
             if let Some(ready) = ready {
                 return if ready.processing_eq(state) {
                     Ok(())
@@ -402,6 +407,26 @@ pub(super) fn original_state(
     }
 }
 
+pub(super) fn requested_selection(
+    input: &ResidentEffectPreparation<'_>,
+    device: u64,
+) -> Result<Option<AuthoredSelection>, String> {
+    AuthoredSelection::from_targets_and_dense(
+        input.authored_plugin_targets(device),
+        input.modulated_plugin_target(device)?,
+    )
+    .map_err(str::to_owned)
+}
+
+fn source_covers_selection(
+    armed: Option<&AuthoredSelection>,
+    requested: Option<&AuthoredSelection>,
+) -> bool {
+    armed.and_then(AuthoredSelection::dense_parameter)
+        == requested.and_then(AuthoredSelection::dense_parameter)
+        && armed.map_or(requested.is_none(), |armed| armed.covers(requested))
+}
+
 /// Root's complete validated target set, including live metadata extensions.
 pub(super) fn armed_selection(
     control: &mut PublicationControl,
@@ -410,10 +435,11 @@ pub(super) fn armed_selection(
 ) -> Result<Option<AuthoredSelection>, String> {
     let metadata = source_metadata(control, binding, cancellation)?;
     let class = metadata.selection().cid;
-    AuthoredSelection::from_targets(
+    AuthoredSelection::from_targets_and_dense(
         metadata
             .authored_base_values()
             .map(|(id, _)| (id, Some(class))),
+        metadata.dense_parameter().map(|id| (id, class)),
     )
     .map_err(str::to_owned)
 }
@@ -466,5 +492,36 @@ pub(super) fn canonical_bases(
             return result;
         }
         poll_control(control);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_reuse_requires_the_same_dense_reservation_independently_of_sparse_coverage() {
+        let class = [1; 16];
+        let ordinary = AuthoredSelection::from_targets([(0, Some(class)), (7, Some(class))])
+            .unwrap()
+            .unwrap();
+        let selected =
+            AuthoredSelection::from_targets_and_dense([(7, Some(class))], Some((0, class)))
+                .unwrap()
+                .unwrap();
+        let same_dense = AuthoredSelection::from_targets_and_dense([], Some((0, class)))
+            .unwrap()
+            .unwrap();
+        let changed_dense = AuthoredSelection::from_targets_and_dense([], Some((7, class)))
+            .unwrap()
+            .unwrap();
+        assert!(source_covers_selection(Some(&ordinary), None));
+        assert!(!source_covers_selection(Some(&ordinary), Some(&same_dense)));
+        assert!(!source_covers_selection(Some(&selected), None));
+        assert!(source_covers_selection(Some(&selected), Some(&same_dense)));
+        assert!(!source_covers_selection(
+            Some(&selected),
+            Some(&changed_dense)
+        ));
     }
 }

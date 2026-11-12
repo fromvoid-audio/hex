@@ -219,6 +219,8 @@ impl EditorView {
         actual_playing
             || self.play_intent.desired_playing(actual_playing)
             || self.edit_pending()
+            || self.automation_close_preflight.waiting()
+            || self.automation_take_recovery.polling()
             || super::device_panel::vst3_parameters::query_pending(self)
             || self.transport_pending()
     }
@@ -234,7 +236,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

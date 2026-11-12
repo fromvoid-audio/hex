@@ -37,7 +37,7 @@ impl Entry {
 
 impl EditorView {
     /// Keep the touched VST3 target as the main Arrangement preview. This is
-    /// transient view state; it never writes authored automation points.
+    /// transient view state; it never changes view mode or authored automation points.
     pub(in crate::editor) fn remember_touched_vst3(
         &mut self,
         owner: Owner,
@@ -57,7 +57,6 @@ impl EditorView {
                     || old.target.device != device
                     || !matches!(old.target.kind, DeviceAutomationTarget::Vst3 { parameter } if parameter == row.id)
             });
-            self.automation_view.enabled = true;
             if self.mode == crate::editor::EditorMode::Arrangement {
                 self.track_scroll.remeasure();
             }
@@ -80,7 +79,6 @@ impl EditorView {
         } else {
             lanes.known.push(entry);
         }
-        self.automation_view.enabled = true;
         if self.mode == crate::editor::EditorMode::Arrangement {
             self.track_scroll.remeasure();
         }
@@ -150,7 +148,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_lattice_contract::NativeDeviceState;
@@ -177,6 +175,7 @@ mod tests {
             automation_class: Some([2; 16]),
             page_first: 0,
             metadata_revision: 7,
+            editor_sequence: 0,
         };
         for instrument in [false, true] {
             let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

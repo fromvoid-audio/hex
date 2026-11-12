@@ -1,7 +1,22 @@
 //! Bounded sealed device takes become one canonical history command. Storage
 //! owns projection/clock semantics; Project owns the atomic splice and history.
 //! This control-side conversion grants no SDK, live-source or callback authority.
-use super::{CompletedAutomationTake, MAX_SPANS_PER_STEP, SpanReadState};
+use super::{
+    CompletedAutomationTake, MAX_SPANS_PER_STEP, ProjectedAutomationSpan, SpanReadProgress,
+    SpanReadState,
+};
+use hex_project::{
+    BeatTime, DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+};
+use hex_storage::automation_draft::{
+    CompletedGroupedDraft, DraftProvenance, DraftTarget, MAX_APPEND_EVENTS,
+};
+use std::{ops::Range, sync::Arc};
+
+// Bound one-shot control preparation separately from output density.
+// Larger files retain their original reader/recovery custody.
+const MAX_ADOPTION_EVENTS: u64 = 65_536;
 
 /// Prepare one exact canonical splice from a validated, sealed device take.
 /// The edit is committed later through the ordinary prepare-before-commit
@@ -12,16 +27,6 @@ pub fn prepare_device_take_adoption_on_control(
     take: &mut CompletedAutomationTake,
     expected: hex_storage::automation_draft::DraftProvenance,
 ) -> Result<hex_project::Command, String> {
-    use hex_project::{
-        BeatTime, DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
-        MAX_DEVICE_AUTOMATION_POINTS_PER_LANE, MAX_DEVICE_AUTOMATION_TOUCH_SPANS,
-    };
-    use hex_storage::automation_draft::{DraftTarget, MAX_APPEND_EVENTS};
-    use std::sync::Arc;
-
-    // Bound the one-shot control preparation separately from output density.
-    // Large takes remain available to the original streamed source path.
-    const MAX_ADOPTION_EVENTS: u64 = 65_536;
     let DraftTarget::Device { device, target } = take.target() else {
         return Err("sealed take does not target a device".into());
     };
@@ -50,12 +55,74 @@ pub fn prepare_device_take_adoption_on_control(
     }
 
     let map = Arc::new(project.tempo_map().clone());
-    let [first, second] = take.projected_coverage(&map)?;
+    let range = adoption_extent(take.projected_coverage(&map)?)?;
+    let mut cursor = take.begin_projected_spans_on_control(Arc::clone(&map), range)?;
+    let spans = collect_spans(&map, |output| {
+        take.read_projected_spans_on_control(&map, &mut cursor, MAX_APPEND_EVENTS, output)
+    })?;
+    Ok(hex_project::Command::SpliceDeviceAutomationTouch {
+        vst3_class,
+        device,
+        target,
+        spans,
+    })
+}
+
+/// Prepare all members from one complete grouped file before requesting
+/// publication. Project receives a single command; no member can commit alone.
+pub fn prepare_group_take_adoption_on_control(
+    session: &crate::Session,
+    document_base: Option<&std::path::Path>,
+    take: &mut CompletedGroupedDraft,
+    expected: DraftProvenance,
+) -> Result<hex_project::Command, String> {
+    if take.provenance() != expected {
+        return Err("sealed group provenance differs from the completed gesture".into());
+    }
+    let project = super::super::recovery::project_for_save(session, document_base)?;
+    if take.source() != &project {
+        return Err(
+            "sealed group source differs from the current project; retain the draft".into(),
+        );
+    }
+    let target = take.target();
+    let class = DraftTarget::Vst3Group(target)
+        .vst3_class_in_source(&project)
+        .map_err(|error| error.to_string())?
+        .ok_or("sealed group has no vst3 class")?;
+    let map = Arc::new(project.tempo_map().clone());
+    let members = take.projected_lanes_on_control(MAX_ADOPTION_EVENTS)?;
+    let mut lanes = Vec::new();
+    lanes
+        .try_reserve_exact(members.len())
+        .map_err(|_| "could not reserve grouped adoption lanes")?;
+    for mut member in members {
+        let range = adoption_extent(member.projected_coverage(&map)?)?;
+        let mut cursor = member.begin_projected_spans_on_control(Arc::clone(&map), range)?;
+        let spans = collect_spans(&map, |output| {
+            member.read_projected_spans_on_control(&map, &mut cursor, MAX_APPEND_EVENTS, output)
+        })?;
+        lanes.push((member.parameter(), spans));
+    }
+    Ok(hex_project::Command::SpliceVst3AutomationTouchGroup {
+        device: target.device(),
+        class,
+        lanes,
+    })
+}
+
+fn adoption_extent([first, second]: [Option<Range<u64>>; 2]) -> Result<Range<u64>, String> {
     let first = first
         .or_else(|| second.clone())
         .ok_or("sealed take has no covered time")?;
     let end = second.map_or(first.end, |range| range.end.max(first.end));
-    let mut cursor = take.begin_projected_spans_on_control(Arc::clone(&map), first.start..end)?;
+    Ok(first.start..end)
+}
+
+fn collect_spans(
+    map: &hex_project::TempoMap,
+    mut read: impl FnMut(&mut [Option<ProjectedAutomationSpan>]) -> Result<SpanReadProgress, String>,
+) -> Result<Vec<DeviceAutomationTouchSpan>, String> {
     let mut output = [None; MAX_SPANS_PER_STEP];
     let mut spans = Vec::<DeviceAutomationTouchSpan>::new();
     let mut steps = 0usize;
@@ -69,12 +136,7 @@ pub fn prepare_device_take_adoption_on_control(
         Ok(beat)
     };
     loop {
-        let progress = take.read_projected_spans_on_control(
-            &map,
-            &mut cursor,
-            MAX_APPEND_EVENTS,
-            &mut output,
-        )?;
+        let progress = read(&mut output)?;
         for row in output.iter().take(progress.written).flatten() {
             let start = beat_at(row.start)?;
             let end = beat_at(row.end)?;
@@ -99,7 +161,7 @@ pub fn prepare_device_take_adoption_on_control(
             let span = spans.last_mut().ok_or("missing prepared touch span")?;
             span.end = end;
             if span.steps.last().is_none_or(|step| step.value != row.value) {
-                if steps == MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
+                if steps == MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE {
                     return Err(
                         "sealed take exceeds the touch point budget; retain the draft".into(),
                     );
@@ -121,12 +183,7 @@ pub fn prepare_device_take_adoption_on_control(
     if spans.is_empty() {
         return Err("sealed take has no covered time".into());
     }
-    Ok(hex_project::Command::SpliceDeviceAutomationTouch {
-        vst3_class,
-        device,
-        target,
-        spans,
-    })
+    Ok(spans)
 }
 
 #[cfg(test)]

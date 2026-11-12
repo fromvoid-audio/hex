@@ -39,6 +39,8 @@ fn project_with_saturators_bypassed(
     snapshot.next_id = return_device + 1;
 
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: track_device,
@@ -55,6 +57,8 @@ fn project_with_saturators_bypassed(
         gain: 0.75,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: return_device,

@@ -498,7 +498,11 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     let lane = visual.debug_bounds("main-track-lane").unwrap();
     assert_eq!(ruler.size.width, lane.size.width);
-    assert!(lane.size.width >= px(super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH));
+    assert!(
+        lane.size.width >= px(super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH),
+        "lane={lane:?}, main={main:?}, ruler={ruler:?}, content={:?}",
+        visual.debug_bounds("arrangement-content")
+    );
     assert!(main.size.width >= px(TRACK_HEADER_WIDTH));
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
@@ -1097,8 +1101,8 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
         view.selected_track = Some(tracks[7]);
         view.track_selection.replace(&tracks[6..8]);
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: tracks[6],
-            end_track: tracks[7],
+            anchor_track: Some(tracks[6]),
+            end_track: Some(tracks[7]),
             anchor_frame: 48_000,
             end_frame: 96_000,
         });

@@ -1050,6 +1050,7 @@ fn same_shell(
         aliases,
         native_sources,
         arrangement_sections,
+        arrangement_locators,
         tuning,
         routing,
         audio_feeds,
@@ -1114,6 +1115,7 @@ fn same_shell(
     if !aliases_match
         || native_sources != &b.native_sources
         || arrangement_sections != &b.arrangement_sections
+        || arrangement_locators != &b.arrangement_locators
         || tuning != &b.tuning
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds

@@ -175,7 +175,9 @@ fn resident_new_saved_open_and_journal_recovery_replay_exact_original_with_atomi
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -396,7 +398,9 @@ fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_exten
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -532,7 +536,9 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -601,7 +607,9 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
         project_generation: 2,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1097,7 +1105,9 @@ fn ordinary_file_seek_case(sampler: bool, section: bool) {
             project_generation: 0,
             revision: added.state.revision,
             track,
-            empty_sampler: None,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
             path: sampler_files.wav(48_000, 8192),
             cancel: Arc::new(AtomicBool::new(false)),
         });
@@ -1121,12 +1131,22 @@ fn ordinary_file_seek_case(sampler: bool, section: bool) {
         }));
         (initial, _) = h.applied(initial);
     }
-    let imported = h.run(Request::ImportToNewTrack {
+    let mut imported = h.run(Request::ImportToNewTrack {
         path: path.clone(),
         before_track: None,
         start: 0,
     });
-    let (before_seek, _) = h.applied(initial);
+    (initial, _) = h.applied(initial);
+    if section {
+        imported = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 129,
+            end: 513,
+            enabled: true,
+        }));
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        (initial, _) = h.applied(initial);
+    }
+    let before_seek = initial;
     assert!(
         imported
             .state
@@ -1230,7 +1250,9 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: sampler_files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

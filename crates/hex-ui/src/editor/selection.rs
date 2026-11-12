@@ -55,6 +55,10 @@ impl TrackSelection {
         self.ids.contains(&track)
     }
 
+    pub(super) fn only_or_empty(&self, track: TrackId) -> bool {
+        self.ids.is_empty() || (self.ids.len() == 1 && self.ids.contains(&track))
+    }
+
     pub(super) fn ordered(&self, project: &Project) -> Vec<TrackId> {
         project
             .tracks()
@@ -332,7 +336,7 @@ pub(super) fn neighbor(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor};

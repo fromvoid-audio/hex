@@ -217,16 +217,27 @@ fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
         )
         .is_err()
     );
-    assert!(
-        PreparedParameterAutomation::new(
-            vec![ParameterAutomationLane {
-                points: 0..2,
-                ..lane.clone()
-            }],
-            vec![point, point]
-        )
-        .is_err()
-    );
+    for points in [
+        vec![point, point, point],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 1,
+                ..point
+            },
+            point,
+        ],
+    ] {
+        assert!(
+            PreparedParameterAutomation::new(
+                vec![ParameterAutomationLane {
+                    points: 0..points.len(),
+                    ..lane.clone()
+                }],
+                points,
+            )
+            .is_err()
+        );
+    }
     assert!(
         PreparedParameterAutomation::new(vec![lane.clone(); MAX_AUTOMATION_LANES + 1], vec![point])
             .is_err()
@@ -293,6 +304,7 @@ fn both_actual_runtime_twins_must_confirm_factory_parameter_support() {
         }
     }
     let prepared = PreparedRuntimeInstance {
+        modulation: None,
         automation: program(descriptor(), semantics()),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -462,6 +474,7 @@ fn host_lanes_are_not_provider_ids_and_use_content_clock_and_exact_physical_stor
 fn host_chain(bypassed: bool) -> crate::NativeRuntimeChain {
     use crate::*;
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
         automation: host_program(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -1108,6 +1121,7 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
     let mut armed = PreparedParameterAutomation::default();
     armed.arm_provider_input(descriptor(), semantics()).unwrap();
     let make = |device_id, automation, fail_loud| PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner: ProcessorChainOwner::Main,
@@ -1381,6 +1395,7 @@ fn external_groups_apply_multiple_targets_and_processors_once() {
             automation.prepare_external_host(target).unwrap();
         }
         PreparedRuntimeInstance {
+            modulation: None,
             automation,
             meter: std::sync::Arc::new(crate::DeviceMeter::default()),
             owner,
@@ -1531,4 +1546,127 @@ fn foreign_history_updates_preserve_native_and_host_envelopes_and_reject_key_ali
     );
     assert_eq!(current.foreign().unwrap().storage_bytes(), storage);
     assert!(current.has_host_target(DeviceAutomationTarget::HostOutputGain));
+}
+
+#[test]
+fn host_gain_reads_preserve_unrounded_frames_and_existing_linear_precedence() {
+    let target = DeviceAutomationTarget::HostOutputGain;
+    let left = 0.123_456_7_f32;
+    let right = 0.872_346_9_f32;
+    let touch = 0.654_321_1_f32;
+    let external_value = 0.456_789_1_f32;
+    let mut prepared = PreparedParameterAutomation::new_with_host_and_touch(
+        Vec::new(),
+        vec![HostAutomationLane {
+            target,
+            points: 0..2,
+        }],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 2,
+                normalized: left,
+                step: false,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 6,
+                normalized: right,
+                step: true,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 5,
+                normalized: touch,
+                step: true,
+            },
+        ],
+        vec![ParameterAutomationTouchSpan {
+            target,
+            start_beat: 5,
+            end_beat: 6,
+            points: 2..3,
+        }],
+    )
+    .unwrap();
+    prepared.arm_host_gain_input(target).unwrap();
+
+    let samples = [
+        None,
+        Some(NormalizedAutomationValue::new(external_value).unwrap()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
+    let external = External {
+        targets: &[target],
+        values: &samples,
+    };
+    let block = prepared
+        .block_with_external(Some(&Clock), samples.len(), None, &external)
+        .unwrap();
+    let expected = |block: &ParameterAutomationBlock<'_>, frame, normalized: f32| {
+        assert_eq!(
+            block.host_gain_normalized_at(target, frame).unwrap().get(),
+            normalized
+        );
+        let millidb = (84_000.0 * f64::from(normalized) - 60_000.0).round();
+        let db = millidb as f32 / 1000.0;
+        assert_eq!(
+            block.host_gain_at(target, frame),
+            Some(10.0_f32.powf(db / 20.0))
+        );
+    };
+    expected(&block, 0, left);
+    expected(&block, 1, external_value);
+    expected(
+        &block,
+        4,
+        ((f64::from(left) + f64::from(right)) * 0.5) as f32,
+    );
+    expected(&block, 5, touch);
+    expected(&block, 6, right);
+    assert_eq!(block.host_gain_normalized_at(target, 7), None);
+    assert_eq!(
+        prepared.block(None, 1).host_gain_normalized_at(target, 0),
+        None
+    );
+
+    let held = HostGain::from_millidb(-4_321).unwrap();
+    let with_held = prepared
+        .block_with_external(
+            Some(&Clock),
+            samples.len(),
+            Some(NativeTransientValue::HostOutputGain(held)),
+            &external,
+        )
+        .unwrap();
+    expected(&with_held, 1, held.normalized());
+    expected(&with_held, 5, held.normalized());
+}
+
+#[test]
+fn native_automation_ramps_to_the_incoming_point_and_jumps_at_the_shared_beat() {
+    let descriptor = descriptor();
+    let program = PreparedParameterAutomation::new(
+        vec![ParameterAutomationLane {
+            descriptor,
+            semantics: semantics(),
+            points: 0..4,
+        }],
+        [(0, 0.0), (20, 1.0), (20, 0.25), (40, 0.75)]
+            .map(|(beat_raw, normalized)| ParameterAutomationPoint {
+                beat_raw,
+                normalized,
+                step: false,
+            })
+            .to_vec(),
+    )
+    .unwrap();
+    let block = program.block(Some(&Clock), 42);
+    for (offset, expected) in [(10, 5.0), (20, 3.0), (30, 5.0)] {
+        assert_eq!(
+            block.value_at(descriptor.id, offset),
+            Some(ParameterValue::Float(expected))
+        );
+    }
 }

@@ -245,8 +245,13 @@ impl EditorView {
             let context_page = page.clone();
             let header = div()
                 .id(("console-return-header", id.value()))
+                .on_drop(super::sampler_load::track_drop_listener(
+                    cx,
+                    None,
+                    hex_project::InstrumentLoadPlacement::First,
+                ))
                 .debug_selector(move || format!("console-return-header-{}", id.value()))
-                .h(px(34.0))
+                .h(px(super::session_grid::TRACK_HEADER_HEIGHT))
                 .flex_shrink_0()
                 .px(px(6.0))
                 .flex()
@@ -378,7 +383,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{Command, Editor};
@@ -497,6 +502,10 @@ mod ui_tests {
                 "the previous click must advance the Return bank"
             );
             let main = visual.debug_bounds("console-main-header").unwrap();
+            assert_eq!(
+                main.size.height,
+                px(super::super::session_grid::TRACK_HEADER_HEIGHT)
+            );
             let main_mixer = visual.debug_bounds("console-main-mixer-column").unwrap();
             let bank = visual.debug_bounds("console-return-bank").unwrap();
             let tail = visual.debug_bounds("console-column-header-tail").unwrap();

@@ -384,6 +384,7 @@ pub(super) mod tests {
             .collect()
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn mixed_rows_preserve_order_extent_resize_and_surviving_scroll_anchor() {
         let mut parameters = parameters();

@@ -1,12 +1,14 @@
 //! Control-side connection from one keyed SDK gesture to the existing device
-//! take Lane. The Lane retains disk custody; this owner retains at most one
-//! original observation under backpressure, at most two later SDK observations
-//! during failed-input release, and one terminal request while disk
-//! completion is pending. No callback, UI clock or second writer lives here.
+//! take Lane. The Lane retains disk custody; this owner retains one pending
+//! original observation and one terminal request while disk completion is
+//! pending. Failed input retains at most two later host knob observations,
+//! or the separately bounded original editor prefix. No callback, UI clock
+//! or second writer lives here.
 use super::*;
 use crate::device_gesture::{PluginGesturePreparation, PreparedGesture};
 use native_automation_recording::{Lane, Step};
 use std::time::{Duration, Instant};
+mod editor;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -30,6 +32,11 @@ struct Active {
     released: bool,
     ended: bool,
     failed_observations: [Option<PluginParameterObservation>; 2],
+    // The original plug-in editor owns a deeper Main receipt queue than a
+    // Hex knob. Allocate this tail only after its exact cancellation is owed.
+    failed_editor: Option<Vec<PluginParameterObservation>>,
+    editor_request: Option<u64>,
+    editor_start_error: Option<String>,
     interrupted: bool,
     sealing: bool,
     outcome: Option<Result<Step, String>>,
@@ -37,6 +44,14 @@ struct Active {
 }
 
 impl Active {
+    fn has_failed_tail(&self) -> bool {
+        self.failed_observations.iter().any(Option::is_some)
+            || self
+                .failed_editor
+                .as_ref()
+                .is_some_and(|tail| !tail.is_empty())
+    }
+
     fn terminal_error(&self, error: SessionError) -> SessionError {
         if self.source_lost {
             SessionError::PluginSourceLost(error.to_string())
@@ -76,6 +91,225 @@ pub(super) fn start_failed_copy(
     lane.copy_failed_plugin(scope, destination, max_events, observations)
 }
 
+pub(super) fn generic_sealed_recovery_idle(state: &State, lane: &Lane) -> bool {
+    !state.pending() && state.failed.is_none() && !lane.busy() && !lane.has_failed_custody()
+}
+
+/// Discover original custody without changing the writer, SDK receipts or files.
+pub(super) fn failed_custody(
+    state: &State,
+    lane: &Lane,
+    gesture_active: bool,
+) -> Result<DeviceAutomationTakeProgress, String> {
+    use DeviceAutomationTakeProgress as Progress;
+    let Some((scope, path)) = lane.failed_plugin_identity() else {
+        return Ok(
+            if state.failed.is_some()
+                || state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.outcome.as_ref().is_some_and(Result::is_err))
+            {
+                Progress::FailedPluginPending
+            } else {
+                Progress::FailedPluginUnavailable
+            },
+        );
+    };
+    if gesture_active
+        || state.active.is_some()
+        || state.terminal.is_some()
+        || state.failed.as_ref().is_some_and(|failed| !failed.ended)
+    {
+        return Ok(Progress::FailedPluginPending);
+    }
+    let source = lane.failed_source(scope)?;
+    if state
+        .failed
+        .as_ref()
+        .is_some_and(|failed| failed.path != path)
+    {
+        return Err("vst3 recovery draft identities disagree".into());
+    }
+    state.failed_observations(scope, source)?;
+    Ok(Progress::FailedPluginCustody {
+        scope: Box::new(scope),
+        path: path.to_owned(),
+    })
+}
+
+pub(super) fn inspect_failed_copy(
+    state: &State,
+    lane: &Lane,
+    scope: DeviceAutomationTakeScope,
+    gesture_active: bool,
+) -> Result<Step, String> {
+    if gesture_active {
+        return Err("vst3 recovery requires a quiescent gesture".into());
+    }
+    let source = lane.failed_source(scope)?;
+    let observations = state.failed_observations(scope, source)?;
+    lane.inspect_failed_plugin_copy(scope, &observations)
+}
+
+/// Explicit keep-copy resolution changes no canonical project or history. The
+/// completed, aborted or interrupted outcome remains exactly as captured; no
+/// restoration clock is synthesized. Both durable files remain on disk.
+pub(super) fn keep_failed_copy(
+    state: &mut State,
+    lane: &mut Lane,
+    scope: DeviceAutomationTakeScope,
+    selected: &Path,
+    selected_receipt: automation_draft::RecoveryCopyReceipt,
+    max_events: u64,
+    gesture_active: bool,
+) -> Result<Step, String> {
+    if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
+        return Err("device automation recovery exceeds the event budget".into());
+    }
+    let DeviceAutomationTakeProgress::FailedPluginCustody { scope: found, .. } =
+        failed_custody(state, lane, gesture_active)?
+    else {
+        return Err("no failed device automation custody is available for resolution".into());
+    };
+    if *found != scope {
+        return Err("device automation recovery belongs to another take".into());
+    }
+    let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) =
+        inspect_failed_copy(state, lane, scope, gesture_active)?
+    else {
+        return Err("verified VST3 recovery copy is unavailable".into());
+    };
+    if selected != path.as_path() || selected_receipt != receipt {
+        return Err("verified vst3 recovery copy changed".into());
+    }
+    let outcome = Arc::clone(lane.failed_outcome(scope)?);
+    receipt.with_verified_on_control(
+        &path,
+        hex_storage::automation_draft::DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        },
+        max_events,
+        || release_failed_copy(state, lane, scope, &path, receipt, &outcome),
+    )?;
+    Ok(Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)))
+}
+
+pub(super) struct RecoveryAdoption {
+    scope: DeviceAutomationTakeScope,
+    pub(super) path: PathBuf,
+    receipt: automation_draft::RecoveryCopyReceipt,
+    outcome: Arc<automation_draft::DraftWorkerOutcome>,
+}
+
+pub(super) fn prepare_failed_adoption(
+    state: &State,
+    lane: &Lane,
+    session: &Session,
+    document_base: Option<&Path>,
+    scope: DeviceAutomationTakeScope,
+    live_source: Option<DeviceAutomationSource>,
+    max_events: u64,
+) -> Result<(Box<hex_project::Command>, RecoveryAdoption), String> {
+    if Some(lane.failed_source(scope)?) != live_source {
+        return Err("vst3 recovery live source changed".into());
+    }
+    let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) =
+        inspect_failed_copy(state, lane, scope, false)?
+    else {
+        return Err("verified VST3 recovery copy is unavailable".into());
+    };
+    let command = native_automation_recording::prepare_verified_vst3_recovery_on_control(
+        session,
+        document_base,
+        scope,
+        &path,
+        receipt,
+        max_events,
+    )?;
+    let outcome = Arc::clone(lane.failed_outcome(scope)?);
+    Ok((
+        Box::new(command),
+        RecoveryAdoption {
+            scope,
+            path,
+            receipt,
+            outcome,
+        },
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RecoveryPublication {
+    Refused,
+    Unchanged,
+    Committed,
+}
+
+pub(super) fn classify_recovery_publication(
+    error: bool,
+    previous_revision: u64,
+    current_revision: u64,
+    callback_confirmed: bool,
+) -> RecoveryPublication {
+    if error {
+        RecoveryPublication::Refused
+    } else if previous_revision == current_revision {
+        RecoveryPublication::Unchanged
+    } else if callback_confirmed && previous_revision.checked_add(1) == Some(current_revision) {
+        RecoveryPublication::Committed
+    } else {
+        RecoveryPublication::Refused
+    }
+}
+
+/// Retain both owners unless the confirmed resident transaction changed history.
+pub(super) fn finish_failed_adoption(
+    state: &mut State,
+    lane: &mut Lane,
+    adoption: &RecoveryAdoption,
+    publication: RecoveryPublication,
+) -> Result<(), String> {
+    match publication {
+        RecoveryPublication::Refused | RecoveryPublication::Unchanged => Ok(()),
+        RecoveryPublication::Committed => release_failed_adoption(state, lane, adoption),
+    }
+}
+
+/// Called only after the resident transaction confirmed application and committed.
+pub(super) fn release_failed_adoption(
+    state: &mut State,
+    lane: &mut Lane,
+    adoption: &RecoveryAdoption,
+) -> Result<(), String> {
+    release_failed_copy(
+        state,
+        lane,
+        adoption.scope,
+        &adoption.path,
+        adoption.receipt,
+        &adoption.outcome,
+    )
+}
+
+fn release_failed_copy(
+    state: &mut State,
+    lane: &mut Lane,
+    scope: DeviceAutomationTakeScope,
+    path: &Path,
+    receipt: automation_draft::RecoveryCopyReceipt,
+    outcome: &Arc<automation_draft::DraftWorkerOutcome>,
+) -> Result<(), String> {
+    let source = lane.failed_source(scope)?;
+    if !Arc::ptr_eq(lane.failed_outcome(scope)?, outcome) {
+        return Err("original VST3 recovery custody changed".into());
+    }
+    let observations = state.failed_observations(scope, source)?;
+    lane.release_failed_plugin_copy(scope, path, receipt, &observations)?;
+    state.failed = None;
+    Ok(())
+}
+
 fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     match operation {
         PluginGesturePreparation::Begin { snapshot, .. }
@@ -85,6 +319,9 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    pub(super) fn close_safe(&self) -> bool {
+        self.active.is_none() && self.failed.is_none() && self.terminal.is_none()
+    }
     /// Copy the bounded receipts only after the original gesture is quiescent.
     /// The owner retains every original; an empty result never clears custody.
     pub(super) fn failed_observations(
@@ -101,12 +338,24 @@ impl State {
         if !failed.ended || failed.scope != scope || failed.source != source {
             return Err("vst3 recovery custody is incomplete or belongs to another source".into());
         }
-        let mut observations = Vec::with_capacity(3);
+        let mut observations = Vec::with_capacity(
+            failed
+                .failed_editor
+                .as_ref()
+                .map_or(3, |tail| tail.len() + 1),
+        );
         if let Some(pending) = failed.pending.as_ref() {
             let DeviceAutomationTakeAction::PluginObservation(observation) = pending else {
                 return Err("vst3 recovery has an unsupported pending action".into());
             };
             observations.push(**observation);
+        }
+        if let Some(tail) = &failed.failed_editor {
+            if failed.failed_observations.iter().any(Option::is_some) {
+                return Err("vst3 recovery has two observation owners".into());
+            }
+            observations.extend(tail.iter().copied());
+            return Ok(observations);
         }
         let mut gap = false;
         for observation in failed.failed_observations {
@@ -134,7 +383,9 @@ impl State {
         self.active
             .as_ref()
             .zip(snapshot)
-            .is_some_and(|(active, snapshot)| active.key == snapshot.key)
+            .is_some_and(|(active, snapshot)| {
+                active.editor_request.is_none() && active.key == snapshot.key
+            })
     }
     pub(super) fn actor_began(&mut self) {
         self.retired = None;
@@ -331,41 +582,7 @@ impl Preparation<'_> {
                 let observation = sink
                     .take_plugin_parameter_observation()
                     .ok_or("vst3 recording did not provide its original ready observation")?;
-                let scope = DeviceAutomationTakeScope::from_plugin_ready(context, &observation)?;
-                let PluginParameterObservation::Ready { key, source, .. } = observation else {
-                    return Err("vst3 recording did not begin with ready".into());
-                };
-                if key != snapshot.key {
-                    return Err("vst3 recording ready belongs to another gesture".into());
-                }
-                let directory = match self.recovery.and_then(Path::parent) {
-                    Some(directory) => directory.join("automation-drafts"),
-                    None => automation_draft::default_directory()?,
-                };
-                self.lane
-                    .begin(session, self.document_base, scope, source, &directory)?;
-                self.state.active = Some(Active {
-                    key,
-                    scope,
-                    source,
-                    has_points: false,
-                    path: self
-                        .lane
-                        .path()
-                        .ok_or("admitted automation draft has no recovery identity")?
-                        .to_owned(),
-                    source_lost: false,
-                    pending: None,
-                    released: false,
-                    ended: false,
-                    failed_observations: [None; 2],
-                    interrupted: false,
-                    sealing: false,
-                    outcome: None,
-                    deadline: None,
-                });
-                self.state.retired = None;
-                Ok::<_, String>(())
+                self.admit_ready(session, context, snapshot.key, observation)
             })();
             if let Err(reason) = admitted {
                 // No SDK point has been sent. Release the admitted empty hold
@@ -432,6 +649,59 @@ impl Preparation<'_> {
         }
     }
 
+    fn admit_ready(
+        &mut self,
+        session: &Session,
+        context: hex_engine::AudioSourceContext,
+        expected_key: crate::device_gesture::GestureKey,
+        observation: PluginParameterObservation,
+    ) -> Result<(), String> {
+        let scope = DeviceAutomationTakeScope::from_plugin_ready(context, &observation)?;
+        let (key, source) = match observation {
+            PluginParameterObservation::Ready { key, source, .. } => (key, source),
+            PluginParameterObservation::Grouped(group)
+                if group.receipt == Vst3EditorGroupReceipt::Ready =>
+            {
+                (group.key, group.source)
+            }
+            _ => return Err("vst3 recording did not begin with ready".into()),
+        };
+        if key != expected_key {
+            return Err("vst3 recording ready belongs to another gesture".into());
+        }
+        let directory = match self.recovery.and_then(Path::parent) {
+            Some(directory) => directory.join("automation-drafts"),
+            None => automation_draft::default_directory()?,
+        };
+        self.lane
+            .begin(session, self.document_base, scope, source, &directory)?;
+        self.state.active = Some(Active {
+            key,
+            scope,
+            source,
+            has_points: false,
+            path: self
+                .lane
+                .path()
+                .ok_or("admitted automation draft has no recovery identity")?
+                .to_owned(),
+            source_lost: false,
+            pending: None,
+            released: false,
+            ended: false,
+            failed_observations: [None; 2],
+            failed_editor: None,
+            editor_request: None,
+            editor_start_error: None,
+            interrupted: false,
+            sealing: false,
+            outcome: None,
+            deadline: None,
+        });
+        self.state.retired = None;
+        Ok(())
+    }
+
     pub(super) fn drive(
         &mut self,
         session: &Session,
@@ -463,7 +733,12 @@ impl Preparation<'_> {
                 break;
             };
             active.has_points |= matches!(action, DeviceAutomationTakeAction::PluginObservation(observation)
-                if matches!(**observation, PluginParameterObservation::Delivered(_)));
+            if matches!(**observation,
+                PluginParameterObservation::Delivered(_)
+                | PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+                    receipt: Vst3EditorGroupReceipt::Applied(_), ..
+                })
+            ));
             match self
                 .lane
                 .receive(session, self.document_base, context, active.scope, action)
@@ -471,22 +746,31 @@ impl Preparation<'_> {
                 Ok(Step::Progress(DeviceAutomationTakeProgress::Backpressured)) => break,
                 Ok(Step::Progress(progress)) => {
                     if let DeviceAutomationTakeAction::PluginObservation(observation) = action {
-                        active.released |=
-                            matches!(**observation, PluginParameterObservation::Restored(_));
-                        active.interrupted |= matches!(
-                            **observation,
-                            PluginParameterObservation::Interrupted { .. }
-                        );
-                        active.source_lost |= matches!(
-                            **observation,
-                            PluginParameterObservation::Interrupted { .. }
-                        );
-                        active.ended |= matches!(
+                        let restored = matches!(
                             **observation,
                             PluginParameterObservation::Restored(_)
-                                | PluginParameterObservation::Unchanged { .. }
-                                | PluginParameterObservation::Interrupted { .. }
+                                | PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+                                    receipt: Vst3EditorGroupReceipt::Finished(_),
+                                    ..
+                                })
                         );
+                        let interrupted = matches!(
+                            **observation,
+                            PluginParameterObservation::Interrupted { .. }
+                                | PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+                                    receipt: Vst3EditorGroupReceipt::Interrupted,
+                                    ..
+                                })
+                        );
+                        active.released |= restored;
+                        active.interrupted |= interrupted;
+                        active.source_lost |= interrupted;
+                        active.ended |= restored
+                            || interrupted
+                            || matches!(
+                                **observation,
+                                PluginParameterObservation::Unchanged { .. }
+                            );
                     }
                     active.sealing |= progress == DeviceAutomationTakeProgress::Sealing;
                     active.pending = None;
@@ -558,17 +842,20 @@ impl Preparation<'_> {
     fn retire_detached(&mut self, context: hex_engine::AudioSourceContext) {
         if self.state.active.as_ref().is_some_and(|active| {
             self.state.terminal.is_none()
-                && (active.source_lost || context != active.scope.context())
+                && active.editor_request.is_none()
+                && (active.source_lost
+                    || context != active.scope.context()
+                    || active.failed_editor.is_some())
                 && active.ended
                 && active.outcome.is_some()
         }) && let Some(active) = self.state.active.take()
         {
-            self.state.retired = Some(active.key);
+            self.state.retired = active.failed_editor.is_none().then_some(active.key);
             // The original terminal is still owed an exact acknowledgement.
             // Keep it until its synthetic attempt, even after source custody ends.
             if active.pending.is_some()
                 || matches!(active.outcome, Some(Err(_)))
-                || active.failed_observations.iter().any(Option::is_some)
+                || active.has_failed_tail()
                 || self.lane.busy()
             {
                 self.state.failed = Some(active);
@@ -586,68 +873,117 @@ impl Preparation<'_> {
         let Some(active) = self.state.active.as_mut() else {
             return;
         };
-        for slot in &mut active.failed_observations {
-            if slot.is_some() {
+        if active.ended {
+            return;
+        }
+        if active.failed_editor.is_some() || sink.cancel_plugin_editor_recording(active.key) {
+            let tail = active.failed_editor.get_or_insert_with(Vec::new);
+            // Account the pending Session action separately. Reserve before
+            // popping, and let the adapter retain backpressure on refusal.
+            let remaining = (MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS - 1).saturating_sub(tail.len());
+            let credit = remaining.min(4);
+            if tail.try_reserve_exact(remaining).is_err() {
+                return;
+            }
+            for _ in 0..credit {
+                let Some(observation) = sink.take_plugin_parameter_observation() else {
+                    break;
+                };
+                Self::observe_failed(active, observation);
+                if let Some(tail) = active.failed_editor.as_mut() {
+                    tail.push(observation);
+                }
+                if active.ended {
+                    break;
+                }
+            }
+            return;
+        }
+        for index in 0..active.failed_observations.len() {
+            if active.failed_observations[index].is_some() {
                 continue;
             }
             let Some(observation) = sink.take_plugin_parameter_observation() else {
                 break;
             };
-            let matches = |point: PluginParameterDelivery| {
-                DeviceAutomationTakeScope::from_plugin_ready(
-                    active.scope.context(),
-                    &PluginParameterObservation::Ready {
-                        key: point.key,
-                        context: point.context,
-                        target: point.target,
-                        source: point.source,
-                    },
-                )
-                .is_ok_and(|scope| scope == active.scope)
-                    && point.source.section_loop == active.source.section_loop
-                    && point.application.binding == point.target.binding
-                    && point.application.parameter == point.target.parameter
-                    && point.delivery_performance_frame
-                        >= point.application.origin.performance_frame
-                    && point.application.value == automation_draft::Vst3ApplicationValue::Restored
-            };
-            match observation {
-                PluginParameterObservation::Restored(point) if matches(point) => {
-                    active.released = true;
-                    active.ended = true;
+            Self::observe_failed(active, observation);
+            active.failed_observations[index] = Some(observation);
+            if active.ended {
+                break;
+            }
+        }
+    }
+
+    fn observe_failed(active: &mut Active, observation: PluginParameterObservation) {
+        let matches = |point: PluginParameterDelivery| {
+            DeviceAutomationTakeScope::from_plugin_ready(
+                active.scope.context(),
+                &PluginParameterObservation::Ready {
+                    key: point.key,
+                    context: point.context,
+                    target: point.target,
+                    source: point.source,
+                },
+            )
+            .is_ok_and(|scope| scope == active.scope)
+                && point.source.section_loop == active.source.section_loop
+                && point.application.binding == point.target.binding
+                && point.application.parameter == point.target.parameter
+                && point.delivery_performance_frame >= point.application.origin.performance_frame
+                && point.application.value == automation_draft::Vst3ApplicationValue::Restored
+        };
+        match observation {
+            PluginParameterObservation::Grouped(group)
+                if group.matches(active.scope, active.source) =>
+            {
+                match group.receipt {
+                    Vst3EditorGroupReceipt::Ready => {}
+                    Vst3EditorGroupReceipt::Applied(_) => active.has_points = true,
+                    Vst3EditorGroupReceipt::Finished(_) => {
+                        active.released = true;
+                        active.ended = true;
+                    }
+                    Vst3EditorGroupReceipt::Interrupted => {
+                        active.interrupted = true;
+                        active.source_lost = true;
+                        active.ended = true;
+                    }
                 }
-                PluginParameterObservation::Unchanged { key }
-                    if key == active.key && !active.has_points =>
-                {
-                    active.ended = true;
-                }
-                PluginParameterObservation::Interrupted {
+            }
+            PluginParameterObservation::Restored(point) if matches(point) => {
+                active.released = true;
+                active.ended = true;
+            }
+            PluginParameterObservation::Unchanged { key }
+                if key == active.key && !active.has_points =>
+            {
+                active.ended = true;
+            }
+            PluginParameterObservation::Interrupted {
+                key,
+                context,
+                target,
+                source,
+                ..
+            } if DeviceAutomationTakeScope::from_plugin_ready(
+                active.scope.context(),
+                &PluginParameterObservation::Ready {
                     key,
                     context,
                     target,
                     source,
-                    ..
-                } if DeviceAutomationTakeScope::from_plugin_ready(
-                    active.scope.context(),
-                    &PluginParameterObservation::Ready {
-                        key,
-                        context,
-                        target,
-                        source,
-                    },
-                )
-                .is_ok_and(|scope| scope == active.scope) =>
-                {
-                    active.interrupted = true;
-                    active.source_lost = true;
-                    active.ended = true;
-                }
-                PluginParameterObservation::Delivered(_) => {
-                    active.has_points = true;
-                }
-                _ => {}
+                },
+            )
+            .is_ok_and(|scope| scope == active.scope) =>
+            {
+                active.interrupted = true;
+                active.source_lost = true;
+                active.ended = true;
             }
-            *slot = Some(observation);
+            PluginParameterObservation::Delivered(_) => {
+                active.has_points = true;
+            }
+            _ => {}
         }
     }
 
@@ -751,10 +1087,7 @@ impl Preparation<'_> {
             );
         }
         let result = result.map_err(|error| active.terminal_error(error));
-        if active.pending.is_some()
-            || self.lane.busy()
-            || active.failed_observations.iter().any(Option::is_some)
-        {
+        if active.pending.is_some() || self.lane.busy() || active.has_failed_tail() {
             self.state.failed = Some(active);
         }
         result

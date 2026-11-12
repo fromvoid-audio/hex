@@ -15,6 +15,7 @@ fn oscillator_ratio_and_fixed_hz_sliders_edit_independently_with_canonical_histo
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     for operator in 0..4 {
         let ratio = 1 + operator * 3;
         let fixed = 62 + operator * 3;

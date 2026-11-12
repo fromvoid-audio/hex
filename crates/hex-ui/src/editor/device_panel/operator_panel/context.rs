@@ -92,6 +92,7 @@ pub(in crate::editor::device_panel) fn select_oscillator(
         } else {
             OperatorPage::Envelope
         },
+        ..current
     };
     if target != current {
         view.device_panel
@@ -116,6 +117,11 @@ pub(super) fn select_page(
         .operator_pages
         .entry(owner.device)
         .or_default();
+    let page = if page == OperatorPage::Oscillator && state.page == OperatorPage::Oscillator {
+        OperatorPage::Envelope
+    } else {
+        page
+    };
     if state.page != page {
         state.page = page;
         cx.notify();
@@ -197,4 +203,23 @@ pub(super) fn section_listener(
             }
         });
     }
+}
+
+/// View-only expansion. Never hide an unfinished invalid native parameter edit.
+pub(in crate::editor::device_panel) fn toggle_options(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    owner: Owner,
+) -> bool {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
+        return false;
+    }
+    let state = view
+        .device_panel
+        .operator_pages
+        .entry(owner.device)
+        .or_default();
+    state.options_open = !state.options_open;
+    cx.notify();
+    true
 }

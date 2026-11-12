@@ -25,18 +25,7 @@ pub struct Fixture {
 pub fn project(
     tracks: usize,
     notes_per_track: usize,
-    feedback: f32,
-    level: f32,
-) -> Result<Fixture, Box<dyn Error>> {
-    project_with_operators(tracks, notes_per_track, feedback, level, false)
-}
-
-pub fn project_with_operators(
-    tracks: usize,
-    notes_per_track: usize,
-    feedback: f32,
-    level: f32,
-    all_operators: bool,
+    state: &NativeDeviceState,
 ) -> Result<Fixture, Box<dyn Error>> {
     if tracks == 0
         || tracks > hex_project::MAX_TRACKS
@@ -48,7 +37,6 @@ pub fn project_with_operators(
     let authored_notes = tracks
         .checked_mul(notes_per_track)
         .ok_or("operator fixture note count overflow")?;
-    let state = state_with_operators(feedback, level, all_operators)?;
     let mut next_id = 1_u64;
     let mut track_snapshots = Vec::with_capacity(tracks);
     let mut instrument_ids = Vec::with_capacity(tracks);
@@ -94,6 +82,8 @@ pub fn project_with_operators(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
@@ -129,6 +119,7 @@ pub fn project_with_operators(
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -168,12 +159,10 @@ pub fn project_with_operators(
 /// contributing MIDI to its single receiver. Notes use the independent fixture's
 /// pitches, simultaneous onset and 120-beat hold so steady measurements cover
 /// the same sustained workload. Larger workloads exceed the source voice bound.
-pub fn shared_source_project_with_operators(
+pub fn shared_source_project(
     tracks: usize,
     notes_per_track: usize,
-    feedback: f32,
-    level: f32,
-    all_operators: bool,
+    state: NativeDeviceState,
 ) -> Result<Fixture, Box<dyn Error>> {
     if tracks == 0 || tracks > hex_project::MAX_TRACKS || notes_per_track == 0 {
         return Err("tracks and notes must be nonzero and within project limits".into());
@@ -188,7 +177,6 @@ pub fn shared_source_project_with_operators(
         )
         .into());
     }
-    let state = state_with_operators(feedback, level, all_operators)?;
     let mut editor = Editor::new(Project::new(SAMPLE_RATE)?, 1)?;
     let Created::NativeSource(source) = editor.execute(Command::CreateNativeSource {
         name: "shared operator".into(),
@@ -260,8 +248,13 @@ pub fn shared_source_project_with_operators(
     })
 }
 
-pub fn state(feedback: f32, level: f32) -> Result<NativeDeviceState, Box<dyn Error>> {
-    let state = OPERATOR_METADATA.default_state()?;
+/// Set the workload's voice, feedback and level values on the caller's route.
+pub fn state_with_operators(
+    state: NativeDeviceState,
+    feedback: f32,
+    level: f32,
+    all_operators: bool,
+) -> Result<NativeDeviceState, Box<dyn Error>> {
     let state = OPERATOR_METADATA.patch_parameter(
         &state,
         parameter::GLOBAL_MODE,
@@ -274,20 +267,11 @@ pub fn state(feedback: f32, level: f32) -> Result<NativeDeviceState, Box<dyn Err
         parameter::feedback(1),
         ParameterValue::Float(feedback),
     )?;
-    Ok(OPERATOR_METADATA.patch_parameter(
+    let mut state = OPERATOR_METADATA.patch_parameter(
         &state,
         parameter::oscillator_level(1),
         ParameterValue::Float(level),
-    )?)
-}
-
-/// Optional four-active-carrier control workload; defaults remain unchanged.
-pub fn state_with_operators(
-    feedback: f32,
-    level: f32,
-    all_operators: bool,
-) -> Result<NativeDeviceState, Box<dyn Error>> {
-    let mut state = state(feedback, level)?;
+    )?;
     if all_operators {
         for operator in 2..=4 {
             state = OPERATOR_METADATA.patch_parameter(

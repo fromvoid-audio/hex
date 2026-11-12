@@ -47,10 +47,32 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     }
     // Amount -> filter toggle, then its selector and two dials -> routing.
     // Focus paints without a pointer event or forced draw.
-    for (title, tabs) in [("filter", 1), ("global", 4)] {
-        for _ in 0..tabs {
+    for (title, parameter) in [
+        ("filter", Some(20001)),
+        ("feedback", Some(81)),
+        ("global", None),
+    ] {
+        let target = editor.read_with(cx, |view, app| match parameter {
+            Some(parameter) => match &view.device_panel.controls[&ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+            }] {
+                ParameterControl::Bool { entity, .. } => entity.focus_handle(app),
+                ParameterControl::Float { entity, .. } => entity.focus_handle(app),
+                _ => panic!("working control focus"),
+            },
+            None => view.device_panel.operator_previews[&device]
+                .routing_focus
+                .clone()
+                .unwrap(),
+        });
+        for _ in 0..16 {
             visual.simulate_keystrokes("tab");
+            if focused(&mut visual) == target {
+                break;
+            }
         }
+        assert_eq!(focused(&mut visual), target, "{title} is reachable by tab");
         assert_eq!(
             visual.rendered_background(row(title)),
             background(device_layout_style().surface),
@@ -229,24 +251,39 @@ impl Drop for OperatorTabBrowser {
 }
 
 #[gpui::test]
-fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits(
+fn operator_tab_browser_bootstrap_with_saved_places_excludes_unrelated_cached_media(
     cx: &mut TestAppContext,
 ) {
-    operator_tab_cycle(cx, false);
+    let (service, state, track, _) = operator_navigation_tests::operator_fixture();
+    let browser = OperatorTabBrowser::new(true);
+    let (handle, editor) = browser.window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.browser
+                .places
+                .contains(&browser.root.join("saved-place")),
+            "configured saved-place root remains available"
+        );
+    });
+    // The exact catalog comparison proves saved media is included and the stale
+    // unrelated cache entry stays excluded, without repeating the focus walk.
+    browser.assert_bounded(&editor, cx);
 }
 
 #[gpui::test]
-fn operator_tab_cycle_with_saved_places_excludes_unrelated_cached_media(cx: &mut TestAppContext) {
-    operator_tab_cycle(cx, true);
-}
-
-fn operator_tab_cycle(cx: &mut TestAppContext, saved_places: bool) {
+fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits(
+    cx: &mut TestAppContext,
+) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
     let original = state.project.clone();
     let revision = state.revision;
-    let browser = OperatorTabBrowser::new(saved_places);
+    let browser = OperatorTabBrowser::new(false);
     let (handle, editor) = browser.window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());

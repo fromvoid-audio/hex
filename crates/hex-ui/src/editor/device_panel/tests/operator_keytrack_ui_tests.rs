@@ -125,10 +125,11 @@ fn primary_keytrack_rails_fit_rows_and_commit_independent_canonical_history(
             )))
             .is_some()
     );
+    open_operator_options(&mut visual, device);
     for parameter in [62, 63, 64] {
         let cell = visual
             .debug_bounds(selector(format!(
-                "operator-field-{}-{parameter}",
+                "operator-options-panel-{}",
                 device.value()
             )))
             .unwrap();

@@ -503,18 +503,16 @@ pub(super) fn analytic_import_sources_match(
     Ok(true)
 }
 
-/// Compute the revision-wide source changes once before reconciling owners.
-/// Track IDs are unique, and an absent old source cannot be disconnected.
+/// Find removed, unbound or newly disabled source contributors before
+/// reconciling owners. Track IDs are unique; an absent old source cannot
+/// contribute a voice to release.
 pub(super) fn disconnected_contributors(
     previous: &PreparedRevision,
     candidate: &PreparedRevision,
 ) -> [Option<TrackId>; MAX_TRACKS] {
     std::array::from_fn(|old| {
-        let track = previous
-            .arrangement()
-            .tracks()
-            .get(old)?
-            .canonical_track_id()?;
+        let old_track = previous.arrangement().tracks().get(old)?;
+        let track = old_track.canonical_track_id()?;
         let source = previous.source_routing().source(old)?;
         let new = candidate
             .arrangement()
@@ -524,6 +522,8 @@ pub(super) fn disconnected_contributors(
         new.is_none_or(|index| {
             candidate.source_routing().source(index) != Some(source)
                 || candidate.source_routing().receiver_index(index).is_none()
+                || (old_track.source_input_enabled()
+                    && !candidate.arrangement().tracks()[index].source_input_enabled())
         })
         .then_some(track)
     })
@@ -600,6 +600,7 @@ pub(super) fn plan_release_audio_owner(
     previous: &SessionPlayback,
     candidate: &PreparedRevision,
     analytic_owner_matches: &[bool; MAX_TRACKS],
+    source_effects_continue: bool,
 ) -> Result<ReleaseAudioPlan, SessionPlaybackError> {
     let Some(mut origin) = release.source_origin else {
         return Ok(ReleaseAudioPlan {
@@ -646,9 +647,13 @@ pub(super) fn plan_release_audio_owner(
                 &candidate.arrangement().tracks()[receiver],
             )
         });
-    let follows = previous
-        .revision
-        .retained_source_configuration_matches(candidate, origin.source)
+    // A compatible source effect stage has already verified the explicit
+    // prepared generator. Keep its held voices on the new source input;
+    // a dry detached copy would bypass the transferred effect history.
+    let follows = source_effects_continue
+        || previous
+            .revision
+            .retained_source_configuration_matches(candidate, origin.source)
         || continued_context
         || inline_tuning;
     if follows && let Some(receiver) = current_receiver {
@@ -2688,6 +2693,81 @@ mod tests {
                 let mut candidate = playback(&f);
                 candidate.try_inherit_state_from(&mut old).unwrap();
                 check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
+            }
+        });
+    }
+    #[test]
+    fn shared_contributor_mute_and_solo_preserve_receiver_voice() {
+        on_control(|| {
+            for solo in [false, true] {
+                let mut f = fixture();
+                let mut old = started(&f);
+                f.editor
+                    .execute(if solo {
+                        Command::ToggleSolo {
+                            track: f.receiver,
+                            exclusive: true,
+                        }
+                    } else {
+                        Command::Mute {
+                            track: f.contributor,
+                            muted: true,
+                        }
+                    })
+                    .unwrap();
+                let mut candidate = playback(&f);
+                candidate.try_inherit_state_from(&mut old).unwrap();
+                // One held voice continues unchanged while the other gets its
+                // existing sampler note-off envelope, before shared summing.
+                check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
+                candidate.render(&mut [[0.0; 2]; 128]).unwrap();
+                check_pcm(&mut candidate, 154, 8, 0.25);
+                assert!(f.editor.undo());
+                let mut undone = playback(&f);
+                undone.try_inherit_state_from(&mut candidate).unwrap();
+                let mut output = [[0.0; 2]; 8];
+                undone.render(&mut output).unwrap();
+                for (index, frame) in output.iter().enumerate() {
+                    let reference = PCM[(162 + index) % 4][0];
+                    if reference != 0.0 {
+                        let gain = frame[0] / reference;
+                        assert!((0.25..=0.5).contains(&gain), "solo={solo}, gain={gain}");
+                    }
+                }
+            }
+        });
+    }
+    #[test]
+    fn muting_shared_contributor_releases_its_live_key() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut candidate, _) = live_playback(&f, &input);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let mut output = [[0.0; 2]; 160];
+            for chunk in output.chunks_mut(7) {
+                candidate.render(chunk).unwrap();
+            }
+            for (index, frame) in output.iter().enumerate().skip(128) {
+                for channel in 0..2 {
+                    assert!(
+                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs() < 0.000_002,
+                        "index={index} frame={frame:?}"
+                    );
+                }
             }
         });
     }

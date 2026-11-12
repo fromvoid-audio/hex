@@ -5,6 +5,45 @@ use shared_sources::SharedSourceHandoff;
 
 /// Retained-path creation/removal needs the stopped bounce fence and a fresh
 /// graph. Do not let an ordinary handoff preserve voices or tails across it.
+/// Compare the actual prepared receiver. Pure analytic providers need not
+/// retain the mutable revision descriptor; a contributor may not own one.
+fn prepared_source_generator_matches(
+    previous: &PreparedRevision,
+    candidate: &PreparedRevision,
+    source: hex_project::SourceId,
+) -> bool {
+    fn receiver(
+        revision: &PreparedRevision,
+        source: hex_project::SourceId,
+    ) -> Option<&crate::Track> {
+        revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .find(|track| track.source_id() == Some(source) && track.receives_source_audio())
+    }
+    previous.arrangement().shared_contexts().tuning_identity()
+        == candidate.arrangement().shared_contexts().tuning_identity()
+        && receiver(previous, source)
+            .zip(receiver(candidate, source))
+            .is_some_and(|(old, new)| {
+                old.instrument_id.is_some()
+                    && old.instrument_id == new.instrument_id
+                    && old.instrument_bypassed == new.instrument_bypassed
+                    && old.foreign_instrument.is_none()
+                    && new.foreign_instrument.is_none()
+                    && old
+                        .instrument_state
+                        .as_ref()
+                        .zip(new.instrument_state.as_ref())
+                        .is_some_and(|(old, new)| {
+                            old.asset_references().is_empty()
+                                && new.asset_references().is_empty()
+                                && old.processing_eq_on_callback(new)
+                        })
+            })
+}
+
 fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> bool {
     let retained = |revision: &PreparedRevision, index: usize| {
         revision.source_routing().source(index).is_some()
@@ -34,6 +73,23 @@ fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> 
             })
     };
     matches(old, new) && matches(new, old)
+}
+
+fn appended_foreign_effect<'a>(
+    new: &'a [hex_lattice::PreparedRuntimeInstance],
+    old: &[hex_lattice::PreparedRuntimeInstance],
+) -> Option<&'a hex_lattice::PreparedRuntimeInstance> {
+    let (appended, prefix) = new.split_last()?;
+    (prefix.len() == old.len()
+        && matches!(
+            appended.definition,
+            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+        )
+        && prefix
+            .iter()
+            .zip(old)
+            .all(|(new, old)| new.device_id == old.device_id))
+    .then_some(appended)
 }
 
 /// One physical foreign endpoint cannot process both current input and an old
@@ -384,7 +440,8 @@ impl SessionPlayback {
     /// cursor through the reset handoff. Voices and tails reset and gate-active
     /// notes are chased on the next played block; the transport is never
     /// stopped and no note-off is lost. A changed tempo map or loop relocates
-    /// to the musically equivalent frame while playing.
+    /// to the musically equivalent frame while playing. Source-owned effects
+    /// need an exact continuation and cannot fall back to a restart.
     pub(super) fn inherit_state_planned(
         &mut self,
         previous: &mut Self,
@@ -393,6 +450,41 @@ impl SessionPlayback {
         live: bool,
         fenced_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        let source_effect_handoff =
+            !self.source_effects.is_empty() || !previous.source_effects.is_empty();
+        let source_transfer = if source_effect_handoff {
+            let incompatible = SessionPlaybackError::Arrangement(
+                "source effect handoff requires the same prepared source configuration",
+            );
+            if groups.is_some()
+                || fenced_restart
+                || (live && self.live_restart)
+                || self.revision.arrangement().tempo_map
+                    != previous.revision.arrangement().tempo_map
+            {
+                return Err(incompatible);
+            }
+            // A new stage starts empty. A stopped transport can retire a
+            // superseded stage only after its committed history is quiet.
+            Some(
+                self.source_effects
+                    .plan_continuation(
+                        &previous.source_effects,
+                        live,
+                        live && !previous.playing && !previous.monitor_source_releases,
+                        |source| {
+                            prepared_source_generator_matches(
+                                &previous.revision,
+                                &self.revision,
+                                source,
+                            )
+                        },
+                    )
+                    .ok_or(incompatible)?,
+            )
+        } else {
+            None
+        };
         if !(retained_path_roles_match(&previous.revision, &self.revision)
             || fenced_restart && live && self.live_restart && self.candidate_admission_open)
         {
@@ -404,9 +496,15 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
         if live && self.live_restart && self.candidate_admission_open {
-            return self.inherit_state_planned_once(previous, None, demand, true);
+            return self.inherit_state_planned_once(previous, None, demand, true, None);
         }
-        match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
+        let result = match self.inherit_state_planned_once(
+            previous,
+            groups,
+            demand.as_deref_mut(),
+            false,
+            source_transfer.as_ref(),
+        ) {
             // An open admission proves the refusal came from the pure
             // preflight: neither runtime changed, so the reset handoff may
             // run instead (Pulse #3770, #3774).
@@ -421,11 +519,23 @@ impl SessionPlayback {
             {
                 Err(SessionPlaybackError::DeviceTransitionBusy)
             }
-            Err(error) if live && self.candidate_admission_open && restartable(error) => {
-                self.inherit_state_planned_once(previous, None, demand, true)
+            Err(error)
+                if live
+                    && !source_effect_handoff
+                    && self.candidate_admission_open
+                    && restartable(error) =>
+            {
+                self.inherit_state_planned_once(previous, None, demand, true, None)
             }
             result => result,
+        };
+        if let Some(source_transfer) = source_transfer
+            && result.is_ok()
+        {
+            self.source_effects
+                .continue_from(&mut previous.source_effects, source_transfer);
         }
+        result
     }
     /// Whether any same-identity device chain must defer this handoff until
     /// the predecessor's committed live transitions drain (Pulse #4178).
@@ -506,6 +616,7 @@ impl SessionPlayback {
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         force_restart: bool,
+        source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -513,7 +624,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
         let fresh = if previous.playing && !previous.foreign_arrangement.is_empty() {
-            fresh_instrument_track(
+            fresh_unconnected_track(
                 self.revision.arrangement().tracks(),
                 previous.revision.arrangement().tracks(),
             )
@@ -711,7 +822,19 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
-        let fresh_history = fresh.filter(|_| {
+        // A cold, independent added or removed track also needs a fresh delay history
+        // when no foreign instrument is present. Foreign handoff admission
+        // retains its narrower `fresh` input above; compensation proves the
+        // isolated routing and silent rings independently below.
+        let history_track = fresh.or_else(|| {
+            if !previous.playing {
+                return None;
+            }
+            let old = previous.revision.arrangement().tracks();
+            let new = self.revision.arrangement().tracks();
+            cold_added_track(new, old).or_else(|| cold_added_track(old, new))
+        });
+        let fresh_history = history_track.filter(|_| {
             self.compensation
                 .as_ref()
                 .zip(previous.compensation.as_ref())
@@ -795,17 +918,50 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        // A loop edit may carry a source effect only through the continuous
+        // handoff. Its committed history belongs to the donor's running clock.
+        if relocate && source_transfer.is_some() && new_loop_region != old_loop_region {
+            return Err(SessionPlaybackError::LatencyLayoutChanged);
+        }
+        let same_periodic_timing =
+            previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
+        // The planner anchors any changed periodic tempo at the current
+        // performance beat. Arrangement gates stay on their validated frame
+        // deadlines because the base map and both frame cursors are retained.
         let compatible_instrument_loop_edit = same_base_timing
             && new_loop_region != old_loop_region
-            && previous.anchor.is_none()
-            && foreign_handoff.keeps_first_pass_loop_clock;
+            && (foreign_handoff.keeps_unautomated_loop_clock
+                || (previous.anchor.is_none() && foreign_handoff.keeps_first_pass_loop_clock));
+        // A fresh compensation epoch can start at the same running cursor
+        // when the timing map and loop are unchanged.
+        let running_restart =
+            relocate && previous.playing && mapped_main_clock && same_periodic_timing;
+        // Appending a hosted effect or removing an already bypassed suffix
+        // can require fresh delay rings. The same-clock restart keeps the
+        // Arrangement cursor, worker binding and accepted gate deadlines
+        // while the local PCM history refills. An active removed effect still
+        // needs the tail planner.
+        let keep_foreign_gates = foreign_handoff.requires_clock_continuity
+            && running_restart
+            && !force_restart
+            && source_transfer.is_none()
+            && self
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .zip(previous.revision.arrangement().tracks())
+                .any(|(new, old)| {
+                    new.canonical_track_id() == old.canonical_track_id()
+                        && (appended_foreign_effect(&new.device_chain, &old.device_chain).is_some()
+                            || appended_foreign_effect(&old.device_chain, &new.device_chain)
+                                .is_some_and(|removed| removed.bypassed))
+                });
         if foreign_handoff.requires_clock_continuity
             && (force_restart
-                || relocate
+                || (relocate && !keep_foreign_gates)
                 || (!compatible_instrument_loop_edit
-                    && (!mapped_main_clock
-                        || previous.periodic_tempo()
-                            != self.periodic_tempo_at(previous.arrangement_frame))))
+                    && (!mapped_main_clock || !same_periodic_timing)))
         {
             return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
         }
@@ -835,16 +991,8 @@ impl SessionPlayback {
         } else {
             None
         };
-        // Running: the same law at the next block boundary, but the transport
-        // clock, loop pass and Session launches continue unchanged. Audio
-        // restarts there (tails/PDC empty, gate-active notes chased); the user
-        // never has to stop. A changed tempo map or loop keeps its refusal.
-        let running_restart = relocate
-            && previous.playing
-            && mapped_main_clock
-            && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
-        // A changed tempo map or loop cannot keep the running clock: restart
-        // as a Play-from at the musically equivalent frame instead.
+        // A changed timing map or loop relocates a fresh audio epoch to the
+        // musically equivalent frame as a Play-from.
         let running_relocate = relocate && previous.playing && !running_restart;
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
@@ -1023,7 +1171,7 @@ impl SessionPlayback {
             self.foreign_arrangement.inherit_handoff(
                 &mut previous.foreign_arrangement,
                 foreign_handoff,
-                false,
+                keep_foreign_gates,
             );
             return Ok(SessionHandoffReport {
                 cancelled_pending,
@@ -2305,13 +2453,16 @@ impl SessionPlayback {
                 }
             };
             route.pending = old_route.pending;
-            // A fading outgoing clip continues only while the new revision
-            // keeps that clip on this track; otherwise it ends with its source.
+            // Never render the candidate's different source as the outgoing
+            // clip. Both revisions must retain the same prepared source facts.
             route.audio_release = old_route.audio_release.filter(|release| {
                 self.revision
                     .session()
                     .audio_clip(release.clip)
-                    .is_some_and(|prepared| prepared.track == old_route.id)
+                    .zip(previous.revision.session().audio_clip(release.clip))
+                    .is_some_and(|(next, old)| {
+                        next.track == old_route.id && next.source_matches(old)
+                    })
             });
             if let Some(mut pending) = route.pending {
                 let valid = match pending.target {
@@ -3419,11 +3570,18 @@ impl SessionPlayback {
             if release.location.tail_group().is_some() {
                 continue;
             }
+            let source_effects_continue = source_transfer.is_some_and(|transfer| {
+                release.source_origin.is_some_and(|origin| {
+                    self.source_effects
+                        .has_continued_source(transfer, origin.source)
+                })
+            });
             let audio_plan = shared_sources::plan_release_audio_owner(
                 release,
                 previous,
                 self.revision.as_ref(),
                 &analytic_owner_matches,
+                source_effects_continue,
             )?;
             if let Some(current) = audio_plan.current_receiver {
                 release.location = ReleaseLocation::new(current, None)?;
@@ -3754,6 +3912,9 @@ impl SessionPlayback {
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
+            runtime
+                .preflight_tail_parameters()
+                .map_err(|error| error.render_error())?;
             old_track_mutable_tail_slots[old_index] = Some(slot);
         }
         self.release_scratch.sort_unstable_by_key(|entry| {
@@ -4346,8 +4507,23 @@ impl SessionPlayback {
             &previous.return_chains,
             previous.revision.arrangement().return_buses(),
         )?;
+        // Capture THEN-current committed targets before any owned transfer.
+        // These donor buffers are inactive staging while attached; an earlier
+        // successful capture changes no audio/history/ownership if a later one
+        // refuses. Existing detached tails keep their already-frozen values.
+        for (old_index, slot) in old_track_mutable_tail_slots.iter().enumerate() {
+            if slot.is_some() {
+                previous
+                    .mutable_instruments
+                    .get_mut(old_index)
+                    .and_then(Option::as_mut)
+                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?
+                    .capture_tail_parameters()
+                    .map_err(|error| error.render_error())?;
+            }
+        }
         // All admission/storage and source-lease checks precede destructive
-        // owned-history transfers. The donor remains untouched on refusal.
+        // owned-history transfers. The donor remains audibly untouched on refusal.
         for (new_index, bus) in self
             .revision
             .arrangement()
@@ -4640,6 +4816,12 @@ impl SessionPlayback {
         // only proofs whose exact clip has become inactive in the candidate.
         let revision = &self.revision;
         let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
+        // Ordinary onset suppressions cannot shorten a held gate. Check for
+        // admitted cuts once instead of searching the whole list for each proof.
+        let has_gate_cutoffs = self
+            .suppressions
+            .iter()
+            .any(|entry| entry.gate_cutoff_frame().is_some());
         let release_live_input = previous
             .computer_keyboard
             .as_ref()
@@ -4694,10 +4876,14 @@ impl SessionPlayback {
                 {
                     return Some(previous.performance_frame);
                 }
+                if !has_gate_cutoffs {
+                    return None;
+                }
                 let (onset, old_gate, pitch, channel, velocity) = signature.details();
                 self.suppressions
                     .iter()
                     .filter_map(|entry| {
+                        let cutoff = entry.gate_cutoff_frame()?;
                         let candidate = entry.mutable_signature()?;
                         let (new_onset, new_gate, new_pitch, new_channel, new_velocity) =
                             candidate.details();
@@ -4705,8 +4891,7 @@ impl SessionPlayback {
                             && (new_onset, new_pitch, new_channel, new_velocity)
                                 == (onset, pitch, channel, velocity)
                             && new_gate < old_gate)
-                            .then(|| entry.gate_cutoff_frame())
-                            .flatten()
+                            .then_some(cutoff)
                     })
                     .min()
             });
@@ -5360,7 +5545,7 @@ fn cut_arrangement_voices_for_remap(
 
 /// Only one independent cold track can acquire fresh pre-Main history in a
 /// handoff. Graph and runtime preflight separately prove routing and PCM.
-fn fresh_instrument_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+fn fresh_unconnected_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
     let unconnected = |track: &Track| {
         track.clips.is_empty() && track.device_chain.is_empty() && track.midi_source_index.is_none()
     };
@@ -5394,6 +5579,21 @@ fn fresh_instrument_track(candidate: &[Track], previous: &[Track]) -> Option<Tra
         }
     }
     fresh
+}
+
+/// A track absent from the other revision with no authored or live source.
+/// The compensation graph separately proves isolated routing and silent rings.
+fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    let id = fresh_unconnected_track(candidate, previous)?;
+    let track = candidate
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(id))?;
+    (track.instrument_id.is_none()
+        && track.source_id.is_none()
+        && !previous
+            .iter()
+            .any(|track| track.canonical_track_id() == Some(id)))
+    .then_some(id)
 }
 
 /// The candidate frame and loop pass at the donor cursor's Arrangement beat.

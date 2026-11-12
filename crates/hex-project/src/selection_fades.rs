@@ -49,7 +49,9 @@ fn fitted(shape: ClipFade, first: u64, end: u64, incoming: bool) -> Result<ClipF
                 500,
             )
         };
-    ClipFade::new(span, shape.offset(), fade_in, fade_out)?
+    let mut laws = shape.curve_laws();
+    laws[usize::from(!incoming)] = ClipFade::DEFAULT_S_CURVE;
+    Ok(ClipFade::new(span, shape.offset(), fade_in, fade_out)?
         .with_shape(
             in_start,
             span.checked_sub(out_end)
@@ -57,7 +59,8 @@ fn fitted(shape: ClipFade, first: u64, end: u64, incoming: bool) -> Result<ClipF
             in_curve,
             out_curve,
         )?
-        .with_curve_positions(in_position, out_position)
+        .with_curve_positions(in_position, out_position)?
+        .with_curve_laws(laws))
 }
 fn edge(
     clip: &Clip,

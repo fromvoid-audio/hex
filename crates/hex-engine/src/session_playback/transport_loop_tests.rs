@@ -28,6 +28,8 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
         fade: ClipFade::neutral(8192).unwrap(),
     }]);
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 7,
@@ -113,21 +115,38 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
     tempo_live.try_inherit_state_live_from(&mut paused).unwrap();
     assert!(!tempo_live.playing());
     assert_eq!(tempo_live.arrangement_frame(), 800);
-    let mut running = SessionPlayback::new(prepare(&linear)).unwrap();
-    running.apply(SessionPlaybackCommand::Play).unwrap();
-    running.render(&mut [[0.0; 2]; 600]).unwrap();
-    let mut relocated = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
-    relocated.try_inherit_state_live_from(&mut running).unwrap();
-    assert!(relocated.playing());
-    // 120 -> 90 bpm: frame 600 (1/40 beat) lands at frame 800 under 90 bpm.
-    assert_eq!(relocated.arrangement_frame(), 800);
-    let mut relocated_oracle = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
-    relocated_oracle.play_from(800).unwrap();
-    let mut relocated_actual = vec![[0.0; 2]; 2048];
-    let mut relocated_expected = relocated_actual.clone();
-    relocated.render(&mut relocated_actual).unwrap();
-    relocated_oracle.render(&mut relocated_expected).unwrap();
-    assert_eq!(relocated_actual, relocated_expected);
+    let old_revision = prepare(&linear);
+    let new_revision = prepare(&tempo_changed);
+    assert!(old_revision.arrangement().main_latency_frames() > 0);
+    assert!(new_revision.arrangement().main_latency_frames() > 0);
+    for block in [1, 257] {
+        let mut running = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        running.apply(SessionPlaybackCommand::Play).unwrap();
+        for chunk in [[0.0; 2]; 600].chunks_mut(block) {
+            running.render(chunk).unwrap();
+        }
+        let mut relocated = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        relocated.try_inherit_state_live_from(&mut running).unwrap();
+        assert!(relocated.playing());
+        // 120 -> 90 bpm: frame 600 (1/40 beat) lands at frame 800 under 90 bpm.
+        assert_eq!(relocated.arrangement_frame(), 800);
+        let mut relocated_oracle = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        relocated_oracle.play_from(800).unwrap();
+        let mut relocated_actual = vec![[0.0; 2]; 2048];
+        let mut relocated_expected = relocated_actual.clone();
+        for chunk in relocated_actual.chunks_mut(block) {
+            relocated.render(chunk).unwrap();
+        }
+        relocated_oracle.render(&mut relocated_expected).unwrap();
+        assert_eq!(relocated_actual, relocated_expected, "block={block}");
+        assert!(
+            relocated_actual
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0)
+        );
+        assert_eq!(relocated.arrangement_frame(), 2848);
+    }
     let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
     let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
     for runtime in [&mut donor, &mut oracle] {
@@ -162,6 +181,8 @@ fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrup
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id,

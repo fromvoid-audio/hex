@@ -1205,7 +1205,9 @@ impl SignalGraph {
     /// typed endpoints are unchanged, and nodes on both sides keep their actual
     /// latency and arrivals. Edge positions may shift: a zero-latency node with
     /// only zero-delay edges (for example an unbound source's generator) may
-    /// appear or disappear. History must be copied through
+    /// appear or disappear. This can also change the order of independent
+    /// owners. Each graph uses its own topological order, while history follows
+    /// the unchanged typed edges. History must be copied through
     /// `pair_retained_pre_main_edges`, never by position.
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
         self.retained_pre_main_history_maps_from(other, None)
@@ -1236,7 +1238,7 @@ impl SignalGraph {
                             .iter()
                             .filter_map(|&owner| retained_order(other, owner)))
             } else {
-                self.tracks.len() != other.tracks.len() || self.owner_order != other.owner_order
+                self.tracks.len() != other.tracks.len()
             }
         {
             return false;
@@ -1401,25 +1403,26 @@ impl SignalGraph {
             .try_reserve_exact(self.plan.nodes().len())
             .map_err(|_| Invalid("could not reserve output tail plan"))?;
         tails.resize(self.plan.nodes().len(), Some(0_u64));
+        let declared_tail = |device: &PreparedRuntimeInstance| {
+            if device.bypassed {
+                return Some(0);
+            }
+            match device.definition.as_ref().map_or(
+                OutputTail::Finite { max_tail_frames: 0 },
+                PreparedProcessorFactory::output_tail,
+            ) {
+                OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
+                OutputTail::Unbounded => None,
+            }
+        };
         let mut assign = |indices: &[usize], chain: &[PreparedRuntimeInstance]| {
             if indices.len() != chain.len() {
                 return Err(Invalid("output tail graph does not match device chain"));
             }
             for (&index, device) in indices.iter().zip(chain) {
-                let value = if device.bypassed {
-                    Some(0)
-                } else {
-                    match device.definition.as_ref().map_or(
-                        OutputTail::Finite { max_tail_frames: 0 },
-                        PreparedProcessorFactory::output_tail,
-                    ) {
-                        OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
-                        OutputTail::Unbounded => None,
-                    }
-                };
                 *tails
                     .get_mut(index)
-                    .ok_or(Invalid("output tail node is missing"))? = value;
+                    .ok_or(Invalid("output tail node is missing"))? = declared_tail(device);
             }
             Ok(())
         };
@@ -1435,6 +1438,20 @@ impl SignalGraph {
             assign(&plan.devices, &bus.device_chain)?;
         }
         assign(&self.main_devices, &project.main_device_chain)?;
+        for recipe in &project.source_effects {
+            let generator = self
+                .tracks
+                .get(recipe.receiver)
+                .and_then(|track| track.generator)
+                .ok_or(Invalid("source effect tail has no prepared generator"))?;
+            let tail = recipe
+                .instances
+                .iter()
+                .try_fold(0_u64, |sum, device| sum.checked_add(declared_tail(device)?));
+            *tails
+                .get_mut(generator)
+                .ok_or(Invalid("source effect tail node is missing"))? = tail;
+        }
 
         // None means an unbounded or overflowing path. Keeping it in the DAG
         // allows an unrelated selected capture to remain independently valid.

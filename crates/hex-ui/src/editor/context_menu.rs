@@ -40,6 +40,7 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    SourcePicker(device_panel::SourcePickerChoice),
     HistoryPlayback(super::history_playback::MenuAction),
     Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
@@ -70,6 +71,10 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    WaveformDecibels {
+        generation: u64,
+        enabled: bool,
+    },
     InputQuantization {
         generation: u64,
         policy: hex_project::InputQuantization,
@@ -92,6 +97,7 @@ pub(super) enum EditorContextAction {
         before: Option<SceneId>,
     },
     UtilityMode(UtilityModeAction),
+    AddModulator(device_panel::AddModulatorAction),
     DeviceComparison(super::device_comparison::Intent),
     DevicePreset(super::device_preset::Intent),
     RenameTrackName {
@@ -215,8 +221,9 @@ impl EditorView {
         };
         if let Some(tracks) = after_track.and_then(|id| self.track_membership(Some(id))) {
             use hex_session::service::TrackClipboardAction as Action;
+            let group_tracks = self.track_group_membership(after_track);
             if let Some(menu) = &mut self.context_menu {
-                menu.items.push(MenuItem {
+                menu.items.extend(group_tracks.map(|tracks| MenuItem {
                     label: "group tracks",
                     swatch: None,
                     checked: false,
@@ -224,11 +231,11 @@ impl EditorView {
                         generation,
                         revision,
                         command: Command::GroupTracks {
-                            tracks: tracks.clone(),
+                            tracks,
                             name: "group".into(),
                         },
                     },
-                });
+                }));
                 if let Some(track) = after_track.filter(|id| {
                     state
                         .project
@@ -494,7 +501,7 @@ impl EditorView {
                 ),
             ];
             if linked {
-                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push(("make unique · shift+i", ClipAliasOperation::MakeUnique));
                 entries.push((
                     "apply settings to aliases",
                     ClipAliasOperation::ApplySettings,
@@ -609,6 +616,7 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::SourcePicker(choice) => choice.perform(self, window, cx),
             EditorContextAction::HistoryPlayback(action) => {
                 self.history_playback_menu_action(action, cx)
             }
@@ -697,9 +705,21 @@ impl EditorView {
                     cx.notify();
                 }
             }
+            EditorContextAction::WaveformDecibels {
+                generation,
+                enabled,
+            } => {
+                if generation == self.project_generation {
+                    self.waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
+                    );
+                    cx.notify();
+                }
+            }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
+            EditorContextAction::AddModulator(action) => action.perform(self),
             EditorContextAction::DevicePreset(target) => {
                 self.perform_device_preset_action(target, cx)
             }
@@ -920,6 +940,7 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::SourcePicker(choice) => !choice.current(self),
                 EditorContextAction::HistoryPlayback(action) => {
                     !self.history_playback_menu_current(action)
                 }
@@ -936,6 +957,7 @@ impl EditorView {
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
                 }
+                EditorContextAction::AddModulator(action) => !action.current(self),
                 EditorContextAction::DevicePreset(target) => {
                     !super::device_preset::current(self, target)
                 }
@@ -976,6 +998,7 @@ impl EditorView {
                     *generation != self.project_generation
                 }
                 EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::WaveformDecibels { generation, .. }
                 | EditorContextAction::LaunchQuantization { generation, .. }
                 | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
@@ -1039,11 +1062,12 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            if !menu
-                .items
-                .iter()
-                .any(|item| matches!(item.action, EditorContextAction::Automation(_)))
-            {
+            if !menu.items.iter().any(|item| {
+                matches!(
+                    item.action,
+                    EditorContextAction::Automation(_) | EditorContextAction::SourcePicker(_)
+                )
+            }) {
                 return crate::context_menu::popup(
                     menu,
                     window,
@@ -1068,6 +1092,7 @@ impl EditorView {
 
 pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
     match &item.action {
+        EditorContextAction::SourcePicker(choice) => choice.label.clone(),
         EditorContextAction::Tags(action) => action.label(),
         EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
             if item.label == "parameter" =>
@@ -1306,6 +1331,7 @@ mod tests {
                     EditorContextAction::ClipFlavor { .. }
                         | EditorContextAction::ClipAlias(_)
                         | EditorContextAction::AdaptiveGrid { .. }
+                        | EditorContextAction::WaveformDecibels { .. }
                 )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
@@ -2100,7 +2126,7 @@ mod tests {
             for label in [
                 "duplicate · d",
                 "duplicate alias · cmd+d",
-                "make unique · i",
+                "make unique · shift+i",
                 "apply settings to aliases",
             ] {
                 assert!(menu.items.iter().any(|item| item.label == label));
@@ -2143,7 +2169,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .find(|item| item.label == "make unique · i")
+                .find(|item| item.label == "make unique · shift+i")
                 .unwrap()
                 .action
                 .clone()

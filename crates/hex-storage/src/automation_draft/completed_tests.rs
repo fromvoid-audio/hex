@@ -189,7 +189,7 @@ fn clocked_headers_require_strict_explicit_and_well_formed_clock_metadata() {
         assert!(DraftReader::open(&path, limits()).is_err());
         assert_eq!(fs::read(&path).unwrap(), malformed);
     }
-    let unsupported = changed_metadata(&original, VST3_CLOCK_VERSION + 1, |_| {});
+    let unsupported = changed_metadata(&original, VST3_GROUP_VERSION + 1, |_| {});
     fs::write(&path, &unsupported).unwrap();
     assert!(
         DraftReader::open(&path, limits())

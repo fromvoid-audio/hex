@@ -96,6 +96,7 @@ impl ActiveView<'_> {
             pending_play: false,
             command_prefix: prefix,
             frames,
+            fenced_restart: false,
         };
         if self
             .state

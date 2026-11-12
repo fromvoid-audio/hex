@@ -95,6 +95,15 @@ pub(in crate::editor) fn view(
         .map_or(640.0, |bounds| f32::from(bounds.size.width));
     let mut body = div()
         .id("audio-events-waveform")
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                if view.begin_audio_pan(false, event.position, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
         .on_scroll_wheel(cx.listener(|view, event, window, cx| {
             if view.audio_navigation_wheel(event, false, window, cx) {
                 cx.stop_propagation();
@@ -269,7 +278,7 @@ pub(in crate::editor) fn view(
                         ..visible_end.saturating_sub(pasted.frame_start),
                     clip.gain(),
                     true,
-                    std::rc::Rc::clone(&view.waveform_geometry_cache),
+                    std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                     ink,
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -279,7 +288,7 @@ pub(in crate::editor) fn view(
                 event.id,
                 visible_start,
                 visible_end,
-                std::rc::Rc::clone(&view.waveform_geometry_cache),
+                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                 ink,
             ) {
                 element = element.child(waveform);
@@ -315,7 +324,7 @@ pub(in crate::editor) fn view(
                         source_root + (visible_start - start)..source_root + (visible_end - start),
                         clip.gain(),
                         true,
-                        std::rc::Rc::clone(&view.waveform_geometry_cache),
+                        std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                         ink,
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -329,7 +338,7 @@ pub(in crate::editor) fn view(
                         &clip,
                         source_frame,
                         end_frame,
-                        std::rc::Rc::clone(&view.waveform_geometry_cache),
+                        std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                         ink,
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -433,13 +442,18 @@ pub(in crate::editor) fn view(
                     .left(px(7.0))
                     .right(px(7.0))
                     .h(px(4.0))
-                    .cursor(gpui::CursorStyle::ResizeUpDown)
-                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+                    .when(view.option_held, |style| {
+                        style
+                            .cursor(gpui::CursorStyle::ResizeUpDown)
+                            .hover(|style| {
+                                style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            })
+                    })
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control("event gain"),
                             name: format!(
-                                "gain {:+.1} db · drag down to reduce · shift for fine",
+                                "gain {:+.1} db · option-drag · shift for fine",
                                 f64::from(gain) / 1000.0
                             ),
                         })
@@ -612,6 +626,7 @@ pub(in crate::editor) fn view(
                 // Existing geometry tracking above may end a stale gesture;
                 // the lease witness itself only reads current held state.
                 let view = entity.read(cx);
+                view.renew_audio_pan(false, bounds, window, entity.entity_id());
                 if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
                     && view.audio_event_focus.is_focused(window)
                 {
@@ -723,7 +738,8 @@ pub(in crate::editor) fn view(
                     && (offset - x(hit.end)).abs() <= 6.0
                 {
                     Kind::Trailing(hit)
-                } else if !view.audio_event_editor.fade_key_held
+                } else if event.modifiers.alt
+                    && !view.audio_event_editor.fade_key_held
                     && (EVENT_RULER_HEIGHT..EVENT_RULER_HEIGHT + 5.0).contains(&local_y)
                 {
                     let target = if let Some((path, id)) = view
@@ -1127,6 +1143,7 @@ pub(in crate::editor) fn view(
                 view.advance_selection_intent();
                 view.audio_event_editor.gesture = None;
                 view.audio_event_editor.range = None;
+                view.sync_held_play_start_audition();
             }
             cx.stop_propagation();
             cx.notify();

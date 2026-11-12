@@ -118,7 +118,7 @@ pub fn install_update_client(cx: &mut App, client: UpdateClient) {
     cx.set_global(client);
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

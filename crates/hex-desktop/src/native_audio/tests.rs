@@ -3,6 +3,7 @@
 use super::*;
 mod bypass_latency;
 mod delay_bypass;
+mod discrete_automation;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
@@ -14,6 +15,7 @@ mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
 mod resident_export;
+mod resident_file_metadata;
 mod resident_grouping;
 mod resident_history_seek;
 mod resident_lifecycle;
@@ -35,6 +37,7 @@ mod transport_loop;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unavailable_plugins;
 mod utility_width;
+mod verified_clip_move;
 mod verified_device_preview;
 pub(super) mod verified_gain;
 mod worker_idle;
@@ -90,6 +93,7 @@ pub(super) struct Observation {
         hex_engine::AudioCandidateIdentity,
     )>,
     received_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
+    verified_clip_updates: Vec<(hex_session::service::ClipMovePreviewIdentity, &'static str)>,
     replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     pub(super) received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     pub(super) replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
@@ -405,6 +409,26 @@ impl WorkerAudioSink for ObservedSink {
             .verified_device_parameter_source(Arc::clone(&source));
         self.observation.lock().unwrap().received_verified_device = Some(source);
     }
+    fn verified_clip_move_update(
+        &mut self,
+        update: hex_session::service::VerifiedClipMoveUpdate,
+    ) -> bool {
+        use hex_session::service::VerifiedClipMoveUpdate;
+        let (identity, kind) = match &update {
+            VerifiedClipMoveUpdate::Preview(source) => (source.identity(), "preview"),
+            VerifiedClipMoveUpdate::Released { identity, .. } => (*identity, "released"),
+            VerifiedClipMoveUpdate::Cancelled { identity, .. } => (*identity, "cancelled"),
+        };
+        let accepted = self.inner.verified_clip_move_update(update);
+        if accepted {
+            self.observation
+                .lock()
+                .unwrap()
+                .verified_clip_updates
+                .push((identity, kind));
+        }
+        accepted
+    }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
         let mut observation = self.observation.lock().unwrap();
@@ -443,7 +467,7 @@ impl WorkerAudioSink for ObservedSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        self.inner.begin_section_edit(context, allow_playing)
+        WorkerAudioSink::begin_section_edit(&mut self.inner, context, allow_playing)
     }
     fn section_edit_ready(
         &mut self,
@@ -1955,6 +1979,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
     };
     let metadata = ResidentPublicationMetadata {
+        clip_preview: None,
         context,
         device_preview: None,
         tuning_preview: None,

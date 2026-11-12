@@ -2,6 +2,7 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod frozen_instrument_parameters;
 mod instrument_matrix_ramp;
 mod interactive_start;
 mod release_timeline;
@@ -463,7 +464,8 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         let mut previous_offset = 0;
         for event in events.iter().copied() {
             let (offset, is_on) = match event {
-                hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                hex_lattice::NativeInstrumentEvent::NotePressure { .. }
+                | hex_lattice::NativeInstrumentEvent::Expression { .. } => {
                     return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
@@ -495,7 +497,8 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {
                 let (offset, is_on) = match event {
-                    hex_lattice::NativeInstrumentEvent::Expression { .. } => return,
+                    hex_lattice::NativeInstrumentEvent::NotePressure { .. }
+                    | hex_lattice::NativeInstrumentEvent::Expression { .. } => return,
                     hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
                         (frame_offset, true)
                     }
@@ -558,7 +561,8 @@ impl MutableFeedbackRuntime {
         release: u8,
     ) {
         match event {
-            hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
+            hex_lattice::NativeInstrumentEvent::NotePressure { .. }
+            | hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
             hex_lattice::NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -759,6 +763,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
             let offset = match event {
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
                 | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::NotePressure { frame_offset, .. }
                 | hex_lattice::NativeInstrumentEvent::Expression { frame_offset, .. } => {
                     frame_offset
                 }
@@ -768,7 +773,8 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
             }
             Self::advance(&mut voices, offset - previous_offset);
             match event {
-                hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                hex_lattice::NativeInstrumentEvent::NotePressure { .. }
+                | hex_lattice::NativeInstrumentEvent::Expression { .. } => {
                     return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
@@ -808,6 +814,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
             while events.get(event_index).is_some_and(|event| match *event {
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
                 | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::NotePressure { frame_offset, .. }
                 | hex_lattice::NativeInstrumentEvent::Expression { frame_offset, .. } => {
                     frame_offset == frame_index
                 }
@@ -961,6 +968,8 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
                 .checked_add(1)
                 .ok_or(hex_project::Invalid("fixture id capacity"))?;
             track.instrument = Some(DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id,
@@ -984,6 +993,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1236,6 +1246,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1350,6 +1361,8 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         )
         .unwrap();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 7,
@@ -1470,6 +1483,8 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
             gain: 1.0,
             muted: false,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 80,
@@ -1598,6 +1613,8 @@ fn removed_track_release_retains_its_original_device_matrix() {
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 10,
@@ -1647,6 +1664,8 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 10,
@@ -1709,6 +1728,8 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 10,
@@ -1716,6 +1737,8 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
             state: prefix,
         },
         DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 11,
@@ -1779,6 +1802,8 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 10,
@@ -1786,6 +1811,8 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
             state: prefix,
         },
         DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 11,
@@ -1841,6 +1868,8 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -1848,6 +1877,8 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
@@ -1911,6 +1942,8 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -1918,6 +1951,8 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
             state: neutral,
         },
         DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
@@ -2191,6 +2226,8 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
             state = crate::patch_native_device_parameter(&state, parameter, value).unwrap();
         }
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 7,
@@ -2373,6 +2410,8 @@ fn utility_mute_handoff_ramps_warmed_filter_and_keeps_its_history() {
                 .unwrap();
         }
         let device = DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -2493,6 +2532,8 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         )
         .unwrap();
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: instrument_id,
@@ -2500,6 +2541,8 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         state: instrument_state,
     });
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: device_id,
@@ -2586,6 +2629,8 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -2593,6 +2638,8 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
             state: state.clone(),
         },
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
@@ -2858,6 +2905,8 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
         let id = snapshot.next_id;
         snapshot.next_id += 1;
         devices.push(hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id,
@@ -3677,6 +3726,8 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
         let mut devices = Vec::new();
         for _ in 0..devices_in_chain {
             devices.push(DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: next_id,
@@ -4452,6 +4503,8 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         )
         .unwrap();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: effect,
@@ -4702,7 +4755,8 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     frame_offset,
                     occurrence_id,
                 } => (start + frame_offset, false, occurrence_id),
-                NativeInstrumentEvent::Expression { .. } => panic!("unexpected expression"),
+                NativeInstrumentEvent::NotePressure { .. }
+                | NativeInstrumentEvent::Expression { .. } => panic!("unexpected expression"),
             }));
             runtime.commit_block();
             start = end;
@@ -4806,6 +4860,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 velocity,
             } => Some((frame_offset, occurrence_id, pitch, velocity)),
             hex_lattice::NativeInstrumentEvent::NoteOff { .. }
+            | hex_lattice::NativeInstrumentEvent::NotePressure { .. }
             | hex_lattice::NativeInstrumentEvent::Expression { .. } => None,
         })
         .collect();
@@ -5129,6 +5184,11 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
     let graph_host_bytes =
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS).unwrap();
+    // The owner slots include the vector headers. Charge their reserved heap
+    // entries independently of the production frozen-parameter quote.
+    let frozen_parameter_bytes_per_owner = hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
+        * (std::mem::size_of::<hex_lattice_contract::ParameterId>()
+            + std::mem::size_of::<Option<hex_lattice_contract::ParameterValue>>());
 
     assert_eq!(
         ledger_bytes,
@@ -5150,6 +5210,8 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
                 * 2
                 * MAX_SIMULTANEOUS_VOICES_PER_TRACK
                 * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
+            + (hex_project::MAX_TRACKS + hex_lattice::MAX_STATEFUL_PROCESSORS)
+                * frozen_parameter_bytes_per_owner
             + std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>()
             + crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
                 * std::mem::size_of::<hex_lattice::NativeInstrumentEvent>()
@@ -5163,6 +5225,17 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     );
     assert!(
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS + 1).is_none()
+    );
+    let one_track_increment = std::mem::size_of::<
+        Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>,
+    >() + ledger_bytes
+        + frozen_parameter_bytes_per_owner
+        + crate::mutable_instrument::MutableInstrumentTrackRuntime::source_live_storage_upper_bound(
+        );
+    assert_eq!(
+        crate::mutable_instrument::host_storage_upper_bound(1).unwrap()
+            - crate::mutable_instrument::host_storage_upper_bound(0).unwrap(),
+        one_track_increment
     );
     println!(
         "mutable storage bytes: track_owner={}, ledger_pair={}, onset_buffer={}, event={}, runtime_pair={}, max_graph_host={graph_host_bytes}",
@@ -5294,6 +5367,8 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let eq8_id = source_snapshot.next_id;
     source_snapshot.next_id += 1;
     source_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: eq8_id,
@@ -5704,6 +5779,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let first_id = source.next_id;
     source.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: first_id,
@@ -5711,6 +5788,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: first_id + 1,
@@ -5917,6 +5996,8 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     let first_id = old_snapshot.next_id;
     old_snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: first_id,
@@ -5924,6 +6005,8 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: first_id + 1,
@@ -7811,6 +7894,8 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
@@ -8565,6 +8650,8 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
@@ -11620,6 +11707,8 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
         .unwrap();
     let mut track_snapshot = project(1.0, 0, 8 << 32).snapshot();
     track_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: track_snapshot.next_id,
@@ -11651,6 +11740,8 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: return_device_id,
@@ -12209,6 +12300,8 @@ pub(super) fn mutable_feedback_with_stateful_track_and_return_edited(
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: track_effect_id,
@@ -12229,6 +12322,8 @@ pub(super) fn mutable_feedback_with_stateful_track_and_return_edited(
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: return_effect_id,
@@ -12247,14 +12342,12 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             let region = LoopRegion::new(24_000, 48_000, true).unwrap();
-            let source = mutable_feedback_with_stateful_track_and_return();
-            let oracle = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+            let source = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
                 snapshot.loop_region = Some(region)
             });
-            assert!(source.arrangement().loop_region().is_none());
             // Section launches use the interactive Play-from law at the loop
             // start: no prefix replay, empty tails and chased held notes.
-            let mut expected = SessionPlayback::new(oracle).unwrap();
+            let mut expected = SessionPlayback::new(Arc::clone(&source)).unwrap();
             expected.play_from(24_000).unwrap();
             let mut history = SessionPlayback::new(Arc::clone(&expected.revision)).unwrap();
             history.apply(SessionPlaybackCommand::Play).unwrap();
@@ -12292,12 +12385,9 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
             assert_ne!(rendered, replayed, "prefix history is not reconstructed");
             assert_eq!(actual.arrangement_frame(), expected.arrangement_frame());
             assert_eq!(actual.performance_frame(), expected.performance_frame());
-            assert!(
-                source.arrangement().loop_region().is_none(),
-                "saved loop remains unchanged"
-            );
             let playback =
                 crate::playback::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.section_loop(), None);
             assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(
@@ -13798,6 +13888,158 @@ mod delay_tests;
 mod reverb_bypass_tests;
 #[path = "utility_bypass_tests.rs"]
 mod utility_bypass_tests;
+
+#[test]
+fn session_audio_release_handoff_never_renders_a_replaced_source() {
+    let project = audio_project(0, 32, 4);
+    let original = crate::Audio::new(48_000, vec![[0.5; 2]; 32]).unwrap();
+    let replacement = crate::Audio::new(48_000, vec![[-0.5; 2]; 32]).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepare = |project: &Project, audio: &crate::Audio| {
+        Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &audio_media(project, audio, audio),
+                Arc::clone(&table),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let original_revision = prepare(&project, &original);
+    let track = project.tracks()[0].id();
+    let clip = original_revision.session().audio_clips()[0].id;
+    let changed_region = audio_project(1, 32, 4);
+    let changed_asset = audio_project(0, 32, 5);
+    let mut snapshot = project.snapshot();
+    snapshot.session.cells.clear();
+    let removed = Project::from_snapshot(snapshot).unwrap();
+    for (candidate, expected_release) in [
+        (prepare(&project, &original), true),
+        (prepare(&project, &replacement), false),
+        (prepare(&changed_region, &original), false),
+        (prepare(&changed_asset, &original), false),
+        (prepare(&removed, &original), false),
+    ] {
+        let mut old = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+        old.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 8]).unwrap();
+        old.apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        let mut first = [[0.0; 2]; 1];
+        old.render(&mut first).unwrap();
+        assert!(first[0][0] > 0.0);
+        let mut next = SessionPlayback::new(candidate).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut after = [[0.0; 2]; 1];
+        next.render(&mut after).unwrap();
+        if expected_release {
+            assert!(after[0][0] > 0.0, "unchanged source retains its release");
+        } else {
+            assert_eq!(
+                after,
+                [[0.0; 2]],
+                "a replacement must not sound as the old release"
+            );
+        }
+    }
+}
+
+#[test]
+fn streamed_session_release_handoff_demands_only_the_unchanged_source() {
+    struct Pages {
+        frames: [[f32; 2]; 32],
+    }
+    impl MediaPages for Pages {
+        fn page(
+            &mut self,
+            _key: StreamSourceKey,
+            page_index: u64,
+        ) -> Option<BorrowedMediaPage<'_>> {
+            (page_index == 0).then_some(BorrowedMediaPage {
+                page_index,
+                frames: &self.frames,
+            })
+        }
+        fn request_page(&mut self, _key: StreamSourceKey, _page_index: u64) {}
+    }
+    let project = audio_project(0, 32, 4);
+    let prepare = |generation| {
+        let sources = project
+            .assets()
+            .map(|asset| {
+                let metadata = StreamedSourceMetadata::new(
+                    StreamSourceKey::new(generation, asset.id()),
+                    48_000,
+                    48_000,
+                    32,
+                    32,
+                    hex_project::IDENTITY_CONVERSION,
+                    [0x42; 32],
+                )
+                .unwrap();
+                (
+                    asset.id(),
+                    PreparedAudioSource::Streamed(Arc::new(metadata)),
+                )
+            })
+            .collect();
+        Arc::new(
+            PreparedRevision::prepare_with_prepared_audio_sources(
+                &project,
+                &sources,
+                generation,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let revision = prepare(1);
+    let track = project.tracks()[0].id();
+    let clip = revision.session().audio_clips()[0].id;
+    for (generation, keeps_release) in [(1, true), (2, false)] {
+        let mut pages = Pages {
+            frames: [[0.5; 2]; 32],
+        };
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        old.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_pages(&mut [[0.0; 2]; 8], &mut pages)
+            .unwrap();
+        old.apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.render_with_pages(&mut [[0.0; 2]; 1], &mut pages)
+            .unwrap();
+        let mut next = SessionPlayback::new(prepare(generation)).unwrap();
+        let mut extents = Vec::new();
+        next.preview_stream_handoff(&mut old, 1, None, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(!extents.is_empty(), keeps_release);
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut after = [[0.0; 2]; 1];
+        next.render_with_pages(&mut after, &mut pages).unwrap();
+        assert_eq!(after[0][0] > 0.0, keeps_release);
+    }
+}
 
 #[test]
 fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {

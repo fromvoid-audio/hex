@@ -323,12 +323,17 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
         let capabilities = self
             .canonical_for(effect, state)?
             .map_or(&effect.authored, |facts| &facts.capabilities);
-        Ok(capabilities.view(
-            effect.binding,
-            effect.sample_rate,
-            effect.prepared.quantum_frames(),
-            effect.program_revision,
-        ))
+        Ok(capabilities
+            .view(
+                effect.binding,
+                effect.sample_rate,
+                effect.prepared.quantum_frames(),
+                effect.program_revision,
+            )
+            .map(|mut source| {
+                source.dense_parameter = effect.dense_raw_id;
+                source
+            }))
     }
 }
 

@@ -10,7 +10,66 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
 mod parameter_extension;
 
+/// A copied callback observation correlated with a particular stopped fence.
+/// It proves neither graph membership nor continued validity after that fence
+/// changes, and grants no ownership or publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FencedNativeQuantum {
+    source: AppliedAudioSource,
+    fence: StoppedEditFence,
+    quantum: crate::plugin_worker::CommittedQuantum,
+}
+
+impl FencedNativeQuantum {
+    pub fn observation(&self) -> crate::plugin_worker::CommittedQuantum {
+        self.quantum
+    }
+}
+
 impl PublicationControl {
+    fn stopped_native_quantum_fence_matches(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) -> bool {
+        self.native_custody
+            && self
+                .status
+                .stopped_native_source_fence_matches(source, fence)
+    }
+
+    /// Read only while the exact stopped native fence remains ready. The
+    /// observation may advance as the callback runs even while the graph is
+    /// fenced; callers must independently prove graph membership and the
+    /// lifetime of any history selected from it.
+    pub fn try_fenced_native_quantum_on_control(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+    ) -> Result<Option<FencedNativeQuantum>, &'static str> {
+        if binding.root != source.output_identity
+            || !self.stopped_native_quantum_fence_matches(source, fence)
+        {
+            return Err("native quantum fence is not current");
+        }
+        let quantum = self.try_native_source_committed_quantum_on_control(binding)?;
+        if !self.stopped_native_quantum_fence_matches(source, fence) {
+            return Err("native quantum fence is not current");
+        }
+        Ok(quantum.map(|quantum| FencedNativeQuantum {
+            source,
+            fence,
+            quantum,
+        }))
+    }
+
+    /// Recheck the correlated fence only; this does not assert the callback
+    /// observation is still the most recent quantum.
+    pub fn fenced_native_quantum_fence_is_ready(&self, checkpoint: FencedNativeQuantum) -> bool {
+        self.stopped_native_quantum_fence_matches(checkpoint.source, checkpoint.fence)
+    }
+
     /// Definite correspondence or a specific unavailable/busy observation.
     /// A control caller must not turn contention into a negative approval or
     /// use this observation as graph/native admission authority.
@@ -296,6 +355,123 @@ impl PublicationControl {
             return Err("vst3 delivery source differs or is closing");
         }
         Ok(())
+    }
+
+    /// Passive observation of a verified playing worker. This does not
+    /// authorize a value change, retain the Root, or consume controller edits.
+    pub fn arm_native_source_editor_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(&self.status, source, binding, None, None, |scope| {
+                self.candidate_root
+                    .arm_native_editor_pcm(binding, scope, None)
+            })
+    }
+
+    /// Arm one exclusive original SDK editor target for compensated delivery.
+    /// While live, the existing native parameter input reservation excludes
+    /// another host gesture from taking the same output.
+    pub fn arm_native_source_editor_touch_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        binding: Binding,
+        touch: crate::foreign_parameter_delivery::editor::TouchPlan,
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(
+                &self.status,
+                source,
+                binding,
+                Some(transport_epoch),
+                Some(Arc::clone(&self.status)),
+                |scope| {
+                    self.candidate_root.arm_native_editor_pcm(
+                        binding,
+                        scope,
+                        Some(
+                            crate::foreign_parameter_delivery::editor::TouchAdmission::Single(
+                                touch,
+                            ),
+                        ),
+                    )
+                },
+            )
+    }
+
+    /// Arm the exact prepared group on its original source. Targets must
+    /// already have owned read/Base anchors, including unlaned Base values.
+    pub fn arm_native_source_editor_group_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        binding: Binding,
+        targets: &[hex_plugin_host::protocol::EditorTouchTarget],
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(
+                &self.status,
+                source,
+                binding,
+                Some(transport_epoch),
+                Some(Arc::clone(&self.status)),
+                |scope| {
+                    self.candidate_root.arm_native_editor_pcm(
+                        binding,
+                        scope,
+                        Some(
+                            crate::foreign_parameter_delivery::editor::TouchAdmission::Group(
+                                targets,
+                            ),
+                        ),
+                    )
+                },
+            )
+    }
+
+    pub fn cancel_native_source_editor_delivery_on_control(
+        &mut self,
+        target: crate::foreign_parameter_delivery::editor::Target,
+    ) -> bool {
+        self.foreign_editor_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.cancel(target))
+    }
+
+    pub fn try_native_source_editor_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::editor::Receipt> {
+        self.foreign_editor_delivery.as_mut()?.try_receipt()
+    }
+
+    pub fn native_source_editor_confirmed_sequence_on_control(
+        &self,
+        target: crate::foreign_parameter_delivery::editor::Target,
+    ) -> Option<u64> {
+        self.foreign_editor_delivery
+            .as_ref()?
+            .confirmed_sequence(target)
+    }
+
+    /// Detach the exact editor scope's observation before output relinquish.
+    /// This publication cannot admit another editor scope after transfer.
+    pub fn retire_native_source_editor_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::editor::Retired> {
+        self.foreign_editor_delivery.as_ref()?.target()?;
+        self.foreign_editor_delivery.take()?.retire()
     }
 
     pub fn cancel_native_source_parameter_delivery_on_control(
@@ -1028,20 +1204,31 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_received_program(binding)
     }
-    /// Retryable observation on the exact original live worker. `Ok(None)`
-    /// means no coherent pickup is available yet; only `Some(received)` whose
-    /// `program` is None proves an observed empty frontier. Busy observations
-    /// are distinct from a stale, revoked or closing source. No admission or
-    /// callback/graph custody is granted by this query.
-    pub fn try_native_source_received_program_on_control(
+    /// Retryable observation on the exact original worker. An empty frontier
+    /// requires either an unprogrammed pickup or an observed zero pickup
+    /// prefix on the live pair. Unknown grants no graph or pruning authority.
+    pub fn try_native_source_program_frontier_on_control(
         &self,
         binding: Binding,
-    ) -> Result<Option<crate::plugin_worker::ReceivedProgram>, &'static str> {
+    ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native automation output is closing");
         }
         self.candidate_root
-            .try_native_source_received_program(binding)
+            .try_native_source_program_frontier(binding)
+    }
+    /// Observe the last accepted quantum of the exact live loaned endpoint.
+    /// None means no coherent callback observation; busy, stale, retired and
+    /// closing sources are errors. This grants no graph or pruning authority.
+    pub fn try_native_source_committed_quantum_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::CommittedQuantum>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native automation output is closing");
+        }
+        self.candidate_root
+            .try_native_source_committed_quantum(binding)
     }
     /// Exact worker reply publication, still distinct from final Main delivery.
     pub fn native_source_processed_program_on_control(

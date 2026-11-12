@@ -776,3 +776,264 @@ fn comparison_preset_roundtrip_restores_both_variants_but_not_global_trims_or_by
         );
     }
 }
+
+#[test]
+fn actual_worker_preset_uses_retained_source_child_as_an_effect() {
+    let dir = Directory::new();
+    let (service, added, instrument) =
+        fixture(NativeDeviceClass::Instrument, "hex.instrument.operator");
+    let utility = added.state.project.tracks()[0].devices()[0].state().clone();
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: instrument,
+            state: utility.clone(),
+        }))
+        .unwrap();
+    let inserted = event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let Some(hex_project::Created::Device(child)) = inserted.created else {
+        panic!("source child")
+    };
+    let path = dir.0.join("Child.hex-device-preset.json");
+    service
+        .submit(Request::SaveDevicePreset {
+            owner: owner(&inserted, child, NativeDeviceClass::Effect),
+            path: path.clone(),
+        })
+        .unwrap();
+    let saved = event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert_eq!(saved.state.project, inserted.state.project);
+    assert_eq!(saved.state.revision, inserted.state.revision);
+    assert_eq!(hex_storage::preset::load(&path).unwrap().state, utility);
+
+    let wrong_class = dir.0.join("Wrong.hex-device-preset.json");
+    service
+        .submit(Request::SaveDevicePreset {
+            owner: owner(&saved, child, NativeDeviceClass::Instrument),
+            path: wrong_class.clone(),
+        })
+        .unwrap();
+    let rejected = event(&service);
+    assert!(rejected.error.is_some());
+    assert!(!wrong_class.exists());
+    assert_eq!(rejected.state.project, inserted.state.project);
+}
+
+#[test]
+fn worker_restores_a_complete_unit_and_uses_it_for_new_defaults() {
+    use hex_lattice_contract::DeviceAutomationTarget;
+    use hex_project::{
+        Created, DeviceComparison, DeviceModulation, DeviceModulationRoute, DeviceVariant,
+        ElementColor, ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
+        ModulationRouteId, ModulationSourceId, Modulator,
+    };
+    let directory = Directory::new();
+    let class = NativeDeviceClass::Effect;
+    let (mut service, first, root) = fixture(class, "hex.utility");
+    service
+        .set_device_defaults_directory(directory.0.clone())
+        .unwrap();
+    let track = first.state.project.tracks()[0].id();
+    let base = first.state.project.device(root).unwrap().state().clone();
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: root,
+            state: base.clone(),
+        }))
+        .unwrap();
+    let child_added = event(&service);
+    assert!(child_added.error.is_none(), "{:?}", child_added.error);
+    let Some(Created::Device(child)) = child_added.created else {
+        panic!("nested utility")
+    };
+    service
+        .submit(Request::Edit(Command::SetDeviceBypass {
+            device: child,
+            bypassed: true,
+        }))
+        .unwrap();
+    assert!(event(&service).error.is_none());
+
+    let active = base.clone().with_output_gain_millidb(-1100).unwrap();
+    let inactive = hex_engine::patch_native_device_parameter_for_class(
+        class,
+        &active,
+        ParameterId::from_static(1),
+        ParameterValue::Float(0.45),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceComparison {
+            device: root,
+            state: active,
+            comparison: Some(DeviceComparison::new(DeviceVariant::B, inactive)),
+        }))
+        .unwrap();
+    let compared = event(&service);
+    assert!(compared.error.is_none(), "{:?}", compared.error);
+    let next = compared.state.project.next_identity();
+    let slot = ModulationSourceId::new(next).unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceModulation {
+            device: root,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: slot,
+                    color: ElementColor::Cyan,
+                    enabled: true,
+                    state: hex_engine::macro_modulator::Settings { value: 0.625 }
+                        .encode()
+                        .unwrap(),
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1).unwrap(),
+                    source: slot,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: base.type_id(),
+                        target: DeviceAutomationTarget::Parameter(ParameterId::from_static(1)),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.15).unwrap(),
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )
+            .unwrap(),
+        }))
+        .unwrap();
+    let authored = event(&service);
+    assert!(authored.error.is_none(), "{:?}", authored.error);
+    let expected = authored
+        .state
+        .project
+        .capture_portable_device_unit(root)
+        .unwrap();
+    let target = owner(&authored, root, class);
+    let path = directory.0.join("Unit.hex-device-preset.json");
+    service
+        .submit(Request::SaveDeviceUnitPreset {
+            owner: target,
+            path: path.clone(),
+        })
+        .unwrap();
+    let saved = event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert_eq!(saved.state.project, authored.state.project);
+    assert_eq!(
+        hex_storage::preset::load_contents(&path).unwrap(),
+        PresetContents::Unit(expected.clone())
+    );
+    service
+        .submit(Request::SaveDeviceUnitDefault {
+            owner: target,
+            root: directory.0.clone(),
+        })
+        .unwrap();
+    assert!(event(&service).error.is_none());
+
+    service
+        .submit(Request::Edit(Command::RemoveDevice(child)))
+        .unwrap();
+    let removed = event(&service);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&removed, root, class),
+            path,
+        })
+        .unwrap();
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_eq!(
+        loaded
+            .state
+            .project
+            .capture_portable_device_unit(root)
+            .unwrap(),
+        expected
+    );
+    let restored_child = loaded
+        .state
+        .project
+        .devices()
+        .find(|item| item.parent() == Some(root))
+        .unwrap();
+    assert_ne!(restored_child.id(), child);
+    assert!(restored_child.bypassed());
+    let restored_id = restored_child.id();
+    assert_ne!(
+        loaded
+            .state
+            .project
+            .device(root)
+            .unwrap()
+            .modulation()
+            .sources()[0]
+            .id,
+        slot
+    );
+
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    let mut before = removed.state.project.snapshot();
+    before.next_id = undone.state.project.snapshot().next_id;
+    assert_eq!(undone.state.project.snapshot(), before);
+    assert!(undone.state.project.device(restored_id).is_none());
+
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class,
+            type_id: Box::new(base.type_id()),
+            before: None,
+        })
+        .unwrap();
+    let default = event(&service);
+    assert!(default.error.is_none(), "{:?}", default.error);
+    let Some(Created::Device(added)) = default.created else {
+        panic!("default root")
+    };
+    assert_ne!(added, root);
+    assert_eq!(
+        default
+            .state
+            .project
+            .capture_portable_device_unit(added)
+            .unwrap(),
+        expected
+    );
+    let legacy = directory.0.join("Legacy.hex-device-preset.json");
+    hex_storage::preset::save_new(
+        &legacy,
+        &Preset {
+            class: DeviceClass::Effect,
+            state: base,
+            comparison: None,
+        },
+    )
+    .unwrap();
+    let default_child = default
+        .state
+        .project
+        .devices()
+        .find(|item| item.parent() == Some(added))
+        .unwrap()
+        .id();
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&default, added, class),
+            path: legacy,
+        })
+        .unwrap();
+    let loaded_legacy = event(&service);
+    assert!(loaded_legacy.error.is_none(), "{:?}", loaded_legacy.error);
+    let project = &loaded_legacy.state.project;
+    let legacy_root = project.device(added).unwrap();
+    assert_eq!(legacy_root.state().output_gain_millidb(), -1100);
+    assert!(legacy_root.bypassed());
+    assert!(legacy_root.comparison().is_none());
+    assert!(project.device(default_child).unwrap().bypassed());
+}

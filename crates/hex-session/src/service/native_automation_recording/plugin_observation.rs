@@ -3,10 +3,15 @@
 //! is acknowledged; this adapter owns no audio endpoint or second recorder.
 use super::super::automation_draft::{AppliedEvent, Vst3ApplicationValue};
 use super::*;
-use crate::service::{PluginParameterDelivery, PluginParameterObservation as Observation};
+use crate::service::{
+    PluginParameterDelivery, PluginParameterObservation as Observation, Vst3EditorGroupReceipt,
+};
+mod group;
 use hex_storage::automation_draft::DraftClock;
 
-const MAX_FAILED_OBSERVATIONS: usize = 3;
+/// Editor Main FIFO (64 values and one terminal) plus the adapter's
+/// outstanding observation, one Session action, and one in-flight callback.
+pub const MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS: usize = 68;
 
 /// Copy failed writer custody and the original retained SDK observations to a
 /// new draft. The original file, batches and observations remain with the caller.
@@ -20,19 +25,56 @@ pub fn copy_failed_plugin_on_control(
     source: DeviceAutomationSource,
     observations: &[Observation],
 ) -> Result<DraftTerminal, String> {
+    copy_failed_plugin_with_receipt_on_control(
+        outcome,
+        destination,
+        limits,
+        max_events,
+        scope,
+        source,
+        observations,
+    )
+    .map(|receipt| receipt.terminal())
+}
+
+/// Copy and return a content-bound receipt; it does not transfer custody.
+pub fn copy_failed_plugin_with_receipt_on_control(
+    outcome: &DraftWorkerOutcome,
+    destination: &Path,
+    limits: DraftReadLimits,
+    max_events: u64,
+    scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    observations: &[Observation],
+) -> Result<super::super::automation_draft::RecoveryCopyReceipt, String> {
     use hex_storage::automation_draft::DraftTarget;
 
+    if matches!(scope.target, DeviceCaptureTarget::Vst3Group(_)) {
+        return group::copy_failed_group(
+            outcome,
+            destination,
+            limits,
+            max_events,
+            scope,
+            source,
+            observations,
+        );
+    }
     let DeviceCaptureTarget::Vst3(target) = scope.target else {
         return Err("plugin recovery requires a vst3 target".into());
     };
     if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
         return Err("plugin recovery event budget exceeds project limit".into());
     }
-    super::super::automation_draft::copy_failed_with_tail_on_control(
+    if outcome.failure.is_none() {
+        return Err("automation writer outcome is not a bounded failure".into());
+    }
+    super::super::automation_draft::copy_outcome_with_tail_on_control(
         outcome,
         destination,
         limits,
         max_events,
+        MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS,
         |reader, previous| {
             let expected = DraftTarget::Device {
                 device: target.device,
@@ -62,19 +104,19 @@ pub fn copy_failed_plugin_on_control(
                     terminal
                 }
             };
-            Ok((tail.events().collect(), terminal))
+            Ok((tail.events, terminal))
         },
     )
 }
 
 /// Validated, bounded continuation; original SDK observations remain with their owner.
 pub struct FailedPluginContinuation {
-    events: [Option<AppliedEvent>; MAX_FAILED_OBSERVATIONS],
+    events: Vec<AppliedEvent>,
     terminal: Option<DraftTerminal>,
 }
 impl FailedPluginContinuation {
     pub fn events(&self) -> impl Iterator<Item = AppliedEvent> + '_ {
-        self.events.iter().flatten().copied()
+        self.events.iter().copied()
     }
     /// Only an actual restoration supplies a Finished clock.
     pub fn terminal(&self) -> Option<DraftTerminal> {
@@ -93,7 +135,7 @@ pub fn prepare_failed_plugin_continuation(
     let DeviceCaptureTarget::Vst3(target) = scope.target else {
         return Err("failed plugin continuation requires a vst3 target");
     };
-    if observations.len() > MAX_FAILED_OBSERVATIONS
+    if observations.len() > MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS
         || !source.matches(scope)
         || !target.binding.is_valid()
         || target.binding.root != scope.stamp.output_identity
@@ -102,11 +144,14 @@ pub fn prepare_failed_plugin_continuation(
         return Err("failed plugin continuation has invalid scope or capacity");
     }
     let mut result = FailedPluginContinuation {
-        events: [None; MAX_FAILED_OBSERVATIONS],
+        events: Vec::new(),
         terminal: None,
     };
+    result
+        .events
+        .try_reserve_exact(observations.len())
+        .map_err(|_| "plugin recovery continuation storage refused")?;
     let mut previous = predecessor;
-    let mut index = 0;
     for observation in observations {
         if result.terminal.is_some() {
             return Err("plugin observation follows its terminal");
@@ -142,11 +187,7 @@ pub fn prepare_failed_plugin_continuation(
                             loop_pass: point.application.origin.loop_pass,
                             value,
                         };
-                        *result
-                            .events
-                            .get_mut(index)
-                            .ok_or("plugin recovery event budget exceeded")? = Some(event);
-                        index += 1;
+                        result.events.push(event);
                         previous = Some(event);
                     }
                     Observation::Restored(_) => {
@@ -183,7 +224,9 @@ pub fn prepare_failed_plugin_continuation(
                 }
                 result.terminal = Some(DraftTerminal::Aborted(DraftAbortReason::Cancelled));
             }
-            Observation::Ready { .. } => return Err("plugin recovery is already admitted"),
+            Observation::Ready { .. } | Observation::Grouped(_) => {
+                return Err("plugin recovery does not match the original single-target take");
+            }
         }
     }
     Ok(result)
@@ -219,6 +262,12 @@ impl DeviceAutomationTakeScope {
         current: AudioSourceContext,
         observation: &Observation,
     ) -> Result<Self, &'static str> {
+        if let Observation::Grouped(group) = *observation {
+            if group.context != current || group.receipt != Vst3EditorGroupReceipt::Ready {
+                return Err("grouped vst3 recording requires its original ready observation");
+            }
+            return group.scope();
+        }
         let Observation::Ready {
             key,
             context,
@@ -279,6 +328,21 @@ impl Active {
     ) -> Result<DeviceAutomationTakeAction, String> {
         use DeviceAutomationTakeAction as Action;
         match observation {
+            Observation::Grouped(group) => {
+                if !group.matches(self.scope, self.source) {
+                    return Err("grouped vst3 observation belongs to another delivery".into());
+                }
+                match group.receipt {
+                    Vst3EditorGroupReceipt::Ready => {
+                        Err("grouped vst3 recording is already admitted".into())
+                    }
+                    Vst3EditorGroupReceipt::Applied(rows) => {
+                        Ok(Action::AppendVst3Group(rows.rows().collect()))
+                    }
+                    Vst3EditorGroupReceipt::Finished(clock) => Ok(Action::FinishVst3Group(clock)),
+                    Vst3EditorGroupReceipt::Interrupted => Ok(Action::Interrupt),
+                }
+            }
             Observation::Delivered(point) => {
                 self.validate_plugin_delivery(point)?;
                 if !matches!(point.application.value, Vst3ApplicationValue::Value(_)) {
@@ -311,7 +375,10 @@ impl Active {
             Observation::Unchanged { key } => {
                 if key.generation != self.scope.stamp.project_generation
                     || key.token != self.scope.stamp.gesture_serial
-                    || !matches!(self.scope.target, DeviceCaptureTarget::Vst3(_))
+                    || !matches!(
+                        self.scope.target,
+                        DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_)
+                    )
                     || self.input.progress().accepted_events != 0
                 {
                     return Err("plugin recording has delivered changes".into());

@@ -165,6 +165,128 @@ fn device_titles_move_between_left_and_right_without_editing_on_hover(cx: &mut T
 }
 
 #[gpui::test]
+fn plain_drag_reorders_the_whole_selection_in_each_chain(cx: &mut TestAppContext) {
+    for kind in 0..3 {
+        let (service, mut state, track, owner) = if kind == 2 {
+            let (service, state, track, id, _, _) = actor_return_utility_fixture();
+            (service, state, track, DevicePanelOwner::Return(id))
+        } else {
+            let (service, state, track, _, _, _) = actor_utility_fixture();
+            let owner = if kind == 0 {
+                DevicePanelOwner::Track(track)
+            } else {
+                DevicePanelOwner::Main
+            };
+            (service, state, track, owner)
+        };
+        let state_for_effect = || {
+            hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap()
+        };
+        for _ in 0..if kind == 1 { 4 } else { 3 } {
+            let command = match owner {
+                DevicePanelOwner::Track(track) => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state_for_effect(),
+                },
+                DevicePanelOwner::Main => Command::InsertMainDevice {
+                    before: None,
+                    state: state_for_effect(),
+                },
+                DevicePanelOwner::Return(return_track) => Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state: state_for_effect(),
+                },
+            };
+            service.submit(Request::Edit(command)).unwrap();
+            state = receive_service_event(&service).state;
+        }
+        let original = state.project.clone();
+        let revision = state.revision;
+        let (handle, editor) = actor_editor_window(cx, service, state, track);
+        editor.update(cx, |view, cx| {
+            match owner {
+                DevicePanelOwner::Track(_) => {}
+                DevicePanelOwner::Main => {
+                    view.selected_track = None;
+                    view.device_panel.main_selected = Some(view.project_generation)
+                }
+                DevicePanelOwner::Return(id) => view.focused_return = Some(id),
+            }
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(2000.), px(800.)));
+        visual.run_until_parked();
+        let [a, b, c, d] = editor
+            .read_with(cx, |view, _| chain(view, owner))
+            .try_into()
+            .unwrap();
+        let title = |visual: &mut VisualTestContext, id: DeviceId| {
+            visual
+                .debug_bounds(Box::leak(
+                    format!("device-drag-title-{}", id.value()).into_boxed_str(),
+                ))
+                .unwrap_or_else(|| panic!("missing title for {id:?} in {owner:?}"))
+                .center()
+        };
+        let c_title = title(&mut visual, c);
+        let a_title = title(&mut visual, a);
+        visual.simulate_click(c_title, Modifiers::default());
+        visual.simulate_click(
+            a_title,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
+
+        let drop_at = |visual: &mut VisualTestContext, source, target, right| {
+            let landing = drag_title(visual, source, target, owner, right);
+            visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+        };
+        let idle = |view: &EditorView| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        };
+        drop_at(&mut visual, a, d, true);
+        pump_until(&editor, cx, idle);
+        let later = editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(chain(view, owner), [b, d, a, c]);
+            assert!(view.device_panel.is_selected(a) && view.device_panel.is_selected(c));
+            assert_eq!(view.state.as_ref().unwrap().revision, revision + 1);
+            view.state.as_ref().unwrap().project.clone()
+        });
+
+        drop_at(&mut visual, c, b, false);
+        pump_until(&editor, cx, idle);
+        let earlier = editor.read_with(cx, |view, _| {
+            assert_eq!(chain(view, owner), [a, c, b, d]);
+            assert_eq!(view.state.as_ref().unwrap().revision, revision + 2);
+            view.state.as_ref().unwrap().project.clone()
+        });
+        drop_at(&mut visual, a, c, false);
+        pump_until(&editor, cx, idle);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, revision + 2)
+        });
+        for (request, project) in [
+            (Request::Undo, later.clone()),
+            (Request::Undo, original),
+            (Request::Redo, later),
+            (Request::Redo, earlier),
+        ] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, project)
+            });
+        }
+    }
+}
+
+#[gpui::test]
 fn return_titles_reorder_with_undo_and_cancel_or_noop_without_history(cx: &mut TestAppContext) {
     let (service, mut state, track, owner, first, _) = actor_return_utility_fixture();
     for _ in 0..2 {

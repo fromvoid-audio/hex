@@ -84,18 +84,20 @@ pub(in crate::service) fn failed_outcome(
     let retained = if events.is_empty() {
         Vec::new()
     } else {
-        let mut batch = Box::new(Batch {
+        let mut payload = [event(1); EVENTS_PER_BATCH];
+        payload[..events.len()].copy_from_slice(events);
+        let batch = Box::new(Batch {
             slot: 0,
             ticket: 1,
-            events: [event(1); EVENTS_PER_BATCH],
+            payload: BatchPayload::Single(payload),
             len: events.len(),
         });
-        batch.events[..events.len()].copy_from_slice(events);
         vec![RetainedBatch(batch)]
     };
     DraftWorkerOutcome {
         path,
         admitted_events: acknowledged + events.len() as u64,
+        grouped: false,
         progress: DraftProgress {
             durable_events: acknowledged,
             ..Default::default()
@@ -396,6 +398,28 @@ fn send(input: &mut DraftInput, events: &[AppliedEvent]) {
         batch.push(*event).unwrap();
     }
     batch.submit().unwrap();
+}
+
+#[cfg(feature = "recording-fault-test-support")]
+#[test]
+fn per_take_injected_append_failure_retains_original_batch_without_terminal() {
+    let files = Files::new();
+    let path = files.path("injected-writer");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&path, &project, target, stamp).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let (mut input, worker) = spawn_writer_on_control(writer).unwrap();
+    input.inject_next_append_failure().unwrap();
+    assert!(input.inject_next_append_failure().is_err());
+    send(&mut input, &[event(1)]);
+    input.finish(DraftTerminal::Interrupted).unwrap();
+    let outcome = worker.join_on_control().unwrap();
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.retained.len(), 1);
+    assert_eq!(outcome.retained[0].events(), &[event(1)]);
+    assert_eq!(outcome.requested_terminal, DraftTerminal::Interrupted);
+    assert_eq!(outcome.progress.durable_terminal, None);
+    assert_eq!(std::fs::read(path).unwrap(), original);
 }
 
 pub(in crate::service) fn injected_failed_writer(
@@ -938,4 +962,162 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
             assert!(path.exists(), "the sealed source remains available");
         }
     }
+}
+
+fn grouped_source() -> (Session, Vst3GroupTarget, DraftProvenance) {
+    let mut session = Session::new(48_000, 16, 4096).unwrap();
+    let state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([9; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [6; 32],
+                info_sha256: [7; 32],
+            },
+        },
+        component: Some(&[42]),
+        controller: Some(&[]),
+    })
+    .unwrap();
+    let Created::Device(device) = session
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("expected a vst3 device");
+    };
+    (
+        session,
+        Vst3GroupTarget::new(device, [9; 16], &[0, 11]).unwrap(),
+        fixture().2,
+    )
+}
+
+fn group_rows() -> [GroupDraftEvent; 4] {
+    let row = |ordinal: u64, parameter, sdk_gesture, application| GroupDraftEvent {
+        ordinal,
+        parameter,
+        sdk_sequence: ordinal + 40,
+        sdk_gesture,
+        clock: DraftClock {
+            performance_frame: ordinal,
+            content_frame: ordinal + 10,
+            loop_pass: 0,
+        },
+        application,
+    };
+    [
+        row(1, 0, 23, GroupApplication::Value(-0.0)),
+        row(2, 11, 24, GroupApplication::Value(1.0 / 3.0)),
+        row(3, 0, 23, GroupApplication::Restored),
+        row(4, 11, 24, GroupApplication::Restored),
+    ]
+}
+
+fn send_group(input: &mut DraftInput, rows: &[GroupDraftEvent]) {
+    let mut batch = input.reserve_batch().unwrap().unwrap();
+    assert!(batch.push(event(1)).is_err());
+    for row in rows {
+        batch.push_group(*row).unwrap();
+    }
+    batch.submit().unwrap();
+}
+
+#[test]
+fn grouped_worker_acknowledges_both_members_before_a_single_terminal() {
+    let files = Files::new();
+    let path = files.path("grouped-source");
+    let (session, target, stamp) = grouped_source();
+    let clock = hex_storage::automation_draft::CaptureClock {
+        sample_rate: 48_000,
+        loop_region: None,
+    };
+    let (mut input, worker) =
+        start_group_on_control(&session, None, path.clone(), target, stamp, clock).unwrap();
+    let rows = group_rows();
+    send_group(&mut input, &rows[..2]);
+    send_group(&mut input, &rows[2..]);
+    let terminal = DraftTerminal::Finished(rows[3].clock);
+    input.finish(terminal).unwrap();
+    let outcome = worker.join_on_control().unwrap();
+    assert!(outcome.grouped);
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    assert_eq!(outcome.progress.durable_events, 4);
+    assert_eq!(outcome.progress.durable_terminal, Some(terminal));
+    let mut file = reader(&path).into_completed_group().unwrap();
+    assert_eq!(file.target(), target);
+    let mut found = [None; 4];
+    assert_eq!(file.read_events(0, &mut found).unwrap(), 4);
+    assert_eq!(found, rows.map(Some));
+}
+
+#[cfg(feature = "recording-fault-test-support")]
+#[test]
+fn grouped_writer_failure_keeps_exact_acknowledged_and_retained_rows() {
+    let files = Files::new();
+    let path = files.path("grouped-failed");
+    let (session, target, stamp) = grouped_source();
+    let clock = hex_storage::automation_draft::CaptureClock {
+        sample_rate: 48_000,
+        loop_region: None,
+    };
+    let (mut input, worker) =
+        start_group_on_control(&session, None, path.clone(), target, stamp, clock).unwrap();
+    let rows = group_rows();
+    send_group(&mut input, &rows[..2]);
+    let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
+    loop {
+        if let Some(ack) = input.poll() {
+            assert!(matches!(ack, DraftWriteAck::Durable { .. }), "{ack:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        crate::test_wait::pause();
+    }
+    let bytes = fs::read(&path).unwrap();
+    input.inject_next_append_failure().unwrap();
+    send_group(&mut input, &rows[2..]);
+    let end = DraftTerminal::Finished(rows[3].clock);
+    input.finish(end).unwrap();
+    let outcome = worker.join_on_control().unwrap();
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.admitted_events, 4);
+    assert_eq!(outcome.progress.durable_events, 2);
+    assert_eq!(outcome.progress.durable_terminal, None);
+    assert_eq!(outcome.retained[0].group_events().unwrap(), &rows[2..]);
+
+    let limits = DraftReadLimits {
+        max_source_bytes: 65_536,
+    };
+    let interrupted_path = files.path("grouped-interrupted");
+    copy_failed_on_control(&outcome, &interrupted_path, limits, 4).unwrap();
+    let mut copy = reader(&interrupted_path);
+    assert_eq!(copy.outcome(), DraftOutcome::Interrupted);
+    let mut found = [None; 4];
+    assert_eq!(copy.read_group_events(0, &mut found).unwrap(), 4);
+    assert_eq!(found, rows.map(Some));
+    assert!(copy.into_completed_group().is_err());
+
+    let complete_path = files.path("grouped-complete");
+    let receipt = copy_group_outcome_with_tail_on_control(
+        &outcome,
+        &complete_path,
+        limits,
+        4,
+        0,
+        |original, previous| {
+            assert_eq!(original.provenance(), stamp);
+            assert_eq!(previous, Some(rows[3]));
+            Ok((Vec::new(), end))
+        },
+    )
+    .unwrap();
+    let mut completed = receipt
+        .open_completed_group_on_control(&complete_path, limits, 4)
+        .unwrap();
+    assert_eq!(completed.read_events(0, &mut found).unwrap(), 4);
+    assert_eq!(found, rows.map(Some));
+    assert_eq!(fs::read(path).unwrap(), bytes);
 }

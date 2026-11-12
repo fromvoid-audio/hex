@@ -1081,6 +1081,8 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: next,
@@ -1504,6 +1506,49 @@ fn zero_latency_audio_feed_and_device_insertion_adopt_fresh_empty_delay_layouts_
     for (offset, frame) in actual.iter().enumerate() {
         let sample = f.samples[8 + offset];
         assert_eq!(*frame, [sample[0] * 2.5, sample[1] * 2.5]);
+    }
+}
+
+#[test]
+fn zero_latency_device_edits_preserve_track_compensation_history() {
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let revision = prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 7);
+        let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut oracle = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut donor, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        let Created::Device(device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[1],
+                before: None,
+                state: state(0).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        for remove in [false, true] {
+            if remove {
+                f.editor.execute(Command::RemoveDevice(device)).unwrap();
+            }
+            let mut candidate = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            candidate.try_inherit_state_from(&mut donor).unwrap();
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for chunk in actual.chunks_mut(partition) {
+                candidate.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                oracle.render(chunk).unwrap();
+            }
+            assert_eq!(actual, expected, "partition={partition} remove={remove}");
+            donor = candidate;
+        }
     }
 }
 

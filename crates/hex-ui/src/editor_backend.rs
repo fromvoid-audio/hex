@@ -80,7 +80,8 @@ pub enum EditorAudioEvent {
         source: hex_audio::prepared::AppliedAudioSource,
     },
     /// Latest native editor touch observed on an exact retained source. This
-    /// copied hint requests fresh controller values; it authors no automation.
+    /// carries an optional SDK-confirmed Perform value for immediate display.
+    /// Controller pages still own metadata and edit authority.
     /// The desktop coalesces per device under UI backpressure, never native
     /// gesture receipts or their processing order.
     PluginParameterTouched {
@@ -89,6 +90,7 @@ pub enum EditorAudioEvent {
         device: u64,
         parameter: u32,
         sequence: u64,
+        value: Option<hex_session::device_gesture::PluginParameterValue>,
     },
     /// The complete set of vst3 device ids for this document on this output whose endpoint
     /// faulted and now passes audio through (#3977). Sent when the set
@@ -115,13 +117,16 @@ impl DegradedDevices {
     pub(crate) fn contains(&self, device: u64) -> bool {
         self.0.binary_search(&device).is_ok()
     }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn as_slice(&self) -> &[u64] {
         &self.0
     }
 }
 
 /// UI-safe summary of a worker-owned publication attempt.
+// Resident metadata is bounded scalar data. Keeping it inline avoids an allocation
+// for each control-side publication while retaining exact callback correlation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum EditorPublicationState {
     Preparing,
@@ -146,7 +151,7 @@ pub enum EditorPublicationState {
     Fault(String),
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::DegradedDevices;
 

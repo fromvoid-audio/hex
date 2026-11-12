@@ -14,6 +14,7 @@ use hex_session::service::{
 };
 mod degraded;
 mod editor;
+pub(super) mod editor_recording;
 mod parameter_gesture;
 mod parameters;
 mod restore;
@@ -53,6 +54,7 @@ struct Source {
     queued: bool,
     observes_latency: bool,
     editor_open: bool,
+    editor_transfer: bool,
     edit_backlog: bool,
     edit_recovery: Option<bool>,
     pending_touch: Option<parameter_touches::Touch>,
@@ -145,6 +147,7 @@ pub(super) struct Plugins {
     parameters: Option<parameters::Inventory>,
     observed_parameters: Vec<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
+    editor_recording: Option<editor_recording::Recording>,
     // At most two control records: a late prior point and the current point.
     confirmed_parameters:
         std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
@@ -203,7 +206,7 @@ impl Plugins {
             })
             .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
         match Hosting::current_on_control() {
-            Ok(host) => self.host = Some(host),
+            Ok(host) => self.host = Some(host.with_grouped_editor_callbacks()),
             Err(error) => self.unavailable = Some(error),
         }
     }
@@ -236,6 +239,7 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        self.close_editor_recording();
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
         }
@@ -257,11 +261,12 @@ impl Plugins {
             source.edit_recovery = None;
             source.pending_touch = None;
             source.editor_open = false;
+            source.editor_transfer = false;
         }
         self.editor_checked = None;
         if let Some(editor::EditorOperation::Pending {
             generation,
-            report: true,
+            action: editor::EditorAction::Toggle,
             ..
         }) = &self.editor
         {
@@ -330,6 +335,7 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         self.pending.is_none()
             && self.editor.is_none()
+            && self.editor_recording.is_none()
             && self.parameters.is_none()
             && self.restore.is_none()
             && !self.parameter_override_cleanup_pending()
@@ -387,6 +393,15 @@ impl Plugins {
         context: AudioSourceContext,
         target: hex_session::service::automation_draft::Vst3CaptureTarget,
     ) -> bool {
+        self.matches_capture_binding(context, target.device.value(), target.binding)
+    }
+
+    pub(super) fn matches_capture_binding(
+        &self,
+        context: AudioSourceContext,
+        device: u64,
+        binding: Binding,
+    ) -> bool {
         self.sources
             .iter()
             .rev()
@@ -394,9 +409,9 @@ impl Plugins {
                 source.accepted
                     && !source.retiring
                     && source.project_generation == context.project_generation
-                    && source.device == target.device.value()
+                    && source.device == device
             })
-            .is_some_and(|source| source.binding == target.binding)
+            .is_some_and(|source| source.binding == binding)
     }
 
     pub(super) fn retire_document_sources(&mut self, generation: u64) {
@@ -499,6 +514,7 @@ impl Plugins {
                 queued: false,
                 observes_latency: false,
                 editor_open: false,
+                editor_transfer: false,
                 edit_backlog: false,
                 edit_recovery: None,
                 pending_touch: None,
@@ -514,7 +530,7 @@ impl Plugins {
                 result: None,
             });
         }
-        self.poll(output, Some(input.insertion.context));
+        self.poll_for_context(output, Some(input.insertion.context), None);
         match self.pending.as_ref().and_then(|p| p.result.as_ref()) {
             Some(Ok(state)) => Ok(PluginEffectPreparationState::Ready(state.clone())),
             Some(Err(error)) => Err(error.clone()),
@@ -548,12 +564,29 @@ impl Plugins {
             source.retiring |= !source.accepted;
         }
     }
-    pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
+    pub fn poll(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) {
+        self.poll_for_context(
+            output,
+            desired.map(CanonicalAudioSourceSnapshot::context),
+            desired,
+        );
+    }
+
+    fn poll_for_context(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        context: Option<AudioSourceContext>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
             return;
         };
-        self.poll_editor(control, context);
+        self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
         self.poll_parameter_override(control, context);
         self.poll_restore(control, context);
@@ -684,7 +717,7 @@ impl Plugins {
         // removing one here would shift a later source past its renewal stage.
         while self.restore.is_none() && index < self.sources.len() {
             let source = &self.sources[index];
-            if source.retiring {
+            if source.retiring && !source.editor_transfer && !self.editor_holds(source.binding) {
                 let _ = control.retire_native_source_preparation(source.binding);
                 if control
                     .recover_native_source_preparation(source.binding)
@@ -1036,6 +1069,7 @@ mod idle_tests {
             queued: true,
             observes_latency: true,
             editor_open: false,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
@@ -1089,6 +1123,7 @@ mod idle_tests {
             queued: true,
             observes_latency: true,
             editor_open: true,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,

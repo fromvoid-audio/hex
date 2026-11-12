@@ -43,6 +43,93 @@ fn assert_value(program: &PreparedForeignAutomation, revision: u64) {
 }
 
 #[test]
+fn selected_history_preserves_old_quantum_and_immediate_predecessor_across_many_edits() {
+    let mut previous = program(1);
+    let initial = previous.clone();
+    let bytes = previous.storage_bytes();
+    for revision in 2..=64 {
+        let original = previous.clone();
+        let mut next = program(revision);
+        next.retain_selected_on_control(&previous, &[key(1)])
+            .unwrap();
+        assert!(previous.shares_storage_with(&original));
+        assert!(next.shares_current_program_history_with(&previous));
+        assert!(next.shares_current_program_history_with(&initial));
+        assert_value(&next, 1);
+        assert_value(&next, revision - 1);
+        assert_value(&next, revision);
+        assert!(next.storage_owners().count() <= 3);
+        assert_eq!(next.storage_bytes(), next.storage_owners().count() * bytes);
+        if revision > 3 {
+            assert!(!next.borrow().contains_revision(key(revision - 2)));
+        }
+        previous = next;
+    }
+}
+
+#[test]
+fn selective_history_refuses_unknown_source_alias_and_capacity_without_mutation() {
+    let mut previous = program(1);
+    for revision in 2..=9 {
+        let mut next = program(revision);
+        next.retain_previous_on_control(&previous).unwrap();
+        previous = next;
+    }
+    let mut cases = vec![(program(10), vec![key(10)]), (program(9), vec![key(1)])];
+    let mut wrong_source = program(10);
+    wrong_source.binding.epoch += 1;
+    cases.push((wrong_source, vec![key(1)]));
+    let mut conflict = program(10);
+    conflict.retain_previous_on_control(&program(1)).unwrap();
+    cases.push((conflict, vec![key(1)]));
+    cases.push((program(10), (1..=8).map(key).collect()));
+    for (mut candidate, required) in cases {
+        let original = candidate.clone();
+        assert!(
+            candidate
+                .retain_selected_on_control(&previous, &required)
+                .is_err()
+        );
+        assert!(candidate.shares_storage_with(&original));
+        assert_eq!(candidate.storage_bytes(), original.storage_bytes());
+    }
+    assert_value(&previous, 1);
+    assert_value(&previous, 9);
+}
+
+#[test]
+fn selective_history_keeps_only_requested_keys_and_predecessor() {
+    let mut previous = program(1);
+    for revision in 2..=9 {
+        let mut next = program(revision);
+        next.retain_previous_on_control(&previous).unwrap();
+        previous = next;
+    }
+    let original = previous.clone();
+    let mut candidate = program(10);
+    candidate.retain_previous_on_control(&program(2)).unwrap();
+    candidate
+        .retain_selected_on_control(&previous, &[key(1), key(5)])
+        .unwrap();
+    for revision in [1, 5, 9, 10] {
+        assert_value(&candidate, revision);
+    }
+    for revision in [2, 3, 4, 6, 7, 8] {
+        assert!(!candidate.borrow().contains_revision(key(revision)));
+    }
+    assert_eq!(candidate.storage_owners().count(), 4);
+    assert!(previous.shares_storage_with(&original));
+
+    let mut successor = program(11);
+    successor
+        .retain_selected_on_control(&candidate, &[])
+        .unwrap();
+    assert_value(&successor, 10);
+    assert_eq!(successor.storage_owners().count(), 2);
+    assert!(!successor.borrow().contains_revision(key(1)));
+}
+
+#[test]
 fn received_frontier_advances_without_losing_unfinished_or_newer_versions() {
     let mut previous = program(1);
     let bytes = previous.storage_bytes();

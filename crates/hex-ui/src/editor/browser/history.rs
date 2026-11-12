@@ -116,9 +116,7 @@ impl History {
 
 impl EditorView {
     fn browser_history_entry(&self, cx: &App) -> Entry {
-        let count = self.browser_visible_entries(cx).len()
-            + self.browser_visible_devices(cx).len()
-            + self.browser_visible_plugins(cx).len();
+        let count = self.browser_result_count(cx);
         let top = self.browser_history_top_index(count, cx);
         Entry {
             location: Location {
@@ -296,6 +294,12 @@ impl EditorView {
     }
 
     pub(super) fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
+        if self.browser.section == BrowserSection::ProjectSamples {
+            let state = self.state.as_ref()?;
+            return self.browser_project_samples(cx).get(index).map(|row| {
+                BrowserItemKey::ProjectSample(self.project_generation, state.revision, row.asset)
+            });
+        }
         let files = self.browser_visible_entries(cx);
         let devices = self.browser_visible_devices(cx);
         let plugins = self.browser_visible_plugins(cx);
@@ -331,6 +335,18 @@ impl EditorView {
             self.browser_devices_first(cx),
         );
         match key {
+            BrowserItemKey::ProjectSample(generation, revision, asset) => {
+                let state = self.state.as_ref()?;
+                if self.browser.section != BrowserSection::ProjectSamples
+                    || *generation != self.project_generation
+                    || *revision != state.revision
+                {
+                    return None;
+                }
+                self.browser_project_samples(cx)
+                    .iter()
+                    .position(|row| row.asset == *asset)
+            }
             BrowserItemKey::File(path) => files
                 .iter()
                 .position(|entry| &entry.path == path)
@@ -356,6 +372,7 @@ impl EditorView {
             BrowserSection::Projects => (true, true, false),
             BrowserSection::Instruments
             | BrowserSection::Plugins
+            | BrowserSection::ProjectSamples
             | BrowserSection::Collection(_) => (false, false, false),
         };
         if (listing && self.browser.loading)
@@ -386,6 +403,10 @@ impl EditorView {
             .and_then(|key| self.browser_history_index(key, cx));
         self.browser.results_focused = selected.is_some();
         self.browser.selected_index = selected.unwrap_or(0);
+        self.browser.project_sample_selection = entry
+            .position
+            .selected
+            .filter(|key| selected.is_some() && matches!(key, BrowserItemKey::ProjectSample(..)));
         let top = entry
             .position
             .top
@@ -398,7 +419,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     fn entry(index: usize) -> Entry {
