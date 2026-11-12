@@ -534,6 +534,9 @@ pub enum DeviceClipboardAction {
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
     /// Place an exact current-project asset using the Arrangement import law.
+    /// Generation and revision must still match; offline, device-owned and
+    /// nonresident media are refused. Warp and optional browser audition timing
+    /// are captured by the caller, and successful placement is one undo step.
     InsertProjectSample {
         project_generation: u64,
         revision: u64,
