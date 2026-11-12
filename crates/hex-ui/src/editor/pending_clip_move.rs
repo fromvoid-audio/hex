@@ -319,8 +319,8 @@ impl EditorView {
         drag.cursor_position().map(|(_, frame)| frame)
     }
 
-    /// The callback-confirmed anchor is shown separately only while it differs
-    /// from the held pointer target. Never infer a position from submission.
+    /// Show the callback-confirmed anchor for the held gesture. Never infer an
+    /// audible position from a submitted pointer target.
     pub(super) fn audible_clip_move_anchor(&self) -> Option<(hex_project::TrackId, u64)> {
         let drag = self.active_clip_drag.as_ref()?;
         let (audio_revision, applied) = self.applied_clip_preview?;
@@ -337,8 +337,6 @@ impl EditorView {
             || applied.context.editor_revision != state.revision
             || applied.gesture != desired.gesture
             || applied.sequence > desired.sequence
-            || (applied.track, applied.position, applied.mode)
-                == (desired.track, desired.position, desired.mode)
         {
             return None;
         }

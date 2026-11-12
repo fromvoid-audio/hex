@@ -4589,13 +4589,20 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
         std::thread::yield_now();
     }
     visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("clip-audition-audible-marker")
-            .is_none()
-    );
+    let marker = visual
+        .debug_bounds("clip-audition-audible-marker")
+        .expect("applied B marker");
+    editor.read_with(&visual, |view, _| {
+        let (track, frame) = view.audible_clip_move_anchor().unwrap();
+        assert_eq!(track, next_identity.track);
+        let lane = view.drag_lanes.get(&track).unwrap();
+        let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
+        let expected_x = lane.left + lane.width * viewport.fraction(frame).unwrap();
+        assert!((f32::from(marker.left()) - expected_x).abs() < 2.0);
+        assert!((f32::from(marker.top()) - lane.top).abs() < 2.0);
+    });
     let identity = next_identity;
-    editor.update(&mut visual, |view, _| {
+    editor.update(&mut visual, |view, cx| {
         let drag = view.active_clip_drag.as_ref().unwrap().clone();
         drag.copy_modifier.set(true);
         view.sync_held_clip_move_audition();
@@ -4638,10 +4645,20 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
             hex_session::service::ArrangementMoveMode::AliasCopy
         );
         drag.destination.set(None);
-        view.sync_held_clip_move_audition();
+        assert!(
+            view.sync_held_clip_move_audition(),
+            "cancellation requests a repaint"
+        );
         assert!(view.expected_clip_preview.is_none());
         assert!(view.applied_clip_preview.is_none());
+        cx.notify();
     });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("clip-audition-audible-marker")
+            .is_none()
+    );
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
