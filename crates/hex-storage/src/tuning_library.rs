@@ -147,7 +147,13 @@ fn lock_slot(path: &Path) -> Result<File, String> {
     if !opened.is_file() || opened.len() != 0 {
         return Err("tuning slot lock is not an empty regular file".into());
     }
-    fs2::FileExt::try_lock_exclusive(&file).map_err(|e| format!("tuning slot is in use · {e}"))?;
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            "tuning slot is in use · try again".to_owned()
+        } else {
+            format!("cannot lock tuning slot · {e}")
+        }
+    })?;
     let current = fs::symlink_metadata(&lock_path)
         .map_err(|e| format!("cannot inspect tuning slot lock · {e}"))?;
     if current.file_type().is_symlink() || !current.is_file() || current.len() != 0 {
