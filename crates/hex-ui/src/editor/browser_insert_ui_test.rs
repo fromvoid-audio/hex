@@ -1,5 +1,7 @@
 //! Real Enter routing into the canonical worker, using bounded private startup roots.
 use super::*;
+use crate::editor::browser::BrowserItemKey;
+use gpui::size;
 use hex_session::service::Request;
 
 fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
