@@ -6878,6 +6878,222 @@ pub(super) mod tests {
     }
 
     #[gpui::test]
+    fn held_recovery_allows_next_section_copy_and_applied_play(cx: &mut TestAppContext) {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let environment = super::super::test_environment::Environment::new().unwrap();
+        let recovery = environment.root().join("held-section.hex-journal");
+        let commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
+            cx,
+            commands,
+            false,
+            true,
+            Some(recovery.clone()),
+        );
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let mut gate = hex_session::service::hold_next_checkpoint(recovery).unwrap();
+        let (revision, expected) = editor.update(&mut visual, |view, _| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let expected = view.playback_start_frame();
+            let revision = view.state.as_ref().unwrap().revision;
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            (revision, expected)
+        });
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut entered_at = None;
+        let mut first = None;
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if entered_at.is_none() {
+                match gate.try_entered() {
+                    Ok(()) => entered_at = Some(Instant::now()),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(error) => panic!("checkpoint gate failed: {error}"),
+                }
+            }
+            if first.is_none() {
+                first = editor.read_with(&visual, |view, _| {
+                    view.service.try_arrangement_edit_view().ok()
+                });
+            }
+            let applied = editor.read_with(&visual, |view, _| {
+                view.audio_status().is_some_and(|status| {
+                    !status.stopped_edit_pending()
+                        && status
+                            .recording_source()
+                            .is_some_and(|source| source.context.editor_revision == revision + 1)
+                })
+            });
+            if entered_at.is_some() && first.is_some() && applied {
+                break;
+            }
+            assert!(
+                entered_at.is_none_or(|time| time.elapsed() < Duration::from_millis(1500)),
+                "first source did not arrive within the held checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "held first checkpoint and applied source"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.service.try_event().is_err(),
+                "first terminal waits for recovery"
+            );
+            assert!(view.observe_duplicate_view(first.take().unwrap()));
+            assert!(view.sections.ahead.is_some());
+            cx.notify();
+        });
+        let second = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(
+                entered_at.is_some_and(|time| time.elapsed() < Duration::from_millis(1500)),
+                "second copy missed the held checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "second copy while recovery is held"
+            );
+            std::thread::yield_now();
+        };
+        let committed = second.state.upgrade().unwrap();
+        assert_eq!(committed.revision, revision + 2);
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.service.try_event().is_err(),
+                "ordered terminals still wait for recovery"
+            );
+            assert!(view.observe_duplicate_view(second));
+            cx.notify();
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.section_copy_play_source()
+                    .is_some_and(|source| source.context.editor_revision == revision + 2)
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                entered_at.is_some_and(|time| time.elapsed() < Duration::from_millis(1500)),
+                "applied source missed the held checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "applied second source while recovery is held"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.audio_status().unwrap().playing.load(Acquire))
+        });
+        visual.run_until_parked();
+        let marker = visual.debug_bounds("arrangement-section-1").unwrap();
+        gate.release()
+            .expect("checkpoint must still be held after the second copy and Play");
+        let first_terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "first durable terminal");
+            std::thread::yield_now();
+        };
+        let second_terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "second durable terminal");
+            std::thread::yield_now();
+        };
+        assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+        editor.update(&mut visual, |view, cx| {
+            view.receive(first_terminal);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("arrangement-section-1"), Some(marker));
+        editor.update(&mut visual, |view, cx| {
+            view.receive(second_terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
+            view.toggle_play();
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 512]).unwrap();
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("arrangement-section-1"), Some(marker));
+        editor.update(&mut visual, |view, cx| {
+            view.history_action(Request::Undo, cx)
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let undone = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision + 3)
+            });
+            if undone {
+                break;
+            }
+            assert!(Instant::now() < deadline, "undo after durable copies");
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .len(),
+                2
+            )
+        });
+        fixture.finish(cx);
+        drop(environment);
+    }
+
+    #[gpui::test]
     fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppContext) {
         use std::sync::atomic::Ordering::Acquire;
 
