@@ -1281,11 +1281,10 @@ impl EditorView {
                     .target
                     .current(&state.project, self.project_generation)
                     .is_none()
-        }) {
-            if let Some(marquee) = lanes.marquee.take() {
-                lanes.selected = marquee.base;
-                lanes.range = marquee.base_range;
-            }
+        }) && let Some(marquee) = lanes.marquee.take()
+        {
+            lanes.selected = marquee.base;
+            lanes.range = marquee.base_range;
         }
         for entries in [&mut lanes.main, &mut lanes.extra, &mut lanes.known] {
             entries.retain_mut(|entry| {
