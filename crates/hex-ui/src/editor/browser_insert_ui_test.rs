@@ -148,6 +148,26 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
         view.offline_cursor = 100;
         (asset, revision, generation)
     });
+    editor.update(cx, |view, _| {
+        view.set_auto_warp_imports_for_test(true);
+        let captured = view.capture_audio_import_policy(Request::InsertProjectSample {
+            project_generation: generation,
+            revision,
+            asset,
+            track,
+            start: 100,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: None,
+        });
+        assert!(matches!(
+            captured,
+            Ok(Request::InsertProjectSample {
+                warp: hex_project::AudioImportWarp::Beats,
+                ..
+            })
+        ));
+        view.set_auto_warp_imports_for_test(false);
+    });
     let source = visual.debug_bounds("browser-project-samples").unwrap();
     visual.simulate_click(source.center(), Modifiers::default());
     visual.run_until_parked();
