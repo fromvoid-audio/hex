@@ -1424,30 +1424,57 @@ fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
             let mut origin = 0;
             for chunk in frames.chunks_mut(partition) {
                 endpoint.render(&mut playback, chunk).unwrap();
-                events.extend(endpoint.notes.iter().map(|(offset, note)| (origin + offset, *note)));
+                events.extend(
+                    endpoint
+                        .notes
+                        .iter()
+                        .map(|(offset, note)| (origin + offset, *note)),
+                );
                 origin += chunk.len();
             }
             let (frame, first) = events.first().copied().expect("initial onset");
             assert_eq!(frame, 0);
             assert!(first.on && first.pitch == 60 && first.channel == 2 && first.velocity == 101);
             let wraps = (frames.len() - 1) / 11;
-            assert_eq!(events.len(), 1 + 2 * wraps, "partition={partition} stop={stop}");
+            assert_eq!(
+                events.len(),
+                1 + 2 * wraps,
+                "partition={partition} stop={stop}"
+            );
             let mut current = first;
             let mut ids = std::collections::HashSet::from([first.note_id]);
             for wrap in 1..=wraps {
                 let (off_frame, off) = events[2 * wrap - 1];
                 let (on_frame, on) = events[2 * wrap];
                 assert_eq!((off_frame, on_frame), (11 * wrap, 11 * wrap));
-                assert!(!off.on && off.note_id == current.note_id && off.pitch == 60 && off.channel == 2);
+                assert!(
+                    !off.on
+                        && off.note_id == current.note_id
+                        && off.pitch == 60
+                        && off.channel == 2
+                );
                 assert!(on.on && on.pitch == 60 && on.channel == 2 && on.velocity == 101);
                 assert!(ids.insert(on.note_id), "reused note ID at wrap {wrap}");
                 current = on;
             }
-            playback.apply(if stop { SessionPlaybackCommand::Stop } else { SessionPlaybackCommand::Pause }).unwrap();
+            playback
+                .apply(if stop {
+                    SessionPlaybackCommand::Stop
+                } else {
+                    SessionPlaybackCommand::Pause
+                })
+                .unwrap();
             endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
             assert_eq!(
                 endpoint.notes,
-                [(0, hex_lattice::ForeignNote { on: false, velocity: 0, ..current })],
+                [(
+                    0,
+                    hex_lattice::ForeignNote {
+                        on: false,
+                        velocity: 0,
+                        ..current
+                    }
+                )],
                 "partition={partition} stop={stop}"
             );
         }
