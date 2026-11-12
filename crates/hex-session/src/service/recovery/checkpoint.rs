@@ -322,6 +322,88 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() {
+        let directory =
+            std::env::temp_dir().join(format!("hex-duplicate-checkpoint-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let track = next(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            }))
+            .unwrap();
+        let placed = next(&service);
+        let mut clip = placed.state.project.tracks()[0].midi_clips()[0].id();
+        let mut revision = placed.state.revision;
+        for alias in [false, true] {
+            let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+            let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+            CHECKPOINT_GATE
+                .lock()
+                .unwrap()
+                .push((path.clone(), entered_tx, release_rx));
+            let request = if alias {
+                Request::DuplicateAliasClips {
+                    project_generation: 0,
+                    revision,
+                    clips: vec![clip],
+                }
+            } else {
+                Request::DuplicateClips {
+                    project_generation: 0,
+                    revision,
+                    clips: vec![clip],
+                }
+            };
+            service.submit(request).unwrap();
+            entered
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .unwrap();
+            let display = service.try_duplicate_view().unwrap();
+            assert_eq!(display.project_generation, 0);
+            assert_eq!(display.previous_revision, revision);
+            assert_eq!(display.state.revision, revision + 1);
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap().tracks()[0]
+                    .midi_clips()
+                    .len(),
+                if alias { 2 } else { 1 }
+            );
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            release.send(()).unwrap();
+            let terminal = next(&service);
+            assert!(terminal.request_complete && terminal.error.is_none());
+            assert!(Arc::ptr_eq(&display.state, &terminal.state));
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *terminal.state.project
+            );
+            let Some(Created::Clips { first, last }) = terminal.created else {
+                panic!("created duplicate");
+            };
+            assert_eq!(first, last);
+            clip = first;
+            revision = terminal.state.revision;
+        }
+        service.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn solo_observation_does_not_hide_a_recovery_conflict() {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(

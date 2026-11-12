@@ -1120,6 +1120,9 @@ impl EditorView {
         if let Ok(view) = self.service.try_solo_view() {
             visible_change |= self.observe_solo_view(view);
         }
+        if let Ok(view) = self.service.try_duplicate_view() {
+            visible_change |= self.observe_duplicate_view(view);
+        }
         visible_change |= self.poll_retired_action_outcomes();
         if self.retired_action_outcomes.is_none()
             && self.audio.as_ref().is_some_and(|audio| {
