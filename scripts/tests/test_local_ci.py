@@ -689,6 +689,164 @@ class LocalCiRunnerTests(unittest.TestCase):
             report["artifact"] = runner.identify_release_artifact(artifact, argv)
         return runner, report
 
+    def _reserved_release_runner(self, name, *, absent=False):
+        target = self.repo / name
+        if not absent:
+            target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"),
+                        runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        return runner, reservation, target
+
+    def _release_owner_path(self, target):
+        dev = local_ci.target_state_paths(target, self.target_state_dir)[1]
+        return dev.with_name(dev.name.removesuffix(".owner.json") + ".release-owner.json")
+
+    def _finish_reserved_release(self, runner, report, target):
+        artifact = target / "release" / "release-fixture"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"optimized reserved fixture")
+        argv = ["cargo", "build", "--release"]
+        report.update(build_argv=argv, build_exit_code=0,
+                      artifact=runner.identify_release_artifact(artifact, argv))
+
+    def test_reserved_release_publishes_ready_owner_while_holding_same_lock(self):
+        for absent in (False, True):
+            with self.subTest(absent=absent):
+                name = f"reserved-release-{absent}"
+                runner, reservation, target = self._reserved_release_runner(name, absent=absent)
+                lock = reservation._lock
+                lock_file = lock.file
+                owner = self._release_owner_path(target)
+                with runner.guarded_release(reservation=reservation) as report:
+                    self.assertIs(runner.target_lock, lock)
+                    self.assertIs(lock.file, lock_file)
+                    self.assertEqual(report["state"], "pending")
+                    self.assertEqual(report["cleanup_status"], "not_needed")
+                    self._finish_reserved_release(runner, report, target)
+                record = json.loads(owner.read_text())
+                self.assertEqual(record["schema_version"], 1)
+                self.assertEqual(record["profile"], "release")
+                self.assertEqual(record["state"], "ready")
+                self.assertEqual(record["target_directory"], str(target))
+                self.assertEqual(record["target_identity"], runner._directory_identity(target))
+                self.assertEqual(record["workspace_owner"], {
+                    key: runner.git_identity[key] for key in ("workspace_root", "git_common_dir")})
+                self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(
+                    b"optimized reserved fixture").hexdigest())
+                self.assertEqual(report["state"], "ready")
+                self.assertNotIn("cargo clean", self.call_log.read_text())
+                self.assertIsNone(runner.target_lock)
+                self.assertIsNone(lock.file)
+
+    def test_reserved_release_real_offline_metadata_leaves_target_fresh(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "release-real-offline", real_cargo=True, absent=True)
+        runner.env["CARGO_CACHE_RUSTC_INFO"] = "1"
+        with runner.guarded_release(reservation=reservation) as report:
+            self.assertEqual(runner.env["CARGO_CACHE_RUSTC_INFO"], "0")
+            self.assertEqual(list(target.iterdir()), [])
+            self._finish_reserved_release(runner, report, target)
+        self.assertEqual(runner.env["CARGO_CACHE_RUSTC_INFO"], "1")
+        self.assertEqual(json.loads(self._release_owner_path(target).read_text())["state"], "ready")
+
+    def test_reserved_release_refuses_metadata_side_effects_before_publication(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-metadata-entry")
+        scope = runner._release_scope
+        foreign = target / ".rustc_info.json"
+
+        def metadata():
+            packages = scope()
+            foreign.write_bytes(b"unowned cache")
+            return packages
+
+        with patch.object(runner, "_release_scope", side_effect=metadata), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "fresh target is not empty"):
+            with runner.guarded_release(reservation=reservation):
+                self.fail("release admitted unowned metadata output")
+        self.assertEqual(foreign.read_bytes(), b"unowned cache")
+        self.assertFalse(self._release_owner_path(target).exists())
+        self.assertIsNone(runner.target_lock)
+
+    def test_reserved_release_marker_collision_preserves_competitor_and_pending_sentinel(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-collision")
+        owner = self._release_owner_path(target)
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        competitor = b"competing release owner\n"
+        original_link = os.link
+
+        def collide(source, destination, *args, **kwargs):
+            if os.fspath(destination) == owner.name:
+                descriptor = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(competitor)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            return original_link(source, destination, *args, **kwargs)
+
+        with patch.object(local_ci.os, "link", side_effect=collide), \
+                self.assertRaises(local_ci.TargetCacheError):
+            with runner.guarded_release(reservation=reservation):
+                self.fail("release entered after competing owner publication")
+        self.assertEqual(owner.read_bytes(), competitor)
+        self.assertTrue(pending.exists())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+        self.assertIsNone(runner.target_lock)
+
+    def test_reserved_release_refuses_replacements_during_ready_marker_staging(self):
+        for replacement in ("target", "owner", "staging"):
+            with self.subTest(replacement=replacement):
+                runner, reservation, target = self._reserved_release_runner(
+                    f"reserved-release-replace-{replacement}")
+                owner = self._release_owner_path(target)
+                replacement_target = target.with_name(target.name + ".original")
+                write_owner = runner._write_release_owner
+                fsync = os.fsync
+                changed = False
+
+                def sync_then_replace(descriptor):
+                    nonlocal changed
+                    fsync(descriptor)
+                    if changed:
+                        return
+                    changed = True
+                    if replacement == "target":
+                        target.rename(replacement_target)
+                        target.mkdir()
+                    elif replacement == "owner":
+                        owner.unlink()
+                        owner.write_bytes(b"competing pending owner\n")
+                    else:
+                        staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                        staging.unlink()
+                        staging.write_bytes(b"competing ready staging entry\n")
+
+                def write_with_race(path, payload, **options):
+                    with patch.object(local_ci.os, "fsync", side_effect=sync_then_replace):
+                        write_owner(path, payload, **options)
+
+                with patch.object(runner, "_write_release_owner", side_effect=write_with_race), \
+                        self.assertRaises(local_ci.TargetCacheError):
+                    with runner.guarded_release(reservation=reservation) as report:
+                        self._finish_reserved_release(runner, report, target)
+                self.assertTrue(changed)
+                self.assertNotIn("cargo clean", self.call_log.read_text())
+                if replacement == "target":
+                    self.assertTrue(replacement_target.is_dir())
+                    self.assertTrue(target.is_dir())
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                elif replacement == "owner":
+                    self.assertEqual(owner.read_bytes(), b"competing pending owner\n")
+                else:
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                    staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                    self.assertEqual(staging.read_bytes(), b"competing ready staging entry\n")
+
     def test_release_unknown_pending_and_explicit_recovery(self):
         target = self.repo / "cargo-target"
         target.mkdir()
