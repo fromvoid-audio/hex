@@ -430,6 +430,12 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Append a selection from another track in canonical source order as one edit.
+    MoveTrackDevices {
+        source: TrackId,
+        selected: crate::DeviceSelectionIds,
+        destination: TrackId,
+    },
     /// Move a complete unit within one retained source, keeping its parent.
     /// The designated instrument moves with its children. None appends; invalid
     /// membership placement must stay inside the owning chain.
@@ -2275,6 +2281,7 @@ impl Project {
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
+            | Command::MoveTrackDevices { .. }
             | Command::MoveNativeSourceDevice { .. }
             | Command::ReparentDevice { .. }
             | Command::InsertNestedDevice { .. }

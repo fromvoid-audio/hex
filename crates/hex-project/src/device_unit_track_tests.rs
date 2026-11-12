@@ -1,4 +1,4 @@
-use crate::{Command, Created, DeviceId, Editor, Project, TrackId};
+use crate::{Command, Created, DeviceId, DeviceSelectionIds, Editor, Project, TrackId};
 
 fn fixture(position: usize) -> (Editor, TrackId, TrackId, DeviceId, Vec<DeviceId>) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
@@ -76,6 +76,138 @@ fn command(mixed: bool, device: DeviceId, track: TrackId, before: Option<DeviceI
             before,
         }
     }
+}
+
+#[test]
+fn selected_track_move_keeps_subtrees_and_instrument_in_source_order() {
+    let (mut editor, source, destination, instrument, ids) = fixture(4);
+    let Created::Device(existing) = editor
+        .execute(Command::InsertDevice {
+            track: destination,
+            before: None,
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("destination effect")
+    };
+    let move_selected = |ids: &[DeviceId]| Command::MoveTrackDevices {
+        source,
+        selected: DeviceSelectionIds::new(ids).unwrap(),
+        destination,
+    };
+    let selected = [ids[6], instrument, ids[2], ids[0]];
+    editor
+        .execute(Command::InsertInstrument {
+            track: destination,
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let occupied = editor.project().snapshot();
+    assert!(editor.execute(move_selected(&selected)).is_err());
+    assert_eq!(editor.project().snapshot(), occupied);
+    assert!(editor.undo());
+    assert!(
+        editor
+            .project()
+            .track(destination)
+            .unwrap()
+            .instrument()
+            .is_none()
+    );
+
+    let before = editor.project().snapshot();
+    for invalid in [[ids[1], ids[6]], [ids[0], existing]] {
+        assert!(editor.execute(move_selected(&invalid)).is_err());
+        assert_eq!(editor.project().snapshot(), before);
+    }
+    let refused = editor.execute_validated(move_selected(&selected), |candidate| {
+        assert_eq!(
+            candidate
+                .track(destination)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id(),
+            instrument
+        );
+        Err(crate::Invalid("preparation refused"))
+    });
+    assert_eq!(refused.unwrap_err(), crate::Invalid("preparation refused"));
+    assert_eq!(editor.project().snapshot(), before);
+    let original = editor.project().clone();
+    editor.execute(move_selected(&selected)).unwrap();
+    let project = editor.project();
+    let target = project.track(destination).unwrap();
+    assert_eq!(target.instrument().unwrap().id(), instrument);
+    assert_eq!(target.instrument_position(), Some(5));
+    assert_eq!(
+        target
+            .devices()
+            .iter()
+            .map(crate::Device::id)
+            .collect::<Vec<_>>(),
+        [existing, ids[0], ids[1], ids[2], ids[3], ids[6]]
+    );
+    assert_eq!(
+        project
+            .track(source)
+            .unwrap()
+            .devices()
+            .iter()
+            .map(crate::Device::id)
+            .collect::<Vec<_>>(),
+        [ids[4], ids[5]]
+    );
+    for device in original.devices() {
+        assert_eq!(project.device(device.id()), Some(device));
+    }
+    let after = project.snapshot();
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn selected_track_move_uses_the_exact_track_binding_for_shared_instruments() {
+    let (mut editor, receiver, source, instrument, _) = fixture(4);
+    let retained = editor.project().track(receiver).unwrap().source_id();
+    editor
+        .execute(Command::BindTrackSource {
+            track: source,
+            source: retained,
+        })
+        .unwrap();
+    let Created::Track(destination) = editor
+        .execute(Command::AddMidiTrack {
+            name: "destination".into(),
+        })
+        .unwrap()
+    else {
+        panic!("destination")
+    };
+    editor
+        .execute(Command::MoveTrackDevices {
+            source,
+            selected: DeviceSelectionIds::new(&[instrument]).unwrap(),
+            destination,
+        })
+        .unwrap();
+    let project = editor.project();
+    let receiver = project.track(receiver).unwrap();
+    assert!(receiver.receives_source_audio());
+    assert_eq!(receiver.instrument().unwrap().id(), instrument);
+    assert!(project.track(source).unwrap().instrument().is_none());
+    assert_eq!(
+        project
+            .track(destination)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id(),
+        instrument
+    );
 }
 
 #[test]

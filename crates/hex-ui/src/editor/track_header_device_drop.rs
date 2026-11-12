@@ -1,16 +1,17 @@
 //! Header destinations capture the painted TrackId, independent of
 //! device-panel selection. Existing worker stamps and prepare-before-commit own
 //! insertion/history. Browser effects append; browser instruments replace the
-//! existing instrument or precede effects. Track-chain moves append through the
-//! same command as a chain drop. Option-drag copies use clipboard edits.
+//! existing instrument or precede effects. Track-chain moves append the frozen
+//! selection as one edit. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
+    device_panel::DevicePanelOwner,
     drag::{BrowserAudioDrag, NativeDeviceDrag, NativeDeviceDragSource},
 };
 use crate::theme;
 use gpui::{App, Context, Div, Stateful, prelude::*, rgb};
 use hex_engine::NativeDeviceClass;
-use hex_project::{DeviceChainOwner, DeviceOwner, TrackId};
+use hex_project::{DeviceChainOwner, TrackId};
 use hex_session::service::{NativeDeviceDropSource, Request};
 
 impl EditorView {
@@ -54,53 +55,33 @@ impl EditorView {
                 }
                 Ok(None)
             }
-            NativeDeviceDragSource::Existing {
-                device,
-                class,
-                type_id,
-            } => {
-                let target = self.check_device_append_target(track, cx)?;
+            NativeDeviceDragSource::Existing { .. } => {
+                self.check_device_append_target(track, cx)?;
                 if copy {
                     return self
                         .duplicate_device_drag_request(drag, DeviceChainOwner::Track(track), None)
                         .map(Some);
                 }
-                let source = self
+                let (owner, selected) = self
+                    .device_drag_selection(drag)
+                    .ok_or("device move canceled · selection changed")?;
+                let DevicePanelOwner::Track(source) = owner else {
+                    return Err("move from a track device chain");
+                };
+                let project = &self
                     .state
                     .as_ref()
-                    .and_then(|state| state.project.device_location(device))
-                    .ok_or("device drop canceled · source changed")?;
-                if matches!(source.owner, DeviceOwner::Track(owner) if owner == track)
-                    || target
-                        .instrument()
-                        .is_some_and(|instrument| instrument.id() == device)
-                {
-                    return Err("drop onto another track to move a device");
-                }
-                match (class, source.owner) {
-                    (NativeDeviceClass::Effect, DeviceOwner::Track(_))
-                        if source.device.parent().is_none() => {}
-                    (NativeDeviceClass::Effect, DeviceOwner::Track(_)) => {
-                        return Err("moving nested devices between tracks requires reparenting");
-                    }
-                    (NativeDeviceClass::Instrument, DeviceOwner::Source(_)) => {
-                        if target.is_group() || target.instrument().is_some() {
-                            return Err("destination cannot accept another instrument");
-                        }
-                    }
-                    _ => return Err("move from a track device chain"),
-                }
-                Ok(Some(Request::DropNativeDevice {
+                    .ok_or("device move canceled · project changed")?
+                    .project;
+                project
+                    .validate_track_device_move(source, selected, track)
+                    .map_err(|error| error.0)?;
+                Ok(Some(Request::MoveTrackDevices {
                     project_generation: generation,
                     revision: drag.revision,
-                    source: NativeDeviceDropSource::Existing {
-                        device,
-                        class,
-                        type_id,
-                    },
-                    track,
-                    before: None,
-                    replace: None,
+                    source,
+                    selected: selected.clone(),
+                    destination: track,
                 }))
             }
             NativeDeviceDragSource::Browser {
@@ -255,7 +236,7 @@ impl EditorView {
                                         "copying devices"
                                     }
                                     NativeDeviceDragSource::Existing { .. } => {
-                                        "moving device to track"
+                                        "moving devices to track"
                                     }
                                     _ => "adding device to track",
                                 }
