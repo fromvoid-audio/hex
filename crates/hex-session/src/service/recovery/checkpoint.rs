@@ -353,6 +353,74 @@ mod tests {
             Err(error) => panic!("next: worker event absent: {error}"),
         }
     }
+    #[test]
+    fn locator_recovery_timing_covers_the_held_checkpoint() {
+        use super::super::diagnostics::{DiagnosticObserver, DiagnosticStage};
+        use std::time::Duration;
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-locator-timing-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        next(&service);
+        let measured = Arc::new(AtomicU64::new(u64::MAX));
+        let output = Arc::clone(&measured);
+        service
+            .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+                if matches!(event.stage, DiagnosticStage::OutcomeReady { .. })
+                    && event
+                        .request
+                        .is_some_and(|request| request.operation == Some("add_arrangement_locator"))
+                    && let Some(value) = event
+                        .details
+                        .split_whitespace()
+                        .find_map(|field| field.strip_prefix("locator_recovery_us="))
+                    && let Ok(value) = value.parse::<u64>()
+                {
+                    output.store(value, Ordering::Relaxed);
+                }
+            })))
+            .unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::AddArrangementLocator {
+                frame: 48_000,
+            }))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        assert!(
+            service
+                .events
+                .recv_timeout(Duration::from_millis(20))
+                .is_err()
+        );
+        release.send(()).unwrap();
+        let outcome = next(&service);
+        assert!(matches!(
+            outcome.created,
+            Some(Created::ArrangementLocator(_))
+        ));
+        assert!(outcome.error.is_none());
+        let duration = measured.load(Ordering::Relaxed);
+        assert!(
+            duration != u64::MAX && duration >= 20_000,
+            "missing or incomplete locator recovery timing: {duration}"
+        );
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *outcome.state.project
+        );
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn prepare_paste(service: &Service) -> hex_project::TrackId {
         next(service);
         service

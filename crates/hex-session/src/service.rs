@@ -3197,6 +3197,10 @@ fn run_worker(
         let request_recovery_kind = deferred_recovery_kind(&request);
         let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
         let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
+        let locator_add = matches!(
+            &request,
+            Request::Edit(Command::AddArrangementLocator { .. })
+        );
         let arrangement_paste = matches!(
             &request,
             Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. }
@@ -9343,6 +9347,8 @@ fn run_worker(
                     events.measure_recovery("paste_recovery_us", maintain_recovery)
                 } else if committed_track_switch {
                     events.measure_recovery("track_switch_recovery_us", maintain_recovery)
+                } else if locator_add && canonical_changed && error.is_none() {
+                    events.measure_recovery("locator_recovery_us", maintain_recovery)
                 } else {
                     maintain_recovery()
                 }
