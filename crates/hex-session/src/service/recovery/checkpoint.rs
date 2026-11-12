@@ -432,7 +432,8 @@ mod tests {
             std::env::temp_dir().join(format!("hex-mute-queue-{}-{conflict}", std::process::id()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("untitled.hex-journal");
-        struct SwitchSink(Arc<std::sync::Mutex<Vec<(hex_engine::AudioSourceContext, Vec<bool>)>>>);
+        type SwitchStates = Vec<(hex_engine::AudioSourceContext, Vec<bool>)>;
+        struct SwitchSink(Arc<std::sync::Mutex<SwitchStates>>);
         impl WorkerAudioSink for SwitchSink {
             fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
                 Ok(48_000)
