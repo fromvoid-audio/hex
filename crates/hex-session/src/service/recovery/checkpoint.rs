@@ -384,6 +384,38 @@ mod tests {
     }
 
     #[test]
+    fn unread_track_switch_view_retains_latest_consecutive_commit() {
+        let service = Service::new(48_000, 16, 8_000_000).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let track = next(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        let first = next(&service);
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        let second = next(&service);
+        let view = service.try_track_switch_view().unwrap();
+        assert_eq!(view.first_previous_revision + 1, first.state.revision);
+        assert_eq!(view.previous_revision, first.state.revision);
+        assert_eq!(view.revision, second.state.revision);
+        assert!(
+            !view
+                .tracks
+                .iter()
+                .find(|item| item.track == track)
+                .unwrap()
+                .muted
+        );
+    }
+
+    #[test]
     fn track_switch_view_precedes_recovery_terminal_without_claiming_durability() {
         let directory =
             std::env::temp_dir().join(format!("hex-track-switch-recovery-{}", std::process::id()));
