@@ -135,6 +135,63 @@ mod tests {
     }
 
     #[test]
+    fn locator_views_keep_identities_and_drop_excess_without_crossing_generations() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::ArrangementLocator(first) = editor
+            .execute(Command::AddArrangementLocator { frame: 24_000 })
+            .unwrap()
+        else {
+            panic!("first locator")
+        };
+        let Created::ArrangementLocator(second) = editor
+            .execute(Command::AddArrangementLocator { frame: 48_000 })
+            .unwrap()
+        else {
+            panic!("second locator")
+        };
+        let (sender, receiver) = channel();
+        sender.send(observation(
+            1,
+            3,
+            ArrangementEditViewKind::LocatorAdd(first),
+        ));
+        sender.send(observation(
+            1,
+            4,
+            ArrangementEditViewKind::LocatorAdd(second),
+        ));
+        sender.send(observation(1, 5, ArrangementEditViewKind::Paste));
+        assert!(
+            matches!(receiver.try_recv().unwrap().kind, ArrangementEditViewKind::LocatorAdd(id) if id == first)
+        );
+        assert!(
+            matches!(receiver.try_recv().unwrap().kind, ArrangementEditViewKind::LocatorAdd(id) if id == second)
+        );
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+        sender.send(observation(
+            1,
+            6,
+            ArrangementEditViewKind::LocatorAdd(first),
+        ));
+        sender.send(observation(
+            2,
+            0,
+            ArrangementEditViewKind::LocatorAdd(second),
+        ));
+        sender.send(observation(
+            1,
+            7,
+            ArrangementEditViewKind::LocatorAdd(first),
+        ));
+        let replacement = receiver.try_recv().unwrap();
+        assert_eq!(replacement.project_generation, 2);
+        assert!(
+            matches!(replacement.kind, ArrangementEditViewKind::LocatorAdd(id) if id == second)
+        );
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
     fn time_copy_and_paste_preserve_order_and_bounded_fallback() {
         let (sender, receiver) = channel();
         sender.send(observation(1, 3, ArrangementEditViewKind::TimeRangeCopy));
