@@ -387,6 +387,14 @@ impl SessionPlayback {
         }
     }
 
+    pub(crate) fn cut_retained_foreign_gates_from(&mut self, previous: &mut Self) {
+        // Exact source identity also proves the prepared generator index order.
+        if Arc::ptr_eq(&self.revision, &previous.revision) {
+            self.foreign_arrangement
+                .cut_retained_gates_from(&mut previous.foreign_arrangement);
+        }
+    }
+
     pub(super) fn mutable_destination_has_active_occurrence(
         &mut self,
         index: usize,
