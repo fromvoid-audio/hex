@@ -398,27 +398,64 @@ fn g_does_not_group_during_track_name_edit(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn g_refuses_tracks_with_different_parents_without_partial_group(cx: &mut TestAppContext) {
-    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
-    select(&mut visual, ids[0], false);
-    select(&mut visual, ids[1], true);
-    visual.simulate_keystrokes("g");
-    receive(&mut visual, &editor);
-    select(&mut visual, ids[0], false);
-    select(&mut visual, ids[2], true);
-    let before = snapshot(&visual, &editor);
-    visual.simulate_keystrokes("g");
-    editor.read_with(&visual, |view, _| {
-        assert!(view.worker_requests_pending > 0);
-    });
-    editor.update(&mut visual, |view, cx| {
-        let event = super::track_reorder_ui_test::next(&view.service);
-        assert!(event.error.is_some());
-        view.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(snapshot(&visual, &editor), before);
+fn grouping_mixed_parents_uses_the_last_selected_header(cx: &mut TestAppContext) {
+    for anchor_inside in [false, true] {
+        let (mut visual, editor, ids) = live_tracks(cx, 4, false);
+        let [inside, sibling, between, outside] = ids.try_into().unwrap();
+        select(&mut visual, inside, false);
+        select(&mut visual, sibling, true);
+        visual.simulate_keystrokes("g");
+        receive(&mut visual, &editor);
+        let parent = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.tracks()[0].id()
+        });
+        let (first, last) = if anchor_inside {
+            (outside, inside)
+        } else {
+            (inside, outside)
+        };
+        select(&mut visual, first, false);
+        select(&mut visual, last, true);
+        if anchor_inside {
+            let point = bounds(&mut visual, first).center();
+            visual.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
+            visual.run_until_parked();
+            let index = editor.read_with(&visual, |view, _| {
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .position(|item| item.label == "group tracks")
+                    .unwrap()
+            });
+            for _ in 0..index {
+                visual.simulate_keystrokes("down");
+            }
+            visual.simulate_keystrokes("enter");
+        } else {
+            visual.simulate_keystrokes("g");
+        }
+        receive(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let group = project.track(inside).unwrap().parent_group().unwrap();
+            assert_ne!(group, parent);
+            assert_eq!(project.track(outside).unwrap().parent_group(), Some(group));
+            assert_eq!(project.track(sibling).unwrap().parent_group(), Some(parent));
+            assert_eq!(
+                project.track(group).unwrap().parent_group(),
+                anchor_inside.then_some(parent)
+            );
+            let expected = if anchor_inside {
+                [parent, group, inside, outside, sibling, between]
+            } else {
+                [parent, sibling, between, group, inside, outside]
+            };
+            assert!(project.tracks().iter().map(|track| track.id()).eq(expected));
+        });
+    }
 }
 
 fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {

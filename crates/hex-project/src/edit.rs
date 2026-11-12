@@ -89,7 +89,8 @@ pub enum Command {
     },
     /// Explicit authored-state deletion. The source must be unlinked from every track.
     RemoveNativeSource(crate::SourceId),
-    /// Create one effects-only group around normalized sibling subtrees.
+    /// Group selected subtrees in display order at the last member's position
+    /// and parent. A selected ancestor owns the position of its descendants.
     GroupTracks {
         tracks: crate::TrackSelectionIds,
         name: String,
