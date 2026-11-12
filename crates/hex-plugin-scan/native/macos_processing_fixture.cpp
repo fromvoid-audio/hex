@@ -111,6 +111,7 @@ constexpr int authored_instrument_variant=145, held_instrument_variant=146;
 // Original GUI callback + automatable controller fixture for desktop follow/lane
 // integration. It permits live-worker zero-frame flushes while transport is idle.
 constexpr int touched_automation_variant=147;
+constexpr int stopped_editor_echo_variant=150;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -215,10 +216,15 @@ class RestoreController final : public IEditController {
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
         if(grouped_editor(self->fault)) {self->grouped_edit_tick();return;}
-        const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant)
+        const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant ||
+            self->fault==stopped_editor_echo_variant)
             ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;
         if(self->edits_sent) {
             if(end_release && std::strlen(end_release)<=4096 && ::access(end_release,F_OK)==0) {
+                if(self->fault==stopped_editor_echo_variant) {
+                    self->component_gain=3.5;
+                    if(self->handler->performEdit(parameter_id(self->fault),0.875)!=kResultOk) ++observed.violations;
+                }
                 self->handler->endEdit(parameter_id(self->fault));
                 CFRunLoopTimerInvalidate(self->edit_timer);
             }
@@ -315,7 +321,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || grouped_editor(fault) ||
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==stopped_editor_echo_variant || grouped_editor(fault) ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -868,7 +874,7 @@ public:
                 ++observed.flushes;
                 return kResultOk;
             }
-            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132 && fault!=touched_automation_variant) ||
+            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132 && fault!=touched_automation_variant && fault!=stopped_editor_echo_variant) ||
                 !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
@@ -882,9 +888,13 @@ public:
             if(fault==74) fault_hang(24);
             if(fault==75) data.numSamples=1;
             if(fault==77) data.inputParameterChanges->addRef();
+            const auto previous_gain=gain.load();
             value=parameter_value(fault,value);
             gain=static_cast<float>(value*(fault>=37?4.0:1.0));
             if(fault>=37 && data.outputParameterChanges) {
+                // The stopped processor reports its previous value while
+                // accepting the current editor input. Host input still echoes normally.
+                if(fault==stopped_editor_echo_variant && (value==0.75 || value==0.875)) value=previous_gain/4.0;
                 int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* feedback=data.outputParameterChanges->addParameterData(id,index);
                 if(!feedback || feedback->addPoint(0,value,index)!=kResultOk) return kResultFalse;
@@ -1155,7 +1165,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>grouped_instrument_variant) return false;next_fault=value;
+        if (value>stopped_editor_echo_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
