@@ -1853,6 +1853,92 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_future_notes_do_not_overrun_retained_authored_releases() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..13 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let mut old = started(&f);
+            let notes: Vec<_> = f
+                .editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .map(|note| note.id())
+                .collect();
+            assert_eq!(notes.len(), 14);
+            for note in notes {
+                f.editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            }
+            for pitch in 30..44 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_ratio(1, 16).unwrap(),
+                        duration: BeatTime::from_ratio(1, 2).unwrap(),
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let mut candidate = playback(&f);
+            let mut output = [[0.0; 2]; 64];
+            if candidate.try_inherit_state_from(&mut old).is_err() {
+                old.render(&mut output)
+                    .expect("refused edit must leave the old source rendering");
+            } else {
+                for _ in 0..8 {
+                    candidate
+                        .render(&mut output)
+                        .expect("admitted future notes must fit alongside retained releases");
+                }
+            }
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+        });
+    }
+
+    #[test]
     fn shared_source_session_launch_with_live_keys_respects_reserved_capacity() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
