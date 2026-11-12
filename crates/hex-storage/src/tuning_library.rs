@@ -475,37 +475,42 @@ mod tests {
         fs::create_dir(&p).unwrap();
         Directory(p)
     }
-    #[test]
-    fn substituted_tuning_temporary_preserves_other_files() {
-        for fail_before_publish in [true, false] {
-            let d = directory();
-            let destination = d.0.join("export.freqs");
-            let original = d.0.join("original-stage");
-            let mut substituted = None;
-            let result = publish_with_guard(
-                &destination,
-                b"intended preset",
-                false,
-                |source, target| fs::hard_link(source, target),
-                || {
-                    let entry = fs::read_dir(&d.0).unwrap().next().unwrap().unwrap().path();
-                    fs::rename(&entry, &original).unwrap();
-                    fs::write(&entry, b"foreign work").unwrap();
-                    substituted = Some(entry);
-                    if fail_before_publish {
-                        Err("simulated failure".into())
-                    } else {
-                        Ok(())
-                    }
-                },
-            );
-            let path = substituted.unwrap();
-            assert_eq!(fs::read(&path).unwrap(), b"foreign work");
-            assert_eq!(fs::read(&original).unwrap(), b"intended preset");
-            if result.is_ok() {
-                assert_eq!(fs::read(destination).unwrap(), b"intended preset");
-            }
+    fn check_substituted_tuning_temporary(fail_before_publish: bool) {
+        let d = directory();
+        let destination = d.0.join("export.freqs");
+        let original = d.0.join("original-stage");
+        let mut substituted = None;
+        let result = publish_with_guard(
+            &destination,
+            b"intended preset",
+            false,
+            |source, target| fs::hard_link(source, target),
+            || {
+                let entry = fs::read_dir(&d.0).unwrap().next().unwrap().unwrap().path();
+                fs::rename(&entry, &original).unwrap();
+                fs::write(&entry, b"foreign work").unwrap();
+                substituted = Some(entry);
+                if fail_before_publish {
+                    Err("simulated failure".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        let path = substituted.unwrap();
+        if !fail_before_publish && result.is_ok() {
+            assert_eq!(fs::read(&destination).unwrap(), b"intended preset");
         }
+        assert_eq!(fs::read(&path).unwrap(), b"foreign work");
+        assert_eq!(fs::read(&original).unwrap(), b"intended preset");
+    }
+    #[test]
+    fn substituted_tuning_temporary_survives_failed_publication() {
+        check_substituted_tuning_temporary(true);
+    }
+    #[test]
+    fn substituted_tuning_temporary_never_publishes_foreign_bytes() {
+        check_substituted_tuning_temporary(false);
     }
 
     #[cfg(unix)]
