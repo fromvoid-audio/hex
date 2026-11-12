@@ -161,6 +161,16 @@ impl HeadlessBackend {
         owner.run(|callback, _| fault = callback.native_source_fault_for_test(binding));
         fault
     }
+    /// Revoke the real callback-owned native sources at a controlled fixture
+    /// boundary. This produces no synthetic Session event or publication ACK.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn revoke_native_sources_for_test(&mut self) -> bool {
+        let Some(owner) = self.data.as_mut().and_then(Guard::owner_mut) else {
+            return false;
+        };
+        owner.run(|callback, _| callback.revoke_native_effects());
+        true
+    }
     /// Hold original native Work on a separate test control thread. The
     /// callback entry ends before taking that exclusion; native state and its
     /// actual owners remain in Root. Never call from a measured render scope.
