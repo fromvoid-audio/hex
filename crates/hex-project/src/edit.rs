@@ -89,7 +89,8 @@ pub enum Command {
     },
     /// Explicit authored-state deletion. The source must be unlinked from every track.
     RemoveNativeSource(crate::SourceId),
-    /// Create one effects-only group around normalized sibling subtrees.
+    /// Group selected subtrees in display order at the last member's position
+    /// and parent. A selected ancestor owns the position of its descendants.
     GroupTracks {
         tracks: crate::TrackSelectionIds,
         name: String,
@@ -427,6 +428,18 @@ pub enum Command {
     MoveTrackDevice {
         device: DeviceId,
         track: TrackId,
+        before: Option<DeviceId>,
+    },
+    /// Append a selection from another track in canonical source order as one edit.
+    MoveTrackDevices {
+        source: TrackId,
+        selected: crate::DeviceSelectionIds,
+        destination: TrackId,
+    },
+    /// Move the selected units together to a gap in their current chain.
+    ReorderDevices {
+        owner: crate::DeviceChainOwner,
+        selected: crate::DeviceSelectionIds,
         before: Option<DeviceId>,
     },
     /// Move a complete unit within one retained source, keeping its parent.
@@ -2274,6 +2287,8 @@ impl Project {
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
+            | Command::MoveTrackDevices { .. }
+            | Command::ReorderDevices { .. }
             | Command::MoveNativeSourceDevice { .. }
             | Command::ReparentDevice { .. }
             | Command::InsertNestedDevice { .. }

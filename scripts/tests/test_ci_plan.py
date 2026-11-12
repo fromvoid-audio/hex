@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
-from test_local_ci import install_delivery_source_fixture
+from test_local_ci import install_delivery_source_fixture, load_delivery_source_fixture
 from unittest.mock import patch
 
 
@@ -502,17 +502,14 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual(third.summary["target_cache"]["cleanup_status"], "not_needed")
 
     def test_review_metadata_report_refused_by_locked_release_receiver_before_pending(self):
-        delivery = module("metadata_receiver_fixture", "hex-test-build.py")
+        delivery = load_delivery_source_fixture("metadata_receiver_fixture")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src").mkdir()
             (root / "src/lib.rs").write_text("pub fn value() {}\n")
             (root / "Cargo.toml").write_text('[package]\nname="metadata-receiver"\nversion="0.1.0"\nedition="2021"\n')
             (root / ".gitignore").write_text('/target/\n/artifacts/\n__pycache__/\n')
-            (root / "scripts").mkdir()
-            for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
-                         "ci_checkpoint.py", "ci_target_storage.py"):
-                (root / "scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
+            install_delivery_source_fixture(root)
             def command(*argv):
                 return subprocess.check_output(argv, cwd=root).decode().strip()
             command("git", "init", "-q");command("git", "config", "user.name", "receiver fixture");command("git", "config", "user.email", "fixture@invalid")

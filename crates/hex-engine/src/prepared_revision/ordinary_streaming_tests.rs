@@ -15,6 +15,147 @@ struct Pages<'a> {
 }
 
 #[test]
+fn fenced_retained_restart_preview_matches_committed_stream_demand() {
+    use hex_project::{Command, Created, Project, TrackDeviceSlot};
+
+    let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+    let Created::Track(receiver) = f
+        .editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let source = f
+        .editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(peer) = f
+        .editor
+        .execute(Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer")
+    };
+    f.editor
+        .execute(Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let original = f.editor.project().clone();
+    let mut snapshot = original.snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    let asset = *f.media.keys().next().unwrap();
+    let key = StreamSourceKey::new(31, asset);
+    let sources = BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(
+            StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                1024,
+                1024,
+                hex_project::IDENTITY_CONVERSION,
+                [31; 32],
+            )
+            .unwrap(),
+        )),
+    )]);
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare_with_source_bank(
+                project,
+                crate::compile::SourceBank::Mixed(&sources, 31),
+                Arc::new(SineTable::new()),
+                None,
+                &effects,
+                &instruments,
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap(),
+        )
+    };
+    let context = crate::AudioSourceContext {
+        project_generation: 9,
+        editor_revision: 2,
+    };
+    let mut old = Playback::from_prepared(prepare(&original));
+    old.apply(PlaybackCommand::Play);
+    let mut old_extents = Vec::new();
+    old.stream_playback(context)
+        .visit_next_stream_chunk(32, None, &mut |extent| {
+            old_extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    old.stream_playback(context)
+        .render_with_pages_and_signal_observers(
+            &mut [[0.0; 2]; 32],
+            &mut Pages {
+                samples: &f.samples,
+                key,
+                extents: &old_extents,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    let mut next = Playback::from_prepared(prepare(&retained));
+    assert!(next.request_live_restart());
+    assert!(
+        next.stream_playback(context)
+            .preview_stream_handoff(&mut old.stream_playback(context), 32, None, &mut |_| Ok(()))
+            .is_err()
+    );
+    let position = old.position();
+    let mut predicted = Vec::new();
+    let window = next
+        .stream_playback(context)
+        .preview_ordinary_fenced_restart(
+            &mut old.stream_playback(context),
+            32,
+            None,
+            &mut |extent| {
+                predicted.push(extent);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(old.position(), position);
+    assert_eq!(window.frames, 32);
+    assert!(!predicted.is_empty());
+    next.try_restart_runtime_under_arrangement_fence(&mut old, Some(9), Some(9))
+        .unwrap();
+    let mut committed = Vec::new();
+    next.stream_playback(context)
+        .visit_next_stream_chunk(32, None, &mut |extent| {
+            committed.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(predicted, committed);
+    assert_eq!(next.position(), position);
+}
+
+#[test]
 fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
     let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
     let asset = *f.media.keys().next().unwrap();

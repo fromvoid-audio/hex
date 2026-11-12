@@ -51,6 +51,25 @@ impl SessionPlayback {
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         ordinary: bool,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        self.preview_stream_handoff_with_policy(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            false,
+        )
+    }
+
+    pub(crate) fn preview_stream_handoff_with_policy(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+    ) -> Result<StreamChunkWindow, SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
@@ -67,7 +86,7 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        self.inherit_state_planned(previous, None, Some(&mut demand), true, false)?;
+        self.inherit_state_planned(previous, None, Some(&mut demand), true, fenced_restart)?;
         demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)

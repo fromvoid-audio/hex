@@ -569,14 +569,19 @@ int main(int argc,char** argv) {
                         return !remaining_group;
                     };
                     const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback) {
-                        // All offsets are zero. Processor output wins over its
-                        // corresponding input without losing that input's origin.
+                        // A zero-frame flush has no timeline ordering between
+                        // input and output. Keep the value from a native Perform
+                        // for its own controller. The processor may report its
+                        // previous value while accepting that edit.
                         for(const auto* changes : {&parameter_input,&parameter_output}) {
+                            const bool is_input=changes==&parameter_input;
                             for(size_t n=0;n<changes->size();++n) {
                                 hex_instance::ParameterPoint point{};
                                 if(!changes->point(n,point)) return false;
-                                const auto sequence=feedback_sequence(point.id,changes==&parameter_input?
-                                    std::optional<uint64>{staged_editor_sequence(point.id)}:std::nullopt);
+                                const auto editor_sequence=staged_editor_sequence(point.id);
+                                if(!is_input && editor_sequence) continue;
+                                const auto sequence=feedback_sequence(point.id,is_input?
+                                    std::optional<uint64>{editor_sequence}:std::nullopt);
                                 if(!sequence || !feedback.put(point.id,point.normalized,*sequence)) return false;
                             }
                         }

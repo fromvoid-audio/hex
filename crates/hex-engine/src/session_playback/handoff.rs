@@ -624,7 +624,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
         let fresh = if previous.playing && !previous.foreign_arrangement.is_empty() {
-            fresh_instrument_track(
+            fresh_unconnected_track(
                 self.revision.arrangement().tracks(),
                 previous.revision.arrangement().tracks(),
             )
@@ -822,7 +822,19 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
-        let fresh_history = fresh.filter(|_| {
+        // A cold, independent added or removed track also needs a fresh delay history
+        // when no foreign instrument is present. Foreign handoff admission
+        // retains its narrower `fresh` input above; compensation proves the
+        // isolated routing and silent rings independently below.
+        let history_track = fresh.or_else(|| {
+            if !previous.playing {
+                return None;
+            }
+            let old = previous.revision.arrangement().tracks();
+            let new = self.revision.arrangement().tracks();
+            cold_added_track(new, old).or_else(|| cold_added_track(old, new))
+        });
+        let fresh_history = history_track.filter(|_| {
             self.compensation
                 .as_ref()
                 .zip(previous.compensation.as_ref())
@@ -4801,6 +4813,12 @@ impl SessionPlayback {
         // only proofs whose exact clip has become inactive in the candidate.
         let revision = &self.revision;
         let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
+        // Ordinary onset suppressions cannot shorten a held gate. Check for
+        // admitted cuts once instead of searching the whole list for each proof.
+        let has_gate_cutoffs = self
+            .suppressions
+            .iter()
+            .any(|entry| entry.gate_cutoff_frame().is_some());
         let release_live_input = previous
             .computer_keyboard
             .as_ref()
@@ -4855,10 +4873,14 @@ impl SessionPlayback {
                 {
                     return Some(previous.performance_frame);
                 }
+                if !has_gate_cutoffs {
+                    return None;
+                }
                 let (onset, old_gate, pitch, channel, velocity) = signature.details();
                 self.suppressions
                     .iter()
                     .filter_map(|entry| {
+                        let cutoff = entry.gate_cutoff_frame()?;
                         let candidate = entry.mutable_signature()?;
                         let (new_onset, new_gate, new_pitch, new_channel, new_velocity) =
                             candidate.details();
@@ -4866,8 +4888,7 @@ impl SessionPlayback {
                             && (new_onset, new_pitch, new_channel, new_velocity)
                                 == (onset, pitch, channel, velocity)
                             && new_gate < old_gate)
-                            .then(|| entry.gate_cutoff_frame())
-                            .flatten()
+                            .then_some(cutoff)
                     })
                     .min()
             });
@@ -5521,7 +5542,7 @@ fn cut_arrangement_voices_for_remap(
 
 /// Only one independent cold track can acquire fresh pre-Main history in a
 /// handoff. Graph and runtime preflight separately prove routing and PCM.
-fn fresh_instrument_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+fn fresh_unconnected_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
     let unconnected = |track: &Track| {
         track.clips.is_empty() && track.device_chain.is_empty() && track.midi_source_index.is_none()
     };
@@ -5555,6 +5576,21 @@ fn fresh_instrument_track(candidate: &[Track], previous: &[Track]) -> Option<Tra
         }
     }
     fresh
+}
+
+/// A track absent from the other revision with no authored or live source.
+/// The compensation graph separately proves isolated routing and silent rings.
+fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    let id = fresh_unconnected_track(candidate, previous)?;
+    let track = candidate
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(id))?;
+    (track.instrument_id.is_none()
+        && track.source_id.is_none()
+        && !previous
+            .iter()
+            .any(|track| track.canonical_track_id() == Some(id)))
+    .then_some(id)
 }
 
 /// The candidate frame and loop pass at the donor cursor's Arrangement beat.

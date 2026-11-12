@@ -516,6 +516,7 @@ impl NativeAudioSink {
                     == Some(metadata.context.project_generation)
                     && metadata.device_preview.is_none()
                     && metadata.tuning_preview.is_none()
+                    && metadata.clip_preview.is_none()
                     && metadata.seek_request.is_none()
                     && !metadata.stopped_restore
                     && metadata.computer_keyboard_request.is_none()
@@ -602,7 +603,7 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected)
-                | ResidentPublicationPolicy::SectionWhenReady {
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                     fence: expected, ..
                 } => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -618,8 +619,10 @@ impl NativeAudioSink {
                         });
                     };
                     match policy {
-                        ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                            hex_audio::prepared::PublicationPolicy::InstallSectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                            quantization, ..
+                        } => {
+                            hex_audio::prepared::PublicationPolicy::InstallQuantizedSeekWhenReady {
                                 fence: actual,
                                 quantization,
                             }
@@ -767,7 +770,7 @@ impl NativeAudioSink {
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
-                | ResidentPublicationPolicy::SectionWhenReady { .. }
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {
             return Err(ResidentPublicationRefusal {
                 playback,

@@ -45,15 +45,20 @@ pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
 pub(super) use compressor_panel::sidechain::drop_track_key;
 mod eq8_panel;
+mod eq_automation;
 mod eq_panel;
 mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod device_add;
 mod device_picker;
+mod source_picker;
 pub(super) use device_picker::{
     bind_keys as bind_picker_keys, is_open as picker_is_open, overlay as picker_overlay,
 };
+pub(super) use source_picker::Choice as SourcePickerChoice;
+pub(super) use source_picker::bind_keys as bind_source_picker_keys;
+pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
 mod device_meter;
 mod gate_panel;
 mod keyboard;
@@ -74,6 +79,7 @@ pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_prev
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
+mod source_summary;
 pub(super) mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
@@ -126,6 +132,8 @@ pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
+    source_summary: source_summary::SourceSummaryCache,
+    source_picker: source_picker::State,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     modulation_target_drag: modulators::TargetDragState,
@@ -138,7 +146,7 @@ pub(super) struct DevicePanelState {
     selection_anchor: Option<DeviceId>,
     /// View-only chain gap chosen for paste; exclusive with device selection.
     insertion: Option<InsertionPoint>,
-    pub(super) drag_copy: Option<DeviceDragCopy>,
+    pub(super) drag_selection: Option<DeviceDragSelection>,
     pub(super) pending_duplicate: Option<keyboard::PendingDuplicate>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, device_meter::MeterState>,
@@ -201,7 +209,7 @@ struct OperatorPreviewInventory {
 }
 
 #[derive(Clone)]
-pub(super) struct DeviceDragCopy {
+pub(super) struct DeviceDragSelection {
     generation: u64,
     revision: u64,
     owner: DevicePanelOwner,
@@ -215,7 +223,7 @@ struct InsertionPoint {
     before: Option<DeviceId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum DevicePanelOwner {
     Main,
     Track(TrackId),
@@ -674,7 +682,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
-        view.device_panel.drag_copy = None;
+        view.device_panel.drag_selection = None;
         view.device_panel.select_only(None);
         view.device_panel.generation = view.project_generation;
     }
@@ -779,7 +787,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
-        view.device_panel.drag_copy = None;
+        view.device_panel.drag_selection = None;
         view.device_panel.select_only(None);
         view.device_panel.message = None;
     }
@@ -1362,8 +1370,19 @@ fn render_track(
         .gap(px(5.0))
         .px(px(5.0))
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(track_name_view);
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)));
+    if let Some(summary) = view
+        .device_panel
+        .source_summary
+        .get(&state.project, track_id)
+    {
+        let card = source_summary_card(summary);
+        header = header.child(card);
+    } else if !track.is_group() && track.source_id().is_none() {
+        let card = source_picker::button(view, window, cx, track_id);
+        header = header.child(card);
+    }
+    header = header.child(track_name_view);
     if let Some(label) = retained_source_path_label(track) {
         let element = retained_source_path_badge(label);
         header = header.child(element);
@@ -1374,6 +1393,57 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+fn source_summary_card(summary: &source_summary::SourceSummary) -> Stateful<Div> {
+    let count = summary.contributors;
+    let count_label = if count == 1 {
+        "midi track"
+    } else {
+        "midi tracks"
+    };
+    let tooltip: gpui::SharedString = source_summary_tooltip(summary).into();
+    let background = theme::color(theme::PaletteRole::Surface);
+    let label = format!(
+        "source · {} · {} · {count} {count_label}",
+        hex_session::service::text::verbatim(&summary.name),
+        summary.role,
+    );
+    div()
+        .id("device-source-summary")
+        .debug_selector(|| "device-source-summary".into())
+        .max_w(px(300.0))
+        .min_w_0()
+        .flex_shrink()
+        .truncate()
+        .text_xs()
+        .text_color(rgb(theme::readable_text(
+            background,
+            theme::color(theme::PaletteRole::Text),
+        )))
+        .tooltip(move |_, cx| {
+            let description = tooltip.clone();
+            cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description,
+            })
+            .into()
+        })
+        .child(theme::text(label))
+}
+
+fn source_summary_tooltip(summary: &source_summary::SourceSummary) -> String {
+    let receiver = summary
+        .receiver
+        .as_deref()
+        .map(hex_session::service::text::verbatim)
+        .unwrap_or_else(|| "none".into());
+    format!(
+        "source · {}\nrole · {}\nreceiver · {receiver}\nmidi tracks · {}",
+        hex_session::service::text::verbatim(&summary.name),
+        summary.role,
+        summary.contributors,
+    )
 }
 
 // The panel appends at the tail or replaces the existing instrument in place.
@@ -1926,10 +1996,10 @@ fn device_selection_listener(
         } else {
             vec![device]
         };
-        view.device_panel.drag_copy =
+        view.device_panel.drag_selection =
             hex_project::DeviceSelectionIds::new(&members)
                 .ok()
-                .map(|selected| DeviceDragCopy {
+                .map(|selected| DeviceDragSelection {
                     generation,
                     revision: state.revision,
                     owner,
@@ -2243,26 +2313,29 @@ fn duplicate_device_action(
 }
 
 impl EditorView {
+    pub(super) fn device_drag_selection(
+        &self,
+        drag: &drag::NativeDeviceDrag,
+    ) -> Option<(DevicePanelOwner, &hex_project::DeviceSelectionIds)> {
+        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
+            return None;
+        };
+        let snapshot = self.device_panel.drag_selection.as_ref()?;
+        (snapshot.device == device
+            && snapshot.generation == drag.project_generation
+            && snapshot.revision == drag.revision)
+            .then_some((snapshot.owner, &snapshot.selected))
+    }
+
     pub(super) fn duplicate_device_drag_request(
         &self,
         drag: &drag::NativeDeviceDrag,
         destination: hex_project::DeviceChainOwner,
         before: Option<DeviceId>,
     ) -> Result<Request, &'static str> {
-        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
-            return Err("device copy canceled · selection changed");
-        };
-        let snapshot = self
-            .device_panel
-            .drag_copy
-            .as_ref()
+        let (owner, selected) = self
+            .device_drag_selection(drag)
             .ok_or("device copy canceled · selection changed")?;
-        if snapshot.device != device
-            || snapshot.generation != drag.project_generation
-            || snapshot.revision != drag.revision
-        {
-            return Err("device copy canceled · selection changed");
-        }
         let project = &self
             .state
             .as_ref()
@@ -2271,14 +2344,45 @@ impl EditorView {
         Ok(Request::DeviceClipboard {
             project_generation: drag.project_generation,
             revision: drag.revision,
-            action: duplicate_device_action(
-                project,
-                snapshot.owner,
-                snapshot.selected.clone(),
-                destination,
-                before,
-            )?,
+            action: duplicate_device_action(project, owner, selected.clone(), destination, before)?,
         })
+    }
+
+    fn reorder_selected_devices_on_drop(
+        &mut self,
+        drag: &drag::NativeDeviceDrag,
+        owner: DevicePanelOwner,
+        before: Option<DeviceId>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
+            return false;
+        };
+        let Some((source, selected)) = self.device_drag_selection(drag) else {
+            return false;
+        };
+        if source != owner || selected.ids().len() < 2 {
+            return false;
+        }
+        let selected = selected.clone();
+        self.clear_native_device_drag(drag);
+        if self.enqueue_device_barrier(Request::ReorderDevices {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            owner: project_owner(owner),
+            selected: selected.clone(),
+            before,
+        }) {
+            self.device_panel.select_only(Some(device));
+            self.device_panel
+                .selected_others
+                .extend(selected.ids().iter().copied().filter(|id| *id != device));
+            self.error = None;
+            self.device_panel.message = None;
+            self.status = "moving devices".into();
+        }
+        cx.notify();
+        true
     }
 
     fn drop_native_device_to_effect_bus(
@@ -2327,14 +2431,15 @@ impl EditorView {
             cx.notify();
             return;
         }
+        let panel_owner = match owner {
+            EffectBusOwner::Main => DevicePanelOwner::Main,
+            EffectBusOwner::Return(id) => DevicePanelOwner::Return(id),
+        };
         if window.modifiers().alt
             && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
         {
-            let destination = match owner {
-                EffectBusOwner::Main => hex_project::DeviceChainOwner::Main,
-                EffectBusOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
-            };
-            let request = self.duplicate_device_drag_request(drag, destination, before);
+            let request =
+                self.duplicate_device_drag_request(drag, project_owner(panel_owner), before);
             self.clear_native_device_drag(drag);
             match request {
                 Ok(request) => {
@@ -2346,6 +2451,9 @@ impl EditorView {
                 Err(reason) => self.error = Some(reason.into()),
             }
             cx.notify();
+            return;
+        }
+        if self.reorder_selected_devices_on_drop(drag, panel_owner, before, cx) {
             return;
         }
         let request = match drag.source {
@@ -2579,8 +2687,13 @@ impl EditorView {
             cx.notify();
             return;
         }
+        if self.reorder_selected_devices_on_drop(drag, DevicePanelOwner::Track(track), before, cx) {
+            return;
+        }
         if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
-            && device_move_would_be_noop(&state.project, device, track, before)
+            && self.state.as_ref().is_some_and(|state| {
+                device_move_would_be_noop(&state.project, device, track, before)
+            })
         {
             self.status = "device order unchanged".into();
             self.clear_native_device_drag(drag);
@@ -3505,6 +3618,20 @@ mod header_style_unit_tests {
             }
         };
         0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    #[test]
+    fn source_tooltip_preserves_full_authored_names() {
+        let summary = source_summary::SourceSummary {
+            name: "A Very Long Bright Bass Name".into(),
+            receiver: Some("MIDI Receiver A".into()),
+            contributors: 2,
+            role: "midi contributor",
+        };
+        assert_eq!(
+            theme::text(source_summary_tooltip(&summary)).as_ref(),
+            "source · A Very Long Bright Bass Name\nrole · midi contributor\nreceiver · MIDI Receiver A\nmidi tracks · 2"
+        );
     }
 
     #[test]

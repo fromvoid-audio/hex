@@ -336,7 +336,7 @@ pub(crate) struct Publication {
     source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
-    section_launch_frame: Option<u64>,
+    quantized_seek_frame: Option<u64>,
     streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
     // Field order matters: destroy the actual ordinary graph before releasing
@@ -413,10 +413,10 @@ pub enum PublicationPolicy {
     /// Install only if the active runtime, route generation, and command prefix
     /// still match the caller's control-side capture.
     InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
-    /// A prepared section seek waits on the predecessor's musical clock.
+    /// A prepared quantized seek waits on the predecessor's musical clock.
     /// The first ready callback selects the next grid boundary. Installation
     /// uses ordinary seek/reset semantics, retaining the candidate's DSP clock.
-    InstallSectionWhenReady {
+    InstallQuantizedSeekWhenReady {
         fence: FreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },
@@ -442,7 +442,7 @@ impl PublicationPolicy {
     fn fresh_fence(self) -> Option<FreshRuntimeFence> {
         match self {
             Self::InstallFreshRuntimeIfUnchanged(fence)
-            | Self::InstallSectionWhenReady { fence, .. } => Some(fence),
+            | Self::InstallQuantizedSeekWhenReady { fence, .. } => Some(fence),
             _ => None,
         }
     }
@@ -2064,7 +2064,7 @@ impl PublicationControl {
             source_context,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams,
             playback: Box::new(playback),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -3240,7 +3240,7 @@ impl Callback {
         {
             return;
         }
-        if !self.section_publication_due() {
+        if !self.quantized_seek_publication_due() {
             return;
         }
         // A candidate with a transient release-capacity refusal remains owned
@@ -3284,7 +3284,7 @@ impl Callback {
             let forced_refusal = false;
             let stale_fence = match next.policy {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
-                | PublicationPolicy::InstallSectionWhenReady { fence, .. } => {
+                | PublicationPolicy::InstallQuantizedSeekWhenReady { fence, .. } => {
                     let active_revision = self
                         .active
                         .as_ref()
@@ -3359,7 +3359,7 @@ impl Callback {
                 && matches!(
                     next.policy,
                     PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                        | PublicationPolicy::InstallSectionWhenReady { .. }
+                        | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                 )
                 && let Some(barrier) = self.test_after_fresh_fence_validation.take()
             {
@@ -3436,6 +3436,9 @@ impl Callback {
                 } else {
                     None
                 };
+                let fenced_restart =
+                    matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                        && next.playback.live_restart_requested();
                 let prepared = next.streams.as_mut().map(|streams| {
                     streams.prepare_install(
                         &mut next.playback,
@@ -3444,10 +3447,27 @@ impl Callback {
                         self.stream_pending_play.is_some(),
                         self.stream_prefix,
                         frames.unwrap_or(0),
+                        fenced_restart,
                     )
                 });
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        // Page planning may span callbacks. Revalidate the
+                        // actual fence before promoting its protected pages.
+                        if let PublicationPolicy::InheritUnderArrangement(token) = next.policy
+                            && self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready
+                        {
+                            if let Some(streams) = next.streams.as_mut() {
+                                streams.cancel_install(&mut self.domain_pages);
+                            }
+                            self.reject_publication(
+                                next.revision,
+                                PlaybackHandoffRejection::RuntimeFenceChanged,
+                            );
+                            self.return_graph(next);
+                            self.status.publication_pending.store(false, Release);
+                            return;
+                        }
                         self.trace_audio(
                             AudioDiagnosticKind::PublicationPrepared,
                             next.revision,
@@ -3533,7 +3553,7 @@ impl Callback {
                 next.policy,
                 PublicationPolicy::InstallFreshRuntime
                     | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                    | PublicationPolicy::InstallSectionWhenReady { .. }
+                    | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     | PublicationPolicy::InstallUnderStoppedArrangement(_)
                     | PublicationPolicy::InstallUnderNativeEpoch(_)
             ) {
@@ -3550,8 +3570,6 @@ impl Callback {
                             .explicit_control_context
                             .then_some(previous.control_context_generation);
                         if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
-                            && next.streams.is_none()
-                            && previous.streams.is_none()
                             && next.playback.live_restart_requested()
                         {
                             next.playback.try_restart_runtime_under_arrangement_fence(
@@ -3595,7 +3613,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                            | PublicationPolicy::InstallSectionWhenReady { .. }
+                            | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     ) && let Some(barrier) = self.test_before_fresh_runtime_apply.take()
                     {
                         barrier.wait();
@@ -3625,7 +3643,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                            | PublicationPolicy::InstallSectionWhenReady { .. }
+                            | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     ) && let Some(barrier) = self.test_after_fresh_runtime_apply_decision.take()
                     {
                         barrier.wait();
@@ -3658,7 +3676,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                            | PublicationPolicy::InstallSectionWhenReady { .. }
+                            | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     ) && let Some(previous) =
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
                         && next.control_context_generation == previous.control_context_generation
@@ -4413,7 +4431,7 @@ impl Callback {
         } else {
             self.sample_recording.begin(output.len());
         }
-        if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
+        if self.status.closing.load(Acquire) || !self.render_quantized_seek(output)? {
             self.render_project(output, 0)?;
         }
         self.report_sampler_keyboard_rejection();
@@ -8810,7 +8828,7 @@ mod tests {
                 source_context: None,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
-                section_launch_frame: None,
+                quantized_seek_frame: None,
                 streams: None,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 native_references: None,
@@ -9391,7 +9409,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
-                    section_launch_frame: None,
+                    quantized_seek_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
@@ -11145,7 +11163,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
@@ -11266,7 +11284,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        section_launch_frame: None,
+                        quantized_seek_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
@@ -11347,7 +11365,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        section_launch_frame: None,
+                        quantized_seek_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
@@ -11367,7 +11385,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
@@ -11521,7 +11539,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    section_launch_frame: None,
+                    quantized_seek_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,

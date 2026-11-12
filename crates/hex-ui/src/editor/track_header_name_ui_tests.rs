@@ -127,11 +127,16 @@ fn colored_header_paths_keep_open_corners_and_neutral_expanded_backing(cx: &mut 
                 path_covers(&mesh, at(w - 8.0, h - 1.0)),
                 "fill reaches the diagonal without gaps"
             );
-            assert_eq!(
+            assert!(
                 path_covers(&mesh, at(0.5, 0.5)),
-                !group,
-                "only group starts have a rounded upper-left corner"
+                "the title fill reaches the rail without a cutout at the join"
             );
+            if group {
+                let (corners, _) = visual
+                    .rendered_surface_geometry(selector("track-color-strip", id.value()))
+                    .unwrap();
+                assert_eq!(f64::from(corners.top_left), 2.0 * f64::from(scale));
+            }
             assert!(
                 visual
                     .rendered_background(selector("track-name-area", id.value()))

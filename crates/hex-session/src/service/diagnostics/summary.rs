@@ -687,6 +687,18 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("paste_time_range"; ["track" => track.value(), "frame" => frame]; omitted="clipboard")
         }
         Command::RemoveDevices { .. } => describe!("remove_devices"; []; omitted="owner,selected"),
+        Command::ReorderDevices {
+            selected, before, ..
+        } => {
+            describe!("reorder_devices"; ["devices" => selected.ids().len(), "before" => before.map(|id| id.value())]; omitted="owner,device ids")
+        }
+        Command::MoveTrackDevices {
+            source,
+            selected,
+            destination,
+        } => {
+            describe!("move_track_devices"; ["source" => source.value(), "destination" => destination.value(), "devices" => selected.ids().len()]; omitted="device ids")
+        }
         Command::PasteDevices { .. } => {
             describe!("paste_devices"; []; omitted="clipboard,owner,before")
         }
@@ -1332,6 +1344,14 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::BindUnassignedNativeSource {
+            project_generation,
+            revision,
+            track,
+            source,
+        } => {
+            describe!("bind_unassigned_native_source"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value()]; omitted="")
+        }
         Request::ReplaceDeviceModulation {
             project_generation,
             revision,
@@ -1350,6 +1370,24 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("device_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="action")
         }
+        Request::ReorderDevices {
+            project_generation,
+            revision,
+            selected,
+            before,
+            ..
+        } => {
+            describe!("reorder_devices"; ["project_generation" => project_generation, "revision" => revision, "devices" => selected.ids().len(), "before" => before.map(|id| id.value())]; omitted="owner,device ids")
+        }
+        Request::MoveTrackDevices {
+            project_generation,
+            revision,
+            source,
+            selected,
+            destination,
+        } => {
+            describe!("move_track_devices"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "destination" => destination.value(), "devices" => selected.ids().len()]; omitted="device ids")
+        }
         Request::TrackClipboard {
             project_generation,
             revision,
@@ -1358,6 +1396,17 @@ pub(super) fn request(value: &Request) -> Description {
             let mut description = describe!("track_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="");
             description.nested("action", self::track_clipboard(action));
             description
+        }
+        Request::InsertProjectSample {
+            project_generation,
+            revision,
+            asset,
+            track,
+            start,
+            warp,
+            audition_timing,
+        } => {
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
         }
         Request::ReorderTracks {
             project_generation,
@@ -1490,6 +1539,7 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
+        Request::ContinueRecovery => describe!("continue_recovery"; []; omitted=""),
         Request::TogglePluginEditor {
             project_generation,
             device,

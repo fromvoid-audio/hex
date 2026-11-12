@@ -286,7 +286,7 @@ impl Hooks {
             details_truncated,
         });
     }
-    /// `worker` (WorkerBegin to OutcomeReady), `section` phases and duplicate
+    /// `worker` (WorkerBegin to OutcomeReady), `section` phases and opt-in
     /// recovery maintenance are observations recorded on the worker outcome.
     pub fn outcome(
         &self,
@@ -295,7 +295,7 @@ impl Hooks {
         received: bool,
         worker: Option<Duration>,
         section: Option<SectionPhases>,
-        duplicate_recovery: Option<Duration>,
+        recovery_timing: Option<(&'static str, Duration)>,
     ) {
         if self.observer.get().is_none() {
             return;
@@ -337,11 +337,8 @@ impl Hooks {
                 description.field(name, format_args!("{}", value.as_micros()));
             }
         }
-        if !received && let Some(duration) = duplicate_recovery {
-            description.field(
-                "duplicate_recovery_us",
-                format_args!("{}", duration.as_micros()),
-            );
+        if !received && let Some((field, duration)) = recovery_timing {
+            description.field(field, format_args!("{}", duration.as_micros()));
         }
         if let Some(ack) = &event.gesture_ack {
             description.field("gesture_generation", format_args!("{}", ack.key.generation));

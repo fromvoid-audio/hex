@@ -295,6 +295,7 @@ fn compile_points(
     mapping: Mapping,
     points: &[ParameterAutomationPoint],
     compiled: &mut Vec<PreparedParameterAutomationPoint>,
+    allow_coincident: bool,
 ) -> Result<Option<CanonicalValue>, Error> {
     let Some(first) = points.first() else {
         return Ok(None);
@@ -302,9 +303,13 @@ fn compile_points(
     if points
         .iter()
         .any(|point| !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized))
+        || points.windows(2).any(|pair| {
+            pair[0].beat_raw > pair[1].beat_raw
+                || (!allow_coincident && pair[0].beat_raw == pair[1].beat_raw)
+        })
         || points
-            .windows(2)
-            .any(|pair| pair[0].beat_raw >= pair[1].beat_raw)
+            .windows(3)
+            .any(|run| run[0].beat_raw == run[2].beat_raw)
     {
         return Err(Error::InvalidParameterValue);
     }
@@ -466,7 +471,7 @@ impl PreparedParameterAutomation {
                 .ok_or(Error::InvalidDescriptor)?;
             ids.push(lane.descriptor.id);
             let mapping = Mapping::prepare(lane.descriptor, lane.semantics)?;
-            let constant = compile_points(mapping, values, &mut compiled_points)?;
+            let constant = compile_points(mapping, values, &mut compiled_points, true)?;
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: Some(lane.descriptor),
                 mapping,
@@ -493,7 +498,7 @@ impl PreparedParameterAutomation {
             let values = points
                 .get(lane.points.clone())
                 .ok_or(Error::InvalidDescriptor)?;
-            let constant = compile_points(Mapping::HostGain, values, &mut compiled_points)?;
+            let constant = compile_points(Mapping::HostGain, values, &mut compiled_points, true)?;
             previous = Some(lane.target);
             match lane.target {
                 DeviceAutomationTarget::HostInputGain => host_input = Some(prepared.len()),
@@ -580,7 +585,7 @@ impl PreparedParameterAutomation {
             {
                 return Err(Error::InvalidDescriptor);
             }
-            compile_points(lane.mapping, values, &mut self.points)?;
+            compile_points(lane.mapping, values, &mut self.points, false)?;
             lane.touch.end += 1;
             previous = Some(span);
             end = span.points.end;

@@ -3,16 +3,15 @@
 //! stamps and owns history; released curves retain their exact ordered receipt.
 //! Provider descriptors and typed host gains have separate value metadata;
 //! reserved widget keys are translated only by the shared binding edge.
-//! Point selection is transient view state within one lane. A blank press adds
-//! a point and drags it; a shift blank drag draws the shared
-//! `hex_widgets::Marquee` (shift+cmd toggles). Dragging a selected point moves
-//! the whole selection, and
-//! delete/shape act on every selected point; each is one whole-lane request,
-//! so one Undo reverts the group edit.
+//! A press on the curve adds or moves a point. Empty space selects a time
+//! range within one lane. Dragging a selected point moves the selected group,
+//! and each edit replaces the lane in one undoable request.
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) mod host_tests;
 mod paint;
 mod plot_geometry;
+mod range_edit;
+pub(super) use range_edit::RangeEdit;
 mod read_selection;
 #[cfg(test)]
 mod tests;
@@ -134,35 +133,44 @@ pub(super) enum Action {
     Shape(Target, AutomationInterpolation),
 }
 
-/// Selected beats within one lane, sorted, unique and non-empty.
+/// A point's time and its order among the at most two nodes at that time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PointKey {
+    beat: BeatTime,
+    second: bool,
+}
+
+impl PointKey {
+    fn at(points: &[AutomationPoint], index: usize) -> Self {
+        let beat = points[index].beat;
+        let second = index > 0 && points[index - 1].beat == beat;
+        Self { beat, second }
+    }
+}
+
+/// Selected points within one lane, sorted, unique and non-empty.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Selection {
     target: Target,
-    beats: Vec<BeatTime>,
+    keys: Vec<PointKey>,
 }
 
 impl Selection {
-    fn one(target: Target, beat: BeatTime) -> Self {
+    fn one(target: Target, key: PointKey) -> Self {
         Self {
             target,
-            beats: vec![beat],
+            keys: vec![key],
         }
     }
-    /// `None` for an empty set, so an empty marquee clears the selection.
-    fn new(target: Target, mut beats: Vec<BeatTime>) -> Option<Self> {
-        beats.sort_unstable();
-        beats.dedup();
-        (!beats.is_empty()).then_some(Self { target, beats })
+
+    fn new(target: Target, mut keys: Vec<PointKey>) -> Option<Self> {
+        keys.sort_unstable();
+        keys.dedup();
+        (!keys.is_empty()).then_some(Self { target, keys })
     }
-    fn contains(&self, target: Target, beat: BeatTime) -> bool {
-        self.target == target && self.beats.binary_search(&beat).is_ok()
-    }
-    fn beats_in(&self, target: Target) -> &[BeatTime] {
-        if self.target == target {
-            &self.beats
-        } else {
-            &[]
-        }
+
+    fn contains(&self, target: Target, key: PointKey) -> bool {
+        self.target == target && self.keys.binary_search(&key).is_ok()
     }
 }
 
@@ -173,8 +181,10 @@ pub(super) struct Draft {
     target: Target,
     revision: u64,
     points: Vec<AutomationPoint>,
-    group: Vec<AutomationPoint>,
-    rest: Vec<AutomationPoint>,
+    group: Vec<(usize, AutomationPoint)>,
+    rest: Vec<(usize, AutomationPoint)>,
+    grabbed: usize,
+    initial_key: PointKey,
     /// A stationary click on a grouped point collapses the selection to it.
     collapse: bool,
     initial: AutomationPoint,
@@ -184,25 +194,44 @@ pub(super) struct Draft {
     origin: [f32; 2],
 }
 
-/// Held shift blank press: a click adds `click` on release; a drag becomes a marquee.
+/// A time range is lane-local and retains its bounds even if it contains no points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RangeSelection {
+    target: Target,
+    start: BeatTime,
+    end: BeatTime,
+}
+
+impl RangeSelection {
+    fn selection(self, points: &[AutomationPoint]) -> Option<Selection> {
+        let first = points.partition_point(|point| point.beat < self.start);
+        let last = points.partition_point(|point| point.beat < self.end);
+        Selection::new(
+            self.target,
+            (first..last)
+                .map(|index| PointKey::at(points, index))
+                .collect(),
+        )
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct MarqueeDraft {
     target: Target,
     revision: u64,
-    band: hex_widgets::Marquee,
-    mode: hex_widgets::MarqueeMode,
+    anchor: BeatTime,
     base: Option<Selection>,
-    click: Vec<AutomationPoint>,
-    click_beat: BeatTime,
+    base_range: Option<RangeSelection>,
     viewport: super::viewport::Viewport,
     rect: [f32; 4],
-    active: bool,
 }
 struct Pending {
     target: Target,
     revision: u64,
     points: Vec<AutomationPoint>,
     receipt: Receipt,
+    select_range: Option<RangeSelection>,
+    cut_clipboard: Option<range_edit::Clipboard>,
 }
 
 #[derive(Default)]
@@ -211,6 +240,8 @@ pub(super) struct Lanes {
     extra: Vec<Entry>,
     known: Vec<Entry>,
     selected: Option<Selection>,
+    range: Option<RangeSelection>,
+    clipboard: Option<range_edit::Clipboard>,
     draft: Option<Draft>,
     marquee: Option<MarqueeDraft>,
     pending: Option<Pending>,
@@ -527,6 +558,74 @@ impl Entry {
 }
 
 impl Lanes {
+    /// Reveal the lanes for one owner, or across the Arrangement. A lane can
+    /// come from the project, a previous assignment, or the current preview.
+    pub(super) fn reveal(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        owner: Option<Owner>,
+        used_only: bool,
+    ) {
+        if used_only {
+            self.extra.retain(|entry| {
+                owner.is_some_and(|owner| entry.target.owner != owner)
+                    || project
+                        .device(entry.target.device)
+                        .and_then(|device| device.automation_target(entry.target.kind))
+                        .is_some()
+            });
+        }
+        let owners = match owner {
+            Some(owner) => vec![owner],
+            None => std::iter::once(Owner::Main)
+                .chain(
+                    project
+                        .tracks()
+                        .iter()
+                        .map(|track| Owner::Track(track.id())),
+                )
+                .chain(
+                    project
+                        .return_tracks()
+                        .iter()
+                        .map(|track| Owner::Return(track.id())),
+                )
+                .collect(),
+        };
+        let lane_key = |entry: &Entry| {
+            let target = entry.target;
+            (target.owner, target.device, target.kind)
+        };
+        let mut visible: std::collections::HashSet<_> = self.extra.iter().map(lane_key).collect();
+        for owner in owners {
+            for (device, _) in devices(project, owner) {
+                let authored = device.automation().iter().filter_map(|lane| {
+                    Entry::read(project, generation, owner, device.id(), lane.target)
+                });
+                self.extra
+                    .extend(authored.filter(|entry| visible.insert(lane_key(entry))));
+            }
+        }
+        if !used_only {
+            self.extra.extend(
+                self.known
+                    .iter()
+                    .chain(&self.main)
+                    .filter(|entry| {
+                        owner.is_none_or(|owner| entry.target.owner == owner)
+                            && visible.insert(lane_key(entry))
+                    })
+                    .cloned(),
+            );
+        }
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in crate::editor) fn main_target_for_test(&self) -> Option<Target> {
+        self.main.last().map(|entry| entry.target)
+    }
+
     pub(super) fn display_end(&self, project: &Project) -> Option<u64> {
         self.main
             .iter()
@@ -563,6 +662,7 @@ impl Lanes {
     pub(super) fn clear_main(&mut self, owner: Owner) {
         self.main.retain(|entry| entry.target.owner != owner);
         self.selected = None;
+        self.range = None;
     }
     pub(super) fn has_main(&self, owner: Owner) -> bool {
         self.main.iter().any(|entry| entry.target.owner == owner)
@@ -1094,57 +1194,12 @@ impl EditorView {
                 let Some(state) = &self.state else {
                     return;
                 };
-                let entries: Vec<_> = devices(&state.project, owner)
-                    .into_iter()
-                    .flat_map(|(device, _)| {
-                        device.automation().iter().filter_map(|lane| {
-                            Entry::read(
-                                &state.project,
-                                self.project_generation,
-                                owner,
-                                device.id(),
-                                lane.target,
-                            )
-                        })
-                    })
-                    .collect();
-                let lanes = &mut self.automation_view.devices;
-                if used_only {
-                    lanes.extra.retain(|entry| {
-                        entry.target.owner != owner
-                            || state
-                                .project
-                                .device(entry.target.device)
-                                .and_then(|device| device.automation_target(entry.target.kind))
-                                .is_some()
-                    });
-                }
-                for entry in entries {
-                    if !lanes.extra.iter().any(|old| old.target == entry.target) {
-                        lanes.extra.push(entry);
-                    }
-                }
-                if !used_only {
-                    for entry in lanes
-                        .known
-                        .iter()
-                        .filter(|entry| entry.target.owner == owner)
-                    {
-                        if !lanes.extra.iter().any(|old| old.target == entry.target) {
-                            lanes.extra.push(entry.clone());
-                        }
-                    }
-                }
-                if !used_only
-                    && let Some(main) = lanes
-                        .main
-                        .iter()
-                        .find(|entry| entry.target.owner == owner)
-                        .cloned()
-                    && !lanes.extra.iter().any(|entry| entry.target == main.target)
-                {
-                    lanes.extra.push(main);
-                }
+                self.automation_view.devices.reveal(
+                    &state.project,
+                    self.project_generation,
+                    Some(owner),
+                    used_only,
+                );
                 self.set_mode(super::EditorMode::Arrangement);
                 self.automation_view.enabled = true;
                 self.track_scroll.remeasure();
@@ -1219,9 +1274,9 @@ impl EditorView {
                     return;
                 };
                 let mut points = self.automation_view.devices.points(state, target);
-                for point in &mut points {
-                    if selected.contains(target, point.beat) {
-                        point.outgoing = shape;
+                for index in 0..points.len() {
+                    if selected.contains(target, PointKey::at(&points, index)) {
+                        points[index].outgoing = shape;
                     }
                 }
                 self.commit_device_automation(target, points, cx);
@@ -1262,8 +1317,10 @@ impl EditorView {
                     .target
                     .current(&state.project, self.project_generation)
                     .is_none()
-        }) {
-            lanes.marquee = None;
+        }) && let Some(marquee) = lanes.marquee.take()
+        {
+            lanes.selected = marquee.base;
+            lanes.range = marquee.base_range;
         }
         for entries in [&mut lanes.main, &mut lanes.extra, &mut lanes.known] {
             entries.retain_mut(|entry| {
@@ -1275,7 +1332,15 @@ impl EditorView {
                 }
             });
         }
-        if let Some(selected) = lanes.selected.take() {
+        if lanes
+            .range
+            .is_some_and(|range| lanes.entry(range.target).is_none())
+        {
+            lanes.range = None;
+        }
+        if let Some(range) = lanes.range {
+            lanes.selected = range.selection(lanes.points_ref(&state.project, range.target));
+        } else if let Some(selected) = lanes.selected.take() {
             let target = selected.target;
             lanes.selected = if lanes
                 .pending
@@ -1291,10 +1356,9 @@ impl EditorView {
                     .map_or(&[][..], |lane| lane.points.as_slice());
                 Selection::new(
                     target,
-                    selected
-                        .beats
-                        .into_iter()
-                        .filter(|beat| canonical.iter().any(|point| point.beat == *beat))
+                    (0..canonical.len())
+                        .map(|index| PointKey::at(canonical, index))
+                        .filter(|key| selected.contains(target, *key))
                         .collect(),
                 )
             };
@@ -1338,14 +1402,39 @@ impl EditorView {
         {
             self.automation_view.devices.read_pending = None;
         }
-        if let Some(pending) = &mut self.automation_view.devices.pending
-            && pending.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            ) != Disposition::Waiting
+        let lanes = &mut self.automation_view.devices;
+        let Some(pending) = &mut lanes.pending else {
+            return;
+        };
+        let disposition = pending.receipt.observe(
+            self.project_generation,
+            event.project_replaced,
+            event.request_complete,
+        );
+        if disposition != Disposition::Waiting
+            && let Some(pending) = lanes.pending.take()
+            && disposition == Disposition::Terminal
+            && (pending.cut_clipboard.is_some() || pending.select_range.is_some())
+            // Recovery can report a warning on the same terminal as a committed edit.
+            && event.state.revision > pending.revision
+            && pending.target.identity_current(&event.state.project, self.project_generation)
+                .is_some_and(|device| {
+                    let points = device.automation_target(pending.target.kind)
+                        .map_or(&[][..], |lane| lane.points.as_slice());
+                    points == pending.points
+                })
         {
-            self.retire_pending_device_automation();
+            if let Some(copy) = pending.cut_clipboard {
+                lanes.clipboard = Some(copy);
+            }
+            if let Some(range) = pending.select_range
+                && lanes
+                    .range
+                    .is_some_and(|active| active.target == range.target)
+            {
+                lanes.range = Some(range);
+                lanes.selected = range.selection(&pending.points);
+            }
         }
     }
     pub(super) fn cancel_device_automation_draft(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1353,6 +1442,7 @@ impl EditorView {
         let mut changed = lanes.draft.take().is_some();
         if let Some(marquee) = lanes.marquee.take() {
             lanes.selected = marquee.base;
+            lanes.range = marquee.base_range;
             changed = true;
         }
         if changed {
@@ -1369,8 +1459,17 @@ impl EditorView {
             return false;
         };
         let target = selected.target;
-        let mut points = self.automation_view.devices.points(state, target);
-        points.retain(|point| !selected.contains(target, point.beat));
+        let points = self
+            .automation_view
+            .devices
+            .points_ref(&state.project, target);
+        let points = points
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(index, _)| !selected.contains(target, PointKey::at(points, *index)))
+            .map(|(_, point)| point)
+            .collect();
         self.automation_view.devices.selected = None;
         self.commit_device_automation(target, points, cx);
         true
@@ -1412,6 +1511,8 @@ impl EditorView {
             revision,
             points: points.clone(),
             receipt: Receipt::new(target.generation),
+            select_range: None,
+            cut_clipboard: None,
         });
         if !self.enqueue(Request::DeviceAutomation {
             project_generation: target.generation,

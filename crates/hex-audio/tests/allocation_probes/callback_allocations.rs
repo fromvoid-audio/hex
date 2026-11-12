@@ -1,9 +1,13 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 
+#[path = "callback_allocations/cold_track.rs"]
+mod cold_track;
 #[path = "callback_allocations/compressor.rs"]
 mod compressor;
 #[path = "callback_allocations/cursor_loop.rs"]
 mod cursor_loop;
+#[path = "callback_allocations/device_track.rs"]
+mod device_track;
 #[path = "callback_allocations/finite_bounce.rs"]
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]

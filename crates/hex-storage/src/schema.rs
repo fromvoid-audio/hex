@@ -10,6 +10,7 @@ pub(crate) mod branch_audio;
 pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
+pub(crate) mod coincident_automation;
 pub(crate) mod combined;
 pub(crate) mod content_view_resampler;
 pub(crate) mod content_views;

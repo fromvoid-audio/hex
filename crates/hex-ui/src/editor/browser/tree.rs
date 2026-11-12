@@ -74,6 +74,7 @@ impl EditorView {
             BrowserItemKey::Plugin(path, id) => {
                 self.browser_history_index(&BrowserItemKey::Plugin(path, id), cx)
             }
+            key @ BrowserItemKey::ProjectSample(..) => self.browser_history_index(&key, cx),
         };
         if let Some(index) = index {
             self.browser.selected_index = index;

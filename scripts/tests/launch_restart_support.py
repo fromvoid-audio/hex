@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+from test_local_ci import load_delivery_source_fixture
 
 
 def load(name, filename):
@@ -13,4 +14,4 @@ def load(name, filename):
 
 
 restart = load("hex_restart_test_support", "launch-restart.py")
-delivery = load("hex_delivery_restart_test_support", "hex-test-build.py")
+delivery = load_delivery_source_fixture("hex_delivery_restart_test_support")

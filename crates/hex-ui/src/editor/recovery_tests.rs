@@ -129,6 +129,7 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
         view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         view.applied_project_revision = Some(revision);
         view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: None,
             audio_revision: 0,
@@ -557,8 +558,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
 struct Sink {
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    audition_ready: bool,
     hold: Arc<AtomicBool>,
     held: Arc<Mutex<Option<EditorAudioEvent>>>,
+    consume_next_inherited_candidate: Option<Arc<AtomicBool>>,
     reject_next_fresh: Arc<AtomicBool>,
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
@@ -569,12 +572,16 @@ struct Sink {
 pub(in crate::editor) fn worker_fixture_sink(
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    audition_ready: bool,
+    consume_next_inherited_candidate: Arc<AtomicBool>,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
         events,
+        audition_ready,
         hold: Arc::new(AtomicBool::new(false)),
         held: Arc::new(Mutex::new(None)),
+        consume_next_inherited_candidate: Some(consume_next_inherited_candidate),
         reject_next_fresh: Arc::new(AtomicBool::new(false)),
         cancel_next_fresh: Arc::new(AtomicBool::new(false)),
         cancellation_done: Arc::new(AtomicBool::new(false)),
@@ -773,6 +780,25 @@ fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::Te
     output.publication.close();
 }
 impl WorkerAudioSink for Sink {
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        use hex_session::service::ResidentPublicationReadiness;
+        if !self.audition_ready {
+            return ResidentPublicationReadiness::NoOutput;
+        }
+        let Some(control) = self.output.publication.control() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        let Some(output_identity) = control.output_identity() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        ResidentPublicationReadiness::Idle {
+            output_identity,
+            applied_revision: control.status.applied_revision.load(Acquire),
+            publication_in_flight: control.status.publication_in_flight(),
+        }
+    }
     fn resident_publication_enabled(&self) -> bool {
         true
     }
@@ -798,7 +824,7 @@ impl WorkerAudioSink for Sink {
     }
     fn publish_resident(
         &mut self,
-        playback: Playback,
+        mut playback: Playback,
         _: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
         observation: Arc<PreparedPlaybackObservation>,
         metadata: ResidentPublicationMetadata,
@@ -816,6 +842,16 @@ impl WorkerAudioSink for Sink {
         }
         let cancel_fresh = matches!(policy, ResidentPublicationPolicy::InstallFreshRuntime)
             && self.cancel_next_fresh.swap(false, AcqRel);
+        if matches!(policy, ResidentPublicationPolicy::InheritRuntime)
+            && self
+                .consume_next_inherited_candidate
+                .as_ref()
+                .is_some_and(|armed| armed.swap(false, AcqRel))
+        {
+            // A used candidate refuses ordinary inheritance on the actual
+            // callback. The worker still owns its committed prepared revision.
+            playback.apply(PlaybackCommand::Stop);
+        }
         let control = self.output.publication.control().unwrap();
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
@@ -842,7 +878,7 @@ impl WorkerAudioSink for Sink {
                 });
             }
             ResidentPublicationPolicy::FreshIfUnchanged(expected)
-            | ResidentPublicationPolicy::SectionWhenReady {
+            | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                 fence: expected, ..
             } => {
                 let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -858,8 +894,8 @@ impl WorkerAudioSink for Sink {
                     });
                 };
                 match policy {
-                    ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                        PublicationPolicy::InstallSectionWhenReady {
+                    ResidentPublicationPolicy::QuantizedSeekWhenReady { quantization, .. } => {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence: actual,
                             quantization,
                         }
@@ -1107,8 +1143,10 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
         Box::new(Sink {
             output,
             events,
+            audition_ready: false,
             hold: Arc::clone(&hold),
             held: Arc::clone(&held),
+            consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::clone(&reject_next_fresh),
             cancel_next_fresh: Arc::clone(&cancel_next_fresh),
             cancellation_done: Arc::clone(&cancellation_done),
@@ -1323,8 +1361,10 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         Box::new(Sink {
             output,
             events,
+            audition_ready: false,
             hold: hold.clone(),
             held: held.clone(),
+            consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::new(AtomicBool::new(false)),
             cancel_next_fresh: Arc::new(AtomicBool::new(false)),
             cancellation_done: Arc::new(AtomicBool::new(false)),

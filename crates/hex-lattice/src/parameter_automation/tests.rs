@@ -217,16 +217,27 @@ fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
         )
         .is_err()
     );
-    assert!(
-        PreparedParameterAutomation::new(
-            vec![ParameterAutomationLane {
-                points: 0..2,
-                ..lane.clone()
-            }],
-            vec![point, point]
-        )
-        .is_err()
-    );
+    for points in [
+        vec![point, point, point],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 1,
+                ..point
+            },
+            point,
+        ],
+    ] {
+        assert!(
+            PreparedParameterAutomation::new(
+                vec![ParameterAutomationLane {
+                    points: 0..points.len(),
+                    ..lane.clone()
+                }],
+                points,
+            )
+            .is_err()
+        );
+    }
     assert!(
         PreparedParameterAutomation::new(vec![lane.clone(); MAX_AUTOMATION_LANES + 1], vec![point])
             .is_err()
@@ -1631,4 +1642,31 @@ fn host_gain_reads_preserve_unrounded_frames_and_existing_linear_precedence() {
         .unwrap();
     expected(&with_held, 1, held.normalized());
     expected(&with_held, 5, held.normalized());
+}
+
+#[test]
+fn native_automation_ramps_to_the_incoming_point_and_jumps_at_the_shared_beat() {
+    let descriptor = descriptor();
+    let program = PreparedParameterAutomation::new(
+        vec![ParameterAutomationLane {
+            descriptor,
+            semantics: semantics(),
+            points: 0..4,
+        }],
+        [(0, 0.0), (20, 1.0), (20, 0.25), (40, 0.75)]
+            .map(|(beat_raw, normalized)| ParameterAutomationPoint {
+                beat_raw,
+                normalized,
+                step: false,
+            })
+            .to_vec(),
+    )
+    .unwrap();
+    let block = program.block(Some(&Clock), 42);
+    for (offset, expected) in [(10, 5.0), (20, 3.0), (30, 5.0)] {
+        assert_eq!(
+            block.value_at(descriptor.id, offset),
+            Some(ParameterValue::Float(expected))
+        );
+    }
 }

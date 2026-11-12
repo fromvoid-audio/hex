@@ -37,9 +37,20 @@ def install_delivery_source_fixture(root: Path) -> None:
     """Install independent copies of the actual delivery input sources."""
     scripts = root / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+    for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
                  "ci_checkpoint.py", "ci_target_storage.py"):
         (scripts / name).write_bytes((SCRIPT.parent / name).read_bytes())
+
+
+def load_delivery_source_fixture(name):
+    path = SCRIPT.with_name("hex-test-build.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    source = path.read_bytes()
+    module._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+    return module
 
 
 FAKE_TOOL = """#!/bin/sh
@@ -53,6 +64,10 @@ case "$tool $*" in
   git\\ ls-files*) printf '%s\\0' "$FAKE_FILE_LIST"; exit 0 ;;
   'cargo metadata'*)
     case "$FAIL_MATCH" in *metadata*) echo "metadata unavailable" >&2; exit 9 ;; esac
+    if [ "$METADATA_WRITE_TARGET_FILE" = 1 ]; then
+      /bin/mkdir -p "$CARGO_TARGET_DIR"
+      printf 'cargo metadata side effect\n' > "$CARGO_TARGET_DIR/.rustc_info.json"
+    fi
     printf '{"target_directory":"%s","workspace_root":"%s","workspace_members":["fixture 0.1.0","other 0.1.0"],"packages":[{"id":"fixture 0.1.0","name":"fixture","version":"0.1.0","manifest_path":"%s/Cargo.toml"},{"id":"other 0.1.0","name":"other","version":"0.1.0","manifest_path":"%s/other/Cargo.toml"}]}\\n' "$FAKE_METADATA_TARGET" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT"
     exit 0 ;;
 esac
@@ -497,6 +512,7 @@ class LocalCiRunnerTests(unittest.TestCase):
             "FAKE_WORKSPACE_ROOT": str(self.repo),
             "FAKE_METADATA_TARGET": str(self.repo / "cargo-target"),
             "MAKE_TARGET": "0",
+            "METADATA_WRITE_TARGET_FILE": "0",
         }
         self.target_state_dir = self.base / "target-ownership"
         # Storage probing has its own real-command/metadata tests. Keep cache,
@@ -677,6 +693,164 @@ class LocalCiRunnerTests(unittest.TestCase):
             report["build_exit_code"] = 0
             report["artifact"] = runner.identify_release_artifact(artifact, argv)
         return runner, report
+
+    def _reserved_release_runner(self, name, *, absent=False):
+        target = self.repo / name
+        if not absent:
+            target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"),
+                        runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        return runner, reservation, target
+
+    def _release_owner_path(self, target):
+        dev = local_ci.target_state_paths(target, self.target_state_dir)[1]
+        return dev.with_name(dev.name.removesuffix(".owner.json") + ".release-owner.json")
+
+    def _finish_reserved_release(self, runner, report, target):
+        artifact = target / "release" / "release-fixture"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"optimized reserved fixture")
+        argv = ["cargo", "build", "--release"]
+        report.update(build_argv=argv, build_exit_code=0,
+                      artifact=runner.identify_release_artifact(artifact, argv))
+
+    def test_reserved_release_publishes_ready_owner_while_holding_same_lock(self):
+        for absent in (False, True):
+            with self.subTest(absent=absent):
+                name = f"reserved-release-{absent}"
+                runner, reservation, target = self._reserved_release_runner(name, absent=absent)
+                lock = reservation._lock
+                lock_file = lock.file
+                owner = self._release_owner_path(target)
+                with runner.guarded_release(reservation=reservation) as report:
+                    self.assertIs(runner.target_lock, lock)
+                    self.assertIs(lock.file, lock_file)
+                    self.assertEqual(report["state"], "pending")
+                    self.assertEqual(report["cleanup_status"], "not_needed")
+                    self._finish_reserved_release(runner, report, target)
+                record = json.loads(owner.read_text())
+                self.assertEqual(record["schema_version"], 1)
+                self.assertEqual(record["profile"], "release")
+                self.assertEqual(record["state"], "ready")
+                self.assertEqual(record["target_directory"], str(target))
+                self.assertEqual(record["target_identity"], runner._directory_identity(target))
+                self.assertEqual(record["workspace_owner"], {
+                    key: runner.git_identity[key] for key in ("workspace_root", "git_common_dir")})
+                self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(
+                    b"optimized reserved fixture").hexdigest())
+                self.assertEqual(report["state"], "ready")
+                self.assertNotIn("cargo clean", self.call_log.read_text())
+                self.assertIsNone(runner.target_lock)
+                self.assertIsNone(lock.file)
+
+    def test_reserved_release_real_offline_metadata_leaves_target_fresh(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "release-real-offline", real_cargo=True, absent=True)
+        runner.env["CARGO_CACHE_RUSTC_INFO"] = "1"
+        with runner.guarded_release(reservation=reservation) as report:
+            self.assertEqual(runner.env["CARGO_CACHE_RUSTC_INFO"], "0")
+            self.assertEqual(list(target.iterdir()), [])
+            self._finish_reserved_release(runner, report, target)
+        self.assertEqual(runner.env["CARGO_CACHE_RUSTC_INFO"], "1")
+        self.assertEqual(json.loads(self._release_owner_path(target).read_text())["state"], "ready")
+
+    def test_reserved_release_refuses_metadata_side_effects_before_publication(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-metadata-entry")
+        scope = runner._release_scope
+        foreign = target / ".rustc_info.json"
+
+        def metadata():
+            packages = scope()
+            foreign.write_bytes(b"unowned cache")
+            return packages
+
+        with patch.object(runner, "_release_scope", side_effect=metadata), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "fresh target is not empty"):
+            with runner.guarded_release(reservation=reservation):
+                self.fail("release admitted unowned metadata output")
+        self.assertEqual(foreign.read_bytes(), b"unowned cache")
+        self.assertFalse(self._release_owner_path(target).exists())
+        self.assertIsNone(runner.target_lock)
+
+    def test_reserved_release_marker_collision_preserves_competitor_and_pending_sentinel(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-collision")
+        owner = self._release_owner_path(target)
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        competitor = b"competing release owner\n"
+        original_link = os.link
+
+        def collide(source, destination, *args, **kwargs):
+            if os.fspath(destination) == owner.name:
+                descriptor = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(competitor)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            return original_link(source, destination, *args, **kwargs)
+
+        with patch.object(local_ci.os, "link", side_effect=collide), \
+                self.assertRaises(local_ci.TargetCacheError):
+            with runner.guarded_release(reservation=reservation):
+                self.fail("release entered after competing owner publication")
+        self.assertEqual(owner.read_bytes(), competitor)
+        self.assertTrue(pending.exists())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+        self.assertIsNone(runner.target_lock)
+
+    def test_reserved_release_refuses_replacements_during_ready_marker_staging(self):
+        for replacement in ("target", "owner", "staging"):
+            with self.subTest(replacement=replacement):
+                runner, reservation, target = self._reserved_release_runner(
+                    f"reserved-release-replace-{replacement}")
+                owner = self._release_owner_path(target)
+                replacement_target = target.with_name(target.name + ".original")
+                write_owner = runner._write_release_owner
+                fsync = os.fsync
+                changed = False
+
+                def sync_then_replace(descriptor):
+                    nonlocal changed
+                    fsync(descriptor)
+                    if changed:
+                        return
+                    changed = True
+                    if replacement == "target":
+                        target.rename(replacement_target)
+                        target.mkdir()
+                    elif replacement == "owner":
+                        owner.unlink()
+                        owner.write_bytes(b"competing pending owner\n")
+                    else:
+                        staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                        staging.unlink()
+                        staging.write_bytes(b"competing ready staging entry\n")
+
+                def write_with_race(path, payload, **options):
+                    with patch.object(local_ci.os, "fsync", side_effect=sync_then_replace):
+                        write_owner(path, payload, **options)
+
+                with patch.object(runner, "_write_release_owner", side_effect=write_with_race), \
+                        self.assertRaises(local_ci.TargetCacheError):
+                    with runner.guarded_release(reservation=reservation) as report:
+                        self._finish_reserved_release(runner, report, target)
+                self.assertTrue(changed)
+                self.assertNotIn("cargo clean", self.call_log.read_text())
+                if replacement == "target":
+                    self.assertTrue(replacement_target.is_dir())
+                    self.assertTrue(target.is_dir())
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                elif replacement == "owner":
+                    self.assertEqual(owner.read_bytes(), b"competing pending owner\n")
+                else:
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                    staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                    self.assertEqual(staging.read_bytes(), b"competing ready staging entry\n")
 
     def test_release_unknown_pending_and_explicit_recovery(self):
         target = self.repo / "cargo-target"
@@ -1148,6 +1322,216 @@ class LocalCiRunnerTests(unittest.TestCase):
                 local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
             resolve.assert_called_once()
 
+    def _isolate_fresh_cli(self):
+        state_paths = local_ci.target_state_paths
+        def isolated_paths(target, state_dir=None):
+            return state_paths(target, state_dir or self.target_state_dir)
+
+        paths = patch.object(local_ci, "target_state_paths", side_effect=isolated_paths)
+        paths.start()
+        self.addCleanup(paths.stop)
+
+    def test_fresh_target_scoped_metadata_is_locked_and_target_bound(self):
+        self._isolate_fresh_cli()
+        target = self.base / "fresh-scoped-target"
+        target.mkdir()
+        foreign = self.base / "foreign-target"
+        foreign.mkdir()
+        lock_path, _ = local_ci.target_state_paths(target)
+        observations = []
+
+        def metadata(*_args, **_kwargs):
+            contender = local_ci.CargoTargetLock(lock_path, {"run_id": "metadata-contender"})
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                contender.acquire()
+            observations.append("locked")
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps({
+                "target_directory": str(foreign), "workspace_root": str(self.repo),
+                "workspace_members": [], "packages": [],
+            }))
+
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                patch.object(local_ci, "command_output", side_effect=metadata), \
+                patch.object(local_ci.ci_plan, "resolve") as resolve:
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--fresh-target", "--profile", "merge", "--base", "base", "--source", "source"])
+            resolve.assert_not_called()
+        self.assertEqual(observations, ["locked"])
+        self.assertFalse(list(target.iterdir()))
+
+    def test_fresh_target_scoped_metadata_refuses_preexisting_lock(self):
+        self._isolate_fresh_cli()
+        target = self.base / "fresh-scoped-contended"
+        target.mkdir()
+        lock_path, _ = local_ci.target_state_paths(target)
+        owner = local_ci.CargoTargetLock(lock_path, {"run_id": "existing-owner"})
+        owner.acquire()
+        self.addCleanup(owner.release)
+        metadata = Mock(return_value=SimpleNamespace(stdout="{}"))
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                patch.object(local_ci, "command_output", metadata):
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--fresh-target", "--profile", "merge", "--base", "base", "--source", "source"])
+        metadata.assert_not_called()
+
+    def test_fresh_target_full_metadata_side_effect_refuses_before_build(self):
+        self._isolate_fresh_cli()
+        target = self.repo / "fresh-full-target"
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target),
+                   METADATA_WRITE_TARGET_FILE="1")
+        lock_path, owner_path = local_ci.target_state_paths(target)
+        original_subprocess_run = subprocess.run
+        observations = []
+
+        def checked_subprocess_run(argv, *args, **kwargs):
+            if argv[:2] == ["cargo", "metadata"]:
+                contender = local_ci.CargoTargetLock(lock_path, {"run_id": "metadata-contender"})
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                    contender.acquire()
+                observations.append("locked-before-metadata")
+            return original_subprocess_run(argv, *args, **kwargs)
+
+        runners = []
+        runner_class = local_ci.LocalCiRunner
+
+        def make_runner(**options):
+            runner = runner_class(self.repo, target_state_dir=self.target_state_dir, **options)
+            runners.append(runner)
+            return runner
+
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.dict(os.environ, env), \
+                patch.object(local_ci, "planned_steps", return_value=(
+                    local_ci.Step("one-build", ("cargo", "build")),)), \
+                patch.object(local_ci.subprocess, "run", side_effect=checked_subprocess_run), \
+                patch.object(local_ci, "LocalCiRunner", side_effect=make_runner):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                exit_code = local_ci.main(["--fresh-target"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(observations, ["locked-before-metadata"])
+        self.assertEqual(len(runners), 1)
+        runner = runners[0]
+        self.assertIn("cargo_metadata_error", runner.summary)
+        self.assertTrue((target / ".rustc_info.json").is_file())
+        self.assertFalse(owner_path.exists())
+        self.assertTrue(all(entry["status"] == "not_run" for entry in runner.summary["steps"]))
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_target_cli_admits_full_and_scoped_under_one_lock(self):
+        self._isolate_fresh_cli()
+        runner_class = local_ci.LocalCiRunner
+        run = subprocess.run
+        for scoped in (False, True):
+            with self.subTest(scoped=scoped):
+                target = self.repo / f"fresh-cli-{scoped}"
+                lock_path, owner_path = local_ci.target_state_paths(target)
+                observed = []
+                runners = []
+
+                def check_metadata(argv, *args, **options):
+                    if argv[:2] == ["cargo", "metadata"]:
+                        contender = local_ci.CargoTargetLock(lock_path, {"run_id": "contender"})
+                        with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                            contender.acquire()
+                        observed.append(options["env"].get("CARGO_CACHE_RUSTC_INFO"))
+                    return run(argv, *args, **options)
+
+                def make_runner(**options):
+                    runner = runner_class(self.repo, target_state_dir=self.target_state_dir, **options)
+                    runners.append(runner)
+                    return runner
+
+                arguments = ["--fresh-target"]
+                if scoped:
+                    arguments.extend(["--profile", "edit", "--base", "base", "--source", "source"])
+                env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target),
+                           CARGO_CACHE_RUSTC_INFO="1")
+                steps = (local_ci.Step("build", ("cargo", "build")),)
+                with patch.object(local_ci, "ROOT", self.repo), patch.dict(os.environ, env), \
+                        patch.object(local_ci.ci_plan, "resolve", return_value={"qualifies_merge": False}), \
+                        patch.object(local_ci, "planned_steps", return_value=steps), \
+                        patch.object(local_ci, "LocalCiRunner", side_effect=make_runner), \
+                        patch.object(local_ci.subprocess, "run", side_effect=check_metadata), \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(local_ci.main(arguments), 0)
+
+                self.assertEqual(observed, ["0"] * (3 if scoped else 2) + ["1"])
+                runner, = runners
+                cache = runner.summary["target_cache"]
+                self.assertEqual(cache["action"], "claim-fresh")
+                self.assertEqual(cache["target_identity"], runner._directory_identity(target))
+                self.assertEqual(runner._load_target_owner(owner_path, target)["dependency_inputs"],
+                                 cache["dependency_inputs"])
+                self.assertIsNone(runner.target_lock)
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+
+    def test_direct_fresh_target_rejects_runner_source_drift_before_cargo(self):
+        scripts = self.repo / "scripts"
+        planner = scripts / "ci_plan.py"
+        planner.write_bytes(planner.read_bytes() + b'''
+with Path(__file__).with_name("local-ci.py").open("ab") as runner:
+    runner.write(b"\\n# changed after direct runner compilation\\n")
+''')
+        target = self.repo / "fresh-direct"
+        result = subprocess.run([sys.executable, str(scripts / "local-ci.py"), "--fresh-target"],
+                                cwd=self.repo, env=dict(self.env, CARGO_TARGET_DIR=str(target)),
+                                capture_output=True, text=True, timeout=8)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("executed runner differs from candidate source", result.stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse(self.call_log.exists())
+
+    def test_fresh_target_run_admits_real_offline_metadata(self):
+        fixture, reservation, target = self._reserved_dev_runner(
+            "fresh-real-run", real_cargo=True, absent=True)
+        step = local_ci.Step("probe", (sys.executable, "-c", "pass"), uses_cargo_target=True)
+        runner = local_ci.LocalCiRunner(self.repo, mode="quick", run_id="real-fresh-ci",
+                                        env=fixture.env, steps=(step,), min_free_bytes=0,
+                                        target_state_dir=self.target_state_dir)
+        self.assertEqual(runner.run(reservation=reservation), 0)
+        cache = runner.summary["target_cache"]
+        self.assertEqual(cache["action"], "claim-fresh")
+        self.assertEqual(cache["target_identity"], runner._directory_identity(target))
+        self.assertEqual(runner._load_target_owner(runner.target_owner_path, target)["dependency_inputs"],
+                         cache["dependency_inputs"])
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_target_runner_claim_keeps_reservation_lock_without_cleanup(self):
+        target = self.repo / "fresh-claim-success"
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        runner = local_ci.LocalCiRunner(
+            self.repo, mode="quick", run_id="fresh-claim-success", env=env,
+            steps=(local_ci.Step("build", ("cargo", "build")),), min_free_bytes=0,
+            target_state_dir=self.target_state_dir)
+        reservation = local_ci.FreshTargetReservation.acquire(
+            self.repo, str(target), {"run_id": "fresh-claim-success"}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        lock = reservation._lock
+        transferred = []
+        original_claim = runner._claim_fresh_dev_owner
+
+        def record_claim(current):
+            identity = original_claim(current)
+            transferred.append(runner.target_lock)
+            return identity
+
+        with patch.object(runner, "_claim_fresh_dev_owner", side_effect=record_claim):
+            self.assertEqual(runner.run(reservation=reservation), 0)
+
+        cache = runner.summary["target_cache"]
+        self.assertEqual(cache["action"], "claim-fresh")
+        self.assertIsNone(cache["cleanup_argv"])
+        self.assertEqual(cache["cleanup_status"], "not_needed")
+        self.assertEqual(transferred, [lock])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        self.assertIn("cargo build", self.call_log.read_text())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+
     def test_cli_policy_refuses_change_during_plan_resolution(self):
         self._install_cli_policy_fixture()
         policy = self.repo / "scripts" / "python_test_plan.py"
@@ -1512,10 +1896,7 @@ fi
 
         # Exercise the delivery consumer against this small complete fake plan;
         # no native build or signing is invoked.
-        spec = importlib.util.spec_from_file_location("checkpoint_delivery", SCRIPT.with_name("hex-test-build.py"))
-        delivery = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = delivery
-        spec.loader.exec_module(delivery)
+        delivery = load_delivery_source_fixture("checkpoint_delivery")
         with patch.object(delivery.ci, "FULL_STEPS", case.steps):
             self.assertEqual(delivery.validate_ci(resumed.summary_path, resumed, report["commit"]), report)
             forged = json.loads(resumed.summary_path.read_text())
@@ -2254,9 +2635,10 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
         self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
 
-    def _reserved_dev_runner(self, name, *, real_cargo=False):
+    def _reserved_dev_runner(self, name, *, real_cargo=False, absent=False):
         target = self.repo / name
-        target.mkdir()
+        if not absent:
+            target.mkdir()
         env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
         if real_cargo:
             # Use real offline Cargo metadata and provenance, with the same
@@ -2312,6 +2694,103 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             contender.acquire()
         self.assertIs(lock.file, locked_file)
         self.assertEqual(runner._load_target_owner(owner, target), record)
+
+    def test_fresh_dev_absent_target_materializes_and_transfers_same_lock(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-real", real_cargo=True, absent=True)
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        locked_file = lock.file
+        self.assertFalse(target.exists(), "offline Cargo metadata must leave the explicit target absent")
+        with reservation:
+            runner._claim_fresh_dev_owner(reservation)
+            self.addCleanup(lock.release)
+
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertIs(runner.target_lock, lock)
+        self.assertIs(lock.file, locked_file)
+        self.assertTrue(runner.target_owner_claimed)
+        record = runner._load_target_owner(owner, target)
+        self.assertEqual(record["workspace_owner"], {key: runner.git_identity[key]
+                                                    for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertFalse(record["cache_inputs"]["workspace"]["checked"])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
+
+    def test_fresh_dev_absent_target_refuses_competing_directory_at_publication(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-competitor", absent=True)
+        owner = runner.target_owner_path
+        publish = local_ci.ci_target_storage.rename_new_directory
+        competing_identity = None
+
+        def compete(parent_fd, stage_name, target_name):
+            nonlocal competing_identity
+            os.mkdir(target_name, dir_fd=parent_fd)
+            competing_identity = runner._directory_identity(target)
+            publish(parent_fd, stage_name, target_name)
+
+        with patch.object(local_ci.ci_target_storage, "rename_new_directory", side_effect=compete), \
+                self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+
+        self.assertIsNotNone(competing_identity)
+        self.assertEqual(runner._directory_identity(target), competing_identity)
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(owner.exists())
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
+
+    def test_fresh_dev_absent_target_replacement_after_publication_is_preserved(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-replaced", absent=True)
+        owner = runner.target_owner_path
+        publish = local_ci.ci_target_storage.rename_new_directory
+        original = target.with_name(target.name + ".published")
+        replacement_identity = None
+
+        def publish_then_replace(parent_fd, stage_name, target_name):
+            nonlocal replacement_identity
+            publish(parent_fd, stage_name, target_name)
+            target.rename(original)
+            target.mkdir()
+            replacement_identity = runner._directory_identity(target)
+
+        with patch.object(local_ci.ci_target_storage, "rename_new_directory",
+                          side_effect=publish_then_replace), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "identity or ancestry changed"):
+            runner._claim_fresh_dev_owner(reservation)
+
+        self.assertTrue(original.is_dir())
+        self.assertIsNotNone(replacement_identity)
+        self.assertEqual(runner._directory_identity(target), replacement_identity)
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(owner.exists())
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+
+    def test_fresh_dev_absent_target_unsupported_publication_leaves_no_target(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "fresh-owner-absent-unsupported", absent=True)
+        owner = runner.target_owner_path
+
+        with patch.object(local_ci.ci_target_storage, "rename_new_directory",
+                          side_effect=OSError(errno.ENOTSUP, "no-replace rename unavailable")), \
+                self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+
+        self.assertFalse(target.exists())
+        self.assertFalse(owner.exists())
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
 
     def _assert_pending_consumers_refuse(self, name, target):
         env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))

@@ -33,7 +33,7 @@ use gpui::{
     rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
-use hex_session::service::{DuplicateViewObservation, Event, Request};
+use hex_session::service::{ArrangementEditViewObservation, Event, Request};
 use hex_widgets::{
     RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
@@ -496,7 +496,7 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
-    /// Arrangement rows display a frozen structural edit or committed copy
+    /// Arrangement rows display a frozen structural edit or committed copy or paste
     /// until its exact terminal installs the canonical state.
     pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
         let state = self.state.as_ref()?;
@@ -506,6 +506,8 @@ impl EditorView {
             .filter(|p| p.generation == self.project_generation)
             .and_then(|p| p.layout.clone())
             .or_else(|| self.arrangement_duplicate_view().cloned())
+            .or_else(|| self.arrangement_paste_view().cloned())
+            .or_else(|| self.time_range_copy_view().cloned())
             .or_else(|| Some(Arc::clone(state)))
     }
 
@@ -513,7 +515,7 @@ impl EditorView {
     /// copy. The ordinary receipt continues to own input, selection and history.
     pub(super) fn observe_section_copy_view(
         &mut self,
-        observation: DuplicateViewObservation,
+        observation: ArrangementEditViewObservation,
         copy: SectionId,
     ) -> bool {
         let Some(current) = self.state.as_ref() else {
@@ -839,7 +841,7 @@ impl EditorView {
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     kind: crate::tooltips::Kind::Identification,
-                    description: "launch and loop section".into(),
+                    description: "play section · hold l to loop".into(),
                 })
                 .into()
             })
@@ -851,7 +853,8 @@ impl EditorView {
                     && !view.sections.held()
                 {
                     click_focus.focus(window);
-                    view.launch_arrangement_section_once(id);
+                    let looped = view.use_section_loop_key();
+                    view.launch_section(id, looped);
                     cx.notify();
                 }
             }))
@@ -862,7 +865,7 @@ impl EditorView {
                         && view.sections_available()
                         && !view.sections.held()
                     {
-                        view.launch_arrangement_section_once(id);
+                        view.launch_section(id, false);
                         cx.notify();
                     }
                 },
@@ -3767,7 +3770,11 @@ pub(super) mod tests {
                 assert_eq!(v.sections.selection.len(), if start == 0 { 2 } else { 1 });
                 v.state.as_ref().unwrap().project.clone()
             });
-            visual.simulate_keystrokes(key);
+            if key == "l" {
+                crate::editor::section_launch::test_tap_loop_key(&mut visual);
+            } else {
+                visual.simulate_keystrokes(key);
+            }
             editor.read_with(cx, |v, _| assert!(matches!(v.last_enqueued_edit,
                 Some(Command::SetLoopRegion { start: a, end: b, enabled: true }) if (a,b)==(start,end)),
                 "selected sections must dispatch a loop request"));
@@ -3822,7 +3829,7 @@ pub(super) mod tests {
         visual.run_until_parked();
         let from = editor.read_with(cx, |v, _| position(v, 2));
         visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3838,7 +3845,7 @@ pub(super) mod tests {
                 "button loss cancels before any late release"
             )
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -3891,7 +3898,7 @@ pub(super) mod tests {
             v.last_enqueued_edit = None;
             v.computer_keyboard.enabled = true;
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.update(cx, |v, _| {
             assert!(
                 v.last_enqueued_edit.is_none(),
@@ -3908,7 +3915,7 @@ pub(super) mod tests {
         visual.run_until_parked();
         let chorus = editor.read_with(cx, |v, _| position(v, 10));
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(v.sections.held());
             assert!(
@@ -3945,7 +3952,7 @@ pub(super) mod tests {
                 end_frame: 2,
             });
         });
-        visual.simulate_keystrokes("l");
+        crate::editor::section_launch::test_tap_loop_key(&mut visual);
         editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -4353,6 +4360,7 @@ pub(super) mod tests {
             let state = Arc::clone(view.state.as_ref().unwrap());
             view.applied_project_revision = Some(state.revision);
             view.audible_playback = Some(super::super::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: Some(false),
                 observation: None,
                 audio_revision,
@@ -4444,52 +4452,25 @@ pub(super) mod tests {
             .expect("explicit section launch")
             .center();
         let selected = editor.read_with(cx, |view, _| view.sections.selected);
-        for key in [None, Some("enter")] {
-            editor.update(cx, |view, _| {
-                view.invalidate_prepared_seek();
-            });
-            if let Some(key) = key {
-                visual.update(|window, cx| {
-                    editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window)
-                });
-                visual.simulate_keystrokes(key);
-            } else {
-                visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
-                visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            }
-            editor.update(cx, |view, _| {
-                view.tick_section_launch();
-                let launch = view
-                    .latched_seek_intent
-                    .as_ref()
-                    .and_then(|intent| intent.kind.section())
-                    .or_else(|| {
-                        view.prepared_seek
-                            .as_ref()
-                            .filter(|pending| !pending.cancelled)
-                            .and_then(|pending| pending.kind.section())
-                    })
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "explicit {key:?} launch while autoplay is off: {:?}",
-                            view.error
-                        )
-                    });
-                assert_eq!(
-                    launch.region,
-                    hex_project::LoopRegion::new(0, 96_000, true).unwrap()
-                );
-                assert_eq!(
-                    launch.quantization,
-                    hex_engine::LaunchQuantization::QuarterTriplet
-                );
-                assert!(!view.section_autoplay);
-                assert!(!view.sections.held());
-                assert_eq!(view.sections.selected, selected);
-                assert_eq!(view.state.as_ref().unwrap().project, source);
-            });
-        }
+        visual.update(|window, cx| {
+            editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window)
+        });
+        visual.simulate_keystrokes("enter");
+        editor.read_with(cx, |view, _| {
+            let pending = view
+                .pending_loop_region()
+                .expect("enter disables the old loop");
+            assert_eq!(
+                pending,
+                hex_project::LoopRegion::new(0, 96_000, false).unwrap()
+            );
+            assert!(!view.section_autoplay);
+            assert!(!view.sections.held());
+            assert_eq!(view.sections.selected, selected);
+            assert_eq!(view.state.as_ref().unwrap().project, source);
+        });
         editor.update(cx, |view, _| {
+            view.cancel_section_launch_wait();
             view.invalidate_prepared_seek();
             view.save_dialog_open = true;
         });
@@ -6167,11 +6148,17 @@ pub(super) mod tests {
         visual.simulate_keystrokes("cmd-d");
 
         let terminal = editor.read_with(cx, |view, _| next(&view.service));
-        let observed = editor.read_with(cx, |view, _| view.service.try_duplicate_view().unwrap());
+        let observed = editor.read_with(cx, |view, _| {
+            view.service.try_arrangement_edit_view().unwrap()
+        });
         let Some(Created::ArrangementSection(copy)) = terminal.created else {
             panic!("section copy");
         };
-        assert_eq!(observed.created, Created::ArrangementSection(copy));
+        assert!(matches!(
+            observed.kind,
+            hex_session::service::ArrangementEditViewKind::Duplicate(Created::ArrangementSection(id))
+                if id == copy
+        ));
         let committed = observed.state.upgrade().unwrap();
         let marker = committed.project.arrangement_section(copy).unwrap();
         let midi = committed.project.tracks()[0]
@@ -6194,12 +6181,15 @@ pub(super) mod tests {
                 (observed.project_generation + 1, observed.previous_revision),
                 (observed.project_generation, observed.previous_revision + 1),
             ] {
-                assert!(!view.observe_duplicate_view(DuplicateViewObservation {
-                    project_generation: generation,
-                    previous_revision: revision,
-                    created: observed.created,
-                    state: Arc::downgrade(&committed),
-                }));
+                assert!(
+                    !view.observe_duplicate_view(ArrangementEditViewObservation {
+                        project_generation: generation,
+                        first_previous_revision: revision,
+                        previous_revision: revision,
+                        kind: observed.kind,
+                        state: Arc::downgrade(&committed),
+                    })
+                );
             }
             assert!(view.observe_duplicate_view(observed));
             assert!(view.section_install_pending());

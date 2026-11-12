@@ -6,9 +6,9 @@ use hex_lattice::{PreparedProcessorFactory, PreparedRuntimeInstance};
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use std::num::NonZeroU64;
 
-/// Actual original-worker pickup, never a queued graph key or final Main ACK.
-/// Empty is an observed absence, distinct from unavailable observation. It
-/// does not assert that the callback has no unfinished keyed quantum.
+/// Actual original-worker pickup state, never a queued graph key or final Main
+/// ACK. Empty is an observed unprogrammed pickup or zero pickup prefix. It does
+/// not assert that the callback has no unfinished keyed quantum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ForeignProgramFrontier {
     #[default]
@@ -18,6 +18,11 @@ pub enum ForeignProgramFrontier {
 }
 
 impl PreparedRevision {
+    /// Whether the Arrangement can advance a retained worker's program key.
+    pub fn has_arrangement_foreign_programs(&self) -> bool {
+        nodes(&self.arrangement).any(|node| node.automation.foreign().is_some())
+    }
+
     /// Preserve programs needed to finish the original worker's open quantum.
     /// Call before sharing/publication, using the actual preceding revision.
     /// `received` must query that exact worker. Unknown/Empty conservatively
@@ -31,7 +36,7 @@ impl PreparedRevision {
         if !self.foreign_automation.is_empty() || !previous.foreign_automation.is_empty() {
             return Err(Invalid("legacy foreign program history is unsupported"));
         }
-        if nodes(&self.arrangement).any(|node| node.automation.foreign().is_some()) {
+        if self.has_arrangement_foreign_programs() {
             self.arrangement
                 .retain_foreign_programs(&previous.arrangement, &mut received)?;
         }

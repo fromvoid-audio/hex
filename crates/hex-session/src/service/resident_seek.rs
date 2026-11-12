@@ -25,9 +25,7 @@ fn preparation_mode(
         (ResidentSeekHistory::Preserve, None) => {
             Ok(ArrangementSeekMode::HistoryPreservingInteractive)
         }
-        (ResidentSeekHistory::Fresh, Some(section)) => {
-            Ok(ArrangementSeekMode::SectionLoop(section.region))
-        }
+        (ResidentSeekHistory::Fresh, Some(section)) => Ok(section.mode()),
         (ResidentSeekHistory::Fresh, None) => Ok(ArrangementSeekMode::Interactive),
     }
 }
@@ -42,6 +40,9 @@ pub struct ResidentArrangementSeekIntent {
     pub start_playing: bool,
     pub history: ResidentSeekHistory,
     pub section: Option<crate::arrangement_seek::SectionLaunch>,
+    /// An ordinary playing seek with no section loop edit. Section launches
+    /// carry their quantization in the section intent.
+    pub locator_quantization: Option<hex_engine::LaunchQuantization>,
     pub fence: ResidentFreshRuntimeFence,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
@@ -171,11 +172,18 @@ impl Lane {
             return Err("seek target changed or was cancelled".into());
         }
         if intent.section.is_some_and(|section| {
-            !section.region.enabled()
+            !section.matches_loop(session.project().loop_region())
                 || section.region.start() != intent.destination_frame
                 || !intent.start_playing
         }) {
-            return Err("section launch requires its exact enabled loop start".into());
+            return Err("section launch requires its exact start and loop state".into());
+        }
+        if intent.locator_quantization.is_some()
+            && (intent.history != ResidentSeekHistory::Fresh
+                || intent.section.is_some()
+                || !intent.start_playing)
+        {
+            return Err("locator quantization requires an ordinary playing seek".into());
         }
         let mode = preparation_mode(intent.history, intent.section)?;
         let selected = selected_source(&intent, current, admission.preview)?;
@@ -201,6 +209,7 @@ impl Lane {
             .ok_or("resident resource reservation unavailable")?;
         let runtime = intent
             .section
+            .filter(|section| section.region.enabled())
             .map_or_else(
                 || hex_engine::SessionPlayback::interactive_runtime_allowance(&selected.prepared),
                 |section| {
@@ -262,6 +271,7 @@ impl Lane {
             .checked_add(
                 intent
                     .section
+                    .filter(|section| section.region.enabled())
                     .map_or_else(
                         || {
                             hex_engine::SessionPlayback::interactive_runtime_allowance(
@@ -329,6 +339,7 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
+                prepared_context: selected.prepared_context,
                 file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
@@ -419,6 +430,7 @@ impl Lane {
                         sink,
                         admission,
                         ResidentPublicationMetadata {
+                            clip_preview: None,
                             context,
                             device_preview: job.intent.device_preview,
                             tuning_preview: job.intent.tuning_preview,
@@ -431,13 +443,17 @@ impl Lane {
                                 .prepared
                                 .arrangement_seek_requires_preroll(),
                         },
-                        job.intent.section.map_or(
-                            ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
-                            |section| ResidentPublicationPolicy::SectionWhenReady {
-                                fence: job.intent.fence,
-                                quantization: section.quantization,
-                            },
-                        ),
+                        job.intent
+                            .section
+                            .map(|section| section.quantization)
+                            .or(job.intent.locator_quantization)
+                            .map_or(
+                                ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                                |quantization| ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                                    fence: job.intent.fence,
+                                    quantization,
+                                },
+                            ),
                         &job.intent.cancelled,
                     )
                     .map_err(|e| e.to_string())

@@ -9,11 +9,11 @@ use super::*;
 mod midi_tests;
 
 impl Callback {
-    pub(super) fn section_publication_due(&mut self) -> bool {
+    pub(super) fn quantized_seek_publication_due(&mut self) -> bool {
         let Some(next) = self.deferred.as_mut() else {
             return true;
         };
-        let PublicationPolicy::InstallSectionWhenReady {
+        let PublicationPolicy::InstallQuantizedSeekWhenReady {
             fence,
             quantization,
         } = next.policy
@@ -40,26 +40,27 @@ impl Callback {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         } else if let Some(old) = old {
             let current = old.playback.performance_frame();
-            if next.section_launch_frame.is_none_or(|due| due < current) {
-                match old.playback.section_launch_frame(quantization) {
-                    Ok(due) => next.section_launch_frame = Some(due),
+            if next.quantized_seek_frame.is_none_or(|due| due < current) {
+                match old.playback.quantized_seek_frame(quantization) {
+                    Ok(due) => next.quantized_seek_frame = Some(due),
                     Err(_) => {
-                        return self
-                            .reject_section_publication(PlaybackHandoffRejection::SessionRuntime);
+                        return self.reject_quantized_seek_publication(
+                            PlaybackHandoffRejection::SessionRuntime,
+                        );
                     }
                 }
             }
-            Ok(next.section_launch_frame == Some(current))
+            Ok(next.quantized_seek_frame == Some(current))
         } else {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         };
         match result {
             Ok(due) => due,
-            Err(reason) => self.reject_section_publication(reason),
+            Err(reason) => self.reject_quantized_seek_publication(reason),
         }
     }
 
-    fn reject_section_publication(&mut self, reason: PlaybackHandoffRejection) -> bool {
+    fn reject_quantized_seek_publication(&mut self, reason: PlaybackHandoffRejection) -> bool {
         if let Some(next) = self.deferred.take() {
             if let Some(cell) = next.fresh_runtime_cancellation.as_ref() {
                 cell.finish();
@@ -71,17 +72,17 @@ impl Callback {
         false
     }
 
-    pub(super) fn render_section_launch(&mut self, output: &mut [Frame]) -> Result<bool, Invalid> {
+    pub(super) fn render_quantized_seek(&mut self, output: &mut [Frame]) -> Result<bool, Invalid> {
         let Some(due) = self
             .deferred
             .as_ref()
             .filter(|next| {
                 matches!(
                     next.policy,
-                    PublicationPolicy::InstallSectionWhenReady { .. }
+                    PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                 )
             })
-            .and_then(|next| next.section_launch_frame)
+            .and_then(|next| next.quantized_seek_frame)
         else {
             return Ok(false);
         };
@@ -211,7 +212,7 @@ mod tests {
                 let revision = control
                     .publish_with_policy(
                         candidate(&source),
-                        PublicationPolicy::InstallSectionWhenReady {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
                             quantization: LaunchQuantization::EightBars,
                         },
@@ -248,7 +249,7 @@ mod tests {
                 control
                     .publish_with_policy(
                         candidate(&source),
-                        PublicationPolicy::InstallSectionWhenReady {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
                             quantization: LaunchQuantization::Quarter,
                         },
@@ -284,6 +285,70 @@ mod tests {
     }
 
     #[test]
+    fn quantized_section_once_ends_at_its_boundary_in_the_callback() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source();
+                for section_end in [None, Some(12_006)] {
+                    let (mut control, mut callback) = active(&source, 3_997, true);
+                    let fence = control.capture_fresh_runtime_fence().unwrap();
+                    let mut candidate = Playback::from_interactive_arrangement_preroll(
+                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                            Arc::clone(&source),
+                            12_000,
+                            0,
+                            true,
+                            &AtomicBool::new(false),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    if let Some(end) = section_end {
+                        candidate
+                            .arm_section_once(LoopRegion::new(12_000, end, false).unwrap())
+                            .unwrap();
+                    }
+                    let revision = control
+                        .publish_with_policy(
+                            candidate,
+                            PublicationPolicy::InstallQuantizedSeekWhenReady {
+                                fence,
+                                quantization: LaunchQuantization::Quarter,
+                            },
+                        )
+                        .unwrap();
+
+                    let mut output = [[0.0; 2]; 16];
+                    render_checked(&mut callback, &mut output);
+                    assert_eq!(&output[..3], &[[0.125; 2]; 3]);
+                    if section_end.is_some() {
+                        assert_eq!(&output[3..9], &[[0.5; 2]; 6]);
+                        assert_eq!(&output[9..], &[[0.0; 2]; 7]);
+                    } else {
+                        assert_eq!(&output[3..], &[[0.5; 2]; 13]);
+                    }
+                    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+                    assert_eq!(
+                        control.status.position.load(Acquire),
+                        section_end.unwrap_or(12_013)
+                    );
+                    assert_eq!(control.status.playing.load(Acquire), section_end.is_none());
+                    let active = callback
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::legacy)
+                        .unwrap();
+                    assert_eq!(active.playback.section_loop(), None);
+                    assert_eq!(control.reclaim(), 1);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn ready_section_seek_splits_the_actual_callback_at_the_next_boundary() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
@@ -296,7 +361,7 @@ mod tests {
                         let revision = control
                             .publish_with_policy(
                                 candidate(&source),
-                                PublicationPolicy::InstallSectionWhenReady {
+                                PublicationPolicy::InstallQuantizedSeekWhenReady {
                                     fence,
                                     quantization: LaunchQuantization::Quarter,
                                 },
@@ -332,7 +397,7 @@ mod tests {
                 control
                     .publish_with_policy(
                         candidate(&source),
-                        PublicationPolicy::InstallSectionWhenReady {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
                             quantization: LaunchQuantization::EightBars,
                         },
@@ -452,7 +517,7 @@ mod tests {
                 let revision = control
                     .publish_with_policy(
                         make_candidate(),
-                        PublicationPolicy::InstallSectionWhenReady {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
                             quantization: LaunchQuantization::Quarter,
                         },
@@ -477,7 +542,7 @@ mod tests {
                 let revision = control
                     .publish_with_policy(
                         make_candidate(),
-                        PublicationPolicy::InstallSectionWhenReady {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
                             quantization: LaunchQuantization::Quarter,
                         },
@@ -513,7 +578,7 @@ mod tests {
                     let revision = control
                         .publish_with_policy(
                             candidate(&source),
-                            PublicationPolicy::InstallSectionWhenReady {
+                            PublicationPolicy::InstallQuantizedSeekWhenReady {
                                 fence,
                                 quantization: LaunchQuantization::Quarter,
                             },

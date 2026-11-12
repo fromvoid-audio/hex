@@ -100,9 +100,15 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
             control
                 .command(PlaybackCommand::PlayFrom(frame))
                 .map_err(|_| "seek refused")?;
-            oracle.apply(PlaybackCommand::PlayFrom(frame));
         }
         oracle.render(&mut expected)?;
+        if destination.is_some() {
+            for (index, frame) in expected.iter_mut().enumerate() {
+                let gain = (127 - index) as f32 / 128.0;
+                frame[0] *= gain;
+                frame[1] *= gain;
+            }
+        }
         let mut rendered = None;
         let counts = measure(|| {
             callback.begin_block();
@@ -115,6 +121,31 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
         assert_eq!(counts.bytes_current, 0);
         assert_eq!(actual, expected);
         assert!(actual.iter().flatten().any(|value| value.abs() > 1.0e-6));
+        if let Some(frame) = destination {
+            oracle.apply(PlaybackCommand::PlayFrom(frame));
+            oracle.render(&mut expected)?;
+            for (index, frame) in expected.iter_mut().enumerate() {
+                let gain = (index + 1) as f32 / 128.0;
+                frame[0] *= gain;
+                frame[1] *= gain;
+            }
+            let mut rendered = None;
+            let counts = measure(|| {
+                callback.begin_block();
+                rendered = Some(callback.render(&mut actual));
+            });
+            rendered.ok_or("render not called")??;
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(actual, expected);
+        }
     }
     control.request_shutdown();
     let counts = measure(|| {

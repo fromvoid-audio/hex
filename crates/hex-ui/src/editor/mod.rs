@@ -46,6 +46,7 @@ mod cpu_meter;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
+mod elapsed_time;
 mod history_playback;
 mod leftover_recovery;
 #[cfg(test)]
@@ -377,6 +378,7 @@ struct PendingEditorPublicationObservation {
 
 #[derive(Clone)]
 struct PlaybackCandidate {
+    clip_preview_identity: Option<hex_session::service::ClipMovePreviewIdentity>,
     worker_requires_preroll: Option<bool>,
     observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
@@ -537,6 +539,7 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     device_panel::bind_picker_keys(cx);
+    device_panel::bind_source_picker_keys(cx);
     device_panel::bind_keyboard_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
@@ -636,7 +639,11 @@ fn bind_editor_keys(cx: &mut App) {
             BounceMixedRangeAndMute,
             Some(ARRANGEMENT_BOUNCE_KEY_CONTEXT),
         ),
-        KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "l",
+            LoopSelection,
+            Some("hex_editor && !hex_text_editing && !hex_arrangement_sections"),
+        ),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new(
@@ -667,23 +674,16 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_numeric_control_keys(cx);
     hex_widgets::bind_selector_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
-    // Background clip shortcuts have no target while the foreground gain lanes
-    // own Arrangement focus. Child text, MIDI and event contexts keep their keys.
+    // Foreground automation handles clipboard and duplicate actions. Other
+    // background clip shortcuts have no target while automation owns focus.
     cx.bind_keys(
         [
-            "cmd-c",
-            "cmd-shift-c",
-            "cmd-x",
-            "cmd-v",
-            "cmd-shift-v",
             "left",
             "right",
             "shift-left",
             "shift-right",
             "cmd-shift-m",
             "cmd-r",
-            "cmd-d",
-            "d",
             "i",
             "e",
             "b",
@@ -821,7 +821,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
-    solo_observation: Option<hex_session::service::SoloViewObservation>,
+    track_switch_observation: Option<hex_session::service::TrackSwitchViewObservation>,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
@@ -871,6 +871,7 @@ pub(super) struct EditorView {
     sections: arrangement_sections::Sections,
     locators: arrangement_locators::Locators,
     section_autoplay: bool,
+    section_loop_key: section_launch::SectionLoopKey,
     track_name: track_name::TrackNameState,
     track_tags: track_tags::State,
     pub(in crate::editor) mode: EditorMode,
@@ -971,8 +972,16 @@ pub(super) struct EditorView {
     track_clipboard_context: Option<(u64, u64)>,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    committed_paste_view: Option<Arc<ViewState>>,
+    committed_time_range_copy_view: Option<Arc<ViewState>>,
     group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
+    /// The latest held move intent; only an exact callback revision can make it audible.
+    expected_clip_preview: Option<hex_session::service::ClipMovePreviewIdentity>,
+    applied_clip_preview: Option<(u64, hex_session::service::ClipMovePreviewIdentity)>,
+    // Once a move has been submitted, a callback may outrun its metadata even
+    // after input is canceled. Keep conservative revision tracking until reset.
+    clip_preview_may_apply: bool,
     close_prompt_open: bool,
     automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
@@ -1049,6 +1058,8 @@ pub(super) struct EditorView {
     midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
     midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
+    clip_move_audition: Option<drag::MoveAudition>,
+    clip_move_gesture: u64,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     pending_sample_drop: Option<pending_sample_drop::PendingSampleDrop>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1142,6 +1153,7 @@ pub(super) struct EditorView {
     time_selection_gesture: Option<time_selection::TimeSelectionGesture>,
     time_range_move_gesture: Option<time_selection::TimeRangeMoveGesture>,
     pending_time_range_move: Option<time_selection::PendingTimeRangeMove>,
+    ahead_time_range_move: Option<time_selection::PendingTimeRangeMove>,
     suppress_cursor_click: bool,
 }
 
@@ -1534,6 +1546,7 @@ impl EditorView {
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 view.time_selection_key_held = false;
+                view.section_loop_key = Default::default();
                 let boundary_cancelled = device_panel::cancel_sampler_boundary(view);
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
@@ -1625,7 +1638,7 @@ impl EditorView {
         let mut view = Self {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
-            solo_observation: None,
+            track_switch_observation: None,
             audio,
             retired_action_outcomes: None,
             retired_action_message: None,
@@ -1668,6 +1681,7 @@ impl EditorView {
             sections: arrangement_sections::Sections::default(),
             locators: arrangement_locators::Locators::new(cx),
             section_autoplay: false,
+            section_loop_key: Default::default(),
             track_name: track_name::TrackNameState::default(),
             track_tags: track_tags::State::default(),
             mode: EditorMode::Arrangement,
@@ -1763,8 +1777,13 @@ impl EditorView {
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            committed_paste_view: None,
+            committed_time_range_copy_view: None,
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
+            expected_clip_preview: None,
+            applied_clip_preview: None,
+            clip_preview_may_apply: false,
             close_prompt_open: false,
             automation_close_preflight: Default::default(),
             export_pending: false,
@@ -1846,6 +1865,8 @@ impl EditorView {
             midi_visible_notes: Default::default(),
             midi_tile_images: Default::default(),
             active_clip_drag: None,
+            clip_move_audition: None,
+            clip_move_gesture: 0,
             active_browser_audio_drag: None,
             pending_sample_drop: None,
             active_native_device_drag: None,
@@ -1921,6 +1942,7 @@ impl EditorView {
             time_selection_gesture: None,
             time_range_move_gesture: None,
             pending_time_range_move: None,
+            ahead_time_range_move: None,
             suppress_cursor_click: false,
         };
         #[cfg(test)]
@@ -2078,37 +2100,55 @@ impl EditorView {
             .map_or(0, |region| region.start())
     }
 
-    fn observe_solo_view(&mut self, view: hex_session::service::SoloViewObservation) -> bool {
+    fn observe_track_switch_view(
+        &mut self,
+        mut view: hex_session::service::TrackSwitchViewObservation,
+    ) -> bool {
+        let Some(installed) = self.state.as_ref().map(|state| state.revision) else {
+            return false;
+        };
+        let predecessor = self
+            .track_switch_observation
+            .as_ref()
+            .filter(|old| old.project_generation == self.project_generation)
+            .map_or(installed, |old| old.revision.max(installed));
         if view.project_generation != self.project_generation
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|state| state.revision != view.previous_revision)
-            || view.revision != view.previous_revision.saturating_add(1)
+            || view.first_previous_revision > view.previous_revision
+            || predecessor < view.first_previous_revision
+            || predecessor > view.previous_revision
+            || view.previous_revision.checked_add(1) != Some(view.revision)
         {
             return false;
         }
-        self.solo_observation = Some(view);
+        if installed < view.first_previous_revision
+            && let Some(previous) = self
+                .track_switch_observation
+                .as_ref()
+                .filter(|old| old.project_generation == self.project_generation)
+        {
+            view.first_previous_revision = previous.first_previous_revision;
+        }
+        self.track_switch_observation = Some(view);
         true
     }
 
-    fn displayed_solo(&self, track: TrackId, canonical: bool) -> bool {
-        self.solo_observation
+    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+        self.track_switch_observation
             .as_ref()
             .filter(|view| {
                 view.project_generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == view.previous_revision)
+                    && self.state.as_ref().is_some_and(|state| {
+                        state.revision >= view.first_previous_revision
+                            && state.revision < view.revision
+                    })
             })
             .and_then(|view| {
                 view.tracks
                     .iter()
-                    .find(|(id, _)| *id == track)
-                    .map(|(_, soloed)| *soloed)
+                    .find(|switches| switches.track == track.id())
+                    .map(|switches| (switches.muted, switches.soloed))
             })
-            .unwrap_or(canonical)
+            .unwrap_or_else(|| (track.muted(), track.soloed()))
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {

@@ -29,6 +29,487 @@ type PluginFacts = crate::native_audio::plugins::FactsGate;
 enum PluginFacts {}
 
 #[test]
+fn held_single_midi_move_reschedules_the_note_before_commit() {
+    use hex_project::{BeatTime, ClipGroupPosition, Command, Created};
+    use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "midi".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    let (applied, _) = h.applied(applied);
+    let beat = |q| BeatTime::from_quarters(q).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let before = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: beat(1),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = before.state.project.snapshot();
+    let target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 11,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(track),
+        position: ClipGroupPosition::Midi(beat(1)),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    for _ in 0..800 {
+        if position(&h) >= 24_128 {
+            break;
+        }
+        assert!(h.render().iter().all(|frame| frame[0].abs() < 1e-5));
+    }
+    assert!((24_128..48_000).contains(&position(&h)));
+    assert!(h.render().iter().all(|frame| frame[0].abs() < 1e-5));
+    for _ in 0..800 {
+        if position(&h) >= 48_128 {
+            break;
+        }
+        h.render();
+    }
+    assert!(position(&h) >= 48_128);
+    assert!(h.render().iter().any(|frame| frame[0].abs() > 0.005));
+    assert!(h.service.try_event().is_err());
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveMidiClipWithOverwrite {
+            clip,
+            track,
+            start: beat(1),
+        },
+    });
+    assert!(committed.error.is_none());
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, _) = h.applied(preview);
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    h.applied(committed_audio);
+}
+
+#[test]
+fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let looped = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = looped.state.project.snapshot();
+    let target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 11,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(track),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    // A refused newer move must leave the previously admitted preview and the
+    // canonical project untouched; the FIFO request remains serviceable.
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    assert!(
+        h.service
+            .audition_arrangement_move(Some(ArrangementMoveAudition {
+                sequence: 2,
+                position: ClipGroupPosition::Audio(24_000),
+                ..target.clone()
+            }))
+    );
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.project.snapshot(), original);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        preview
+    );
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(!h.service.audition_arrangement_move(None));
+    let (restored, restored_metadata) = h.applied(preview);
+    assert!(restored_metadata.clip_preview.is_none());
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, _) = h.applied(restored);
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipWithOverwrite {
+            clip,
+            track,
+            start: 48_000,
+        },
+    });
+    assert!(committed.error.is_none());
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, committed_metadata) = h.applied(preview);
+    assert!(committed_metadata.clip_preview.is_none());
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    h.applied(committed_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+}
+
+#[test]
+fn held_audio_move_to_new_track_is_transient_and_commits_once() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{
+        ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
+        ClipMovePreviewDestination, NewTrackMoveDestination,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, _) = h.applied(initial);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let looped = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = looped.state.project.snapshot();
+    let destination = NewTrackMoveDestination::new(Arc::from("track 2"), Some(track), 0.5).unwrap();
+    let mut target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 25,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: ArrangementMoveDestination::NewTrack(destination),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert_eq!(
+        target.identity().destination,
+        ClipMovePreviewDestination::NewTrack {
+            before_track: Some(track)
+        }
+    );
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+    assert!(!h.service.audition_arrangement_move(None));
+    let (restored, _) = h.applied(preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    target.sequence = 2;
+    target.position = ClipGroupPosition::Audio(0);
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, _) = h.applied(restored);
+    assert!(h.render().iter().all(|f| (f[0] - 0.125).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipToNewTrack {
+            clip,
+            name: "track 2".into(),
+            before_track: Some(track),
+            start: 0,
+            initial_gain: Some(0.5),
+        },
+    });
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert_eq!(committed.state.revision, looped.state.revision + 1);
+    assert_eq!(committed.state.project.tracks().len(), 2);
+    assert_eq!(committed.state.project.tracks()[0].gain(), 0.5);
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, _) = h.applied(preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.125).abs() < 1e-5));
+    let mut expected_undo = original;
+    expected_undo.next_id = committed.state.project.snapshot().next_id;
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), expected_undo);
+    h.applied(committed_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+}
+
+#[test]
+fn held_group_move_auditions_both_clips_and_commits_once() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 96_000);
+    let first = h.run(Request::Import(source.clone()));
+    let a = first.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(applied);
+    let second = h.run(Request::Import(source));
+    let (applied, metadata) = h.applied(applied);
+    let b = second.state.project.tracks()[1].clips()[0].id();
+    let original = second.state.project.snapshot();
+    let target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 11,
+        sequence: 1,
+        clips: vec![a, b].into(),
+        anchor: a,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(
+            second.state.project.tracks()[0].id(),
+        ),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let advance = |h: &mut ResidentHarness, previous| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.pump();
+            h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break revision;
+            }
+            assert!(Instant::now() < deadline, "group preview did not apply");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let preview = advance(&mut h, applied);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+    assert!(!h.service.audition_arrangement_move(None));
+    let restored = advance(&mut h, preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let preview = advance(&mut h, restored);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipsWithOverwrite {
+            clips: target.clips.to_vec(),
+            anchor: a,
+            track: second.state.project.tracks()[0].id(),
+            position: target.position,
+            copy: false,
+        },
+    });
+    assert!(committed.error.is_none());
+    assert_eq!(committed.state.revision, second.state.revision + 1);
+    h.service.retire_arrangement_move_audition();
+    let committed_audio = advance(&mut h, preview);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let undone_audio = advance(&mut h, committed_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    assert_eq!(
+        h.run(Request::Redo).state.project.snapshot(),
+        committed.state.project.snapshot()
+    );
+    let redone_audio = advance(&mut h, undone_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), original);
+    let restored_audio = advance(&mut h, redone_audio);
+    let copy = ArrangementMoveAudition {
+        context: hex_engine::AudioSourceContext {
+            project_generation: target.context.project_generation,
+            editor_revision: undone.state.revision,
+        },
+        position: ClipGroupPosition::Audio(120_000),
+        mode: ArrangementMoveMode::Copy,
+        ..target.clone()
+    };
+    assert!(h.service.audition_arrangement_move(Some(copy.clone())));
+    let copied_preview = advance(&mut h, restored_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    // The original ends before the new position, so PCM there proves the copy.
+    for _ in 0..2_000 {
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 121_000
+        {
+            break;
+        }
+        h.render();
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 121_000
+    );
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let copied = h.run(Request::MoveExistingClips {
+        project_generation: copy.context.project_generation,
+        revision: copy.context.editor_revision,
+        command: Command::MoveClipsWithOverwrite {
+            clips: copy.clips.to_vec(),
+            anchor: copy.anchor,
+            track: second.state.project.tracks()[0].id(),
+            position: copy.position,
+            copy: true,
+        },
+    });
+    assert!(copied.error.is_none());
+    assert_eq!(copied.state.project.tracks()[0].clips().len(), 2);
+    assert_eq!(copied.state.project.tracks()[1].clips().len(), 2);
+    h.service.retire_arrangement_move_audition();
+    let copied_audio = advance(&mut h, copied_preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    let mut expected_after_copy_undo = original.clone();
+    expected_after_copy_undo.next_id = copied.state.project.snapshot().next_id;
+    let copy_undone = h.run(Request::Undo);
+    assert_eq!(
+        copy_undone.state.project.snapshot(),
+        expected_after_copy_undo
+    );
+    let restored_audio = advance(&mut h, copied_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+
+    let alias = ArrangementMoveAudition {
+        context: hex_engine::AudioSourceContext {
+            project_generation: target.context.project_generation,
+            editor_revision: copy_undone.state.revision,
+        },
+        position: ClipGroupPosition::Audio(120_000),
+        mode: ArrangementMoveMode::AliasCopy,
+        ..target.clone()
+    };
+    assert!(h.service.audition_arrangement_move(Some(alias.clone())));
+    let alias_preview = advance(&mut h, restored_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let aliased = h.run(Request::MoveExistingClips {
+        project_generation: alias.context.project_generation,
+        revision: alias.context.editor_revision,
+        command: Command::DuplicateAliasClipsAt {
+            clips: alias.clips.to_vec(),
+            anchor: alias.anchor,
+            track: second.state.project.tracks()[0].id(),
+            position: alias.position,
+        },
+    });
+    assert!(aliased.error.is_none());
+    assert!(aliased.state.project.clip_alias(a).is_some());
+    assert!(aliased.state.project.clip_alias(b).is_some());
+    h.service.retire_arrangement_move_audition();
+    let alias_audio = advance(&mut h, alias_preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    let mut expected_after_alias_undo = original;
+    expected_after_alias_undo.next_id = aliased.state.project.snapshot().next_id;
+    assert_eq!(
+        h.run(Request::Undo).state.project.snapshot(),
+        expected_after_alias_undo
+    );
+    advance(&mut h, alias_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+}
+
+#[test]
 fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
     use hex_session::service::ArrangementStretchAudition;
 
@@ -2420,6 +2901,7 @@ impl ResidentHarness {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity: control.output_identity().unwrap(),
                 active_audio_revision: fence.expected_active_revision(),

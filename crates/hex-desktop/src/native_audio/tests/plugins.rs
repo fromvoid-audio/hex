@@ -8,6 +8,7 @@ mod offline_bounce;
 mod performance_profile;
 mod state;
 mod ui;
+mod unsealed_admission;
 use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_audio::plugin_effects::{EffectPresentation, Hosting};

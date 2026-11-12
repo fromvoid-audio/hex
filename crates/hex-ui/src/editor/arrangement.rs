@@ -6,6 +6,7 @@ use gpui::{
     Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ScrollWheelEvent, Window, canvas, div, list, point, prelude::*, px, relative, rgb,
 };
+use std::sync::Arc;
 
 impl EditorView {
     pub(super) fn begin_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
@@ -130,6 +131,9 @@ impl EditorView {
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, None, cx);
         };
+        let locator_state = self
+            .locator_display_state()
+            .unwrap_or_else(|| Arc::clone(&state));
         self.sync_track_layout(state.project.tracks());
         let viewport = self.visible_viewport(state.timeline_frames);
         let clip_move_guide = self.displayed_clip_move_guide_frame(viewport);
@@ -152,7 +156,7 @@ impl EditorView {
         let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
             let empty_viewport = viewport;
-            self.refresh_locators(&state, empty_viewport);
+            self.refresh_locators(&locator_state, empty_viewport);
             let grid = super::musical_time::grid_lines(
                 &state.project,
                 empty_viewport,
@@ -172,7 +176,7 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
-                .children(self.locator_strip(&state, empty_viewport, ruler_width, cx))
+                .children(self.locator_strip(&locator_state, empty_viewport, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
                     &state,
@@ -240,7 +244,7 @@ impl EditorView {
             return self.arrangement_surface(upper, returns, main, guide_line, cx);
         }
 
-        self.refresh_locators(&state, viewport);
+        self.refresh_locators(&locator_state, viewport);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
         let bands = super::musical_time::adaptive_grid_bands_for_grid(
@@ -320,7 +324,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
-            .children(self.locator_strip(&state, viewport, ruler_width, cx))
+            .children(self.locator_strip(&locator_state, viewport, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
             .children(super::gain_lane::view(
@@ -1028,17 +1032,44 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
-        let labels = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left_0()
-            .right_0()
+        let elapsed = div()
+            .debug_selector(|| "arrangement-elapsed-row".into())
+            .relative()
+            .h(relative(0.5))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children(
+                super::elapsed_time::ruler_ticks(
+                    state.project.sample_rate(),
+                    viewport,
+                    ruler_width,
+                )
+                .into_iter()
+                .filter_map(|tick| {
+                    let x = viewport.fraction(tick.frame)?;
+                    super::timeline_strip::ruler_tick(x, tick.label, false, false, false).map(
+                        |tick_view| {
+                            tick_view
+                                .pb_0()
+                                .line_height(px(10.0))
+                                .debug_selector(move || {
+                                    format!("elapsed-ruler-tick-{}", tick.frame)
+                                })
+                        },
+                    )
+                }),
+            );
+        let beats = div()
+            .debug_selector(|| "arrangement-beat-row".into())
+            .relative()
+            .h(relative(0.5))
+            .flex_shrink_0()
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
                     .filter_map(|tick| {
-                        let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
+                        let x = viewport.fraction(tick.frame)?;
                         super::timeline_strip::ruler_tick(
                             x,
                             tick.label,
@@ -1047,10 +1078,19 @@ impl EditorView {
                             tick.fragmentary_bar,
                         )
                         .map(|tick_view| {
-                            tick_view.debug_selector(move || format!("ruler-tick-{}", tick.frame))
+                            tick_view
+                                .pb_0()
+                                .line_height(px(10.0))
+                                .debug_selector(move || format!("ruler-tick-{}", tick.frame))
                         })
                     }),
             );
+        let labels = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .children([elapsed, beats]);
         let entity = cx.entity();
         let seek_viewport = viewport;
         let cells = div()

@@ -16,6 +16,9 @@ pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
+    /// Exact context used to prepare this graph. A retained overlay based on an
+    /// older editor revision may still need accounting while it is rebased.
+    pub(super) prepared_context: hex_engine::AudioSourceContext,
     pub(super) prepared: Arc<PreparedRevision>,
     pub(super) resources: PreparedDeviceResources,
     pub(super) inputs: RuntimeInputs,
@@ -26,6 +29,7 @@ fn canonical_metadata(
     context: hex_engine::AudioSourceContext,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
+        clip_preview: None,
         context,
         device_preview: None,
         tuning_preview: None,
@@ -322,9 +326,17 @@ impl Inputs<'_> {
         } else {
             prepared
         };
-        let prepared = match self.current {
-            Some(current) => prepared
-                .with_foreign_program_history_from(&current.prepared, |binding| {
+        // A queued preview can already own a newer program received by the
+        // worker. Keep its history while preparing the canonical edit.
+        let predecessor = self.current.map(|current| {
+            self.admission
+                .preview
+                .filter(|preview| preview.follows(current))
+                .map_or(current, |preview| &preview.snapshot)
+        });
+        let prepared = match predecessor {
+            Some(previous) => prepared
+                .with_foreign_program_history_from(&previous.prepared, |binding| {
                     sink.received_foreign_program_on_control(binding)
                 })?,
             None => prepared,
@@ -334,6 +346,7 @@ impl Inputs<'_> {
             None => prepared,
         };
         let snapshot = Snapshot {
+            prepared_context: context,
             file_sources,
             resources,
             prepared: Arc::new(prepared),
@@ -449,6 +462,7 @@ impl Inputs<'_> {
             playback,
             sink,
             ResidentPublicationMetadata {
+                clip_preview: None,
                 context,
                 device_preview: None,
                 tuning_preview: None,
@@ -530,6 +544,7 @@ impl Inputs<'_> {
             project,
             sink,
             ResidentPublicationMetadata {
+                clip_preview: None,
                 context,
                 device_preview: None,
                 tuning_preview: None,
@@ -1756,6 +1771,7 @@ impl Session {
             context,
         )?;
         let metadata = ResidentPublicationMetadata {
+            clip_preview: None,
             context,
             device_preview: None,
             tuning_preview: None,
@@ -1865,6 +1881,7 @@ impl Session {
             context,
         )?;
         let metadata = ResidentPublicationMetadata {
+            clip_preview: None,
             context,
             device_preview: None,
             tuning_preview: None,
@@ -1921,6 +1938,10 @@ impl Session {
                 return Err(SessionError::Invalid("clip audition cancelled"));
             }
             let metadata = ResidentPublicationMetadata {
+                clip_preview: match &identity {
+                    resident_preview::Identity::Clip(target) => target.move_identity(),
+                    _ => None,
+                },
                 context,
                 device_preview: match identity {
                     resident_preview::Identity::Device(id) => Some(id),
@@ -1941,6 +1962,37 @@ impl Session {
         })?;
         Ok(prepared)
     }
+    /// Restore canonical audio as a successor to a preview that may have
+    /// advanced a foreign worker. The older canonical graph can lack the
+    /// program of an unfinished quantum.
+    pub(super) fn restore_resident_preview_with_foreign_programs(
+        &self,
+        current: &Snapshot,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = Inputs {
+            native_parameter_input: current.prepared.native_parameter_input_target(),
+            ..self.resident_seek_inputs(admission, Some(current), None)?
+        };
+        let project = self.project();
+        let mut snapshot = inputs.prepare_with_gain(
+            project,
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            current.prepared.gain_recording_track(),
+            None,
+            context,
+            None,
+        )?;
+        inputs.publish(&mut snapshot, project, sink, context)?;
+        Ok(snapshot)
+    }
+
     pub(super) fn prepare_resident_gain_recording(
         &self,
         track: hex_project::TrackId,
@@ -2510,6 +2562,7 @@ impl Session {
                     project,
                     sink,
                     ResidentPublicationMetadata {
+                        clip_preview: None,
                         context,
                         device_preview: None,
                         tuning_preview: None,
@@ -2636,6 +2689,8 @@ pub(super) mod tests {
         native_parameter_input: Mutex<Option<hex_engine::NativeParameterInputTarget>>,
         native_capture_playing: AtomicBool,
         keyboard_peak: Mutex<f32>,
+        render_for_switch_test: AtomicBool,
+        switch_peaks: Mutex<Vec<(u64, f32)>>,
         keyboard_publications: AtomicUsize,
         effect_compilations: AtomicUsize,
         plugin_preparations: AtomicUsize,
@@ -2802,6 +2857,20 @@ pub(super) mod tests {
                             .flatten()
                             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
                     }
+                    if self.observed.render_for_switch_test.load(Ordering::Acquire) {
+                        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+                        let mut pcm = [[0.0; 2]; 256];
+                        playback.render(&mut pcm).unwrap();
+                        let peak = pcm
+                            .iter()
+                            .flatten()
+                            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                        self.observed
+                            .switch_peaks
+                            .lock()
+                            .unwrap()
+                            .push((metadata.context.editor_revision, peak));
+                    }
                     self.observed
                         .publications
                         .lock()
@@ -2875,6 +2944,133 @@ pub(super) mod tests {
             observed: Arc::new(Observed::default()),
             pending: None,
         })
+    }
+
+    #[test]
+    fn held_checkpoint_allows_ordered_resident_mute_audio() {
+        use std::time::Instant;
+        let files = sampler_export::tests::Files::new(false);
+        let path = files.source();
+        let samples = vec![12000_i16; 4096];
+        let data = (samples.len() * 2) as u32;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&(36 + data).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+        let journal = path.parent().unwrap().join("untitled.hex-journal");
+        let observed = Arc::new(Observed::default());
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(2)
+            .unwrap();
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            8_000_000,
+            Some(journal.clone()),
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        .checked_add(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+                        .unwrap(),
+                },
+                max_scan_frames: 8_000_000,
+            },
+        )
+        .unwrap();
+        let next = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        next();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let track = next().state.project.tracks()[0].id();
+        service
+            .submit(Request::ImportToTrack {
+                path: path.to_path_buf(),
+                track,
+                start: 0,
+            })
+            .unwrap();
+        assert!(next().error.is_none());
+        observed
+            .render_for_switch_test
+            .store(true, Ordering::Release);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        super::super::recovery::install_checkpoint_gate(journal.clone(), entered_tx, release_rx);
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_track_switch_view().unwrap();
+        service
+            .submit(Request::Edit(Command::ToggleMute(track)))
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(300);
+        let second = loop {
+            if let Ok(view) = service.try_track_switch_view() {
+                break Some(view);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_millis(300);
+        let peaks = loop {
+            let peaks = observed.switch_peaks.lock().unwrap().clone();
+            if second
+                .as_ref()
+                .is_some_and(|view| peaks.iter().any(|(revision, _)| *revision == view.revision))
+                || Instant::now() >= until
+            {
+                break peaks;
+            }
+            std::thread::yield_now();
+        };
+        release.send(()).unwrap();
+        let second = second.expect("second mute must commit before checkpoint release");
+        let muted = peaks
+            .iter()
+            .find(|(revision, _)| *revision == first.revision)
+            .expect("first prepared audio")
+            .1;
+        let unmuted = peaks
+            .iter()
+            .find(|(revision, _)| *revision == second.revision)
+            .expect("second prepared audio")
+            .1;
+        assert_eq!(muted, 0.0);
+        assert!(
+            unmuted > 0.01,
+            "unmuted prepared graph must render audible signal, got {unmuted}"
+        );
+        assert!(next().error.is_none() && next().error.is_none());
     }
 
     #[test]
@@ -3068,6 +3264,78 @@ pub(super) mod tests {
             assert_eq!(result.state.revision, rev);
             assert_eq!(result.state.can_undo, added.state.can_undo);
         }
+    }
+
+    #[test]
+    fn project_sample_placement_publishes_or_refuses_before_commit() {
+        let observed = Arc::new(Observed::default());
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            1024,
+            None,
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap();
+        let receive = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        receive();
+        let files = sampler_export::tests::Files::new(false);
+        service
+            .submit(Request::Import(files.source().to_owned()))
+            .unwrap();
+        let imported = receive();
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        let track = imported.state.project.tracks()[0].id();
+        let asset = imported.state.project.assets().next().unwrap().id();
+        let request = |revision| Request::InsertProjectSample {
+            project_generation: 0,
+            revision,
+            asset,
+            track,
+            start: 32,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: Some(hex_engine::playback::BrowserAuditionTiming {
+                grid: hex_project::ResolvedInputGrid::off(),
+                transport_epoch: 0,
+            }),
+        };
+        let accepted_before = observed.accepted.lock().unwrap().len();
+        service.submit(request(imported.state.revision)).unwrap();
+        let placed = receive();
+        assert!(placed.error.is_none(), "{:?}", placed.error);
+        assert_eq!(placed.state.project.assets().count(), 1);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted_before + 1);
+        observed.refuse.store(true, Ordering::Release);
+        service.submit(request(placed.state.revision)).unwrap();
+        let refused = receive();
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fixture publication refused"))
+        );
+        assert_eq!(refused.state.project, placed.state.project);
+        assert_eq!(refused.state.revision, placed.state.revision);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted_before + 1);
     }
 
     // Exercise the real default-stack canonical worker: factories and Playback are constructed
@@ -3296,6 +3564,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3740,6 +4009,7 @@ pub(super) mod tests {
                     )
                     .unwrap();
                 let captured = Snapshot {
+                    prepared_context: current.prepared_context,
                     file_sources: current.file_sources.clone(),
                     prepared: Arc::clone(&current.prepared),
                     resources: current.resources.capture_on_control(bytes).unwrap(),
@@ -3771,6 +4041,7 @@ pub(super) mod tests {
                         &mut sink,
                         sampler_export::Admission::default(),
                         ResidentPublicationMetadata {
+                            clip_preview: None,
                             context,
                             device_preview: None,
                             tuning_preview: None,
@@ -3780,7 +4051,7 @@ pub(super) mod tests {
                             gain_recording_track: None,
                             requires_preroll: false,
                         },
-                        ResidentPublicationPolicy::SectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
                             fence: ResidentFreshRuntimeFence {
                                 output_identity: 1,
                                 active_audio_revision: 1,
@@ -3865,6 +4136,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -3892,6 +4164,7 @@ pub(super) mod tests {
         let mut selected = current.inputs.clone();
         selected.keyboard = Some((track, Arc::clone(&input)));
         let metadata = ResidentPublicationMetadata {
+            clip_preview: None,
             context,
             device_preview: None,
             tuning_preview: None,
@@ -3978,6 +4251,7 @@ pub(super) mod tests {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,

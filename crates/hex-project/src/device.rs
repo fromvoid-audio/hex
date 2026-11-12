@@ -263,7 +263,26 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             track,
             before,
         } => {
-            move_track_device(project, device, track, before)?;
+            move_track_device(project, device, None, track, before)?;
+            Ok(crate::Created::None)
+        }
+        Command::MoveTrackDevices {
+            source,
+            selected,
+            destination,
+        } => {
+            let order = project.track_device_move_order(source, &selected, destination)?;
+            for device in order.into_iter().flatten() {
+                move_track_device(project, device, Some(source), destination, None)?;
+            }
+            Ok(crate::Created::None)
+        }
+        Command::ReorderDevices {
+            owner,
+            selected,
+            before,
+        } => {
+            reorder_selection(project, owner, &selected, before)?;
             Ok(crate::Created::None)
         }
         Command::InsertNestedDevice { parent, state } => {
@@ -665,8 +684,15 @@ enum DeviceLocation {
     Instrument { track: usize },
 }
 
-fn locate_chain_device(project: &Project, id: DeviceId) -> Result<DeviceLocation, Invalid> {
+fn locate_chain_device(
+    project: &Project,
+    id: DeviceId,
+    owner: Option<TrackId>,
+) -> Result<DeviceLocation, Invalid> {
     for (track_index, track) in project.tracks.iter().enumerate() {
+        if owner.is_some_and(|owner| owner != track.id()) {
+            continue;
+        }
         if let Some(index) = track.devices.iter().position(|device| device.id == id) {
             return Ok(DeviceLocation::Effect {
                 track: track_index,
@@ -712,10 +738,11 @@ fn chain_effect_index_before(
 fn move_track_device(
     project: &mut Project,
     id: DeviceId,
+    source_track: Option<TrackId>,
     target_track: TrackId,
     before: Option<DeviceId>,
 ) -> Result<(), Invalid> {
-    let source = locate_chain_device(project, id)?;
+    let source = locate_chain_device(project, id, source_track)?;
     let target_index = project
         .tracks
         .iter()
@@ -728,7 +755,8 @@ fn move_track_device(
         return Ok(());
     }
     if let Some(anchor) = before {
-        let anchor_location = locate_chain_device(project, anchor)?;
+        let anchor_location =
+            locate_chain_device(project, anchor, source_track.map(|_| target_track))?;
         let anchor_track = match anchor_location {
             DeviceLocation::Effect { track, .. } | DeviceLocation::Instrument { track } => track,
         };
@@ -794,6 +822,196 @@ fn move_track_device(
     target.instrument_position = Some(position);
     if let Some(source) = receiver_transfer {
         project.set_native_source_receiver(source, Some(target_track))?;
+    }
+    Ok(())
+}
+
+impl Project {
+    /// Check a cross-track append against the same selection, capacity and slot
+    /// rules used by the command. The preview does not copy any device state.
+    pub fn validate_track_device_move(
+        &self,
+        source: TrackId,
+        selected: &crate::DeviceSelectionIds,
+        destination: TrackId,
+    ) -> Result<(), Invalid> {
+        self.track_device_move_order(source, selected, destination)
+            .map(|_| ())
+    }
+
+    fn track_device_move_order(
+        &self,
+        source: TrackId,
+        selected: &crate::DeviceSelectionIds,
+        destination: TrackId,
+    ) -> Result<[Option<DeviceId>; MAX_DEVICES_PER_TRACK + 1], Invalid> {
+        if source == destination {
+            return Err(Invalid("drop onto another track to move devices"));
+        }
+        let source = self
+            .track(source)
+            .ok_or(Invalid("device source track no longer exists"))?;
+        let target = self
+            .track(destination)
+            .ok_or(Invalid("device target track no longer exists"))?;
+        let mut order = [None; MAX_DEVICES_PER_TRACK + 1];
+        let mut selected_found = 0;
+        let mut next_effect = 0;
+        let mut subtree_end = 0;
+        let mut effect_count = target.devices().len();
+        for (entry, slot) in source.ordered_device_chain().zip(&mut order) {
+            match entry {
+                crate::TrackDeviceRef::Instrument(device)
+                    if selected.ids().contains(&device.id()) =>
+                {
+                    if target.is_group() || target.instrument().is_some() {
+                        return Err(Invalid("destination cannot accept another instrument"));
+                    }
+                    selected_found += 1;
+                    *slot = Some(device.id());
+                }
+                crate::TrackDeviceRef::Instrument(_) => {}
+                crate::TrackDeviceRef::Effect(device) => {
+                    let index = next_effect;
+                    next_effect += 1;
+                    if !selected.ids().contains(&device.id()) {
+                        continue;
+                    }
+                    selected_found += 1;
+                    // A selected root carries its complete subtree. A child
+                    // selected alongside that root only contributes membership.
+                    if index < subtree_end {
+                        continue;
+                    }
+                    if device.parent().is_some() {
+                        return Err(Invalid(
+                            "moving nested devices between tracks requires reparenting",
+                        ));
+                    }
+                    let span = crate::device_inventory::serial_unit_span(source.devices(), index)?;
+                    subtree_end = span.end;
+                    effect_count += span.len();
+                    *slot = Some(device.id());
+                }
+            }
+        }
+        if selected_found != selected.ids().len() {
+            return Err(Invalid(
+                "selected device no longer belongs to the source track",
+            ));
+        }
+        if effect_count > MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("track device limit reached"));
+        }
+        Ok(order)
+    }
+}
+
+fn reorder_selection(
+    project: &mut Project,
+    owner: crate::DeviceChainOwner,
+    selected: &crate::DeviceSelectionIds,
+    before: Option<DeviceId>,
+) -> Result<(), Invalid> {
+    use crate::{DeviceChainOwner, TrackDeviceRef};
+
+    let (effects, instrument) = match owner {
+        DeviceChainOwner::Track(track) => {
+            let track = project
+                .track(track)
+                .ok_or(Invalid("device track no longer exists"))?;
+            let instrument = track
+                .instrument()
+                .map(|device| {
+                    track
+                        .instrument_position()
+                        .map(|gap| (device, gap))
+                        .ok_or(Invalid("instrument position is missing"))
+                })
+                .transpose()?;
+            (track.devices(), instrument)
+        }
+        DeviceChainOwner::Main => (project.main_devices(), None),
+        DeviceChainOwner::Return(id) => {
+            let track = project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .ok_or(Invalid("return no longer exists"))?;
+            (track.devices(), None)
+        }
+    };
+    let gap = instrument.map_or(effects.len(), |(_, gap)| gap);
+    let (leading, trailing) = effects
+        .split_at_checked(gap)
+        .ok_or(Invalid("instrument position is out of bounds"))?;
+    let order = leading
+        .iter()
+        .map(TrackDeviceRef::Effect)
+        .chain(instrument.map(|(device, _)| TrackDeviceRef::Instrument(device)))
+        .chain(trailing.iter().map(TrackDeviceRef::Effect));
+    let mut roots = [None; MAX_DEVICES_PER_TRACK + 1];
+    let mut selected_found = 0;
+    let mut next_effect = 0;
+    let mut subtree_end = 0;
+    let mut found_drop = false;
+    let mut anchor = None;
+    for (node, root) in order.zip(&mut roots) {
+        let (device, index) = match node {
+            TrackDeviceRef::Instrument(device) => (device, None),
+            TrackDeviceRef::Effect(device) => {
+                let index = next_effect;
+                next_effect += 1;
+                (device, Some(index))
+            }
+        };
+        let id = device.id();
+        let selected_here = selected.ids().contains(&id);
+        selected_found += usize::from(selected_here);
+        let covered = index.is_some_and(|index| index < subtree_end);
+        if selected_here && !covered {
+            if let Some(index) = index {
+                subtree_end = crate::device_inventory::serial_unit_span(effects, index)?.end;
+            }
+            *root = Some(id);
+        }
+        // Interpret the drop gap in the remaining chain. A moving root and
+        // every child it carries disappear from that gap together.
+        found_drop |= before == Some(id);
+        if found_drop && !selected_here && !covered && anchor.is_none() {
+            anchor = Some(id);
+        }
+    }
+    if selected_found != selected.ids().len() {
+        return Err(Invalid("selected device no longer belongs to the chain"));
+    }
+    if before.is_some() && !found_drop {
+        return Err(Invalid("device insertion anchor no longer exists"));
+    }
+    for device in roots.into_iter().flatten() {
+        match owner {
+            DeviceChainOwner::Track(track) => {
+                move_track_device(project, device, Some(track), track, anchor)?
+            }
+            DeviceChainOwner::Main => {
+                crate::main_devices::apply(
+                    project,
+                    Command::MoveMainDevice {
+                        device,
+                        before: anchor,
+                    },
+                )?;
+            }
+            DeviceChainOwner::Return(_) => {
+                crate::returns::apply(
+                    project,
+                    Command::MoveReturnDevice {
+                        device,
+                        before: anchor,
+                    },
+                )?;
+            }
+        }
     }
     Ok(())
 }

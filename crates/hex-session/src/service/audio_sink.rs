@@ -221,8 +221,10 @@ impl<'a> ResidentEffectPreparation<'a> {
         Ok(selected)
     }
 
-    /// An authored program is immutable for one native worker epoch. An
-    /// instrument loop edit may keep that epoch when the run budget matches.
+    /// Whether the authored program can stay on its original native worker.
+    /// Effect loop activation and deactivation use the prepared origin budget
+    /// for delayed audio and partial worker quanta. Instruments also need to
+    /// preserve their transport and MIDI gate continuity.
     pub fn same_authored_plugin_program(
         &self,
         previous: &Self,
@@ -252,18 +254,28 @@ impl<'a> ResidentEffectPreparation<'a> {
         }
         let next_loop = self.project.loop_region();
         let previous_loop = previous.project.loop_region();
-        let same_loop_budget = next_loop == previous_loop
-            || quantum_frames.is_some_and(|frames| {
-                self.project
-                    .native_sources()
-                    .iter()
-                    .any(|source| source.instrument().id().value() == device)
-                    && hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+        let same_loop_budget = next_loop == previous_loop || {
+            let instrument = self
+                .project
+                .native_sources()
+                .iter()
+                .any(|source| source.instrument().id().value() == device);
+            if instrument {
+                quantum_frames.is_some_and(|frames| {
+                    hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
                         frames,
                         previous_loop,
                         next_loop,
                     )
-            });
+                })
+            } else {
+                hex_engine::foreign_automation::QuantumProfile::keeps_effect_epoch(
+                    quantum_frames,
+                    previous_loop,
+                    next_loop,
+                )
+            }
+        };
         self.project.tempo_map() == previous.project.tempo_map()
             && same_loop_budget
             && current.eq(old)
@@ -362,6 +374,8 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentPublicationMetadata {
     pub context: hex_engine::AudioSourceContext,
+    /// Identity of a clip-move preview, not proof of callback application.
+    pub clip_preview: Option<ClipMovePreviewIdentity>,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
     pub seek_request: Option<u64>,
@@ -467,7 +481,7 @@ pub enum ResidentPublicationPolicy {
         requires_plugin_profile: bool,
     },
     FreshIfUnchanged(ResidentFreshRuntimeFence),
-    SectionWhenReady {
+    QuantizedSeekWhenReady {
         fence: ResidentFreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },
@@ -1051,7 +1065,7 @@ pub(super) struct WorkerEvents {
     // Observed-request timing only; absent without an installed observer.
     diagnostic_started: Option<std::time::Instant>,
     section_phases: Option<super::diagnostics::SectionPhases>,
-    duplicate_recovery: Option<Duration>,
+    recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -1066,6 +1080,43 @@ pub(super) struct WorkerEvents {
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
+/// One request's unsent event and diagnostic identity stay together if the
+/// control worker has to retain an outcome before delivering it.
+pub(super) struct PendingOutcome {
+    pub(super) event: Event,
+    diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    diagnostic_started: Option<std::time::Instant>,
+    section_phases: Option<super::diagnostics::SectionPhases>,
+    recovery_timing: Option<(&'static str, Duration)>,
+}
+impl PendingOutcome {
+    pub(super) fn finish_recovery(
+        &mut self,
+        metric: &'static str,
+        elapsed: Duration,
+        result: Result<Option<PathBuf>, String>,
+        failure: Option<Arc<super::RecoveryFailure>>,
+    ) {
+        if self.diagnostic.is_some() {
+            self.recovery_timing = Some((metric, elapsed));
+        }
+        match result {
+            Ok(Some(_)) => {
+                self.event.status =
+                    Some("previous recovery journal preserved beside its original slot".into());
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                let message = format!("automatic recovery: {reason}");
+                self.event.error = Some(match self.event.error.take() {
+                    Some(existing) => format!("{existing}; {message}"),
+                    None => message,
+                });
+            }
+        }
+        self.event.recovery_failure = failure;
+    }
+}
 /// One bounded control poll may make a previously admitted gesture ready.
 /// The queued user FIFO retains priority over this copied continuation.
 #[derive(Default)]
@@ -1073,6 +1124,7 @@ pub(super) struct ControlPoll {
     pub pending: bool,
     pub gesture: Option<GestureRequest>,
     pub editor_take: Option<u64>,
+    pub recovery_ready: bool,
 }
 
 impl WorkerEvents {
@@ -1092,7 +1144,7 @@ impl WorkerEvents {
         self.diagnostic = request;
         self.diagnostic_started = request.map(|_| std::time::Instant::now());
         self.section_phases = None;
-        self.duplicate_recovery = None;
+        self.recovery_timing = None;
         self.diagnostics.emit(
             request,
             super::diagnostics::DiagnosticStage::WorkerBegin {
@@ -1121,15 +1173,18 @@ impl WorkerEvents {
         }
         result
     }
-    /// Time only the supplied duplicate checkpoint call and only when its
-    /// request has an installed diagnostic observer.
-    pub(super) fn measure_duplicate_recovery<T>(&mut self, maintain: impl FnOnce() -> T) -> T {
+    /// Time recovery maintenance only for observed requests with a named phase.
+    pub(super) fn measure_recovery<T>(
+        &mut self,
+        field: &'static str,
+        maintain: impl FnOnce() -> T,
+    ) -> T {
         let Some(_) = self.diagnostic else {
             return maintain();
         };
         let started = std::time::Instant::now();
         let result = maintain();
-        self.duplicate_recovery = Some(started.elapsed());
+        self.recovery_timing = Some((field, started.elapsed()));
         result
     }
     pub(super) fn begin_request(
@@ -1200,7 +1255,7 @@ impl WorkerEvents {
             diagnostic: None,
             diagnostic_started: None,
             section_phases: None,
-            duplicate_recovery: None,
+            recovery_timing: None,
             shutdown,
             audio,
             last_context: None,
@@ -1299,9 +1354,14 @@ impl WorkerEvents {
     /// backpressure already retries at the busy cadence.
     pub(super) fn send_with_control_poll<R>(
         &mut self,
-        mut event: Event,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+        event: Event,
+        control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
     ) -> bool {
+        let pending = self.capture_outcome(event);
+        self.send_pending_with_control_poll(pending, control_poll)
+    }
+
+    pub(super) fn capture_outcome(&mut self, mut event: Event) -> PendingOutcome {
         if let Some(source) = &event.state.canonical_audio_source {
             self.canonical_source_changed(source);
         }
@@ -1352,18 +1412,30 @@ impl WorkerEvents {
                     })
             })
             .map(|active| (active.key, active.sequence));
-        let diagnostic = self.diagnostic.take();
-        let worker = self.diagnostic_started.take().map(|start| start.elapsed());
-        let section = self.section_phases.take();
-        let duplicate_recovery = self.duplicate_recovery.take();
-        self.diagnostics.outcome(
+        PendingOutcome {
+            event,
+            diagnostic: self.diagnostic.take(),
+            diagnostic_started: self.diagnostic_started.take(),
+            section_phases: self.section_phases.take(),
+            recovery_timing: self.recovery_timing.take(),
+        }
+    }
+
+    pub(super) fn send_pending_with_control_poll<R>(
+        &mut self,
+        pending: PendingOutcome,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+    ) -> bool {
+        let PendingOutcome {
+            mut event,
             diagnostic,
-            &event,
-            false,
-            worker,
-            section,
-            duplicate_recovery,
-        );
+            diagnostic_started,
+            section_phases: section,
+            recovery_timing,
+        } = pending;
+        let worker = diagnostic_started.map(|start| start.elapsed());
+        self.diagnostics
+            .outcome(diagnostic, &event, false, worker, section, recovery_timing);
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
@@ -1595,6 +1667,12 @@ impl WorkerEvents {
                 Err(mpsc::TryRecvError::Disconnected) => return None,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
+            if control_pending.recovery_ready {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueRecovery,
+                    document_intent,
+                ));
+            }
             if let Some(request_id) = control_pending.editor_take {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginEditorRecording { request_id },
@@ -1726,6 +1804,125 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn retained_outcomes_keep_their_request_identity_and_order() {
+        use super::super::diagnostics::{DiagnosticOrigin, DiagnosticRequest, Hooks};
+        use std::sync::atomic::AtomicU64;
+
+        let mut service = Service::new(48_000, 8, 1024).unwrap();
+        let first = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack { name: "one".into() }))
+            .unwrap();
+        let second = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        let first_context = first
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let second_context = second
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let observed = Arc::new(Observation::default());
+        let mut events = WorkerEvents::new_with_diagnostics(
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(Sink {
+                observed: Arc::clone(&observed),
+                fail: false,
+                idle: true,
+            })),
+            Arc::new(Hooks::default()),
+        );
+        let intent = AtomicU64::new(0);
+        let mut queued = QueuedRequest::continuation(Request::CopyClips(Vec::new()), &intent);
+        queued.diagnostic = Some(DiagnosticRequest {
+            request_id: 1,
+            origin: DiagnosticOrigin::Submitted,
+            ui_action_id: None,
+            kind: "first",
+            operation: None,
+        });
+        events.begin_diagnostics(&queued, 0, first.state.revision);
+        let first_revision = first.state.revision;
+        let first = events.capture_outcome(first);
+        queued.diagnostic.as_mut().unwrap().request_id = 2;
+        events.begin_diagnostics(&queued, 0, second.state.revision);
+        let second_revision = second.state.revision;
+        let second = events.capture_outcome(second);
+        {
+            let sources = observed.sources.lock().unwrap();
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|(generation, revision, _)| (*generation, *revision))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (
+                        first_context.project_generation,
+                        first_context.editor_revision
+                    ),
+                    (
+                        second_context.project_generation,
+                        second_context.editor_revision
+                    ),
+                ]
+            );
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(events.send_pending_with_control_poll(first, |_| ()));
+        assert!(events.send_pending_with_control_poll(second, |_| ()));
+        let first = receiver.try_recv().unwrap();
+        let second = receiver.try_recv().unwrap();
+        assert_eq!(
+            (
+                first.request.unwrap().request_id,
+                first.event.state.revision
+            ),
+            (1, first_revision)
+        );
+        assert_eq!(
+            (
+                second.request.unwrap().request_id,
+                second.event.state.revision
+            ),
+            (2, second_revision)
+        );
+        let sources = observed.sources.lock().unwrap();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(generation, revision, _)| (*generation, *revision))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    first_context.project_generation,
+                    first_context.editor_revision
+                ),
+                (
+                    second_context.project_generation,
+                    second_context.editor_revision
+                ),
+            ]
+        );
+    }
     #[derive(Default)]
     struct Observation {
         sources: Mutex<Vec<(u64, u64, thread::ThreadId)>>,
@@ -1779,14 +1976,8 @@ mod tests {
             crate::test_wait::pause();
         }
     }
-    #[test]
-    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
-        use hex_project::{
-            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
-        };
-        let class = [1; 16];
-        let state = hex_plugin_state::encode(hex_plugin_state::State {
+    fn saved_effect_state(class: [u8; 16]) -> NativeDeviceState {
+        hex_plugin_state::encode(hex_plugin_state::State {
             identity: hex_plugin_state::Identity {
                 class: hex_plugin_state::ClassId::new(class).unwrap(),
                 binary: hex_plugin_state::BinaryIdentity {
@@ -1797,12 +1988,99 @@ mod tests {
             component: Some(&[4]),
             controller: None,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn toggling_a_compatible_loop_keeps_the_authored_effect_worker() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+            DeviceAutomationTarget, Editor,
+        };
+
+        fn prepare(project: &Project) -> ResidentEffectPreparation<'_> {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: true,
+            }
+        }
+
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Device(device) = editor
             .execute(Command::InsertMainDevice {
                 before: None,
-                state,
+                state: saved_effect_state([1; 16]),
+            })
+            .unwrap()
+        else {
+            panic!("plugin fixture");
+        };
+        let automation = |value| Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        };
+        editor.execute(automation(0.5)).unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 1024,
+                end: 4096,
+                enabled: true,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+
+        editor.execute(Command::ToggleLoopRegion).unwrap();
+        let keeps_worker = |old: &Project, new: &Project| {
+            prepare(new).same_authored_plugin_program(&prepare(old), device.value(), Some(256))
+        };
+        let disabled = editor.project().clone();
+        assert!(keeps_worker(&before, &disabled));
+        assert!(keeps_worker(&disabled, &before));
+
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(keeps_worker(&disabled, editor.project()));
+
+        editor.execute(automation(0.75)).unwrap();
+        assert!(!keeps_worker(&disabled, editor.project()));
+        assert!(editor.undo());
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1025,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(!keeps_worker(&disabled, editor.project()));
+    }
+
+    #[test]
+    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
+        };
+        let class = [1; 16];
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: saved_effect_state(class),
             })
             .unwrap()
         else {
