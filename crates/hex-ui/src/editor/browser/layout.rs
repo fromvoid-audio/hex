@@ -774,6 +774,10 @@ impl EditorView {
             }
         }
         let active = self.browser.section == BrowserSection::ProjectSamples;
+        let icon = picker_icon(browser_vector_icon_colored(
+            ICONS[0],
+            picker_ink(active, false),
+        ));
         let sources = sidebar
             .child(self.browser_places(compact, cx))
             .child(picker_group_heading("project", compact))
@@ -792,10 +796,7 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(picker_icon(browser_vector_icon_colored(
-                        ICONS[0],
-                        picker_ink(active, false),
-                    )))
+                    .child(icon)
                     .child(picker_label("samples")),
             );
         div()
