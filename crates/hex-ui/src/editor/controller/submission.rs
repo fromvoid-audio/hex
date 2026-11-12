@@ -42,6 +42,7 @@ pub(super) struct PendingKinds {
     midi_drag: bool,
     fade: bool,
     locator_move: bool,
+    locator_add: Option<u64>,
     clip_gain: bool,
     clip_activation: bool,
     gain: bool,
@@ -109,6 +110,7 @@ impl EditorView {
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
                 locator_move: self.locators.matches(request),
+                locator_add: self.locators.queued_add_frame(request),
                 clip_gain: self.clip_gain_matches(request),
                 clip_activation: self.clip_activation_matches(request),
                 gain: self.pending_gain_matches(request),
@@ -222,6 +224,10 @@ impl EditorView {
         }
         if kinds.locator_move {
             self.locators.submitted(self.worker_requests_pending);
+        }
+        if let Some(frame) = kinds.locator_add {
+            self.locators
+                .add_submitted(frame, self.worker_requests_pending);
         }
         if kinds.fade {
             self.fade_submitted();
@@ -346,6 +352,9 @@ impl EditorView {
         }
         if kinds.locator_move {
             visible |= self.locators.refuse();
+        }
+        if let Some(frame) = kinds.locator_add {
+            visible |= self.locators.refuse_add(frame);
         }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();

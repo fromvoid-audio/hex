@@ -586,13 +586,18 @@ impl EditorView {
     }
 
     pub(super) fn edit_pending(&self) -> bool {
-        (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+        self.edit_blocked_outside_request_queue()
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+    }
+
+    pub(super) fn edit_blocked_outside_request_queue(&self) -> bool {
+        self.gain_recorder.blocks_edits()
+            || self.midi_recorder.blocks_edits()
             || self.automation_view.devices.pointer_active()
             || self.sampler_parameter_pending()
             || self.opening_project
             || self.close_prompt_open
-            || self.worker_requests_pending != 0
-            || !self.pending_requests.is_empty()
             || self.device_gesture_pending()
     }
 
