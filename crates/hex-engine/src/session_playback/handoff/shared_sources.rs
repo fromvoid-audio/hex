@@ -1719,8 +1719,37 @@ mod tests {
                     .any(|source| source.has_committed_live_occurrences()),
                 "the launch must retain admitted live voices"
             );
-            candidate.apply(PlaybackCommand::Stop);
-            candidate.render(&mut output).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut unmuted, _) = live_playback_on(&f, &input, f.receiver);
+            unmuted
+                .try_inherit_runtime_in_control_context(&mut candidate, Some(19), Some(19))
+                .unwrap();
+            unmuted.render(&mut output).unwrap();
+            assert_eq!(
+                unmuted
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+            assert!(
+                unmuted
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "unmute must retain live voices"
+            );
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            unmuted.apply(PlaybackCommand::Stop);
+            unmuted.render(&mut output).unwrap();
             assert!(input.is_cancelled());
         });
     }
