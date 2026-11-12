@@ -281,7 +281,7 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
         };
         (output, backend, audio)
     };
-    let (old_output, mut old_backend, mut old_audio) = open();
+    let (mut old_output, mut old_backend, mut old_audio) = open();
     old_audio.control.command(PlaybackCommand::Play).unwrap();
     old_backend.render(&mut [[0.0; 2]; 64]).unwrap();
     let request = || Request::DropBrowserDeviceOnArrangement {
@@ -345,7 +345,7 @@ fn native_effect_recovery(cx: &mut gpui::TestAppContext, outcome: EffectRecovery
         return;
     }
 
-    let (fresh_output, mut fresh_backend, fresh_audio) = open();
+    let (mut fresh_output, mut fresh_backend, fresh_audio) = open();
     editor.update(cx, |v, _| {
         v.audio = Some(fresh_audio);
         v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
