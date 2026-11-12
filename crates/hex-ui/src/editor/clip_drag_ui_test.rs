@@ -4495,6 +4495,106 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
         );
         assert!(view.applied_project_revision.is_none());
     });
+    // Change the prospective position while withholding callbacks. The
+    // marker remains at the actual anchor and on its actual track.
+    visual.simulate_mouse_move(
+        point(destination.x + px(50.0), destination.y - px(44.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let (next_identity, marker_fraction) = editor.update(&mut visual, |view, cx| {
+        view.sync_held_clip_move_audition();
+        let expected = view.expected_clip_preview.unwrap();
+        assert_ne!(expected.position, identity.position);
+        assert_ne!(expected.track, identity.track);
+        let (track, frame) = view
+            .audible_clip_move_anchor()
+            .expect("actual A while B prepares");
+        assert_eq!(track, identity.track);
+        let saved = view.applied_clip_preview;
+        view.applied_clip_preview = saved.map(|(revision, actual)| (revision + 1, actual));
+        assert!(
+            view.audible_clip_move_anchor().is_none(),
+            "another output revision is not audible evidence"
+        );
+        view.applied_clip_preview = saved.map(|(revision, mut actual)| {
+            actual.context.project_generation += 1;
+            (revision, actual)
+        });
+        assert!(
+            view.audible_clip_move_anchor().is_none(),
+            "another project cannot be displayed"
+        );
+        view.applied_clip_preview = saved;
+        let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
+        let fraction = viewport.fraction(frame).unwrap();
+        cx.notify();
+        (expected, fraction)
+    });
+    visual.run_until_parked();
+    let marker = visual
+        .debug_bounds("clip-audition-audible-marker")
+        .expect("actual placement marker");
+    assert!(visual.debug_bounds("clip-audition-audible-label").is_some());
+    editor.read_with(&visual, |view, _| {
+        let lane = view.drag_lanes.get(&identity.track).unwrap();
+        let expected_x = lane.left + lane.width * marker_fraction;
+        assert!((f32::from(marker.left()) - expected_x).abs() < 2.0);
+        assert!((f32::from(marker.top()) - lane.top).abs() < 2.0);
+    });
+    let saved_actual = editor.update(&mut visual, |view, cx| {
+        let saved = view.applied_clip_preview.unwrap();
+        let mut offscreen = saved.1;
+        offscreen.position = hex_project::ClipGroupPosition::Audio(u64::MAX);
+        view.applied_clip_preview = Some((saved.0, offscreen));
+        cx.notify();
+        saved
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("clip-audition-audible-marker")
+            .is_none()
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.applied_clip_preview = Some(saved_actual);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("clip-audition-audible-marker")
+            .is_some()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let applied = editor.update(&mut visual, |view, cx| {
+            let changed = view.tick(cx);
+            if changed {
+                cx.notify();
+            }
+            view.applied_clip_preview
+                .is_some_and(|(_, actual)| actual == next_identity)
+        });
+        if applied {
+            break;
+        }
+        if Instant::now() >= deadline {
+            editor.read_with(&visual, |view, _| {
+                panic!("new placement did not reach callback: desired={:?}, expected={:?}, actual={:?}, status={:?}, error={:?}", next_identity, view.expected_clip_preview, view.applied_clip_preview, view.audio_status().map(|status| (status.applied_revision.load(Acquire), status.rejected_revision())), view.error);
+            });
+        }
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("clip-audition-audible-marker")
+            .is_none()
+    );
+    let identity = next_identity;
     editor.update(&mut visual, |view, _| {
         let drag = view.active_clip_drag.as_ref().unwrap().clone();
         drag.copy_modifier.set(true);

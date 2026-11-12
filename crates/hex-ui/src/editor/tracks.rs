@@ -1522,6 +1522,35 @@ impl EditorView {
                 }
             }
         }
+        if self
+            .applied_clip_preview
+            .is_some_and(|(_, applied)| applied.track == track_id)
+            && let Some((_, frame)) = self.audible_clip_move_anchor()
+            && let Some(position) = viewport.fraction(frame)
+        {
+            clip_area = clip_area.child(
+                div()
+                    .debug_selector(|| "clip-audition-audible-marker".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(position))
+                    .w(px(1.0 / scale_factor.max(1.0)))
+                    .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(
+                        div()
+                            .debug_selector(|| "clip-audition-audible-label".into())
+                            .absolute()
+                            .left(px(2.0))
+                            .top_0()
+                            .px_1()
+                            .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Background)))
+                            .text_xs()
+                            .child(theme::text("audible")),
+                    ),
+            );
+        }
         clip_area = clip_area
             .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
                 view.drop_clip(drag, track_id, window, cx);
