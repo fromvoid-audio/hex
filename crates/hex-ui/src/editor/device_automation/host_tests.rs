@@ -2234,7 +2234,21 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
 
     let other = DeviceAutomationTarget::HostInputGain;
     header_assign(&mut visual, &editor, Owner::Track(track), other);
-    let blank = lane_point(&mut visual, device, other, [0.3, 0.78]);
+    let selector = Box::leak(
+        format!(
+            "automation-plot-{}-{}-true",
+            device.value(),
+            TargetKey(other)
+        )
+        .into_boxed_str(),
+    );
+    let main = visual
+        .debug_bounds(selector)
+        .expect("foreground host input lane");
+    let blank = point(
+        main.left() + main.size.width * 0.3,
+        main.top() + main.size.height * 0.78,
+    );
     visual.simulate_click(blank, CMD);
     visual.simulate_keystrokes("cmd-v");
     editor.read_with(&visual, |view, _| {
