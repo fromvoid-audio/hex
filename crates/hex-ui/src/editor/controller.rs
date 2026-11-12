@@ -1221,6 +1221,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
                     visible_change |= self.pending_time_range_move.take().is_some();
+                    visible_change |= self.ahead_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.locators.clear_adds();
                     visible_change |= self.pending_group_copy.take().is_some();
@@ -2632,9 +2633,10 @@ impl EditorView {
         let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
+            self.ahead_time_range_move = None;
             0
         } else {
-            self.move_time_selection_complete(&event)
+            self.complete_time_duplicate_pair(&event)
         };
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
@@ -2812,6 +2814,7 @@ impl EditorView {
             self.time_selection_gesture = None;
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
+            self.ahead_time_range_move = None;
             self.suppress_cursor_click = false;
             self.applied_project_revision = None;
             self.playback_candidates
@@ -3314,6 +3317,7 @@ impl EditorView {
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
+        self.start_ahead_time_duplicate();
         self.continue_time_duplicate(time_duplicate_repeats);
         successfully_opened_path
     }

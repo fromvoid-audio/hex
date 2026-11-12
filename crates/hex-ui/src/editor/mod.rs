@@ -1143,6 +1143,7 @@ pub(super) struct EditorView {
     time_selection_gesture: Option<time_selection::TimeSelectionGesture>,
     time_range_move_gesture: Option<time_selection::TimeRangeMoveGesture>,
     pending_time_range_move: Option<time_selection::PendingTimeRangeMove>,
+    ahead_time_range_move: Option<time_selection::PendingTimeRangeMove>,
     suppress_cursor_click: bool,
 }
 
@@ -1926,6 +1927,7 @@ impl EditorView {
             time_selection_gesture: None,
             time_range_move_gesture: None,
             pending_time_range_move: None,
+            ahead_time_range_move: None,
             suppress_cursor_click: false,
         };
         #[cfg(test)]
