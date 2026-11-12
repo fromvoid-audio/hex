@@ -155,6 +155,9 @@ impl EditorView {
         if self.recovery.generation().is_none() {
             return false;
         }
+        if kind == DeferredEditKind::TimeDuplicate {
+            self.mark_time_duplicate_recovery_started();
+        }
         self.recovery.deferred_edit = Some(DeferredGraphEdit {
             kind,
             context,
@@ -185,7 +188,11 @@ impl EditorView {
         {
             return;
         }
-        let accepted = if pending.context.project_generation != self.project_generation
+        let accepted = if time_duplicate && !self.pending_time_duplicate_intent_current() {
+            self.error =
+                Some("edit canceled · time selection changed during audio recovery".into());
+            false
+        } else if pending.context.project_generation != self.project_generation
             || self
                 .state
                 .as_ref()
