@@ -7,6 +7,74 @@ use hex_session::service::Request;
 use std::{path::PathBuf, sync::atomic::Ordering::Acquire};
 
 impl EditorView {
+    pub(super) fn insert_browser_project_sample(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        asset: hex_project::AssetId,
+        cx: &mut Context<Self>,
+    ) {
+        let request = (|| {
+            if self.mode != EditorMode::Arrangement {
+                return Err("sample insertion refused · select an arrangement track");
+            }
+            if self.opening_project
+                || self.close_prompt_open
+                || self.save_dialog_open
+                || self.export_dialog_open
+                || self.audio_batch.is_some()
+                || self.device_gesture.snapshot().is_some()
+                || self.device_gesture.has_pending_terminal()
+                || !self.device_gesture_barriers.is_empty()
+                || self.device_panel.has_pending_draft(cx)
+                || self.worker_requests_pending != 0
+                || !self.pending_requests.is_empty()
+                || self.active_clip_drag.is_some()
+                || self.active_browser_audio_drag.is_some()
+                || self.active_native_device_drag.is_some()
+            {
+                return Err("sample insertion refused · arrangement is busy");
+            }
+            let state = self
+                .state
+                .as_ref()
+                .ok_or("sample insertion refused · no project")?;
+            if generation != self.project_generation || revision != state.revision {
+                return Err("sample insertion canceled · project changed");
+            }
+            state
+                .project
+                .existing_import_frames(asset)
+                .map_err(|_| "sample insertion refused · source is unavailable")?;
+            let track = self
+                .selected_track
+                .filter(|id| state.project.track(*id).is_some())
+                .ok_or("sample insertion refused · select an arrangement track")?;
+            let grid = self
+                .resolve_input_grid()
+                .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
+            let start = grid
+                .snap_frame(state.project.tempo_map(), self.cursor_position())
+                .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
+            Ok(Request::InsertProjectSample {
+                project_generation: generation,
+                revision,
+                asset,
+                track,
+                start,
+            })
+        })();
+        match request {
+            Ok(request) => {
+                if self.enqueue(request) {
+                    self.error = None;
+                }
+            }
+            Err(error) => self.error = Some(error.into()),
+        }
+        cx.notify();
+    }
+
     pub(super) fn insert_browser_audio(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let result = self.browser_insertion_request(path, cx);
         match result {

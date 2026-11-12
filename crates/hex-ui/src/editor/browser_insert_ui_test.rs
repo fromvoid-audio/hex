@@ -130,6 +130,59 @@ fn select_sample(
 }
 
 #[gpui::test]
+fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    let (asset, revision, generation) = editor.update(cx, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let asset = state.project.assets().next().unwrap().id();
+        let revision = state.revision;
+        let generation = view.project_generation;
+        view.select_browser_source(BrowserSection::ProjectSamples, cx);
+        view.offline_cursor = 100;
+        (asset, revision, generation)
+    });
+    visual.run_until_parked();
+    let row = visual.debug_bounds("browser-project-sample-0").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.assets().count(), 1);
+        let clips = project.track(track).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().all(|clip| clip.asset() == asset));
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive_worker(&editor, cx, false);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::InsertProjectSample {
+            project_generation: generation,
+            revision,
+            asset,
+            track,
+            start: 200,
+        }));
+    });
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let after = view.state.as_ref().unwrap();
+        assert_eq!(after.project, before.project);
+        assert_eq!(after.revision, before.revision);
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("project changed"))
+        );
+    });
+}
+
+#[gpui::test]
 fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite(
     cx: &mut TestAppContext,
 ) {

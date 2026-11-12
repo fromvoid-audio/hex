@@ -773,7 +773,31 @@ impl EditorView {
                 );
             }
         }
-        let sources = sidebar.child(self.browser_places(compact, cx));
+        let active = self.browser.section == BrowserSection::ProjectSamples;
+        let sources = sidebar
+            .child(self.browser_places(compact, cx))
+            .child(picker_group_heading("project", compact))
+            .child(
+                picker_row(active, false)
+                    .id("browser-project-samples")
+                    .debug_selector(|| "browser-project-samples".to_owned())
+                    .tooltip(|_, cx| browser_label_tooltip("project samples", cx))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            view.select_browser_source(BrowserSection::ProjectSamples, cx);
+                            view.browser.results_focus.focus(window);
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
+                    .child(picker_icon(browser_vector_icon_colored(
+                        ICONS[0],
+                        picker_ink(active, false),
+                    )))
+                    .child(picker_label("samples")),
+            );
         div()
             .id("browser-sidebar")
             .debug_selector(|| "browser-sidebar".to_owned())
@@ -1080,6 +1104,11 @@ impl EditorView {
 
     pub(super) fn browser_selected_label(&self, cx: &App) -> String {
         match self.browser_item_at(self.browser.selected_index, cx) {
+            Some(BrowserItemKey::ProjectSample(_, _, asset)) => self
+                .browser_project_samples(cx)
+                .iter()
+                .find(|row| row.asset == asset)
+                .map_or_else(|| "no item selected".into(), |row| row.entry.name.clone()),
             Some(BrowserItemKey::Plugin(path, id)) => self
                 .browser_visible_plugins(cx)
                 .iter()

@@ -525,6 +525,14 @@ pub enum DeviceClipboardAction {
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Place one current-project asset at a captured Arrangement target.
+    InsertProjectSample {
+        project_generation: u64,
+        revision: u64,
+        asset: hex_project::AssetId,
+        track: hex_project::TrackId,
+        start: u64,
+    },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
     /// Replace one device's bank against the displayed canonical revision.
@@ -3153,6 +3161,35 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::InsertProjectSample {
+                project_generation: generation,
+                revision: source_revision,
+                asset,
+                track,
+                start,
+            } => Some(
+                if *generation != project_generation || *source_revision != revision {
+                    Err("sample insertion canceled · project changed".to_owned())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before inserting a sample".to_owned())
+                } else {
+                    session
+                        .project()
+                        .existing_import_frames(*asset)
+                        .map_err(|error| error.to_string())
+                        .map(|_| Command::ImportExistingAudio {
+                            asset: *asset,
+                            placement: hex_project::ExistingAudioPlacement::Clip {
+                                track: *track,
+                                start: *start,
+                                overwrite: true,
+                            },
+                        })
+                },
+            ),
             Request::StartPluginEditorRecording { request_id, input } => {
                 let result = (|| {
                     let current = hex_engine::AudioSourceContext {
@@ -4981,6 +5018,9 @@ fn run_worker(
                         unsaved = true;
                         replacement_revision = Some(prepared);
                     }
+                }
+                Request::InsertProjectSample { .. } => {
+                    error = Some("sample insertion target was not resolved".into());
                 }
                 Request::ReorderTracks { .. } | Request::ReparentTracks { .. } => {
                     error = Some("track reorder target was not resolved".into());

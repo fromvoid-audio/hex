@@ -129,6 +129,7 @@ pub(super) enum BrowserSection {
     Instruments,
     Plugins,
     Projects,
+    ProjectSamples,
     Place(PathBuf),
     Collection(usize),
 }
@@ -138,6 +139,21 @@ enum BrowserItemKey {
     File(PathBuf),
     Plugin(PathBuf, Option<[u8; 16]>),
     Device(hex_engine::NativeDeviceClass, hex_engine::DeviceTypeId),
+    ProjectSample(u64, u64, hex_project::AssetId),
+}
+
+#[derive(Clone)]
+struct ProjectSample {
+    asset: hex_project::AssetId,
+    entry: LibraryEntry,
+}
+
+struct ProjectSampleCache {
+    generation: u64,
+    revision: u64,
+    query: String,
+    rows: Arc<Vec<ProjectSample>>,
+    entries: Arc<Vec<LibraryEntry>>,
 }
 
 /// Global row ranges; existing projections retain their local order/identity.
@@ -188,6 +204,7 @@ pub(super) struct BrowserState {
     unreported_places_save_error: Option<String>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
+    project_samples: RefCell<Option<ProjectSampleCache>>,
     plugins: plugins::Plugins,
     tree: tree::Tree,
     listing: Option<DirectoryListing>,
@@ -282,6 +299,7 @@ impl BrowserState {
             unreported_places_save_error: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
+            project_samples: RefCell::new(None),
             plugins: plugins::Plugins::default(),
             tree: tree::Tree::default(),
             listing: None,
@@ -1587,6 +1605,21 @@ impl EditorView {
 
     pub(super) fn browser_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.checkpoint_browser_history(cx);
+        if let Some(BrowserItemKey::ProjectSample(generation, revision, asset)) =
+            self.browser_selected_item(cx)
+        {
+            if !self
+                .browser
+                .search
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+            {
+                self.insert_browser_project_sample(generation, revision, asset, cx);
+            }
+            cx.notify();
+            return;
+        }
         if let Some(BrowserItemKey::Plugin(module, cid)) = self.browser_selected_item(cx) {
             if !self
                 .browser
@@ -1795,7 +1828,68 @@ impl EditorView {
         self.browser_visible_entries(cx).get(local).cloned()
     }
 
+    fn browser_project_samples(&self, cx: &App) -> Arc<Vec<ProjectSample>> {
+        let Some(state) = &self.state else {
+            self.browser.project_samples.borrow_mut().take();
+            return Arc::new(Vec::new());
+        };
+        let query = self.browser.search.read(cx).text().to_lowercase();
+        let mut cache = self.browser.project_samples.borrow_mut();
+        if let Some(cached) = cache.as_ref().filter(|cached| {
+            cached.generation == self.project_generation
+                && cached.revision == state.revision
+                && cached.query == query
+        }) {
+            return Arc::clone(&cached.rows);
+        }
+        let mut rows: Vec<_> = state
+            .project
+            .assets()
+            .filter_map(|asset| {
+                state.project.existing_import_frames(asset.id()).ok()?;
+                let path = asset.path().to_path_buf();
+                let name = path.file_name()?.to_string_lossy().into_owned();
+                name.to_lowercase()
+                    .contains(&query)
+                    .then_some(ProjectSample {
+                        asset: asset.id(),
+                        entry: LibraryEntry {
+                            name,
+                            path,
+                            kind: EntryKind::WaveAudio,
+                        },
+                    })
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            a.entry
+                .name
+                .to_lowercase()
+                .cmp(&b.entry.name.to_lowercase())
+                .then(a.asset.cmp(&b.asset))
+        });
+        let entries = Arc::new(rows.iter().map(|row| row.entry.clone()).collect());
+        let rows = Arc::new(rows);
+        *cache = Some(ProjectSampleCache {
+            generation: self.project_generation,
+            revision: state.revision,
+            query,
+            rows: Arc::clone(&rows),
+            entries,
+        });
+        rows
+    }
+
     fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
+        if self.browser.section == BrowserSection::ProjectSamples {
+            self.browser_project_samples(cx);
+            return self
+                .browser
+                .project_samples
+                .borrow()
+                .as_ref()
+                .map_or_else(|| Arc::new(Vec::new()), |cache| Arc::clone(&cache.entries));
+        }
         if self.browser_place_unavailable() {
             return Arc::new(Vec::new());
         }
@@ -1828,7 +1922,9 @@ impl EditorView {
                 .samples
                 .visible_with_listing(&query, None, listing),
             BrowserSection::Projects => self.browser.samples.folder(&query, listing, true),
-            BrowserSection::Instruments | BrowserSection::Plugins => Arc::new(Vec::new()),
+            BrowserSection::Instruments
+            | BrowserSection::Plugins
+            | BrowserSection::ProjectSamples => Arc::new(Vec::new()),
         };
         self.browser.tree.visible(
             base,
@@ -1948,6 +2044,12 @@ impl EditorView {
         let file_count = entries.len();
         let device_count = devices.len();
         let plugins = self.browser_visible_plugins(cx);
+        let project_samples =
+            (section == BrowserSection::ProjectSamples).then(|| self.browser_project_samples(cx));
+        let project_context = self
+            .state
+            .as_ref()
+            .map(|state| (self.project_generation, state.revision));
         let plugin_groups =
             (section == BrowserSection::Plugins).then(|| plugins::PluginGroups::new(&plugins));
         let row_count = file_count
@@ -1979,10 +2081,23 @@ impl EditorView {
                                     .map(|row| view.browser_plugin_row(logical, row, cx)),
                             }
                         } else if positions.files.contains(&index) {
-                            entries
-                                .get(index - positions.files.start)
-                                .cloned()
-                                .map(|entry| view.browser_row(index, entry, cx))
+                            if let (Some(samples), Some((generation, revision))) =
+                                (&project_samples, project_context)
+                            {
+                                samples
+                                    .get(index - positions.files.start)
+                                    .cloned()
+                                    .map(|row| {
+                                        view.browser_project_sample_row(
+                                            index, generation, revision, row, cx,
+                                        )
+                                    })
+                            } else {
+                                entries
+                                    .get(index - positions.files.start)
+                                    .cloned()
+                                    .map(|entry| view.browser_row(index, entry, cx))
+                            }
                         } else if positions.devices.contains(&index) {
                             devices.get(index - positions.devices.start).cloned().map(
                                 |(class, entry)| view.browser_device_row(index, class, entry, cx),
@@ -2367,6 +2482,43 @@ impl EditorView {
                     .min_h_0()
                     .child(resize),
             )
+    }
+
+    fn browser_project_sample_row(
+        &mut self,
+        index: usize,
+        generation: u64,
+        revision: u64,
+        row: ProjectSample,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let key = BrowserItemKey::ProjectSample(generation, revision, row.asset);
+        let path = row.entry.path.clone();
+        let selected = self.browser.results_focused && self.browser.selected_index == index;
+        result_row(selected)
+            .id(("browser-project-sample", row.asset.value()))
+            .debug_selector(move || format!("browser-project-sample-{index}"))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    view.browser.results_focus.focus(window);
+                    window.prevent_default();
+                    let Some(current) = view.browser_history_index(&key, cx) else {
+                        return;
+                    };
+                    view.checkpoint_browser_history(cx);
+                    view.browser.selected_index = current;
+                    view.browser.results_focused = true;
+                    view.browser_selection_audition(Some(path.clone()), cx);
+                    cx.notify();
+                }),
+            )
+            .child(result_label(
+                row.entry.name,
+                selected,
+                theme::PaletteRole::Text,
+            ))
     }
 
     fn browser_row(

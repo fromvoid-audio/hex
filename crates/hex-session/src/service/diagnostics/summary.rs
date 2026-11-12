@@ -1359,6 +1359,15 @@ pub(super) fn request(value: &Request) -> Description {
             description.nested("action", self::track_clipboard(action));
             description
         }
+        Request::InsertProjectSample {
+            project_generation,
+            revision,
+            asset,
+            track,
+            start,
+        } => {
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start]; omitted="")
+        }
         Request::ReorderTracks {
             project_generation,
             revision,
