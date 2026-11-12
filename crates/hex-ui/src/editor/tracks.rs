@@ -1545,17 +1545,18 @@ impl EditorView {
             (name_colors.muted, name_colors.muted_text)
         };
         let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
+        let is_group = track.is_group();
         let track_name_view = super::track_header::name()
             .text_color(rgb(name_text))
             .flex()
             .items_center()
-            .children(track_selected.then(|| {
-                super::track_header::selection_marker(format!(
-                    "selected-track-marker-{}",
-                    track_id.value()
-                ))
+            .children((track_selected || is_group).then(|| {
+                super::track_header::selection_marker(
+                    format!("selected-track-marker-{}", track_id.value()),
+                    track_selected,
+                )
             }))
-            .children((hierarchy_indent > 0.0).then(|| {
+            .children((!is_group && hierarchy_indent > 0.0).then(|| {
                 div()
                     .w(px(hierarchy_indent))
                     .flex_shrink_0()
@@ -1572,13 +1573,17 @@ impl EditorView {
             )
             .relative()
             .debug_selector(|| format!("track-name-{}", track_id.value()))
-            .children(track.is_group().then(|| {
+            .children(is_group.then(|| {
                 let folded = self.arrangement_focus.projection.folded(track_id);
                 div()
                     .id(("group-fold", track_id.value()))
                     .debug_selector(move || format!("group-fold-{}", track_id.value()))
                     .w(px(14.0))
+                    .h_full()
                     .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |view, _, _, cx| {
@@ -1602,7 +1607,7 @@ impl EditorView {
                         })
                         .into()
                     })
-                    .child(theme::text(if folded { ">" } else { "v" }))
+                    .child(theme::text(if folded { "▸" } else { "▾" }))
             }))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
@@ -1617,8 +1622,8 @@ impl EditorView {
                 })
                 .into()
             });
-        let group_plate = track.is_group()
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        let group_plate =
+            is_group && self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         let group_expanded = group_plate && self.track_body_height(track_id) > TRACK_ROW_HEIGHT;
         let name_area = div()
             .id(("track-name-area", track_id.value()))
@@ -1629,10 +1634,10 @@ impl EditorView {
             .flex_col()
             .relative()
             .px(px(2.))
+            .when(is_group, |plate| plate.ml(px(hierarchy_indent)))
             .children([super::track_header::name_plate(
                 format!("track-name-plate-{}", track_id.value()),
                 name_fill,
-                track.is_group(),
             )])
             .text_color(rgb(name_text))
             .when(group_plate, |plate| plate.h_full().justify_center())
@@ -1989,7 +1994,7 @@ impl EditorView {
             None,
         )
         .when(expanded_header, |header| header.justify_start())
-        .when(track.is_group() || hierarchy_indent > 0.0, |header| {
+        .when(is_group || hierarchy_indent > 0.0, |header| {
             header.border_b_0()
         })
         .when(group_plate, |header| header.pb_0())
@@ -2034,21 +2039,21 @@ impl EditorView {
             div()
                 .absolute()
                 .left(px(hierarchy_indent))
-                .top(px(if track.is_group() || hierarchy_indent > 0.0 {
+                .top(px(if is_group || hierarchy_indent > 0.0 {
                     0.0
                 } else {
                     1.0
                 }))
                 .bottom_0()
-                .when(track.is_group(), |rail| {
+                .when(is_group, |rail| {
                     rail.rounded_tl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
                 })
-                .when(track.is_group() && own_branch_ends, |rail| {
+                .when(is_group && own_branch_ends, |rail| {
                     rail.rounded_bl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
                 })
-                .w(px(4.0))
+                .w(px(super::track_hierarchy_indent::RAIL_WIDTH))
                 .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
-                .bg(rgb(if track.is_group() {
+                .bg(rgb(if is_group {
                     name_fill
                 } else {
                     theme::element_colors(track.color()).accent

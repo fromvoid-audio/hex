@@ -83,7 +83,13 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         },
     );
     visual.run_until_parked();
+    let fold_button = selector("group-fold", outer);
+    let unselected_fold_bounds = visual.debug_bounds(fold_button).unwrap();
     select(&mut visual, outer, false);
+    assert_eq!(
+        visual.debug_bounds(fold_button),
+        Some(unselected_fold_bounds)
+    );
     let before = snapshot(&visual, &editor);
     let scale = visual.update(|window, _| window.scale_factor());
     let check_rail =
@@ -111,13 +117,18 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         };
     for track in [outer, inner] {
         let plate = visual
-            .debug_bounds(selector("track-name-area", track))
+            .debug_bounds(selector("track-name-plate", track))
             .unwrap();
         let header = visual
             .debug_bounds(selector("arrangement-track-header", track))
             .unwrap();
         assert_eq!(plate.top(), header.top());
         assert_eq!(plate.bottom(), header.bottom());
+        let own_rail = visual
+            .debug_bounds(selector("track-color-strip", track))
+            .unwrap();
+        assert_eq!(plate.left(), own_rail.right(), "title joins its own rail");
+        assert_eq!(plate.top(), own_rail.top());
         assert!(
             !visual
                 .rendered_path_triangles(selector("track-name-plate", track))
