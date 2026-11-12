@@ -5,6 +5,9 @@
 //! the source/route/command fence remain effective while the candidate waits.
 use super::*;
 
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod midi_tests;
+
 impl Callback {
     pub(super) fn section_publication_due(&mut self) -> bool {
         let Some(next) = self.deferred.as_mut() else {
