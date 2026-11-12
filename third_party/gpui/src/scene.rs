@@ -1714,7 +1714,7 @@ impl Path<Pixels> {
             content_mask: content_mask.scale(factor),
             vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
                 .map(|vertex| vertex.scale_with_offset(factor, offset)).collect())),
-            start: self.start.map(|start| (start + offset).scale(factor)),
+            start: (self.start + offset).scale(factor),
             current: (self.current + offset).scale(factor),
             contour_count: self.contour_count,
             color: self.color,
