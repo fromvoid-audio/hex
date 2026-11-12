@@ -151,6 +151,13 @@ fn publish_with_link(
 ) -> Result<(), String> {
     let parent = destination
         .parent()
+        .map(|parent| {
+            if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            }
+        })
         .ok_or("tuning preset path has no parent")?;
     if let Ok(metadata) = fs::symlink_metadata(destination) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -239,6 +246,30 @@ mod tests {
         ));
         fs::create_dir(&p).unwrap();
         Directory(p)
+    }
+    #[test]
+    fn export_to_bare_relative_filename() {
+        const CHILD: &str = "HEX_TUNING_RELATIVE_EXPORT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let path = Path::new("export.freqs");
+            export_file(path, "relative", Scale::equal(19)).unwrap();
+            let original = fs::read(path).unwrap();
+            assert_eq!(read_file(path).unwrap().scale, Scale::equal(19));
+            assert!(export_file(path, "replacement", Scale::equal(12)).is_err());
+            assert_eq!(fs::read(path).unwrap(), original);
+            return;
+        }
+        let d = directory();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tuning_library::tests::export_to_bare_relative_filename",
+            ])
+            .env(CHILD, "1")
+            .current_dir(&d.0)
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
     #[cfg(unix)]
     #[test]
