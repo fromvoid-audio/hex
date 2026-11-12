@@ -6,6 +6,7 @@ use hex_session::service::Request;
 pub(super) enum DeferredEditKind {
     NativeEffect,
     SampleDrop,
+    TimeDuplicate,
 }
 
 pub(super) struct DeferredGraphEdit {
