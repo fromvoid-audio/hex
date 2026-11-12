@@ -1592,6 +1592,16 @@ mod tests {
             let mut output = [[0.0; 2]; 64];
             candidate.render(&mut output).unwrap();
             assert!(input.rejected(), "the fixture must saturate live admission");
+            assert!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "the fixture must also admit at least one live voice"
+            );
             candidate
                 .try_apply_action(PlaybackAction::Session(
                     SessionPlaybackCommand::LaunchClip {
@@ -1602,6 +1612,23 @@ mod tests {
                 .unwrap();
             candidate.render(&mut output).unwrap();
             assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+            assert!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "the launch must retain admitted live voices"
+            );
             candidate.apply(PlaybackCommand::Stop);
             candidate.render(&mut output).unwrap();
             assert!(input.is_cancelled());
