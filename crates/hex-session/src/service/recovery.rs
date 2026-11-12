@@ -2,6 +2,7 @@
 use super::*;
 use std::mem;
 mod checkpoint;
+mod checkpoint_worker;
 pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
