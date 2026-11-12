@@ -1848,6 +1848,99 @@ mod tests {
                 !old.bounded_mutable_arrangement_sources_match(&changed, contributor, 16),
                 "changed source must not acquire continuity proof"
             );
+            let notes: Vec<_> = editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .skip(1)
+                .map(|note| note.id())
+                .collect();
+            for note in notes {
+                editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            }
+            let remaining = editor.project().midi_source(clip).unwrap().notes()[0].id();
+            editor
+                .execute(Command::UpdateMidiNote {
+                    note: remaining,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 67,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            editor
+                .execute(Command::Mute {
+                    track: contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let device = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            editor
+                .execute(Command::SetNativeSourceReceiver {
+                    source,
+                    track: Some(contributor),
+                })
+                .unwrap();
+            let swapped = prepare(editor.project());
+            editor
+                .execute(Command::Mute {
+                    track: receiver,
+                    muted: true,
+                })
+                .unwrap();
+            let swapped_muted = prepare(editor.project());
+            assert!(swapped.retained_source_configuration_matches(&swapped_muted, source));
+            assert!(swapped.retained_source_identity_matches(&swapped_muted, source));
+            let mut playing = SessionPlayback::new(Arc::clone(&swapped)).unwrap();
+            playing.apply(SessionPlaybackCommand::Play).unwrap();
+            playing.render(&mut [[0.0; 2]; 64]).unwrap();
+            let mut muted = SessionPlayback::new(Arc::clone(&swapped_muted)).unwrap();
+            muted
+                .try_inherit_state_from(&mut playing)
+                .expect("muting must preserve a non-first receiver's source");
+            let mut output = [[0.0; 2]; 64];
+            muted.render(&mut output).unwrap();
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 0.000_001)
+            );
+            let changed_state = registry
+                .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
+                .unwrap();
+            let changed_state = registry
+                .patch_parameter(
+                    &changed_state,
+                    hex_devices::operator_state::parameter::GLOBAL_MODE,
+                    ParameterValue::Choice(0),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: changed_state,
+                })
+                .unwrap();
+            let changed_configuration = prepare(editor.project());
+            assert!(!swapped.retained_source_configuration_matches(&changed_configuration, source));
+            editor
+                .execute(Command::SetNativeSourceReceiver {
+                    source,
+                    track: None,
+                })
+                .unwrap();
+            let no_receiver = prepare(editor.project());
+            assert!(!swapped.retained_source_configuration_matches(&no_receiver, source));
         });
     }
 
