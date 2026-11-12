@@ -1426,7 +1426,10 @@ impl PreparedRevision {
                 .tracks()
                 .iter()
                 .enumerate()
-                .find(|(index, _)| revision.source_routing.source(*index) == Some(source))
+                .find(|(index, track)| {
+                    revision.source_routing.source(*index) == Some(source)
+                        && track.receives_source_audio()
+                })
                 .and_then(|(_, track)| track.canonical_track_id())
                 .and_then(|track| revision.mutable_track_revision(track))
                 .and_then(|track| track.instrument.as_ref())
@@ -1454,7 +1457,10 @@ impl PreparedRevision {
                 .tracks()
                 .iter()
                 .enumerate()
-                .find(|(index, _)| revision.source_routing.source(*index) == Some(source))
+                .find(|(index, track)| {
+                    revision.source_routing.source(*index) == Some(source)
+                        && track.receives_source_audio()
+                })
                 .and_then(|(_, track)| track.canonical_track_id())
                 .and_then(|track| revision.mutable_track_revision(track))
                 .and_then(|track| track.instrument.as_ref())
