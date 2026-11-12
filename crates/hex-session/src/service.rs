@@ -388,10 +388,11 @@ pub struct SoloViewObservation {
 /// The committed Arrangement duplication view, available before checkpoint
 /// I/O. Its single-slot delivery is best effort. Only the ordinary terminal
 /// can acknowledge the edit, install authoring state or advance repeats.
+/// A missed observation does not keep an old project's media alive.
 pub struct DuplicateViewObservation {
     pub project_generation: u64,
     pub previous_revision: u64,
-    pub state: Arc<ViewState>,
+    pub state: std::sync::Weak<ViewState>,
 }
 
 mod verified_device_preview;
@@ -8934,7 +8935,7 @@ fn run_worker(
             let _ = duplicate_views.try_send(DuplicateViewObservation {
                 project_generation,
                 previous_revision: revision_before_request,
-                state: Arc::clone(&state),
+                state: Arc::downgrade(&state),
             });
         }
         if let Some(untitled_path) = recovery.as_deref() {

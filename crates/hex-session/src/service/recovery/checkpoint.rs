@@ -372,7 +372,8 @@ mod tests {
             let display = service.try_duplicate_view().unwrap();
             assert_eq!(display.project_generation, 0);
             assert_eq!(display.previous_revision, revision);
-            assert_eq!(display.state.revision, revision + 1);
+            let observed = display.state.upgrade().unwrap();
+            assert_eq!(observed.revision, revision + 1);
             assert_eq!(
                 hex_storage::load_journal(&path).unwrap().tracks()[0]
                     .midi_clips()
@@ -386,7 +387,7 @@ mod tests {
             release.send(()).unwrap();
             let terminal = next(&service);
             assert!(terminal.request_complete && terminal.error.is_none());
-            assert!(Arc::ptr_eq(&display.state, &terminal.state));
+            assert!(Arc::ptr_eq(&observed, &terminal.state));
             assert_eq!(
                 hex_storage::load_journal(&path).unwrap(),
                 *terminal.state.project

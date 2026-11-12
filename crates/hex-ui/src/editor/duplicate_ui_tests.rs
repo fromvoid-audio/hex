@@ -40,7 +40,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert!(Instant::now() < deadline, "committed duplicate observation");
         std::thread::sleep(Duration::from_millis(1));
     };
-    let observed = Arc::clone(&observation.state);
+    let observed = observation.state.upgrade().unwrap();
     let copied = observed.project.tracks()[0]
         .clips()
         .iter()
@@ -53,7 +53,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert!(!v.observe_duplicate_view(DuplicateViewObservation {
             project_generation: observation.project_generation + 1,
             previous_revision: observation.previous_revision,
-            state: Arc::clone(&observed),
+            state: Arc::downgrade(&observed),
         }));
         assert!(v.arrangement_duplicate_view().is_none());
         assert!(v.observe_duplicate_view(observation));
@@ -86,7 +86,7 @@ fn committed_copy_paints_before_its_terminal_and_keeps_the_same_bounds(cx: &mut 
         assert!(!v.observe_duplicate_view(DuplicateViewObservation {
             project_generation: v.project_generation,
             previous_revision: observed.revision - 1,
-            state: observed,
+            state: Arc::downgrade(&observed),
         }));
         cx.notify();
     });

@@ -312,11 +312,16 @@ impl EditorView {
             || !matches!(pending.target, Target::Arrangement { .. })
             || observation.project_generation != pending.generation
             || observation.previous_revision != pending.revision
-            || pending.revision.checked_add(1) != Some(observation.state.revision)
         {
             return false;
         }
-        pending.display = Some(observation.state);
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if pending.revision.checked_add(1) != Some(state.revision) {
+            return false;
+        }
+        pending.display = Some(state);
         self.arrangement_duplicate_view().is_some()
     }
 
