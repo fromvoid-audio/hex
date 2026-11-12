@@ -209,6 +209,8 @@ pub(super) struct Sections {
     clipboard: Option<clipboard::Reference>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
+    // At most one keyboard duplicate may follow a committed pending copy.
+    ahead: Option<Pending>,
     // One keyboard/menu follow-up typed while an edit is in flight (latest
     // wins). It is validated and submitted against the acknowledged revision.
     queued: Option<Queued>,
@@ -501,10 +503,17 @@ impl EditorView {
     pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
         let state = self.state.as_ref()?;
         self.sections
-            .pending
+            .ahead
             .as_ref()
             .filter(|p| p.generation == self.project_generation)
             .and_then(|p| p.layout.clone())
+            .or_else(|| {
+                self.sections
+                    .pending
+                    .as_ref()
+                    .filter(|p| p.generation == self.project_generation)
+                    .and_then(|p| p.layout.clone())
+            })
             .or_else(|| self.arrangement_duplicate_view().cloned())
             .or_else(|| self.arrangement_paste_view().cloned())
             .or_else(|| self.time_range_copy_view().cloned())
@@ -521,7 +530,35 @@ impl EditorView {
         let Some(current) = self.state.as_ref() else {
             return false;
         };
-        let Some(pending) = self.sections.pending.as_mut() else {
+        let Some(primary) = self.sections.pending.as_ref() else {
+            return false;
+        };
+        let base = if primary.revision == observation.previous_revision {
+            Arc::clone(current)
+        } else if self
+            .sections
+            .ahead
+            .as_ref()
+            .is_some_and(|p| p.revision == observation.previous_revision)
+            && current.revision == primary.revision
+        {
+            let Some(base) = primary
+                .layout
+                .as_ref()
+                .filter(|base| base.revision == observation.previous_revision)
+            else {
+                return false;
+            };
+            Arc::clone(base)
+        } else {
+            return false;
+        };
+        let pending = if primary.revision == observation.previous_revision {
+            self.sections.pending.as_mut()
+        } else {
+            self.sections.ahead.as_mut()
+        };
+        let Some(pending) = pending else {
             return false;
         };
         if self.mode != EditorMode::Arrangement
@@ -531,7 +568,7 @@ impl EditorView {
             || observation.project_generation != pending.generation
             || observation.first_previous_revision != observation.previous_revision
             || observation.previous_revision != pending.revision
-            || current.revision != pending.revision
+            || base.revision != pending.revision
             || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
                 || copied_section_source(&pending.command).is_some())
         {
@@ -539,7 +576,7 @@ impl EditorView {
         }
         let Some(state) = observation.state.upgrade().filter(|state| {
             pending.revision.checked_add(1) == Some(state.revision)
-                && current.project.arrangement_section(copy).is_none()
+                && base.project.arrangement_section(copy).is_none()
                 && state.project.arrangement_section(copy).is_some()
         }) else {
             return false;
@@ -560,19 +597,34 @@ impl EditorView {
             .collect();
         pending.display.tempo = state.project.tempo_map().clone();
         pending.layout = Some(state);
+        self.start_ahead_section_duplicate();
         true
     }
 
     pub(super) fn committed_section_copy_view(&self) -> Option<&Arc<ViewState>> {
         let pending = self.sections.pending.as_ref()?;
-        pending.layout.as_ref().filter(|layout| {
-            pending.generation == self.project_generation
-                && pending.revision.checked_add(1) == Some(layout.revision)
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == pending.revision)
-        })
+        if pending.generation != self.project_generation
+            || !self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == pending.revision)
+        {
+            return None;
+        }
+        if let Some(ahead) = self.sections.ahead.as_ref()
+            && ahead.generation == self.project_generation
+            && pending.revision.checked_add(1) == Some(ahead.revision)
+            && let Some(layout) = ahead
+                .layout
+                .as_ref()
+                .filter(|layout| ahead.revision.checked_add(1) == Some(layout.revision))
+        {
+            return Some(layout);
+        }
+        pending
+            .layout
+            .as_ref()
+            .filter(|layout| pending.revision.checked_add(1) == Some(layout.revision))
     }
 
     /// An early keyboard-copy start is safe only for the exact installed graph
@@ -1478,9 +1530,6 @@ impl EditorView {
         }
     }
     pub(super) fn pending_section_matches(&self, request: &Request) -> bool {
-        let Some(pending) = self.sections.pending.as_ref() else {
-            return false;
-        };
         let Request::EditArrangementSection {
             project_generation,
             revision,
@@ -1489,20 +1538,65 @@ impl EditorView {
         else {
             return false;
         };
-        pending.receipt.is_queued()
-            && *project_generation == pending.generation
-            && *revision == pending.revision
-            && same_command(command, &pending.command)
+        self.sections
+            .pending
+            .iter()
+            .chain(self.sections.ahead.iter())
+            .any(|pending| {
+                pending.receipt.is_queued()
+                    && *project_generation == pending.generation
+                    && *revision == pending.revision
+                    && same_command(command, &pending.command)
+            })
     }
     pub(super) fn section_submitted(&mut self) {
-        if let Some(p) = self.sections.pending.as_mut() {
+        if let Some(p) = self
+            .sections
+            .ahead
+            .as_mut()
+            .filter(|p| p.receipt.is_queued())
+            .or_else(|| {
+                self.sections
+                    .pending
+                    .as_mut()
+                    .filter(|p| p.receipt.is_queued())
+            })
+        {
             p.receipt.submitted(self.worker_requests_pending);
         }
     }
     pub(super) fn retire_pending_section(&mut self) -> bool {
-        self.sections.pending.take().is_some()
+        let pending = self.sections.pending.take().is_some();
+        self.sections.ahead.take().is_some() || pending
+    }
+    pub(super) fn refuse_section(&mut self, request: &Request) -> bool {
+        if let Some(ahead) = self.sections.ahead.as_ref()
+            && let Request::EditArrangementSection {
+                project_generation,
+                revision,
+                command,
+            } = request
+            && ahead.receipt.is_queued()
+            && *project_generation == ahead.generation
+            && *revision == ahead.revision
+            && same_command(command, &ahead.command)
+        {
+            return self.sections.ahead.take().is_some();
+        }
+        self.retire_pending_section()
     }
     pub(super) fn section_request_complete(&mut self, event: &Event) {
+        if self.sections.ahead.as_mut().is_some_and(|ahead| {
+            ahead.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            ) == Disposition::Invalidated
+        }) {
+            self.sections.ahead = None;
+        } else {
+            self.status = "applying consecutive section copy".into();
+        }
         if self.sections.pending.as_mut().is_some_and(|p| {
             p.receipt.observe(
                 self.project_generation,
@@ -1572,7 +1666,7 @@ impl EditorView {
                 // to different content. The terminal error stays visible.
                 self.status = "queued section edit dropped".into();
             }
-            self.retire_pending_section();
+            self.sections.pending = self.sections.ahead.take();
         }
         if event.project_replaced {
             self.sections = Sections::default();
@@ -1982,6 +2076,7 @@ impl EditorView {
                 command,
             });
             self.status = "section edit queued · applies after the current edit".into();
+            self.start_ahead_section_duplicate();
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -2057,6 +2152,64 @@ impl EditorView {
             _ => return,
         }
         self.submit_section(command, display, self.project_generation, state.revision);
+    }
+
+    /// Admit one queued keyboard duplicate only against the exact committed
+    /// predecessor. Both FIFO receipts retain their own terminal custody.
+    fn start_ahead_section_duplicate(&mut self) {
+        if self.sections.ahead.is_some()
+            || self.worker_requests_pending != 1
+            || !self.pending_requests.is_empty()
+            || !self.device_gesture_barriers.is_empty()
+            || !self.section_input_open()
+        {
+            return;
+        }
+        let Some(primary) = self.sections.pending.as_ref() else {
+            return;
+        };
+        let Command::DuplicateArrangementSection(section) = primary.command else {
+            return;
+        };
+        let Some(queued) = self.sections.queued.as_ref() else {
+            return;
+        };
+        if queued.generation != self.project_generation
+            || !matches!(queued.command, Command::DuplicateArrangementSection(id) if id == section)
+            || primary.generation != self.project_generation
+            || primary.selection_intent_epoch != self.selection_intent_epoch
+            || self.sections.selected_ids() != [section]
+        {
+            return;
+        }
+        let Some(view) = primary.layout.as_ref().filter(|view| {
+            primary.revision.checked_add(1) == Some(view.revision)
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == primary.revision)
+        }) else {
+            return;
+        };
+        let revision = view.revision;
+        let command = queued.command.clone();
+        self.sections.ahead = Some(Pending {
+            generation: self.project_generation,
+            revision,
+            command: command.clone(),
+            display: primary.display.clone(),
+            layout: None,
+            receipt: Receipt::new(self.project_generation),
+            selection_intent_epoch: primary.selection_intent_epoch,
+        });
+        self.sections.queued = None;
+        if !self.enqueue(Request::EditArrangementSection {
+            project_generation: self.project_generation,
+            revision,
+            command,
+        }) {
+            self.sections.ahead = None;
+        }
     }
     pub(super) fn section_menu(
         &mut self,
@@ -2227,7 +2380,13 @@ impl EditorView {
             return Vec::new();
         };
         let canonical;
-        let display = if let Some(p) = self.sections.pending.as_ref() {
+        let display = if let Some(p) = self
+            .sections
+            .ahead
+            .as_ref()
+            .filter(|p| p.layout.is_some())
+            .or(self.sections.pending.as_ref())
+        {
             &p.display
         } else if let Some(g) = self
             .sections
@@ -6296,6 +6455,149 @@ pub(super) mod tests {
             visual.debug_bounds("arrangement-section-1"),
             Some(marker_bounds)
         );
+    }
+
+    #[gpui::test]
+    fn consecutive_keyboard_section_copies_keep_both_receipts_and_latest_rows(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, _ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let source = editor.read_with(cx, |view, _| position(view, 2));
+        visual.simulate_click(source, Modifiers::default());
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        let initial = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+        visual.simulate_keystrokes("cmd-d cmd-d");
+        let deadline = crate::test_wait::hang_deadline();
+        let first_view = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first committed section view");
+            std::thread::yield_now();
+        };
+        let mut first_terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        let first_state = first_view.state.upgrade().unwrap();
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(first_view));
+            assert!(view.sections.pending.is_some());
+            assert!(
+                view.sections.ahead.is_some(),
+                "successor admitted before first terminal"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let second_view = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "second committed section view");
+            std::thread::yield_now();
+        };
+        let second_terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        assert!(first_terminal.error.is_none());
+        assert!(second_terminal.error.is_none());
+        let second_state = second_view.state.upgrade().unwrap();
+        assert_eq!(second_state.revision, initial + 2);
+        let Some(Created::ArrangementSection(copy)) = second_terminal.created else {
+            panic!("second section copy");
+        };
+        let copy_start = second_state
+            .project
+            .arrangement_section(copy)
+            .unwrap()
+            .start();
+        let midi = second_state.project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .find(|clip| {
+                clip.start() == copy_start && first_state.project.midi_clip(clip.id()).is_none()
+            })
+            .unwrap()
+            .id();
+        let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
+        editor.update(&mut visual, |view, cx| {
+            for (generation, revision) in [
+                (
+                    second_view.project_generation + 1,
+                    second_view.previous_revision,
+                ),
+                (
+                    second_view.project_generation,
+                    second_view.previous_revision + 1,
+                ),
+            ] {
+                assert!(
+                    !view.observe_duplicate_view(ArrangementEditViewObservation {
+                        project_generation: generation,
+                        first_previous_revision: revision,
+                        previous_revision: revision,
+                        kind: second_view.kind,
+                        state: Arc::downgrade(&second_state),
+                    })
+                );
+            }
+            assert!(view.observe_duplicate_view(second_view));
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &second_state
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before = visual
+            .debug_bounds(selector)
+            .expect("second committed copy paints");
+        let marker = visual.debug_bounds("arrangement-section-2").unwrap();
+        editor.update(&mut visual, |view, cx| {
+            view.history_action(Request::Undo, cx)
+        });
+        first_terminal.error = Some("automatic recovery: test warning".into());
+        editor.update(&mut visual, |view, cx| {
+            view.receive(first_terminal);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &second_state
+            ));
+            assert!(
+                view.sections.pending.is_some(),
+                "warning cannot retire an admitted successor"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before));
+        assert_eq!(visual.debug_bounds("arrangement-section-2"), Some(marker));
+        editor.update(&mut visual, |view, cx| {
+            view.receive(second_terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &second_state));
+            assert!(view.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before));
+        assert_eq!(visual.debug_bounds("arrangement-section-2"), Some(marker));
+        settle(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, initial + 3);
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .len(),
+                first_state.project.arrangement_sections().len(),
+                "undo follows both admitted copies"
+            );
+        });
     }
 
     #[gpui::test]
