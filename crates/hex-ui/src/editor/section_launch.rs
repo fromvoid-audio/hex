@@ -23,6 +23,7 @@ pub(super) enum SectionLoopKey {
     Up,
     Held,
     Used,
+    ForwardedToMidi,
 }
 
 pub(super) struct SectionLaunchAfterLoop {
@@ -51,7 +52,7 @@ impl EditorView {
             return false;
         }
         if self.section_loop_key != SectionLoopKey::Up {
-            return true;
+            return self.section_loop_key != SectionLoopKey::ForwardedToMidi;
         }
         if event.is_held || !self.has_arrangement_sections() {
             return false;
@@ -69,6 +70,9 @@ impl EditorView {
         if self.computer_keyboard.enabled {
             let position = window.mouse_position();
             if !self.pointer_hits_section_launch(position.x.into(), position.y.into()) {
+                // Preserve the musical key and its note-off while allowing the
+                // user to move the pointer to a section before releasing L.
+                self.section_loop_key = SectionLoopKey::ForwardedToMidi;
                 return false;
             }
         }
@@ -89,15 +93,14 @@ impl EditorView {
         if prior == SectionLoopKey::Held && self.mode == super::EditorMode::Arrangement {
             self.loop_selection_key(window, cx);
         }
-        prior != SectionLoopKey::Up
+        matches!(prior, SectionLoopKey::Held | SectionLoopKey::Used)
     }
 
     pub(super) fn use_section_loop_key(&mut self) -> bool {
-        if self.section_loop_key == SectionLoopKey::Up {
-            return false;
+        if self.section_loop_key == SectionLoopKey::Held {
+            self.section_loop_key = SectionLoopKey::Used;
         }
-        self.section_loop_key = SectionLoopKey::Used;
-        true
+        self.section_loop_key != SectionLoopKey::Up
     }
 
     pub(super) fn toggle_section_autoplay(&mut self) {

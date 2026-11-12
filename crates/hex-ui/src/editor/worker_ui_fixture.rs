@@ -306,6 +306,33 @@ mod tests {
             assert!((region.start()..region.end()).contains(&status.position.load(Acquire)));
         });
         let button = visual.debug_bounds(selector).unwrap().center();
+        visual.update(|window, cx| {
+            fixture.editor.update(cx, |view, cx| {
+                view.computer_keyboard.enabled = true;
+                view.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_move(
+            gpui::point(gpui::px(1.0), gpui::px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        crate::editor::section_launch::test_section_loop_key(&mut visual, true);
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(view.computer_keyboard.physical_notes().count(), 1);
+        });
+        visual.simulate_click(button, Modifiers::default());
+        crate::editor::section_launch::test_section_loop_key(&mut visual, false);
+        fixture.editor.update(&mut visual, |view, _| {
+            assert_eq!(view.computer_keyboard.physical_notes().count(), 0);
+            assert!(view.section_launch_waiting());
+            assert!(view.pending_loop_region().is_none());
+            view.cancel_section_launch_wait();
+            view.computer_keyboard.enabled = false;
+        });
+
         visual.simulate_click(button, Modifiers::default());
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
