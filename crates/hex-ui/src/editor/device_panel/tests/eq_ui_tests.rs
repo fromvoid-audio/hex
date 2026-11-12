@@ -326,6 +326,65 @@ fn eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local(cx: &mut Te
 }
 
 #[gpui::test]
+fn eq_held_node_creation_clears_when_worker_retires_the_gesture(cx: &mut TestAppContext) {
+    use hex_session::device_gesture::{GestureAck, GesturePhase, GestureRequest};
+
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    eq_double_click_down(&mut visual, position);
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_some()
+    });
+    let mut retired = editor.read_with(cx, |view, _| {
+        let key = view.device_gesture.snapshot().unwrap().key;
+        view.service
+            .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+            .unwrap();
+        receive_service_event(&view.service)
+    });
+    assert!(retired.active_device_gesture.is_none());
+    let key = retired.gesture_ack.as_ref().unwrap().key;
+    // The headless worker can cancel the edit. Deliver the same retirement as
+    // an out-of-band Cancel acknowledgement, as on a resident output restart.
+    retired.gesture_request = false;
+    retired.gesture_protocol_ack = false;
+    retired.gesture_ack = Some(GestureAck {
+        key,
+        phase: GesturePhase::Cancel,
+        sequence: 0,
+        accepted: false,
+        preview_retained: false,
+        source_lost: false,
+        reason: Some("device edit canceled · audio is restarting".into()),
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_some());
+        assert!(eq_panel::selection_for_test(view, device).0.is_some());
+        assert!(read(view, device).nodes.is_empty());
+    });
+    editor.update(cx, |view, cx| {
+        view.receive(retired);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none());
+        assert_eq!(eq_panel::selection_for_test(view, device).0, None);
+        assert!(read(view, device).nodes.is_empty());
+    });
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    eq_double_click(&mut visual, position);
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+}
+
+#[gpui::test]
 fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
