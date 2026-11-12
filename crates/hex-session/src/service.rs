@@ -2534,6 +2534,7 @@ fn control_lanes_pending(seek: Option<&resident_seek::Lane>, export: &ExportLane
 enum DeferredRecoveryKind {
     Paste,
     TrackSwitch,
+    TimeRangeCopy,
 }
 
 impl DeferredRecoveryKind {
@@ -2541,6 +2542,7 @@ impl DeferredRecoveryKind {
         match self {
             Self::Paste => "paste_recovery_us",
             Self::TrackSwitch => "track_switch_recovery_us",
+            Self::TimeRangeCopy => "duplicate_recovery_us",
         }
     }
 }
@@ -2550,6 +2552,7 @@ fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecoveryKind> {
         Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. } => {
             Some(DeferredRecoveryKind::Paste)
         }
+        Request::Edit(Command::CopyTimeRangeTo { .. }) => Some(DeferredRecoveryKind::TimeRangeCopy),
         Request::Edit(
             Command::Mute { .. }
             | Command::ToggleMute(_)
@@ -9277,6 +9280,8 @@ fn run_worker(
             Some(DeferredRecoveryKind::Paste)
         } else if committed_track_switch {
             Some(DeferredRecoveryKind::TrackSwitch)
+        } else if time_range_copy && canonical_changed && error.is_none() {
+            Some(DeferredRecoveryKind::TimeRangeCopy)
         } else {
             None
         };
