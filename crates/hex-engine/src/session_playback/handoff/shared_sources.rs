@@ -2731,7 +2731,7 @@ mod tests {
                     let reference = PCM[(162 + index) % 4][0];
                     if reference != 0.0 {
                         let gain = frame[0] / reference;
-                        assert!(gain >= 0.25 && gain <= 0.5, "solo={solo}, gain={gain}");
+                        assert!((0.25..=0.5).contains(&gain), "solo={solo}, gain={gain}");
                     }
                 }
             }
