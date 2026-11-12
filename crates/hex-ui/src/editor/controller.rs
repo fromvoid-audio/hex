@@ -3532,6 +3532,7 @@ impl EditorView {
         let independent_edit = matches!(
             request,
             Request::Edit(_)
+                | Request::BindUnassignedNativeSource { .. }
                 | Request::ChangeProjectSampleRate { .. }
                 | Request::Import(_)
                 | Request::ImportAudioBatch { .. }
@@ -3891,6 +3892,7 @@ impl EditorView {
         if matches!(
             &request,
             Request::DeviceGesture(_)
+                | Request::BindUnassignedNativeSource { .. }
                 | Request::DropNativeDevice { .. }
                 | Request::MoveTrackDevices { .. }
                 | Request::ReorderDevices { .. }
