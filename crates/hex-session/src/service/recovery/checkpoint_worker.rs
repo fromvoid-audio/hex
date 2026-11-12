@@ -2,7 +2,11 @@
 use super::PreparedCheckpoint;
 use std::{
     path::PathBuf,
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -22,16 +26,22 @@ pub(super) struct CheckpointWorker {
     sender: Option<SyncSender<Job>>,
     pending: Option<Receiver<Publication>>,
     thread: Option<JoinHandle<()>>,
+    ready: Arc<AtomicBool>,
 }
 
 impl CheckpointWorker {
     pub(super) fn new() -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel::<Job>(1);
+        let ready = Arc::new(AtomicBool::new(false));
+        let worker_ready = Arc::clone(&ready);
         let thread = thread::Builder::new()
             .name("hex-recovery-checkpoint".into())
             .spawn(move || {
                 while let Ok(mut job) = receiver.recv() {
                     let result = job.checkpoint.publish(&mut job.journal);
+                    // Publish readiness before the one-slot reply. A control
+                    // poll may then wait briefly for the corresponding send.
+                    worker_ready.store(true, Ordering::Release);
                     let _ = job.reply.send((job.journal, result));
                 }
             })
@@ -40,6 +50,7 @@ impl CheckpointWorker {
             sender: Some(sender),
             pending: None,
             thread: Some(thread),
+            ready,
         })
     }
 
@@ -58,6 +69,7 @@ impl CheckpointWorker {
             .as_ref()
             .ok_or("recovery checkpoint worker is closed")?;
         let (reply, receiver) = mpsc::sync_channel(1);
+        self.ready.store(false, Ordering::Release);
         let job = Job {
             checkpoint,
             journal: journal.take(),
@@ -77,6 +89,13 @@ impl CheckpointWorker {
                 Err("recovery checkpoint worker is unavailable".into())
             }
         }
+    }
+
+    /// A pending result is collectable, or the worker exited before replying.
+    pub(super) fn ready(&self) -> bool {
+        self.pending.is_some()
+            && (self.ready.load(Ordering::Acquire)
+                || self.thread.as_ref().is_some_and(JoinHandle::is_finished))
     }
 
     /// Wait only on the service control worker; publication itself owns the journal.
