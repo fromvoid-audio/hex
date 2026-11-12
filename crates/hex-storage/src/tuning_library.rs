@@ -97,16 +97,25 @@ pub fn load(directory: &Path, slot: usize) -> Result<Preset, String> {
 /// Replace an explicitly chosen slot only after validating both the new value
 /// and any existing preset. Corrupt files remain available for recovery.
 pub fn save(directory: &Path, slot: usize, name: &str, scale: Scale) -> Result<(), String> {
+    save_with_publish(directory, slot, name, scale, publish)
+}
+fn save_with_publish(
+    directory: &Path,
+    slot: usize,
+    name: &str,
+    scale: Scale,
+    publish_slot: impl FnOnce(&Path, &[u8], bool) -> Result<(), String>,
+) -> Result<(), String> {
     let path = slot_path(directory, slot)?;
     let text = preset::encode(name, scale).map_err(|e| e.to_string())?;
-    if path
+    let exists = path
         .try_exists()
-        .map_err(|e| format!("cannot inspect tuning slot · {e}"))?
-    {
+        .map_err(|e| format!("cannot inspect tuning slot · {e}"))?;
+    if exists {
         read_file(&path)?;
     }
     fs::create_dir_all(directory).map_err(|e| format!("cannot create tuning library · {e}"))?;
-    publish(&path, text.as_bytes(), true)
+    publish_slot(&path, text.as_bytes(), exists)
 }
 pub fn rename(directory: &Path, slot: usize, name: &str) -> Result<(), String> {
     let old = load(directory, slot)?;
@@ -246,6 +255,17 @@ mod tests {
         ));
         fs::create_dir(&p).unwrap();
         Directory(p)
+    }
+    #[test]
+    fn save_preserves_a_slot_created_during_preparation() {
+        let d = directory();
+        let competing = b"another writer's tuning data";
+        let result = save_with_publish(&d.0, 1, "new", Scale::default(), |path, bytes, replace| {
+            fs::write(path, competing).unwrap();
+            publish(path, bytes, replace)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(d.0.join("slot-1.freqs")).unwrap(), competing);
     }
     #[test]
     fn export_to_bare_relative_filename() {

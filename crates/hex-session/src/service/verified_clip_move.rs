@@ -388,6 +388,7 @@ mod tests {
         projection
             .prepare_candidate_on_control(1, &mut cell)
             .unwrap();
+        cell.cleanup_on_control().unwrap();
         assert_eq!(canonical.project_metadata(), event.state.project.as_ref());
         // Even a malformed resourceful sampler state must enter the private-source
         // refusal path, rather than being admitted as an empty instrument.
