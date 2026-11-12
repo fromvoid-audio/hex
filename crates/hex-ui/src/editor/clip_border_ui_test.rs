@@ -143,6 +143,130 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     visual.simulate_mouse_up(bounds.center(), MouseButton::Left, modifiers);
     visual.run_until_parked();
 }
+
+#[gpui::test]
+fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContext) {
+    use hex_project::{ClipFlavor, ElementColor};
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, track, _, imported) = audio_project();
+    let asset = project.clip(imported).unwrap().asset();
+    let mut canonical = Editor::new(project, 32).unwrap();
+    canonical.execute(Command::RemoveClip(imported)).unwrap();
+    canonical
+        .execute(Command::SetTrackColor {
+            track,
+            color: ElementColor::Red,
+        })
+        .unwrap();
+    let mut clips = Vec::new();
+    for i in 0..17 {
+        let frame = 24_000 + if i == 16 { 10_000 } else { i * 200 };
+        let command = if i < 8 {
+            Command::PlaceClip {
+                track,
+                asset,
+                start: frame,
+                duration: 200,
+                source_offset: 0,
+                source_length: 200,
+                looping: false,
+            }
+        } else {
+            let tempo = canonical.project().tempo_map();
+            let start = tempo.frame_to_beat(frame).unwrap();
+            let duration = if i == 16 { 32 } else { 200 };
+            let end = tempo.frame_to_beat(frame + duration).unwrap();
+            Command::PlaceMidiClip {
+                track,
+                start,
+                length: BeatTime::from_raw(end.raw() - start.raw()),
+            }
+        };
+        let Created::Clip(clip) = canonical.execute(command).unwrap() else {
+            panic!("clip");
+        };
+        canonical
+            .execute(Command::SetClipFlavor {
+                clip,
+                flavor: if i == 16 {
+                    ClipFlavor::Accent
+                } else {
+                    ClipFlavor::Muted
+                },
+            })
+            .unwrap();
+        clips.push(clip);
+    }
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.0; 2]; 96_000]).unwrap(),
+    )]);
+    let project = canonical.project().clone();
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(&project, &media).unwrap();
+    let (handle, editor) = editor_window(cx, project, Arc::new(preview));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let set_view = |visual: &mut VisualTestContext, start, length| {
+        editor.update(visual, |view, cx| {
+            view.viewport = Some(Viewport { start, length });
+            view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+            cx.notify();
+        });
+        visual.run_until_parked();
+    };
+    set_view(&mut visual, 0, 144_000);
+    let bars = Box::leak(format!("narrow-clip-bars-{}", track.value()).into_boxed_str());
+    let muted = theme::clip_fill(ElementColor::Red, ClipFlavor::Muted, false);
+    let accent = theme::clip_fill(ElementColor::Red, ClipFlavor::Accent, false);
+    let fills = visual.rendered_filled_quads(bars);
+    let one_fill = |color| {
+        let mut matches = fills
+            .iter()
+            .filter(|(_, fill)| *fill == gpui::rgb(color).into());
+        let bounds = matches.next().expect("colored bar").0;
+        assert!(
+            matches.next().is_none(),
+            "touching clips share one paint bar"
+        );
+        bounds
+    };
+    let muted_bar = one_fill(muted);
+    let accent_bar = one_fill(accent);
+    assert!(muted_bar.size.width > accent_bar.size.width);
+    assert!(
+        muted_bar.right() < accent_bar.left(),
+        "keep the gap visible"
+    );
+    let first = clips[0];
+    let midi = clips[8];
+    let audio_visual = Box::leak(format!("clip-visual-{}", first.value()).into_boxed_str());
+    let midi_visual = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
+    let audio_edge = Box::leak(format!("clip-trailing-{}", first.value()).into_boxed_str());
+    let midi_edge = Box::leak(format!("midi-clip-trailing-{}", midi.value()).into_boxed_str());
+    assert!(visual.debug_bounds(audio_edge).is_none());
+    assert!(visual.debug_bounds(midi_edge).is_none());
+    let first_bounds = visual.debug_bounds(audio_visual).unwrap();
+    let midi_bounds = visual.debug_bounds(midi_visual).unwrap();
+    assert!(first_bounds.right() < midi_bounds.left());
+    click(&mut visual, first, Modifiers::default());
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.selected_clip()),
+        Some(first)
+    );
+    assert_eq!(visual.debug_bounds(audio_visual), Some(first_bounds));
+    let selected = theme::arrangement_clip_body_fill(muted, true);
+    assert!(
+        visual
+            .rendered_filled_quads(bars)
+            .iter()
+            .any(|(_, fill)| { *fill == gpui::rgb(selected).into() })
+    );
+
+    set_view(&mut visual, 23_000, 10_000);
+    assert!(visual.debug_bounds(bars).is_none());
+    assert!(visual.debug_bounds(audio_edge).is_some());
+    assert!(visual.debug_bounds(midi_edge).is_some());
+}
+
 #[gpui::test]
 fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     cx: &mut TestAppContext,
