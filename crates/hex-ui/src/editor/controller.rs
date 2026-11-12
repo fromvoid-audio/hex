@@ -445,6 +445,7 @@ impl EditorView {
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
         self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
         self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
         self.prepared_seek = None;
@@ -1714,6 +1715,9 @@ impl EditorView {
                 .audible_playback
                 .as_ref()
                 .is_some_and(|candidate| candidate.audio_revision != applied)
+                || self
+                    .applied_clip_preview
+                    .is_some_and(|(revision, _)| revision != applied)
                 || (self.applied_project_revision.is_some()
                     && self
                         .audio_admission
@@ -1726,6 +1730,7 @@ impl EditorView {
                 .any(|candidate| candidate.audio_revision == applied)
         {
             visible_change |= self.applied_project_revision.take().is_some();
+            visible_change |= self.applied_clip_preview.take().is_some();
             visible_change |= self.audible_playback.take().is_some();
             visible_change |= self.audio_admission.preview_applied(applied);
         }
@@ -1784,7 +1789,17 @@ impl EditorView {
                     )
                 })
             };
-            if source == AppliedCandidateSource::Current {
+            if candidate.clip_preview_identity.is_some() {
+                self.applied_clip_preview = (source == AppliedCandidateSource::Current)
+                    .then(|| {
+                        candidate
+                            .clip_preview_identity
+                            .map(|identity| (applied, identity))
+                    })
+                    .flatten();
+                self.audible_playback = None;
+            } else if source == AppliedCandidateSource::Current {
+                self.applied_clip_preview = None;
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(
                         candidate.project_generation,
@@ -1808,8 +1823,6 @@ impl EditorView {
                     }
                 }
                 self.audible_playback = Some(candidate);
-            } else if candidate.clip_preview_identity.is_some() {
-                self.audible_playback = None;
             } else if source == AppliedCandidateSource::InvalidPreview {
                 visible_change |= replace_error(
                     &mut self.error,
@@ -2414,6 +2427,7 @@ impl EditorView {
         self.fade_request_complete(&event);
         if event.project_replaced {
             self.expected_clip_preview = None;
+            self.applied_clip_preview = None;
             self.pending_requests
                 .retain(|request| self.locators.queued_add_frame(request).is_none());
         }
@@ -6161,9 +6175,11 @@ mod sampler_native_ui_protocol_tests {
                 },
             );
             view.tick(cx);
-            let audible = view.audible_playback.as_ref().unwrap();
-            assert_eq!(audible.audio_revision, clip_revision);
-            assert_eq!(audible.clip_preview_identity, Some(clip_identity));
+            assert!(view.audible_playback.is_none());
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((clip_revision, clip_identity))
+            );
             assert!(view.applied_project_revision.is_none());
             assert_ne!(
                 view.audio_admission.current().unwrap().state,
@@ -6175,15 +6191,6 @@ mod sampler_native_ui_protocol_tests {
                 sequence: clip_identity.sequence + 1,
                 ..clip_identity
             });
-            view.retain_publication_observation(
-                context,
-                output_identity,
-                crate::EditorPublicationState::ResidentSubmitted {
-                    audio_revision: stale_revision,
-                    observation: Arc::clone(&observation),
-                    metadata,
-                },
-            );
             for _ in 0..128 {
                 backend.render(&mut [[0.0; 2]; 64]).unwrap();
                 view.tick(cx);
@@ -6198,7 +6205,19 @@ mod sampler_native_ui_protocol_tests {
                 backend.status().unwrap().rejected_revision()
             );
             assert!(view.audible_playback.is_none());
+            assert!(view.applied_clip_preview.is_none());
             assert!(view.applied_project_revision.is_none());
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: stale_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(view.applied_clip_preview.is_none());
             view.expected_clip_preview = None;
             metadata.clip_preview = None;
             let restored_revision = publish(&mut output);

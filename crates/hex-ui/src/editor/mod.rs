@@ -977,6 +977,7 @@ pub(super) struct EditorView {
     pending_clip_move: Option<pending_clip_move::Pending>,
     /// The latest held move intent; only an exact callback revision can make it audible.
     expected_clip_preview: Option<hex_session::service::ClipMovePreviewIdentity>,
+    applied_clip_preview: Option<(u64, hex_session::service::ClipMovePreviewIdentity)>,
     close_prompt_open: bool,
     automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
@@ -1775,6 +1776,7 @@ impl EditorView {
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             expected_clip_preview: None,
+            applied_clip_preview: None,
             close_prompt_open: false,
             automation_close_preflight: Default::default(),
             export_pending: false,

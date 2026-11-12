@@ -274,7 +274,9 @@ impl Target {
         match (self, other) {
             (Self::Stretch(a), Self::Stretch(b)) => a.clip == b.clip && a.edge == b.edge,
             (Self::PlayStart(a), Self::PlayStart(b)) => a.edit.clip() == b.edit.clip(),
-            (Self::Move(a), Self::Move(b)) => a.anchor == b.anchor && a.clips == b.clips,
+            (Self::Move(a), Self::Move(b)) => {
+                a.gesture == b.gesture && a.anchor == b.anchor && a.clips == b.clips
+            }
             _ => false,
         }
     }
@@ -562,6 +564,9 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&first.clips, &retained.clips));
         assert!(a.same_gesture(&b));
+        let mut other_gesture = moved.clone();
+        other_gesture.gesture += 1;
+        assert!(!a.same_gesture(&Target::Move(other_gesture)));
         let mut other = moved.clone();
         other.context.editor_revision += 1;
         assert!(!a.same_gesture(&Target::Move(other)));
