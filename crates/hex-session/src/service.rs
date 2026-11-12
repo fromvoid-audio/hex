@@ -148,6 +148,8 @@ pub mod preset;
 mod project_rate;
 mod recovery;
 pub use project_rate::ProjectSampleRate;
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub use recovery::{HeldCheckpoint, hold_next_checkpoint};
 #[cfg(test)]
 mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;

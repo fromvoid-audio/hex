@@ -1,20 +1,22 @@
 //! Worker-owned recovery availability and explicitly confirmed slot replacement.
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 type CheckpointGate = (
     PathBuf,
     std::sync::mpsc::SyncSender<()>,
     std::sync::mpsc::Receiver<()>,
 );
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 pub(super) static CHECKPOINT_GATE: std::sync::Mutex<Vec<CheckpointGate>> =
     std::sync::Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 pub(super) fn wait_at_checkpoint(path: &Path) {
     let gate = {
-        let mut gates = CHECKPOINT_GATE.lock().unwrap();
+        let mut gates = CHECKPOINT_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         gates
             .iter()
             .position(|(target, _, _)| target == path)
@@ -22,7 +24,12 @@ pub(super) fn wait_at_checkpoint(path: &Path) {
     };
     if let Some((_, entered, release)) = gate {
         let _ = entered.send(());
-        let _ = release.recv_timeout(std::time::Duration::from_millis(500));
+        let timeout = if cfg!(feature = "recovery-checkpoint-test-support") {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        let _ = release.recv_timeout(timeout);
     }
 }
 
