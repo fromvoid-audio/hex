@@ -3014,6 +3014,7 @@ fn run_worker(
             &request,
             Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
         );
+        let time_range_copy = matches!(&request, Request::Edit(Command::CopyTimeRangeTo { .. }));
         let arrangement_duplicate = matches!(
             &request,
             Request::DuplicateClips { .. }
@@ -8967,7 +8968,9 @@ fn run_worker(
                     revision != revision_before_request,
                 )
             };
-            let journal_result = if committed_arrangement_duplicate.is_some() {
+            let journal_result = if committed_arrangement_duplicate.is_some()
+                || (time_range_copy && canonical_changed && error.is_none())
+            {
                 events.measure_duplicate_recovery(maintain_recovery)
             } else {
                 maintain_recovery()
