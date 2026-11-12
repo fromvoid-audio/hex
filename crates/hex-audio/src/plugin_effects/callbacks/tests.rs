@@ -639,7 +639,7 @@ fn revoked_endpoint_passes_aligned_dry_with_current_enabled_trim() {
 }
 
 #[test]
-fn one_late_native_effect_reply_uses_aligned_dry_and_resumes_wet() {
+fn late_native_effect_replies_use_aligned_dry_and_resume_wet() {
     let binding = Binding {
         root: 1,
         instance: 2,
@@ -694,11 +694,14 @@ fn one_late_native_effect_reply_uses_aligned_dry_and_resumes_wet() {
     render(&[0.0; 4], false);
     render(&[0.0; 2], false);
     render(&[0.0, 0.0, 1.0, 2.0], true);
+    // A second missing quantum starts in the same partial callback.
+    render(&[3.0, 4.0, 5.0, 6.0], true);
     respond(&mut worker, 0); // Late reply cannot replace the dry quantum.
     respond(&mut worker, 1);
-    render(&[3.0, 4.0, 10.0, 12.0], true);
     respond(&mut worker, 2);
-    render(&[14.0, 16.0, 18.0, 20.0], false);
+    render(&[7.0, 8.0, 18.0, 20.0], true);
+    respond(&mut worker, 3);
+    render(&[22.0, 24.0, 26.0, 28.0], false);
     assert!(!control.is_revoked());
     assert_eq!(control.take_callback_fault(), None);
 }
