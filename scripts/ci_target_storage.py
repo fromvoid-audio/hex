@@ -1,17 +1,41 @@
-"""Read-only macOS Cargo target volume identification, before cache mutation.
+"""Cargo target volume identification and create-only directory publication.
 
 Probe the nearest existing ancestor for a not-yet-created target. Resolve its
 device with df, then read diskutil's structured filesystem metadata. Neither
 tool writes the volume, moves executables, changes permissions or owns cleanup.
-Other platforms retain the existing runner behavior, without a storage claim.
+The fresh-target publisher requires a native no-replace rename and never falls
+back to an operation that can replace an existing directory.
 """
 
+import ctypes
+import errno
+import os
 from pathlib import Path
 import plistlib
 import subprocess
 import sys
 import time
 from xml.parsers.expat import ExpatError
+
+
+def rename_new_directory(parent_fd: int, staging: str, target: str) -> None:
+    """Publish a sibling directory without replacing an existing destination."""
+    if sys.platform == "darwin":
+        symbol, flag = "renameatx_np", 0x00000004  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        symbol, flag = "renameat2", 1  # RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive directory rename is unavailable")
+    try:
+        rename = getattr(ctypes.CDLL(None, use_errno=True), symbol)
+    except AttributeError as error:
+        raise OSError(errno.ENOTSUP, "exclusive directory rename is unavailable") from error
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                       ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(parent_fd, os.fsencode(staging), parent_fd, os.fsencode(target), flag) != 0:
+        failure = ctypes.get_errno()
+        raise OSError(failure, os.strerror(failure), target)
 
 
 def inspect(target: Path, env: dict[str, str]) -> dict:
