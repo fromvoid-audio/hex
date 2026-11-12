@@ -245,13 +245,23 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
     editor.update(&mut visual, |view, _| {
         view.queue_audio_command(PlaybackCommand::Pause);
     });
-    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let deadline = crate::test_wait::hang_deadline();
+    while fixture.backend.status().unwrap().playing.load(Acquire) {
+        editor.update(&mut visual, |view, cx| view.tick(cx));
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert!(std::time::Instant::now() < deadline, "pause never applied");
+        std::thread::yield_now();
+    }
     editor.update(&mut visual, |view, cx| {
         view.tick(cx);
         cx.notify();
     });
     visual.run_until_parked();
-    assert!((y(&visual) - 0.5).abs() < 0.001);
+    assert!(
+        (y(&visual) - 0.5).abs() < 0.001,
+        "paused node y: {}",
+        y(&visual)
+    );
     fixture.finish(cx);
 }
 
