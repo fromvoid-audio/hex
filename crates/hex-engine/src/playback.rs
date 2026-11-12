@@ -125,6 +125,7 @@ pub enum PlaybackActionRejection {
     NoActivePlayback = 17,
     ProjectChanged = 18,
     AudioSourceChanged = 19,
+    SharedSourceVoiceCapacity = 20,
 }
 
 impl PlaybackActionRejection {
@@ -149,6 +150,7 @@ impl PlaybackActionRejection {
             17 => Some(Self::NoActivePlayback),
             18 => Some(Self::ProjectChanged),
             19 => Some(Self::AudioSourceChanged),
+            20 => Some(Self::SharedSourceVoiceCapacity),
             _ => None,
         }
     }
@@ -158,6 +160,9 @@ impl PlaybackActionRejection {
             Self::NoActivePlayback => "no active playback graph",
             Self::ProjectChanged => "project changed · playback action cancelled",
             Self::AudioSourceChanged => "audio source changed · playback action cancelled",
+            Self::SharedSourceVoiceCapacity => {
+                "shared source voice capacity is full · release notes or wait for tails, then retry"
+            }
             Self::MetronomeUnavailable => {
                 "metronome requires prepared musical timing and sample storage"
             }
@@ -205,6 +210,9 @@ impl PlaybackActionError {
             }
             Self::Session(crate::SessionPlaybackError::ReleaseBankFull) => {
                 PlaybackActionRejection::ReleaseCapacity
+            }
+            Self::Session(crate::SessionPlaybackError::SharedSourceVoiceCapacity) => {
+                PlaybackActionRejection::SharedSourceVoiceCapacity
             }
             Self::Session(crate::SessionPlaybackError::TempoConversion)
             | Self::Session(crate::SessionPlaybackError::SessionTempoUnavailable(_)) => {
