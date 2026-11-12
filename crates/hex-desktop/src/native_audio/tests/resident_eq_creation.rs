@@ -617,7 +617,9 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         // Keep natural source exhaustion beyond the held-note/release checks.
         path: periodic_source(&files, 192_000),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -722,4 +724,118 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
             .all(|sample| sample.abs() < 1e-7)
     );
     assert!(h.publication_refusals.is_empty());
+}
+
+#[test]
+fn refused_eq_creation_releases_the_editor_and_restart_discards_only_the_preview() {
+    use hex_engine::eq::EQ_TYPE_ID;
+    use hex_project::DeviceVariant;
+    use hex_session::device_gesture::GesturePhase;
+    use std::sync::atomic::Ordering::Release;
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack { name: "eq".into() }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    let (applied, _) = h.applied(applied);
+    let before = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(EQ_TYPE_ID),
+        before: None,
+    });
+    let (applied, _) = h.applied(applied);
+    let device = before.state.project.track(track).unwrap().devices()[0].id();
+    let snapshot_for = |state: &hex_session::service::ViewState| {
+        let next_id = state.project.next_identity();
+        let node = Node::new(NodeId::new(next_id).unwrap(), 1200.0, 6.0, 0).unwrap();
+        EqNodeCreationSnapshot::new(node, DeviceVariant::A, next_id).unwrap()
+    };
+    let snapshot = snapshot_for(&before.state);
+    let key = |token| GestureKey {
+        generation: 0,
+        token,
+    };
+    let begin = |token, snapshot| {
+        Request::DeviceGesture(GestureRequest::BeginEqCreation {
+            key: key(token),
+            device,
+            snapshot,
+        })
+    };
+    let change = |token, snapshot| {
+        Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+            key: key(token),
+            sequence: 1,
+            snapshot,
+        })
+    };
+    let commit = |token, snapshot| {
+        Request::DeviceGesture(GestureRequest::CommitEqCreation {
+            key: key(token),
+            sequence: 2,
+            snapshot,
+        })
+    };
+
+    assert!(h.run(begin(1, snapshot)).gesture_ack.unwrap().accepted);
+    h.refuse.store(true, Release);
+    let refused = h.run(change(1, snapshot));
+    assert!(!refused.gesture_ack.unwrap().accepted);
+    assert!(refused.device_preview.is_none());
+    let refused = h.run(commit(1, snapshot));
+    let ack = refused.gesture_ack.unwrap();
+    assert_eq!((ack.key, ack.phase), (key(1), GesturePhase::Commit));
+    assert!(!ack.accepted && !ack.preview_retained);
+    assert!(refused.active_device_gesture.is_none());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.project, before.state.project);
+
+    h.refuse.store(false, Release);
+    assert!(h.run(begin(2, snapshot)).gesture_ack.unwrap().accepted);
+    let committed = h.run(commit(2, snapshot));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.revision, before.state.revision + 1);
+    let state = committed.state.project.device(device).unwrap().state();
+    assert_eq!(EqState::decode(state).unwrap().nodes, vec![snapshot.node]);
+    let (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    let mut restored = undone.state.project.snapshot();
+    let before = before.state.project.snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    let (applied, _) = h.applied(applied);
+
+    let snapshot = snapshot_for(&undone.state);
+    assert!(h.run(begin(3, snapshot)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(3, snapshot)).gesture_ack.unwrap().accepted);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.device_preview.unwrap().key, key(3));
+    h.refuse.store(true, Release);
+    let retained = h.run(commit(3, snapshot));
+    assert!(retained.gesture_ack.unwrap().preview_retained);
+    assert!(retained.device_preview.is_some());
+
+    h.refuse.store(false, Release);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: 0,
+        request_id: 1,
+    });
+    let retired = restarted.gesture_ack.unwrap();
+    assert_eq!((retired.key, retired.phase), (key(3), GesturePhase::Cancel));
+    assert!(!retired.preview_retained);
+    assert!(restarted.active_device_gesture.is_none());
+    assert!(restarted.device_preview.is_none());
+    assert_eq!(restarted.state.revision, undone.state.revision);
+    assert_eq!(restarted.state.project, undone.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (_, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, undone.state.revision);
+    assert!(metadata.device_preview.is_none());
 }

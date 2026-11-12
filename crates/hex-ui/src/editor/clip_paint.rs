@@ -98,9 +98,8 @@ impl EditorView {
             return false;
         };
         let grid = self.snap_grid.with_platform_modifier(free);
-        let Some(start) = state
-            .project
-            .tempo_map()
+        let tempo = state.project.tempo_map();
+        let Some(nearest) = tempo
             .frame_to_beat(frame)
             .ok()
             .and_then(|beat| grid.snap_beat(&state.project, beat, viewport, lane.width))
@@ -112,6 +111,21 @@ impl EditorView {
         {
             return false;
         }
+        // Start at the left edge of the clicked cell. An exact grid-line
+        // click belongs to the cell that begins on that line.
+        let Ok(nearest_frame) = tempo.beat_to_frame(nearest) else {
+            return false;
+        };
+        let start = if nearest_frame > frame {
+            let Some(left) =
+                grid.adjacent_beat(&state.project, nearest, viewport, lane.width, false)
+            else {
+                return false;
+            };
+            left
+        } else {
+            nearest
+        };
         // A stationary double press creates one cell (one beat with snapping off).
         let minimum_end = if grid.is_off() {
             start

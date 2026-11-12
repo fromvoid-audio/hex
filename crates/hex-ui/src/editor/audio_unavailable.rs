@@ -25,7 +25,7 @@ fn rate_mismatch_message(mismatch: RateMismatch) -> String {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

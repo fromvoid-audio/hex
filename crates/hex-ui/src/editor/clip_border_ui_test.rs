@@ -95,6 +95,7 @@ fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut Test
                         stroke,
                         bottom_radius: 0.0,
                         header_height: 14.0,
+                        header_gradient: None,
                         notch: super::Notch::new(native),
                     },
                     native,
@@ -911,32 +912,6 @@ fn adjacent_clip_edges_share_one_grid_pixel(cx: &mut TestAppContext) {
     );
 }
 
-#[test]
-fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
-    use super::{Notch, corner_extent};
-    assert_eq!(corner_extent(100.0, 44.0), 5.0);
-    assert_eq!(corner_extent(6.0, 44.0), 3.0);
-    assert_eq!(corner_extent(100.0, 4.0), 2.0);
-    assert_eq!(corner_extent(0.0, 44.0), 0.0);
-    assert_eq!(corner_extent(-1.0, 44.0), 0.0);
-    assert_eq!(corner_extent(f32::NAN, 44.0), 0.0);
-    let notch = Notch::new(true);
-    let edge = notch.clone();
-    for width in [100.0, 6.0, 100.0] {
-        notch.observe(gpui::Bounds::new(
-            gpui::point(gpui::px(10.0), gpui::px(20.0)),
-            gpui::size(gpui::px(width), gpui::px(44.0)),
-        ));
-        assert_eq!(edge.extent(), corner_extent(width, 44.0));
-    }
-    let cropped = Notch::default();
-    cropped.observe(gpui::Bounds::new(
-        gpui::point(gpui::px(0.0), gpui::px(0.0)),
-        gpui::size(gpui::px(100.0), gpui::px(44.0)),
-    ));
-    assert_eq!(cropped.extent(), 0.0);
-}
-
 #[gpui::test]
 fn resolved_clip_canvas_can_paint_a_distinct_edge_in_the_parent_scene(cx: &mut TestAppContext) {
     use gpui::{
@@ -1049,4 +1024,315 @@ fn resolved_clip_canvas_can_paint_a_distinct_edge_in_the_parent_scene(cx: &mut T
         "the painted edge does not intercept input"
     );
     assert_eq!(clicks.get(), 1);
+}
+
+#[gpui::test]
+fn resolved_edge_scene_witness_distinguishes_occlusion_order(cx: &mut TestAppContext) {
+    use gpui::{
+        Bounds, Context, Pixels, Render, Window, canvas, div, fill, point, prelude::*, px, rgb,
+        size,
+    };
+    use std::{cell::Cell, rc::Rc};
+    struct Fixture {
+        witness: Rc<Cell<Option<Bounds<Pixels>>>>,
+        edge_above: Rc<Cell<bool>>,
+        clipped: Rc<Cell<bool>>,
+        selected: Rc<Cell<bool>>,
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let stroke = 1.0 / window.scale_factor();
+            let clipped = self.clipped.get();
+            let color = if self.selected.get() {
+                0xf003a7
+            } else {
+                0x03a7f0
+            };
+            let separator = || {
+                div()
+                    .absolute()
+                    .left(px(56.0))
+                    .top(px(10.25))
+                    .w(px(4.0))
+                    .h(px(32.0))
+                    .bg(rgb(0x334455))
+                    .debug_selector(|| "edge-witness-separator".into())
+            };
+            let body = div()
+                .absolute()
+                .left(px(13.25))
+                .top(px(10.25))
+                .w(px(43.75))
+                .h(px(32.0))
+                .debug_selector(|| "edge-witness-body".into())
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let edge = Bounds::new(
+                                point(bounds.right(), bounds.top()),
+                                size(px(stroke), bounds.size.height),
+                            );
+                            let mask = clipped.then(|| gpui::ContentMask {
+                                bounds: Bounds::from_corners(
+                                    point(edge.left(), bounds.center().y),
+                                    edge.bottom_right(),
+                                ),
+                            });
+                            window.with_content_mask(mask, |window| {
+                                window.paint_quad(fill(edge, rgb(color)));
+                            });
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
+            let mut lane = div()
+                .relative()
+                .w(px(240.0))
+                .h(px(80.0))
+                .debug_selector(|| "edge-witness-lane".into());
+            if self.edge_above.get() {
+                lane = lane.children([separator()]);
+            }
+            lane = lane.child(body);
+            if !self.edge_above.get() {
+                lane = lane.children([separator()]);
+            }
+            if let Some(bounds) = self.witness.get() {
+                lane = lane.child(
+                    div()
+                        .absolute()
+                        .left(bounds.left())
+                        .top(bounds.top())
+                        .w(bounds.size.width)
+                        .h(bounds.size.height)
+                        .debug_selector(|| "edge-witness".into()),
+                );
+            }
+            lane
+        }
+    }
+    let witness = Rc::new(Cell::new(None));
+    let edge_above = Rc::new(Cell::new(false));
+    let clipped = Rc::new(Cell::new(false));
+    let selected = Rc::new(Cell::new(false));
+    let handle = *cx.add_window(|_, _| Fixture {
+        witness: witness.clone(),
+        edge_above: edge_above.clone(),
+        clipped: clipped.clone(),
+        selected: selected.clone(),
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual.debug_bounds("edge-witness-lane").unwrap();
+    let body = visual.debug_bounds("edge-witness-body").unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    witness.set(Some(Bounds::new(
+        point(body.right() - lane.left(), body.top() - lane.top()),
+        size(px(1.0 / scale), body.size.height),
+    )));
+    let check = |visual: &mut VisualTestContext, above: bool| {
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let edge = visual.rendered_quad_paint_layers("edge-witness", false);
+        let separator = visual.rendered_quad_paint_layers("edge-witness-separator", false);
+        assert_eq!(
+            edge.len(),
+            1,
+            "witness identifies the exact painted edge quad"
+        );
+        assert_eq!(separator.len(), 1);
+        assert_eq!(edge[0].0 > separator[0].0, above, "detect occlusion order");
+    };
+    check(&mut visual, false);
+    assert!(
+        visual
+            .rendered_filled_quads("edge-witness-lane")
+            .iter()
+            .any(|(bounds, color)| bounds.left() == body.right().scale(scale)
+                && *color == gpui::Background::from(rgb(0x03a7f0)))
+    );
+    edge_above.set(true);
+    selected.set(true);
+    check(&mut visual, true);
+    let unmasked = visual.rendered_quad_paint_layers("edge-witness", false);
+    assert!(unmasked[0].1.top() < body.center().y.scale(scale));
+    assert!(
+        visual
+            .rendered_filled_quads("edge-witness-lane")
+            .iter()
+            .any(|(bounds, color)| bounds.left() == body.right().scale(scale)
+                && *color == gpui::Background::from(rgb(0xf003a7)))
+    );
+    clipped.set(true);
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    let edge = visual.rendered_quad_paint_layers("edge-witness", false);
+    assert_eq!(edge.len(), 1);
+    assert_eq!(
+        edge[0].1.top(),
+        body.center().y.scale(scale),
+        "detect the actual clip mask"
+    );
+}
+
+#[gpui::test]
+fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestAppContext) {
+    use gpui::{Context, Render, Window, div, prelude::*, px, rgb};
+    use std::{cell::Cell, rc::Rc};
+    struct Fixture(Rc<Cell<usize>>);
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let clicks = self.0.clone();
+            let body = div()
+                .absolute()
+                .inset_0()
+                .debug_selector(|| "resolved-hover-body".into())
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    clicks.set(clicks.get() + 1)
+                });
+            let style = super::Backdrop {
+                body: 0x112233,
+                header: 0x223344,
+                outline: 0xf003a7,
+                hover_outline: 0x03f0a7,
+                stroke: 1.0 / window.scale_factor(),
+                bottom_radius: 2.0,
+                header_height: 12.0,
+                header_gradient: None,
+                notch: super::Notch::new(true),
+            };
+            div()
+                .relative()
+                .w(px(201.0))
+                .h(px(50.0))
+                .debug_selector(|| "resolved-hover-lane".into())
+                .children([super::backdrop_shell(
+                    body,
+                    0.127,
+                    0.197,
+                    style,
+                    true,
+                    || "resolved-hover-edge".into(),
+                )])
+        }
+    }
+    let clicks = Rc::new(Cell::new(0));
+    let handle = *cx.add_window(|_, _| Fixture(clicks.clone()));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("resolved-hover-body").unwrap();
+    let edge = visual.debug_bounds("resolved-hover-edge").unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(edge.left(), body.right());
+    let has_edge_color = |visual: &mut VisualTestContext, color| {
+        visual
+            .rendered_filled_quads("resolved-hover-lane")
+            .iter()
+            .any(|(bounds, actual)| {
+                bounds.left() == edge.left().scale(scale)
+                    && *actual == gpui::Background::from(rgb(color))
+            })
+    };
+    assert!(has_edge_color(&mut visual, 0xf003a7));
+    visual.simulate_mouse_move(body.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(has_edge_color(&mut visual, 0x03f0a7));
+    visual.simulate_click(body.center(), Modifiers::default());
+    assert_eq!(clicks.get(), 1);
+}
+
+#[gpui::test]
+#[ignore = "manual optimized clip-edge paint profile; no native acceptance"]
+fn profile_clip_edge_paint_composition(cx: &mut TestAppContext) {
+    use gpui::{Context, Render, Window, canvas, div, prelude::*, px, relative, rgb, size};
+    use std::{cell::Cell, rc::Rc, time::Instant};
+    struct Fixture(Rc<Cell<bool>>);
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let resolved = self.0.get();
+            let stroke = 1.0 / window.scale_factor();
+            let mut root = div().w(px(1280.0)).h(px(600.0)).flex().flex_col();
+            for row_index in 0..12 {
+                let mut row = div().relative().w_full().h(px(40.0)).flex_shrink_0();
+                for column in 0..16 {
+                    let notch = super::Notch::new((row_index + column) % 2 == 0);
+                    let style = super::Backdrop {
+                        body: 0x253546,
+                        header: 0x344b64,
+                        outline: 0x99aabb,
+                        hover_outline: 0x99aabb,
+                        stroke,
+                        bottom_radius: 0.0,
+                        header_height: 18.0,
+                        header_gradient: None,
+                        notch: notch.clone(),
+                    };
+                    let observe = notch.clone();
+                    let paint_style = style.clone();
+                    let paint = canvas(
+                        move |bounds, _, _| observe.observe(bounds),
+                        move |bounds, _, window, _| {
+                            let color = rgb(paint_style.outline).into();
+                            super::paint_backdrop(bounds, &paint_style, color, window);
+                            if resolved {
+                                super::paint_resolved_trailing(bounds, &paint_style, color, window);
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0();
+                    let mut clip = div()
+                        .absolute()
+                        .left(relative(column as f32 / 16.0))
+                        .w(relative(1.0 / 16.0))
+                        .top_0()
+                        .bottom_0()
+                        .children([paint]);
+                    if !resolved {
+                        clip = clip.children([super::trailing_edge(
+                            notch,
+                            style.outline,
+                            style.outline,
+                        )
+                        .absolute()
+                        .left(relative(1.0))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(stroke))]);
+                    }
+                    row = row.children([clip]);
+                }
+                root = root.children([row]);
+            }
+            root
+        }
+    }
+    let resolved = Rc::new(Cell::new(false));
+    let handle = *cx.add_window(|_, _| Fixture(resolved.clone()));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(600.0)));
+    visual.run_until_parked();
+    let mut samples = [Vec::new(), Vec::new()];
+    for iteration in 0..100 {
+        let mode = matches!(iteration % 4, 1 | 2);
+        resolved.set(mode);
+        let start = Instant::now();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let elapsed = start.elapsed();
+        if iteration >= 20 {
+            samples[usize::from(mode)].push(elapsed);
+        }
+    }
+    for (name, mut durations) in ["legacy_child", "resolved_canvas"].into_iter().zip(samples) {
+        durations.sort_unstable();
+        println!(
+            "CLIP_EDGE_PROFILE mode={name} clips=192 scale=2 warmup=20 samples={} median_us={:.3} p95_us={:.3}",
+            durations.len(),
+            durations[durations.len() / 2].as_secs_f64() * 1e6,
+            durations[durations.len() * 95 / 100].as_secs_f64() * 1e6
+        );
+    }
 }

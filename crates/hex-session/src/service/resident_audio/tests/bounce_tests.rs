@@ -476,6 +476,11 @@ fn resident_sampler_console_bounce_case(whole_track: bool) {
                 hex_project::BounceAdoption::NewTracks,
                 files.source().parent().unwrap(),
                 &hex_export::ExportControl::default(),
+                &crate::service::RequestCancellation::new(
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    0,
+                ),
                 context(bounce_revision),
                 sink,
                 sampler_export::Admission::default(),

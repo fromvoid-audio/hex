@@ -29,6 +29,666 @@ type PluginFacts = crate::native_audio::plugins::FactsGate;
 enum PluginFacts {}
 
 #[test]
+fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
+    use hex_session::service::ArrangementStretchAudition;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, metadata) = h.applied(initial);
+    let before = imported.state.project.snapshot();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..438 {
+        h.render();
+    }
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+
+    let target = ArrangementStretchAudition {
+        context: metadata.context,
+        clip,
+        edge: hex_project::TrimEdge::Right,
+        frame: 24_000,
+    };
+    let advance = |h: &mut ResidentHarness, previous| {
+        let start = Instant::now();
+        loop {
+            h.pump();
+            let before = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
+            let pcm = h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break (revision, pcm);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "preview did not apply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 84_000,
+            ..target
+        }));
+    h.service.audition_arrangement_stretch(Some(target));
+    let (applied, pcm) = advance(&mut h, applied);
+    assert!(
+        pcm.iter().all(|f| *f == [0.0; 2]),
+        "latest held target is audible before release"
+    );
+    assert!(
+        h.service.try_event().is_err(),
+        "held preview does not edit the project"
+    );
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 36_000,
+            ..target
+        }));
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.revision, imported.state.revision);
+    assert_eq!(unchanged.state.project.snapshot(), before);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    h.service.audition_arrangement_stretch(None);
+    let (restored, pcm) = advance(&mut h, applied);
+    assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+
+    h.service.audition_arrangement_stretch(Some(target));
+    let (held, _) = advance(&mut h, restored);
+    h.service.finish_arrangement_stretch_audition();
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    let committed = h.run(Request::Edit(hex_project::Command::StretchAudioClipEdge {
+        clip,
+        edge: target.edge,
+        frame: target.frame,
+    }));
+    assert_eq!(committed.state.revision, imported.state.revision + 1);
+    assert_eq!(
+        committed.state.project.clip(clip).unwrap().duration(),
+        target.frame
+    );
+    h.service.audition_arrangement_stretch(None);
+    let (committed_audio, pcm) = advance(&mut h, held);
+    assert!(pcm.iter().all(|f| *f == [0.0; 2]));
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), before);
+    let (undone_audio, pcm) = advance(&mut h, committed_audio);
+    assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        committed.state.project.snapshot()
+    );
+    let (redone_audio, pcm) = advance(&mut h, undone_audio);
+    assert!(pcm.iter().all(|f| *f == [0.0; 2]));
+
+    let (entered, _resume, _) = h.probe_next_native_publication();
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 84_000,
+            ..target
+        }));
+    assert!(matches!(
+        entered.recv_timeout(Duration::from_millis(120)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        redone_audio
+    );
+}
+
+#[test]
+fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
+    use hex_project::{AudioViewResizeOperation, Command};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let source = files.wav(48_000, 96_000);
+    let imported = h.run(Request::Import(source.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(initial);
+    let mixed = h.run(Request::Import(source));
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(mixed.state.project.tracks().len(), 2);
+    let original = mixed.state.project.snapshot();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+
+    let target = ArrangementPlayStartAudition {
+        context: metadata.context,
+        edit: PlayStartEdit::Audio {
+            clip,
+            position: 48_000,
+        },
+    };
+    let render = |h: &ResidentHarness, gain: f32| {
+        assert!(
+            h.render().iter().all(|f| (f[0] - gain).abs() < 1e-5),
+            "mix should be {gain}"
+        );
+    };
+    let advance = |h: &mut ResidentHarness, previous| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before = status.position.load(Acquire);
+            h.render();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "play-start preview did not apply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    render(&h, 0.5);
+    h.service.audition_arrangement_play_start(Some(target));
+    let preview = advance(&mut h, applied);
+    render(&h, 0.25);
+    assert!(
+        h.service.try_event().is_err(),
+        "preview must leave canonical history alone"
+    );
+
+    h.service.audition_arrangement_play_start(None);
+    let restored = advance(&mut h, preview);
+    render(&h, 0.5);
+
+    h.service.audition_arrangement_play_start(Some(target));
+    let preview = advance(&mut h, restored);
+    h.service.finish_arrangement_play_start_audition();
+    render(&h, 0.25);
+    let committed = h.run(Request::Edit(Command::ResizeAudioClipView {
+        clip,
+        operation: AudioViewResizeOperation::PlayStart { position: 48_000 },
+    }));
+    assert_eq!(committed.state.revision, mixed.state.revision + 1);
+    h.service.retire_arrangement_play_start_audition();
+    let committed = advance(&mut h, preview);
+    render(&h, 0.25);
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let (undone, metadata) = h.applied(committed);
+    render(&h, 0.5);
+
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            ..target
+        }));
+    let preview = advance(&mut h, undone);
+    h.service.finish_arrangement_play_start_audition();
+    h.service
+        .submit(Request::Edit(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { position: u64::MAX },
+        }))
+        .unwrap();
+    let refused = h.next();
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), original);
+    h.service.retire_arrangement_play_start_audition();
+    advance(&mut h, preview);
+    render(&h, 0.5);
+}
+
+#[test]
+fn held_midi_play_start_reschedules_notes_in_the_playing_arrangement() {
+    use hex_project::{BeatTime, Command, Created};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 96_000)));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "midi".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: beat(2),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    let source_edit = |source_start| Command::SetMidiClipSource {
+        clip,
+        source_length: beat(4),
+        source_start,
+        loop_start: BeatTime::ZERO,
+        loop_end: beat(4),
+        looping: true,
+        length: beat(4),
+    };
+    let before = h.run(Request::Edit(source_edit(BeatTime::ZERO)));
+    let (applied, metadata) = h.applied(applied);
+    let first_note_frame = before
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(beat(1))
+        .unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let before_preview = h.render();
+    assert!(before_preview.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            edit: PlayStartEdit::from_midi_command(&source_edit(beat(1))).unwrap(),
+        }));
+    let start = position(&h);
+    let (_, held_metadata) = h.applied(applied);
+    assert_eq!(held_metadata.context, metadata.context);
+    assert!((start..first_note_frame).contains(&position(&h)));
+    let frames_to_note = first_note_frame - position(&h);
+    for _ in 0..frames_to_note.div_ceil(64) {
+        h.render();
+    }
+    assert!((first_note_frame..first_note_frame + 64).contains(&position(&h)));
+    let mixed = h.render();
+    assert!(
+        mixed.iter().any(|f| (f[0] - 0.25).abs() > 0.005),
+        "the shifted MIDI note should sound over the backing audio a beat earlier"
+    );
+    assert!(h.service.try_event().is_err());
+}
+
+#[test]
+fn browser_insert_audition_survives_publication_after_the_entire_clip() {
+    for (quantized, looped) in [(false, false), (true, false), (false, true)] {
+        late_browser_audition(quantized, looped);
+    }
+}
+
+fn late_browser_audition(quantized: bool, looped: bool) {
+    use hex_engine::playback::BrowserAuditionTiming;
+    use hex_project::{BeatTime, Command, ResolvedInputGrid};
+    use hex_session::import_batch_decode::AudioBatchContext;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(16_384);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "audition".into(),
+    }));
+    let (applied, _) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let mixed = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
+    let (applied, metadata) = h.applied(applied);
+    let (revision, applied) = if looped {
+        let looped = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 512,
+            enabled: true,
+        }));
+        (looped.state.revision, h.applied(applied).0)
+    } else {
+        (mixed.state.revision, applied)
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|frame| *frame == [0.0; 2]));
+    let press = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    let grid = if quantized {
+        ResolvedInputGrid::fixed(mixed.state.project.meter_map(), BeatTime::ONE).unwrap()
+    } else {
+        ResolvedInputGrid::off()
+    };
+    let start = grid
+        .snap_frame(mixed.state.project.tempo_map(), press)
+        .unwrap();
+    assert_eq!(start, if quantized { 0 } else { press });
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    let (request, _) = Request::browser_audio_batch(
+        files.wav(48_000, 256),
+        track,
+        start,
+        AudioBatchContext {
+            project_generation: metadata.context.project_generation,
+            revision,
+            active_gesture: false,
+        },
+        Some(BrowserAuditionTiming {
+            grid,
+            transport_epoch: h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .transport_epoch
+                .load(Acquire),
+        }),
+    )
+    .unwrap();
+    h.service.submit(request).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    for _ in 0..6 {
+        assert!(h.render().iter().all(|frame| *frame == [0.0; 2]));
+    }
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    assert!(position(&h) >= start + 256);
+    resume.send(()).unwrap();
+    let imported = h.next();
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = &imported.state.project.track(track).unwrap().clips()[0];
+    assert_eq!((clip.start(), clip.duration()), (start, 256));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut audible = 0;
+    let mut onset = None;
+    loop {
+        let before = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire);
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.performance_frame.load(Acquire), before + 64);
+        assert_eq!(
+            position(&h),
+            if looped {
+                (before + 64) % 512
+            } else {
+                before + 64
+            }
+        );
+        if status.applied_revision.load(Acquire) > applied {
+            let expected = *onset.get_or_insert(if quantized { 24_000 } else { before });
+            for (index, frame) in pcm.into_iter().enumerate() {
+                let at = before + index as u64;
+                if (expected..expected + 256).contains(&at) {
+                    assert_eq!(frame, [0.125; 2], "wrong sample at {at}");
+                    audible += 1;
+                } else {
+                    assert_eq!(frame, [0.0; 2], "sample duplicated at {at}");
+                }
+            }
+            if before >= expected + 256 {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "import did not apply");
+        std::thread::yield_now();
+    }
+    assert_eq!(audible, 256, "monitor must hear the whole late sample");
+    if looped {
+        // The live read survives the first wrap, then the saved clip plays
+        // normally on a later pass from its authored onset.
+        assert!(onset.unwrap() < 512 && onset.unwrap() + 256 > 512);
+        let mut waits = 0;
+        while position(&h) != start {
+            assert!(waits < 8, "saved clip never reached");
+            assert_eq!(h.render(), [[0.0; 2]; 64]);
+            waits += 1;
+        }
+        assert_eq!(h.render(), [[0.125; 2]; 64]);
+    }
+    let undone = h.run(Request::Undo);
+    assert!(
+        undone
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .is_empty()
+    );
+}
+
+#[test]
+fn browser_insert_audition_replaces_the_voice_and_does_not_restart_after_stop() {
+    use hex_engine::playback::BrowserAuditionTiming;
+    use hex_project::{Command, ResolvedInputGrid};
+    use hex_session::import_batch_decode::AudioBatchContext;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(16_384);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "audition".into(),
+    }));
+    let (applied, metadata) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let gain = added.state.project.track(track).unwrap().gain();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+
+    let request = |h: &ResidentHarness, path, revision| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let frame = status.position.load(Acquire);
+        let epoch = status.transport_epoch.load(Acquire);
+        let (request, _) = Request::browser_audio_batch(
+            path,
+            track,
+            frame,
+            AudioBatchContext {
+                project_generation: metadata.context.project_generation,
+                revision,
+                active_gesture: false,
+            },
+            Some(BrowserAuditionTiming {
+                grid: ResolvedInputGrid::off(),
+                transport_epoch: epoch,
+            }),
+        )
+        .unwrap();
+        (request, frame, epoch)
+    };
+    let first_block = |h: &mut ResidentHarness, after| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let pcm = h.render();
+            let revision = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if revision > after {
+                break (revision, pcm);
+            }
+            assert!(Instant::now() < deadline, "import did not apply");
+            std::thread::yield_now();
+        }
+    };
+
+    let (initial, _, _) = request(&h, files.wav(48_000, 1024), added.state.revision);
+    let first = h.run(initial);
+    let (applied, pcm) = first_block(&mut h, applied);
+    assert_eq!(pcm, [[0.25 * gain; 2]; 64]);
+
+    let (replacement, _, _) = request(
+        &h,
+        files.constant_wav("replacement.wav", 48_000, 128, &[16_384]),
+        first.state.revision,
+    );
+    let second = h.run(replacement);
+    let (applied, pcm) = first_block(&mut h, applied);
+    assert_eq!(pcm, [[0.5 * gain; 2]; 64]);
+    assert_eq!(h.render(), [[0.5 * gain; 2]; 64]);
+    // The previous authored sample may leave a right-hand overwrite fragment.
+    // The two blocks above must contain only the new voice.
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    let (pending, captured_frame, epoch) = request(
+        &h,
+        files.constant_wav("late.wav", 48_000, 512, &[8192]),
+        second.state.revision,
+    );
+    h.service.submit(pending).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.playing.load(Acquire));
+    assert_ne!(status.transport_epoch.load(Acquire), epoch);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(12_000))
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    resume.send(()).unwrap();
+    let committed = h.next();
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert!(
+        committed
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .any(|clip| clip.start() == captured_frame),
+        "the original placement remains a valid authored edit"
+    );
+    assert_eq!(first_block(&mut h, applied).1, [[0.0; 2]; 64]);
+}
+
+#[test]
 fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
 
@@ -200,11 +860,11 @@ struct PublicationProbe {
     busy: SyncSender<()>,
 }
 impl WorkerAudioSink for ResidentSink {
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        input: hex_session::service::PluginStateSaveInput<'_>,
+        input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
-        self.inner.capture_plugin_states_for_save(input)
+        self.inner.capture_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.inner.begin_request(cancellation);
@@ -218,8 +878,12 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        self.inner.finish_plugin_state_restore(context, accepted);
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        self.inner.finish_plugin_state_restore(context, result);
     }
     fn plugin_parameter_requires_stopped_restore(
         &mut self,
@@ -505,8 +1169,9 @@ impl WorkerAudioSink for ResidentSink {
     fn prepare_offline_bounce(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
+        control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
-        self.inner.prepare_offline_bounce(input)
+        self.inner.prepare_offline_bounce(input, control)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
@@ -673,7 +1338,21 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        self.inner.begin_section_edit(context, allow_playing)
+        WorkerAudioSink::begin_section_edit(&mut self.inner, context, allow_playing)
+    }
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<(), String> {
+        self.inner.begin_recoverable_section_edit(context)
+    }
+    fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.inner
+            .confirm_section_edit_recovery(context, acceptance)
     }
     fn section_edit_ready(
         &mut self,
@@ -1424,6 +2103,110 @@ fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
 }
 
 #[test]
+fn refused_unpublished_gain_releases_the_fader_and_restart_retires_a_real_preview() {
+    use hex_project::{Command, Created};
+    use hex_session::device_gesture::{
+        GestureKey, GesturePhase, GestureRequest, GestureTarget, ParameterValue,
+    };
+    use std::sync::atomic::Ordering::Release;
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let before = h.run(Request::Edit(Command::AddTrack {
+        name: "gain".into(),
+    }));
+    let Some(Created::Track(track)) = before.created else {
+        panic!("track");
+    };
+    let (mut applied, _) = h.applied(applied);
+    let key = |token| GestureKey {
+        generation: 0,
+        token,
+    };
+    let begin = |token| {
+        Request::DeviceGesture(GestureRequest::Begin {
+            key: key(token),
+            target: GestureTarget::TrackGain { track },
+        })
+    };
+    let change = |token| {
+        Request::DeviceGesture(GestureRequest::Change {
+            key: key(token),
+            sequence: 1,
+            value: ParameterValue::Float(0.5),
+        })
+    };
+    let commit = |token, value| {
+        Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
+            key: key(token),
+            sequence: 2,
+            value: ParameterValue::Float(value),
+        })
+    };
+
+    assert!(h.run(begin(1)).gesture_ack.unwrap().accepted);
+    h.refuse.store(true, Release);
+    let refused = h.run(change(1));
+    assert!(!refused.gesture_ack.unwrap().accepted);
+    assert!(refused.device_preview.is_none());
+    let refused = h.run(commit(1, 0.25));
+    let ack = refused.gesture_ack.unwrap();
+    assert_eq!((ack.key, ack.phase), (key(1), GesturePhase::Commit));
+    assert!(!ack.accepted && !ack.preview_retained && ack.reason.is_some());
+    assert!(refused.active_device_gesture.is_none());
+    assert!(refused.device_preview.is_none());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.project, before.state.project);
+
+    h.refuse.store(false, Release);
+    assert!(h.run(begin(2)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(2)).gesture_ack.unwrap().accepted);
+    (applied, _) = h.applied(applied);
+    let committed = h.run(commit(2, 0.25));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.project.track(track).unwrap().gain(), 0.25);
+    assert_eq!(committed.state.revision, before.state.revision + 1);
+    (applied, _) = h.applied(applied);
+
+    assert!(h.run(begin(3)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(3)).gesture_ack.unwrap().accepted);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.device_preview.unwrap().key, key(3));
+    h.refuse.store(true, Release);
+    let retained = h.run(commit(3, 0.75));
+    assert!(retained.gesture_ack.unwrap().preview_retained);
+    assert!(retained.device_preview.is_some());
+    h.refuse.store(false, Release);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: 0,
+        request_id: 1,
+    });
+    let retired = restarted.gesture_ack.unwrap();
+    assert_eq!((retired.key, retired.phase), (key(3), GesturePhase::Cancel));
+    assert!(!retired.preview_retained);
+    assert!(restarted.active_device_gesture.is_none());
+    assert!(restarted.device_preview.is_none());
+    assert_eq!(restarted.state.revision, committed.state.revision);
+    assert_eq!(restarted.state.project, committed.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (applied, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, committed.state.revision);
+    assert!(metadata.device_preview.is_none());
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, before.state.project);
+    let (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, committed.state.project);
+    h.applied(applied);
+}
+
+#[test]
 fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonical() {
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
@@ -1446,7 +2229,9 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1716,7 +2501,9 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

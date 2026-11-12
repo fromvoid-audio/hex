@@ -16,7 +16,7 @@ fn node_window(
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let start = plot(&mut visual, device, x, 0.5);
-    visual.simulate_click(start, Modifiers::default());
+    eq_double_click(&mut visual, start);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -450,7 +450,7 @@ fn eq_two_cut_nodes_scroll_their_stable_parameters_and_preserve_other_nodes(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let right = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(right, Modifiers::default());
+    eq_double_click(&mut visual, right);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 2
     });
@@ -847,7 +847,7 @@ fn eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles(cx: &mut Tes
         let (handle, editor, _root, device) = node_window(cx, 0.02);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let bell = plot(&mut visual, device, 0.5, 0.5);
-        visual.simulate_click(bell, Modifiers::default());
+        eq_double_click(&mut visual, bell);
         pump_until(&editor, cx, |view| {
             settled(view) && read(view, device).nodes.len() == 2
         });
@@ -1322,7 +1322,7 @@ fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let right = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(right, Modifiers::default());
+    eq_double_click(&mut visual, right);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 2
     });
@@ -1404,7 +1404,7 @@ fn four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos
     let mut visual = VisualTestContext::from_window(handle, cx);
     for (x, count) in [(0.98, 2), (0.5, 3)] {
         let p = plot(&mut visual, device, x, 0.5);
-        visual.simulate_click(p, Modifiers::default());
+        eq_double_click(&mut visual, p);
         pump_until(&editor, cx, |v| {
             settled(v) && read(v, device).nodes.len() == count
         });
@@ -1482,7 +1482,7 @@ fn four_review_queued_saturation_keeps_reversal_before_and_after_replay(cx: &mut
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1556,7 +1556,7 @@ fn four_review_cancel_and_later_blur_retire_queued_streams_without_committing_th
         let (handle, editor, _root, device) = node_window(cx, 0.02);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let b = plot(&mut visual, device, 0.98, 0.5);
-        visual.simulate_click(b, Modifiers::default());
+        eq_double_click(&mut visual, b);
         pump_until(&editor, cx, |v| {
             settled(v) && read(v, device).nodes.len() == 2
         });
@@ -1620,7 +1620,7 @@ fn four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue(
         let (handle, editor, _root, device) = node_window(cx, 0.02);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let b = plot(&mut visual, device, 0.98, 0.5);
-        visual.simulate_click(b, Modifiers::default());
+        eq_double_click(&mut visual, b);
         pump_until(&editor, cx, |v| {
             settled(v) && read(v, device).nodes.len() == 2
         });
@@ -1767,7 +1767,7 @@ fn four_review_noop_predecessor_preserves_successor_and_does_not_add_history(
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1854,7 +1854,7 @@ fn four_review_stream_capacity_refuses_whole_new_burst_and_preserves_accepted_hi
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -1934,7 +1934,7 @@ fn four_review_stale_cancel_cannot_discard_a_newer_queued_stream(cx: &mut TestAp
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -2011,7 +2011,7 @@ fn four_review_escape_on_refused_overflow_stream_cancels_only_queued_context(
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });
@@ -2064,7 +2064,7 @@ fn four_review_blurred_queue_cannot_readmit_a_late_old_begin(cx: &mut TestAppCon
     let (handle, editor, _root, device) = node_window(cx, 0.02);
     let mut visual = VisualTestContext::from_window(handle, cx);
     let b = plot(&mut visual, device, 0.98, 0.5);
-    visual.simulate_click(b, Modifiers::default());
+    eq_double_click(&mut visual, b);
     pump_until(&editor, cx, |v| {
         settled(v) && read(v, device).nodes.len() == 2
     });

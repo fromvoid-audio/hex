@@ -1,6 +1,8 @@
 //! Output lifecycle admission and graph/cursor restoration, without canonical edits.
-use super::EditorView;
+use super::{EditorView, recovery_state::DeferredNativeEffect};
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
+use hex_engine::{AudioSourceContext, NativeDeviceClass};
+use hex_session::service::{NativeDeviceDropSource, Request};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -32,6 +34,104 @@ impl EditorView {
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.stopped_playback_restore.is_none()
             && !self.degraded_plugins.is_empty()
+    }
+
+    pub(super) fn native_effect_insert_needs_recovery(&self, request: &Request) -> bool {
+        (self.has_degraded_vst3_output() || self.recovery.native_effect.is_some())
+            && matches!(
+                request,
+                Request::DropBrowserDeviceOnArrangement {
+                    class: NativeDeviceClass::Effect,
+                    ..
+                } | Request::DropNativeDevice {
+                    source: NativeDeviceDropSource::Browser {
+                        class: NativeDeviceClass::Effect,
+                        ..
+                    },
+                    ..
+                } | Request::AddNativeDevice {
+                    class: NativeDeviceClass::Effect,
+                    ..
+                }
+            )
+    }
+
+    /// Capture a single device insertion before retiring the degraded output.
+    /// The normal command validates the same destination again after recovery.
+    pub(super) fn recover_before_native_effect_insert(&mut self, request: Request) -> bool {
+        if self.recovery.generation().is_some() {
+            self.error = Some("audio recovery pending · wait before adding a device".into());
+            return false;
+        }
+        if self.edit_pending() || self.pending_restart_request.is_some() {
+            self.error =
+                Some("finish the current edit before restarting audio to add the device".into());
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let context = AudioSourceContext {
+            project_generation: self.project_generation,
+            editor_revision: state.revision,
+        };
+        let current = match &request {
+            Request::DropBrowserDeviceOnArrangement {
+                project_generation,
+                revision,
+                ..
+            }
+            | Request::DropNativeDevice {
+                project_generation,
+                revision,
+                ..
+            } => {
+                (*project_generation, *revision)
+                    == (context.project_generation, context.editor_revision)
+            }
+            Request::AddNativeDevice { track, .. } => state.project.track(*track).is_some(),
+            _ => false,
+        };
+        if !current {
+            self.error = Some("device insertion canceled · project changed".into());
+            return false;
+        }
+
+        let playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(Acquire));
+        self.recover_audio();
+        if self.recovery.generation().is_none() {
+            return false;
+        }
+        self.recovery.native_effect = Some(DeferredNativeEffect {
+            context,
+            request: Box::new(request),
+        });
+        if playing {
+            self.defer_play_until_audio_recovers();
+        }
+        self.status = "restarting audio · device will be added when ready".into();
+        true
+    }
+
+    fn submit_recovered_native_effect(&mut self) {
+        let Some(pending) = self.recovery.native_effect.take() else {
+            return;
+        };
+        if pending.context.project_generation != self.project_generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != pending.context.editor_revision)
+        {
+            self.error =
+                Some("device insertion canceled · project changed during audio recovery".into());
+        } else if self.has_degraded_vst3_output() {
+            self.error = Some("plug-in failed during audio recovery · device was not added".into());
+        } else if self.enqueue(*pending.request) {
+            self.status = "adding device".into();
+        }
     }
 
     pub(super) fn defer_play_until_audio_recovers(&mut self) {
@@ -259,6 +359,7 @@ impl EditorView {
             self.pending_recovery_generation = None;
             self.status = "audio ready · stopped".into();
             self.error = None;
+            self.submit_recovered_native_effect();
             return true;
         }
         false
@@ -351,7 +452,7 @@ fn cursor_frame(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod cursor_tests {
     use super::{Cursor, cursor_frame};
     use std::sync::atomic::Ordering::Relaxed;

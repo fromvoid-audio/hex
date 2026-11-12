@@ -439,8 +439,8 @@ fn empty_project_main_lane_does_not_create_an_invalid_selection(cx: &mut TestApp
     let stale_track = project_with_tracks(1).tracks()[0].id();
     editor.update(cx, |view, _| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: stale_track,
-            end_track: stale_track,
+            anchor_track: Some(stale_track),
+            end_track: Some(stale_track),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -460,13 +460,13 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: track_ids[0],
-            end_track: *track_ids.last().expect("tracks"),
+            anchor_track: Some(track_ids[0]),
+            end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track: track_ids[0],
+            track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
@@ -498,14 +498,14 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: track_ids[0],
-            end_track: *track_ids.last().expect("tracks"),
+            anchor_track: Some(track_ids[0]),
+            end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
         view.time_selection_project_scope = true;
         view.edit_cursor = Some(super::edit_cursor::EditCursor {
-            track: track_ids[0],
+            track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
@@ -527,7 +527,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
         assert_eq!(
             view.time_selection
                 .map(|selection| (selection.anchor_track, selection.end_track)),
-            Some((track_ids[0], *track_ids.last().expect("tracks")))
+            Some((Some(track_ids[0]), track_ids.last().copied()))
         );
         assert_eq!(view.selected_track, None);
     });
@@ -540,8 +540,8 @@ fn main_selection_handle_option_drag_copies_the_project_rectangle(cx: &mut TestA
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: track_ids[0],
-            end_track: *track_ids.last().expect("tracks"),
+            anchor_track: Some(track_ids[0]),
+            end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: 48_000,
             end_frame: 144_000,
         });

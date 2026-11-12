@@ -588,15 +588,15 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
     /// Capture every active hosted instance required by this exact canonical
-    /// save input. The existing worker retains request order while the adapter
+    /// capture input. The existing worker retains request order while the adapter
     /// drains each admitted native token to its matching terminal, including
     /// failure/cancellation. No stop, canonical edit or source owner transfer.
     /// An output without native hosting has no runtime states to capture and
     /// preserves the project's opaque unavailable state. Native hosts must
     /// override this method; failed capture must never fall back to empty data.
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        _input: PluginStateSaveInput<'_>,
+        _input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
         Ok(Vec::new())
     }
@@ -627,10 +627,11 @@ pub trait WorkerAudioSink: Send {
     }
     /// Exact same-context recompilation terminal. Before acceptance, the sink
     /// retains its admitted unpublished document graph and original resources.
+    /// Refusals carry the reason for the matching output's recovery consumer.
     fn finish_plugin_state_restore(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-        _accepted: bool,
+        _result: Result<(), &str>,
     ) {
     }
     /// Renew stopped native sources through their original output owner. None
@@ -716,6 +717,7 @@ pub trait WorkerAudioSink: Send {
     fn prepare_offline_bounce(
         &mut self,
         input: ResidentEffectPreparation<'_>,
+        _control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
         if input.requires_plugin_profile() {
             return Err("offline vst3 bounce unavailable for this host".into());
@@ -916,6 +918,23 @@ pub trait WorkerAudioSink: Send {
         Err("native arrangement edits are unavailable".into())
     }
     /// Callback-observed transport. None means the command prefix is pending.
+    /// A structural section edit can recover from a refused same-project
+    /// publication by fencing the exact runtime still installed on the output.
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        self.begin_section_edit(context, true)
+    }
+    /// A recovered section edit must reach its callback terminal before commit.
+    /// An ordinary section edit uses the existing publication contract.
+    fn confirm_section_edit_recovery(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
         None
     }
@@ -1032,6 +1051,7 @@ pub(super) struct WorkerEvents {
     // Observed-request timing only; absent without an installed observer.
     diagnostic_started: Option<std::time::Instant>,
     section_phases: Option<super::diagnostics::SectionPhases>,
+    duplicate_recovery: Option<Duration>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -1048,6 +1068,7 @@ pub(super) struct WorkerEvents {
 }
 /// One bounded control poll may make a previously admitted gesture ready.
 /// The queued user FIFO retains priority over this copied continuation.
+#[derive(Default)]
 pub(super) struct ControlPoll {
     pub pending: bool,
     pub gesture: Option<GestureRequest>,
@@ -1071,6 +1092,7 @@ impl WorkerEvents {
         self.diagnostic = request;
         self.diagnostic_started = request.map(|_| std::time::Instant::now());
         self.section_phases = None;
+        self.duplicate_recovery = None;
         self.diagnostics.emit(
             request,
             super::diagnostics::DiagnosticStage::WorkerBegin {
@@ -1097,6 +1119,17 @@ impl WorkerEvents {
         if let (Some(phases), Some(started)) = (&mut self.section_phases, started) {
             phases.view += started.elapsed();
         }
+        result
+    }
+    /// Time only the supplied duplicate checkpoint call and only when its
+    /// request has an installed diagnostic observer.
+    pub(super) fn measure_duplicate_recovery<T>(&mut self, maintain: impl FnOnce() -> T) -> T {
+        let Some(_) = self.diagnostic else {
+            return maintain();
+        };
+        let started = std::time::Instant::now();
+        let result = maintain();
+        self.duplicate_recovery = Some(started.elapsed());
         result
     }
     pub(super) fn begin_request(
@@ -1167,6 +1200,7 @@ impl WorkerEvents {
             diagnostic: None,
             diagnostic_started: None,
             section_phases: None,
+            duplicate_recovery: None,
             shutdown,
             audio,
             last_context: None,
@@ -1321,8 +1355,15 @@ impl WorkerEvents {
         let diagnostic = self.diagnostic.take();
         let worker = self.diagnostic_started.take().map(|start| start.elapsed());
         let section = self.section_phases.take();
-        self.diagnostics
-            .outcome(diagnostic, &event, false, worker, section);
+        let duplicate_recovery = self.duplicate_recovery.take();
+        self.diagnostics.outcome(
+            diagnostic,
+            &event,
+            false,
+            worker,
+            section,
+            duplicate_recovery,
+        );
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
@@ -1399,13 +1440,14 @@ impl WorkerEvents {
         &mut self,
         queued: QueuedRequest,
         source: hex_engine::AudioSourceContext,
+        recover: bool,
     ) -> Option<QueuedRequest> {
         let sink = self
             .audio
             .as_mut()
             .filter(|audio| audio.resident_publication_enabled())
             .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
-        self.stopped_fence.defer(sink, queued, source)
+        self.stopped_fence.defer(sink, queued, source, recover)
     }
     /// The lease outcome resolved before dispatch for `source`, if any.
     pub(super) fn take_stopped_fence(
@@ -1462,7 +1504,7 @@ impl WorkerEvents {
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> ControlPoll,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>, bool) -> ControlPoll,
     ) -> Option<QueuedRequest> {
         // The original barrier retains its FIFO place. Continue polling SDK/disk
         // work without consuming a later request; accepted New/Open intent and
@@ -1476,6 +1518,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             if let Some(request) =
                 recording_barrier.poll(context, document_intent.load(Ordering::Acquire))
@@ -1503,6 +1546,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             let readiness = self
                 .audio
@@ -1520,6 +1564,7 @@ impl WorkerEvents {
             self.audio
                 .as_mut()
                 .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            false,
         );
         if self.audio.is_none() && !bounded {
             let result = requests.recv().ok();
@@ -1527,6 +1572,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             return result;
         }
@@ -1540,6 +1586,7 @@ impl WorkerEvents {
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                false,
             );
             // Preserve queued New/Open/edit ordering before a callback-ready
             // continuation. No worker wait can strand project replacement.
@@ -1627,7 +1674,14 @@ impl WorkerEvents {
             }
             // Idle only when no worker continuation, control lane or sink work
             // is pending; any of them restores the busy cadence at once.
+            let audition = control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                true,
+            );
             let idle = !control_pending.pending
+                && !audition.pending
                 && plugin_effect.is_none()
                 && stopped_restore.is_none()
                 && !self.stopped_fence.active()
@@ -1644,6 +1698,7 @@ impl WorkerEvents {
                         self.audio
                             .as_mut()
                             .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                        false,
                     );
                     return Some(request);
                 }

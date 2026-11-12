@@ -1,6 +1,8 @@
 //! Control-worker preparation cost, not UI or device deadline acceptance.
-//! `--recovery` and `--no-recovery` compare the real worker with the same
-//! saved-project fixture; no argument retains the direct-session profile.
+//! `--recovery` and `--no-recovery` compare note edits on the real worker;
+//! `--duplicate-recovery` and `--duplicate-no-recovery` profile whole-clip
+//! duplication against the same saved-project fixture. No argument retains
+//! the direct-session profile.
 use hex_project::{
     BeatTime, Command, Created, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project,
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
@@ -82,6 +84,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         audio_feeds: Vec::new(),
@@ -107,7 +110,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     match std::env::args_os().nth(1) {
         Some(arg) if arg == "--recovery" => return profile_service(true),
         Some(arg) if arg == "--no-recovery" => return profile_service(false),
-        Some(_) => return Err("expected --recovery or --no-recovery".into()),
+        Some(arg) if arg == "--duplicate-recovery" => return profile_duplicate_service(true),
+        Some(arg) if arg == "--duplicate-no-recovery" => return profile_duplicate_service(false),
+        Some(_) => {
+            return Err(
+                "expected --recovery, --no-recovery, --duplicate-recovery, or --duplicate-no-recovery".into(),
+            );
+        }
         None => {}
     }
     let project = fixture()?;
@@ -154,35 +163,87 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+struct WorkerProfile {
+    service: Service,
+    root: std::path::PathBuf,
+    document: std::path::PathBuf,
+    document_bytes: usize,
+    recovery: bool,
+}
+
+impl WorkerProfile {
+    fn open(project: &Project, recovery: bool) -> Result<(Self, Event), Box<dyn Error>> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "hex-recovery-profile-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root)?;
+        eprintln!("profile files: {} (retained on error)", root.display());
+        let document = root.join("fixture.hex");
+        let document_bytes = hex_storage::encode(project)?;
+        std::fs::write(&document, &document_bytes)?;
+        let service = if recovery {
+            Service::with_recovery(48_000, 32, 8_000_000, root.join("untitled.hex-journal"))?
+        } else {
+            Service::new(48_000, 32, 8_000_000)?
+        };
+        let initial = next_event(&service, Instant::now() + Duration::from_secs(5))?;
+        if let Some(error) = initial.error {
+            return Err(error.into());
+        }
+        submit(&service, Request::Open(document.clone()))?;
+        let opened = next_terminal(&service)?;
+        if !opened.open_complete || !opened.project_replaced {
+            return Err("fixture open did not replace the project".into());
+        }
+        Ok((
+            Self {
+                service,
+                root,
+                document,
+                document_bytes: document_bytes.len(),
+                recovery,
+            },
+            opened,
+        ))
+    }
+
+    fn verify_journal(&self, last_project: &Project) -> Result<(), Box<dyn Error>> {
+        let journal = hex_storage::journal_path(&self.document)?;
+        if self.recovery {
+            // Future asynchronous implementations may publish after the terminal.
+            // Poll separately from the timed interval and verify the full latest state.
+            let until = Instant::now() + Duration::from_secs(5);
+            while !hex_storage::load_journal(&journal).is_ok_and(|saved| saved == *last_project) {
+                if Instant::now() >= until {
+                    return Err(
+                        "latest recovery checkpoint did not appear within five seconds".into(),
+                    );
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        } else if journal.exists() {
+            return Err("no-recovery control unexpectedly created a journal".into());
+        }
+        Ok(())
+    }
+
+    fn close(mut self) -> Result<(), Box<dyn Error>> {
+        self.service.shutdown(Duration::from_secs(2))?;
+        drop(self.service);
+        std::fs::remove_dir_all(self.root)?;
+        Ok(())
+    }
+}
+
 /// Measure the public worker's request-to-terminal latency with either a real
 /// strict recovery journal or a no-recovery control. This is not UI timing.
 fn profile_service(recovery: bool) -> Result<(), Box<dyn Error>> {
     let project = fixture()?;
     let clip = project.tracks()[0].midi_clips()[0].id();
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "hex-recovery-profile-{}-{unique}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&root)?;
-    eprintln!("profile files: {} (retained on error)", root.display());
-    let document = root.join("fixture.hex");
-    let document_bytes = hex_storage::encode(&project)?;
-    std::fs::write(&document, &document_bytes)?;
-    let mut service = if recovery {
-        Service::with_recovery(48_000, 32, 8_000_000, root.join("untitled.hex-journal"))?
-    } else {
-        Service::new(48_000, 32, 8_000_000)?
-    };
-    let initial = next_event(&service, Instant::now() + Duration::from_secs(5))?;
-    if let Some(error) = initial.error {
-        return Err(error.into());
-    }
-    submit(&service, Request::Open(document.clone()))?;
-    let opened = next_terminal(&service)?;
-    if !opened.open_complete || !opened.project_replaced {
-        return Err("fixture open did not replace the project".into());
-    }
+    let (profile, opened) = WorkerProfile::open(&project, recovery)?;
+    let service = &profile.service;
     let mut times = Vec::with_capacity(20);
     let mut last_project = opened.state.project.clone();
     let mut revision = opened.state.revision;
@@ -191,7 +252,7 @@ fn profile_service(recovery: bool) -> Result<(), Box<dyn Error>> {
     for iteration in 0..11 {
         let started = Instant::now();
         submit(
-            &service,
+            service,
             Request::Edit(Command::AddMidiNote {
                 clip,
                 start: BeatTime::from_quarters(253)?,
@@ -201,7 +262,7 @@ fn profile_service(recovery: bool) -> Result<(), Box<dyn Error>> {
                 velocity: 100,
             }),
         )?;
-        let added = next_terminal(&service)?;
+        let added = next_terminal(service)?;
         let elapsed = started.elapsed();
         revision = revision.checked_add(1).ok_or("revision exhausted")?;
         if added.state.revision != revision {
@@ -214,8 +275,8 @@ fn profile_service(recovery: bool) -> Result<(), Box<dyn Error>> {
             times.push(elapsed.as_micros());
         }
         let started = Instant::now();
-        submit(&service, Request::Edit(Command::RemoveMidiNote(note)))?;
-        let removed = next_terminal(&service)?;
+        submit(service, Request::Edit(Command::RemoveMidiNote(note)))?;
+        let removed = next_terminal(service)?;
         let elapsed = started.elapsed();
         revision = revision.checked_add(1).ok_or("revision exhausted")?;
         if removed.state.revision != revision {
@@ -227,31 +288,204 @@ fn profile_service(recovery: bool) -> Result<(), Box<dyn Error>> {
         last_project = removed.state.project.clone();
     }
     times.sort_unstable();
-    let journal = hex_storage::journal_path(&document)?;
-    if recovery {
-        // Future asynchronous implementations may publish after the terminal.
-        // Poll separately from the timed interval and verify the full latest state.
-        let until = Instant::now() + Duration::from_secs(5);
-        while !hex_storage::load_journal(&journal).is_ok_and(|saved| saved == *last_project) {
-            if Instant::now() >= until {
-                return Err("latest recovery checkpoint did not appear within five seconds".into());
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-    } else if journal.exists() {
-        return Err("no-recovery control unexpectedly created a journal".into());
-    }
+    profile.verify_journal(&last_project)?;
     println!(
         "service recovery={recovery}: 100 tracks, 6400 notes, {} document bytes, 48000 hz, one warmup pair, 20 edit terminals; p50={}us p95={}us max={}us; latest journal {}",
-        document_bytes.len(),
+        profile.document_bytes,
         (times[9] + times[10]) / 2,
         times[18],
         times[19],
         if recovery { "verified" } else { "disabled" }
     );
-    service.shutdown(Duration::from_secs(2))?;
-    drop(service);
-    std::fs::remove_dir_all(root)?;
+    profile.close()
+}
+
+/// Measure source-bound whole-clip duplication on the public worker. The
+/// committed display sample is a headless observation, not an audio callback
+/// acknowledgment or an isolated checkpoint measurement.
+fn profile_duplicate_service(recovery: bool) -> Result<(), Box<dyn Error>> {
+    let project = fixture()?;
+    let clip = project.tracks()[0].midi_clips()[0].id();
+    let (profile, opened) = WorkerProfile::open(&project, recovery)?;
+    let service = &profile.service;
+    let baseline = opened.state.project.snapshot();
+
+    // Opening the fixture advances the default document generation from zero
+    // to one. DuplicateClips requires this source identity on every submission.
+    let project_generation = 1;
+    let track = opened.state.project.tracks()[0].id();
+    let mut revision = opened.state.revision;
+    let mut last_project = opened.state.project.clone();
+    let mut duplicate_times = Vec::with_capacity(10);
+    let mut observation_times = Vec::with_capacity(10);
+
+    // One complete duplicate/undo pair warms the worker and journal. Ten
+    // further pairs provide bounded repeated measurements on the same fixture.
+    for iteration in 0..11 {
+        let started = Instant::now();
+        submit(
+            service,
+            Request::DuplicateClips {
+                project_generation,
+                revision,
+                clips: vec![clip],
+            },
+        )?;
+        let (duplicated, elapsed, observed_at) =
+            next_duplicate_terminal(service, project_generation, revision, track, started)?;
+        revision = revision.checked_add(1).ok_or("revision exhausted")?;
+        if duplicated.state.revision != revision {
+            return Err("clip duplication acknowledged the wrong revision".into());
+        }
+        let Some(Created::Clips { first, last }) = duplicated.created else {
+            return Err("clip duplication did not return created clips".into());
+        };
+        if first != last
+            || duplicated.state.project.track(track).is_none_or(|track| {
+                track.midi_clips().len() != 2
+                    || !track
+                        .midi_clips()
+                        .iter()
+                        .any(|candidate| candidate.id() == first)
+            })
+        {
+            return Err("clip duplication did not produce exactly one duplicate".into());
+        }
+        if iteration > 0 {
+            duplicate_times.push(elapsed);
+            if let Some(observed_at) = observed_at {
+                observation_times.push((observed_at, elapsed.saturating_sub(observed_at)));
+            }
+            println!(
+                "duplicate recovery={recovery} iteration={} submit_to_terminal={}us{}",
+                iteration,
+                elapsed,
+                observed_at.map_or_else(
+                    || "; headless_display_observation=missed".to_owned(),
+                    |observed| format!(
+                        "; submit_to_headless_display_observation={observed}us; observation_to_terminal={}us",
+                        elapsed.saturating_sub(observed)
+                    )
+                )
+            );
+        }
+
+        submit(service, Request::Undo)?;
+        let undone = next_terminal(service)?;
+        revision = revision.checked_add(1).ok_or("revision exhausted")?;
+        let mut restored = undone.state.project.snapshot();
+        // Undo preserves the allocator high-water mark from the duplicate.
+        restored.next_id = baseline.next_id;
+        if undone.state.revision != revision || restored != baseline {
+            return Err("undo did not restore the fixture project".into());
+        }
+        last_project = undone.state.project.clone();
+    }
+
+    duplicate_times.sort_unstable();
+    profile.verify_journal(&last_project)?;
+    println!(
+        "duplicate summary recovery={recovery}: 100 tracks, 6400 notes, {} document bytes, 48000 hz, 1 warmup and 10 duplicate/undo trials; submit-to-terminal p50={}us p95={}us max={}us; latest journal {}",
+        profile.document_bytes,
+        (duplicate_times[4] + duplicate_times[5]) / 2,
+        duplicate_times[9],
+        duplicate_times[9],
+        if recovery { "verified" } else { "absent" }
+    );
+    if !observation_times.is_empty() {
+        let mut submit_to_observation: Vec<_> = observation_times
+            .iter()
+            .map(|(observed, _)| *observed)
+            .collect();
+        let mut observation_to_terminal: Vec<_> = observation_times
+            .iter()
+            .map(|(_, terminal)| *terminal)
+            .collect();
+        submit_to_observation.sort_unstable();
+        observation_to_terminal.sort_unstable();
+        let middle = submit_to_observation.len() / 2;
+        println!(
+            "headless display observation: received {}/10; submit-to-observation median={}us; observation-to-terminal median={}us (not audio callback or exclusive checkpoint timing)",
+            observation_times.len(),
+            submit_to_observation[middle],
+            observation_to_terminal[middle]
+        );
+    }
+    profile.close()
+}
+
+fn next_duplicate_terminal(
+    service: &Service,
+    project_generation: u64,
+    previous_revision: u64,
+    track_id: hex_project::TrackId,
+    started: Instant,
+) -> Result<(Event, u128, Option<u128>), Box<dyn Error>> {
+    let expected_revision = previous_revision
+        .checked_add(1)
+        .ok_or("revision exhausted")?;
+    let until = started + Duration::from_secs(5);
+    let mut observed = None;
+    let receive_view = || -> Result<bool, Box<dyn Error>> {
+        let observation = match service.try_duplicate_view() {
+            Ok(observation) => observation,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let state = observation
+            .state
+            .upgrade()
+            .ok_or("duplicate display observation state expired")?;
+        if observation.project_generation != project_generation
+            || observation.previous_revision != previous_revision
+            || state.revision != expected_revision
+            || state
+                .project
+                .track(track_id)
+                .is_none_or(|track| track.midi_clips().len() != 2)
+        {
+            return Err(
+                "duplicate display observation did not match its source and committed state".into(),
+            );
+        }
+        Ok(true)
+    };
+    loop {
+        if Instant::now() >= until {
+            return Err(
+                io::Error::new(io::ErrorKind::TimedOut, "duplicate terminal timeout").into(),
+            );
+        }
+        if observed.is_none() && receive_view()? {
+            observed = Some(started.elapsed().as_micros());
+        }
+        match service.try_event() {
+            Ok(event) => {
+                let elapsed = started.elapsed().as_micros();
+                verify_event(&event)?;
+                if event.request_complete {
+                    // Drain a view published between the two polls so it cannot
+                    // be mistaken for the next duplicate. This sample has no
+                    // separately observed display-to-terminal interval.
+                    if observed.is_none() {
+                        receive_view()?;
+                    }
+                    return Ok((event, elapsed, observed));
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => thread::yield_now(),
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn verify_event(event: &Event) -> Result<(), Box<dyn Error>> {
+    if let Some(error) = &event.error {
+        return Err(error.clone().into());
+    }
+    if let Some(failure) = &event.recovery_failure {
+        return Err(format!("automatic recovery failed: {}", failure.explanation).into());
+    }
     Ok(())
 }
 
@@ -285,12 +519,7 @@ fn next_terminal(service: &Service) -> Result<Event, Box<dyn Error>> {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "session terminal timeout").into());
         }
         let event = next_event(service, until)?;
-        if let Some(error) = &event.error {
-            return Err(error.clone().into());
-        }
-        if let Some(failure) = &event.recovery_failure {
-            return Err(format!("automatic recovery failed: {}", failure.explanation).into());
-        }
+        verify_event(&event)?;
         if event.request_complete {
             return Ok(event);
         }

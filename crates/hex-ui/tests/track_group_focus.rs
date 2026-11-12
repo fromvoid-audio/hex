@@ -1,4 +1,6 @@
 //! Focused visibility contract using the same private projection as the UI.
+#[path = "../src/editor/arrangement_focus/interval.rs"]
+mod interval;
 #[path = "../src/editor/track_reorder/subtree.rs"]
 mod subtree;
 #[path = "../src/editor/track_hierarchy_indent.rs"]
@@ -77,8 +79,11 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
             .unwrap()
     };
     assert!(!source.permits(index(inner), Some(outer)));
-    assert!(!source.permits_group(index(inner), inner));
+    assert!(!source.permits_group(inner));
     assert!(!source.permits(index(inside), Some(inner)));
+    assert!(!source.group_ends_by(inner, index(inside)));
+    assert!(source.group_ends_by(inner, index(unrelated)));
+    assert!(source.group_ends_by(outer, index(unrelated)));
     assert!(
         !source.permits(index(unrelated), None),
         "the boundary after the complete subtree is a no-op"
@@ -89,8 +94,8 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     );
     let nested =
         subtree::SourceRows::capture(project, &TrackSelectionIds::new(&[inner]).unwrap()).unwrap();
-    assert!(nested.permits_group(index(unrelated), unrelated));
-    assert!(!nested.permits_group(index(outer), outer));
+    assert!(nested.permits_group(unrelated));
+    assert!(!nested.permits_group(outer));
     assert!(
         nested.permits(index(unrelated), None),
         "unchanged order can still reparent a subtree"
@@ -525,4 +530,172 @@ fn gap_queries_deduplicate_adjacent_rows_and_handle_all_hidden_or_all_visible() 
     assert!(state.indices.is_empty());
     assert!(state.all_tracks_hidden());
     assert!(!state.hidden_before(usize::MAX) && !state.hidden_after(usize::MAX));
+}
+
+#[cfg(test)]
+mod source_tag_projection_tests {
+    use super::visibility::*;
+    use hex_project::{Command, Created, Editor, Project, TrackTag};
+    #[test]
+    fn tag_filter_is_view_only_cached_clearable_and_generation_bound() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut tracks = Vec::new();
+        for name in ["kick", "hat", "bass"] {
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            tracks.push(track);
+        }
+        let drums = TrackTag::new("drums").unwrap();
+        for track in &tracks[..2] {
+            editor
+                .execute(Command::SetTrackTags {
+                    track: *track,
+                    tags: vec![drums.clone()],
+                })
+                .unwrap();
+        }
+        let canonical = editor.project().clone();
+        let mut projection = Projection::default();
+        projection.rebuild(1, 1, &canonical, &[], None);
+        projection.set_tag_filter(Some(drums));
+        assert!(projection.rebuild(1, 1, &canonical, &[], None));
+        assert_eq!(projection.indices, vec![0, 1]);
+        assert_eq!(projection.console_indices, vec![0, 1]);
+        let ptr = projection.indices.as_ptr();
+        for _ in 0..1000 {
+            assert!(!projection.rebuild(1, 1, &canonical, &[], None));
+        }
+        assert_eq!(projection.indices.as_ptr(), ptr);
+        projection.set_tag_filter(Some(TrackTag::new("no match").unwrap()));
+        projection.rebuild(1, 1, &canonical, &[], None);
+        assert!(projection.indices.is_empty());
+        assert!(projection.console_indices.is_empty());
+        projection.set_tag_filter(None);
+        projection.rebuild(1, 1, &canonical, &[], None);
+        assert_eq!(projection.indices, vec![0, 1, 2]);
+        projection.set_tag_filter(Some(TrackTag::new("drums").unwrap()));
+        projection.rebuild(2, 1, &canonical, &[], None);
+        assert!(projection.tag_filter().is_none());
+        assert_eq!(projection.indices, vec![0, 1, 2]);
+        assert_eq!(editor.project(), &canonical);
+    }
+    #[test]
+    fn hundred_track_filter_and_cached_repaint_cost_remain_separate() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let tag = TrackTag::new("drums").unwrap();
+        for index in 0..100 {
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: format!("track {index}"),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            if index % 2 == 0 {
+                editor
+                    .execute(Command::SetTrackTags {
+                        track,
+                        tags: vec![tag.clone()],
+                    })
+                    .unwrap();
+            }
+        }
+        let project = editor.project();
+        let mut projection = Projection::default();
+        projection.rebuild(1, 1, project, &[], None);
+        let before = std::time::Instant::now();
+        for _ in 0..10000 {
+            assert!(!std::hint::black_box(&mut projection).rebuild(1, 1, project, &[], None));
+        }
+        let unfiltered = before.elapsed();
+        projection.set_tag_filter(Some(tag));
+        let before = std::time::Instant::now();
+        projection.rebuild(1, 1, project, &[], None);
+        let rebuild = before.elapsed();
+        assert_eq!(projection.indices.len(), 50);
+        let before = std::time::Instant::now();
+        for _ in 0..10000 {
+            assert!(!std::hint::black_box(&mut projection).rebuild(1, 1, project, &[], None));
+        }
+        eprintln!(
+            "tag filter100tracks unoptimized: rebuild {rebuild:?}; cached10000 unfiltered {unfiltered:?}, filtered {:?}",
+            before.elapsed()
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_hierarchy_indent_tests {
+    use super::track_hierarchy_indent::*;
+    use hex_project::{Command, Created, Editor, ElementColor, Project, TrackSelectionIds};
+
+    #[test]
+    fn nested_ancestors_follow_canonical_order_and_refresh_colours() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut ids = Vec::new();
+        for name in ["a", "b", "c"] {
+            let Created::Track(id) = editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            ids.push(id);
+        }
+        let Created::Track(inner) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&ids[..2]).unwrap(),
+                name: "inner".into(),
+            })
+            .unwrap()
+        else {
+            panic!("inner group")
+        };
+        let Created::Track(outer) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[inner, ids[2]]).unwrap(),
+                name: "outer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("outer group")
+        };
+        editor
+            .execute(Command::SetTrackColor {
+                track: outer,
+                color: ElementColor::Red,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTrackColor {
+                track: inner,
+                color: ElementColor::Blue,
+            })
+            .unwrap();
+        let mut projection = HierarchyIndent::default();
+        projection.reconcile(1, 1, editor.project());
+        assert!(projection.ancestors(outer).is_empty());
+        assert_eq!(projection.ancestors(inner), &[(outer, ElementColor::Red)]);
+        assert_eq!(
+            projection.ancestors(ids[0]),
+            &[(outer, ElementColor::Red), (inner, ElementColor::Blue)]
+        );
+        assert_eq!(projection.pixels(ids[0]), 8.0);
+        editor
+            .execute(Command::SetTrackColor {
+                track: outer,
+                color: ElementColor::Green,
+            })
+            .unwrap();
+        projection.reconcile(1, 2, editor.project());
+        assert_eq!(
+            projection.ancestors(ids[0])[0],
+            (outer, ElementColor::Green)
+        );
+    }
 }

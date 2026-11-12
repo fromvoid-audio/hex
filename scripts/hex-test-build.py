@@ -30,7 +30,23 @@ if __name__ != "hex_update_runtime":
         raise RuntimeError("local CI module unavailable")
     ci = importlib.util.module_from_spec(SPEC)
     sys.modules[SPEC.name] = ci
-    SPEC.loader.exec_module(ci)
+    # Bind execution to a regular source file, without following a symlink or
+    # blocking on a substituted FIFO, and do not trust timestamp-valid pyc.
+    directory = os.open(ROOT / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open("local-ci.py", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError("local CI source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                source = stream.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+    ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+    exec(compile(source, SPEC.origin, "exec", dont_inherit=True), ci.__dict__)
 
     CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
     if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
@@ -917,7 +933,21 @@ def apply_after_approved_parent_exit(parent_pid: int, approval_fd: int, ready_fd
     return _apply_verified_pending(target, selected_receipt_sha256)
 
 
+def _require_delivery_sources(runner) -> None:
+    """Check both policy consumers without looking up mutable module names."""
+    error = ci.delivery_source_error(runner.root)
+    if error is not None:
+        raise DeliveryError("delivery CI source mismatch: " + error)
+    verify = getattr(type(runner), "delivery_source_error", None)
+    if not callable(verify):
+        raise DeliveryError("runner source witness is unavailable")
+    error = verify(runner)
+    if error is not None:
+        raise DeliveryError("runner CI source mismatch: " + error)
+
+
 def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
+    _require_delivery_sources(runner)
     evidence = json.loads(report.read_text())
     if not isinstance(evidence, dict):
         raise DeliveryError("CI certificate must be an object")
@@ -949,10 +979,12 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
                 or not plan.get("qualifies_merge") or plan.get("source") != candidate):
             raise DeliveryError("invalid scoped verification plan")
         metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], runner.root))
+        _require_delivery_sources(runner)
         resolved = ci.ci_plan.resolve(runner.root, profile=plan["profile"], base=plan["base"], source=candidate,
                                       metadata=metadata, allow_same_tree_merge=True)
         if plan.get("reuse"):
             resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]))
+        _require_delivery_sources(runner)
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
         expected_steps = [(step.step_id, list(step.argv)) for step in ci.planned_steps(plan)]
@@ -999,11 +1031,13 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
                 raise DeliveryError("CI toolchain/configuration inputs differ from the guarded delivery")
         except (OSError, ValueError, RuntimeError, ci.TargetCacheError) as error:
             raise DeliveryError(f"cannot revalidate CI toolchain/configuration inputs: {error}") from error
+    _require_delivery_sources(runner)
     return evidence
 
 
 def validate_source(runner, candidate: str, expected: dict | None = None) -> dict:
     """Freeze clean exact source for build-only launch; this is not CI evidence."""
+    _require_delivery_sources(runner)
     if not runner._capture_repository_state("start_tree"):
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]
@@ -1011,6 +1045,7 @@ def validate_source(runner, candidate: str, expected: dict | None = None) -> dic
             or current["dirty"] or current["commit"] != candidate
             or (expected is not None and current != expected)):
         raise DeliveryError("build-only source is dirty, changed or differs from the exact candidate")
+    _require_delivery_sources(runner)
     return dict(current)
 
 

@@ -35,7 +35,12 @@
 //! preparation must preserve project, IDs and history.
 mod sidechain;
 pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
+mod arrangement_locators;
 mod arrangement_occupancy;
+pub use arrangement_locators::{
+    ArrangementLocator, ArrangementLocatorAppearance, ArrangementLocatorSnapshot,
+    MAX_ARRANGEMENT_LOCATORS,
+};
 mod arrangement_sections;
 pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
@@ -86,13 +91,13 @@ pub use audio_edit::{
     AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioFade,
-    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler, WarpSettings,
-    audio_projection_beat, audio_projection_frame, audio_projection_frame_q32, default_audio_warp,
-    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioCycles,
+    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler,
+    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
+    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
-pub use content_window::{ContentWindow, RepeatBoundaryPlan};
+pub use content_window::{ContentWindow, RepeatBoundaryPlan, RepeatCycles};
 mod appearance;
 mod bounce;
 mod clip_conversion;
@@ -216,7 +221,9 @@ pub use session::{
     SessionMidiClip, SessionSceneTarget, session_audio_source_frame,
 };
 pub mod timebase;
-pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
+pub use edit::{
+    Command, Created, InstrumentLoadPlacement, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+};
 pub use history::{Editor, SampleRateHistoryAction};
 mod import_existing;
 pub use import_existing::ExistingAudioPlacement;
@@ -227,7 +234,9 @@ pub use midi::{
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
-pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
+pub use midi_note_overwrite::{
+    MidiNoteOverwriteChange, MidiNoteOverwriteGeometry, MidiNoteOverwritePreview,
+};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };
@@ -282,6 +291,7 @@ identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
 identifier!(SectionId);
+identifier!(LocatorId);
 identifier!(SourceId);
 
 /// Optional half-open timeline region used by prepared playback.
@@ -392,7 +402,7 @@ impl Asset {
 }
 
 mod clip_fade;
-pub use clip_fade::ClipFade;
+pub use clip_fade::{ClipFade, FadeCurveLaw};
 
 /// Edge used by clip trimming and structural section resizing.
 /// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
@@ -708,6 +718,7 @@ pub struct Project {
     pub(crate) aliases: clip_alias::ClipAliases,
     pub(crate) native_sources: Vec<NativeSource>,
     pub(crate) arrangement_sections: Vec<ArrangementSection>,
+    pub(crate) arrangement_locators: std::sync::Arc<Vec<ArrangementLocator>>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
@@ -741,6 +752,7 @@ impl Project {
             aliases: clip_alias::ClipAliases::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Default::default(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
@@ -774,6 +786,7 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning: _,
             routing,
             audio_feeds,
@@ -797,6 +810,7 @@ impl Project {
         aliases == &other.aliases
             && native_sources == &other.native_sources
             && arrangement_sections == &other.arrangement_sections
+            && arrangement_locators == &other.arrangement_locators
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes

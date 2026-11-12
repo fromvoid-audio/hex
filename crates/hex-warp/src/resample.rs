@@ -333,6 +333,7 @@ mod cache_tests {
             let mut work = Work {
                 cancel: &mut cancel,
                 used: 0,
+                limit: MAX_WORK_UNITS,
                 scratch: 0,
                 base_scratch: 0,
                 resampler,

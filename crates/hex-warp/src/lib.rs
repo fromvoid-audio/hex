@@ -321,6 +321,7 @@ pub struct Rendered {
 struct Work<'a> {
     cancel: &'a mut dyn FnMut() -> bool,
     used: u64,
+    limit: u64,
     scratch: usize,
     base_scratch: usize,
     resampler: Resampler,
@@ -328,7 +329,7 @@ struct Work<'a> {
 impl Work<'_> {
     fn check(&mut self, amount: u64) -> Result<(), Error> {
         self.used = self.used.checked_add(amount).ok_or(Error::WorkLimit)?;
-        if self.used > MAX_WORK_UNITS {
+        if self.used > self.limit {
             return Err(Error::WorkLimit);
         }
         if (self.cancel)() {
@@ -440,6 +441,11 @@ pub fn render_with_resampler(
     let mut work = Work {
         cancel,
         used: 0,
+        limit: if matches!(request.mode, Mode::Beats { .. }) {
+            beats::MAX_RENDER_WORK_UNITS
+        } else {
+            MAX_WORK_UNITS
+        },
         scratch: base_scratch,
         base_scratch,
         resampler,

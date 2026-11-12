@@ -229,7 +229,7 @@ pub(super) fn reduce(
     reducer.paths
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{PlotPoint, recorded_knots, reduce, visible_range, visible_sections};
     use hex_project::{AutomationValue, BeatTime, DeviceAutomationTouchSpan};

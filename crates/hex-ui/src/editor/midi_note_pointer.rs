@@ -35,13 +35,14 @@ fn cursor(kind: HitKind, copy: bool) -> CursorStyle {
     }
 }
 impl EditorView {
+    // The pressed note came from the captured source. Canonical note edits
+    // install a new revision, so later pointer events need only check identity.
     fn note_pointer_single_context(&self, c: GroupContext) -> GestureContext {
         GestureContext {
             generation: c.generation,
             revision: c.revision,
             selected_clip: c.clip,
             selected_note: self.midi_selection.primary(),
-            clip_contains_note: true,
             pending: c.pending,
             beat_start: c.beat_start,
             beat_span: c.beat_span,
@@ -94,7 +95,6 @@ impl EditorView {
                         revision: f.revision,
                         selected_clip: Some(f.clip),
                         selected_note: Some(key.note),
-                        clip_contains_note: true,
                         pending: false,
                         beat_start: f.view_start,
                         beat_span: f.view_span,
@@ -205,9 +205,10 @@ impl EditorView {
             changed |= g.update(point, modifiers.platform);
             return changed;
         }
-        let current = self.midi_note_gesture.as_ref().is_some_and(|g| {
-            self.midi_note_gesture_current(g, self.note_pointer_single_context(context))
-        });
+        let current = self
+            .midi_note_gesture
+            .as_ref()
+            .is_some_and(|g| midi_drag::is_current(g, self.note_pointer_single_context(context)));
         if !current {
             return self.midi_note_gesture.take().is_some() | changed;
         }
@@ -278,7 +279,7 @@ impl EditorView {
         let Some(mut g) = self.midi_note_gesture.take() else {
             return;
         };
-        if !self.midi_note_gesture_current(&g, self.note_pointer_single_context(context))
+        if !midi_drag::is_current(&g, self.note_pointer_single_context(context))
             || !midi_drag::release_is_inside(&g, point[0], point[1])
         {
             return;

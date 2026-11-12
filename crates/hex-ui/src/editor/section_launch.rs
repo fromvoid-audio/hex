@@ -1,33 +1,42 @@
-//! Transient section audition intent; seek preparation/publication retains all
-//! graph/resource custody. Pointer gestures dispatch only stationary ordinary
-//! section clicks. A newer click cancels the previous seek through its exact
-//! preparation/publication token; toolbar mode does not own a playback timer.
-use super::EditorView;
-use gpui::{Bounds, Pixels, point, px, size};
+//! Section launch edits the ordinary Arrangement loop, then starts the existing
+//! quantized seek from that exact revision once audio has applied it. Only the
+//! launch is cancellable after the loop edit is admitted.
+use super::{
+    EditorView,
+    audio_admission::{AdmissionState, ProjectRevision},
+};
 use hex_project::{LoopRegion, SectionId};
 use hex_session::arrangement_seek::SectionLaunch;
 
 gpui::actions!(hex_section_launch, [ActivateSectionLaunch]);
 pub(super) fn bind_keys(cx: &mut gpui::App) {
-    cx.bind_keys([
-        gpui::KeyBinding::new("enter", ActivateSectionLaunch, Some("hex_section_launch")),
-        gpui::KeyBinding::new("space", ActivateSectionLaunch, Some("hex_section_launch")),
-    ]);
+    cx.bind_keys([gpui::KeyBinding::new(
+        "enter",
+        ActivateSectionLaunch,
+        Some("hex_section_launch"),
+    )]);
+}
+
+pub(super) struct SectionLaunchAfterLoop {
+    project: ProjectRevision,
+    section: SectionLaunch,
 }
 
 impl EditorView {
     pub(super) fn toggle_section_autoplay(&mut self) {
         self.section_autoplay = !self.section_autoplay;
         if !self.section_autoplay
-            && (self
-                .prepared_seek
-                .as_ref()
-                .is_some_and(|seek| seek.kind.section().is_some())
+            && (self.section_launch_waiting()
+                || self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.kind.section().is_some())
                 || self
                     .latched_seek_intent
                     .as_ref()
                     .is_some_and(|seek| seek.kind.section().is_some()))
         {
+            self.cancel_section_launch_wait();
             self.invalidate_prepared_seek();
         }
         self.status = if self.section_autoplay {
@@ -64,45 +73,93 @@ impl EditorView {
                 .map_err(|_| "section must contain a positive playback interval")
         })();
         match region {
-            Ok(region) => self.request_section_launch(SectionLaunch {
+            Ok(region) => self.set_loop_and_launch_section(SectionLaunch {
                 region,
                 quantization: self.session_quantization,
             }),
             Err(error) => self.error = Some(error.into()),
         }
     }
-}
 
-pub(super) const ACTION_SIZE: f32 = 12.0;
-pub(super) const ACTION_LEFT: f32 = 6.0;
-pub(super) const ACTION_TOP: f32 = 1.0;
-/// One geometry contract for the painted action and the raw capture exclusion.
-pub(super) fn action_bounds(left: f32, top: f32, width: f32) -> Option<Bounds<Pixels>> {
-    if !left.is_finite() || !top.is_finite() || !width.is_finite() || width < 26.0 {
-        return None;
-    }
-    let x = left + ACTION_LEFT;
-    let y = top + ACTION_TOP;
-    (x.is_finite() && y.is_finite())
-        .then(|| Bounds::new(point(px(x), px(y)), size(px(ACTION_SIZE), px(ACTION_SIZE))))
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn action_bounds_keep_narrow_sections_and_header_edges_exact() {
-        assert!(action_bounds(10.0, 20.0, 25.99).is_none());
-        assert_eq!(
-            action_bounds(10.0, 20.0, 26.0),
-            Some(Bounds::new(
-                point(px(16.0), px(21.0)),
-                size(px(12.0), px(12.0))
-            ))
-        );
-        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(action_bounds(bad, 0.0, 100.0).is_none());
-            assert!(action_bounds(0.0, bad, 100.0).is_none());
-            assert!(action_bounds(0.0, 0.0, bad).is_none());
+    fn set_loop_and_launch_section(&mut self, section: SectionLaunch) {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error = Some("section playback is unavailable in verified streaming mode".into());
+            return;
+        }
+        if self.audible_playback.is_none() || self.audio_status().is_none() {
+            self.error = Some("section playback source is unavailable".into());
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if state.project.loop_region() == Some(section.region) {
+            self.section_loop_committed(section);
+        } else {
+            self.submit_section_launch_loop(section);
         }
     }
+
+    pub(super) fn section_loop_committed(&mut self, section: SectionLaunch) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if state.project.loop_region() != Some(section.region) {
+            return;
+        }
+        self.section_launch_after_loop = Some(SectionLaunchAfterLoop {
+            project: ProjectRevision {
+                generation: self.project_generation,
+                revision: state.revision,
+            },
+            section,
+        });
+        self.wake_poll();
+    }
+
+    pub(super) fn tick_section_launch(&mut self) -> bool {
+        let Some(pending) = self.section_launch_after_loop.as_ref() else {
+            return false;
+        };
+        if self.mode != super::EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || self
+                .audio
+                .as_ref()
+                .is_none_or(|audio| !super::arrangement_seek::audio_ready_for_seek(&audio.control))
+            || self.project_generation != pending.project.generation
+            || self.state.as_ref().is_none_or(|state| {
+                state.revision != pending.project.revision
+                    || state.project.loop_region() != Some(pending.section.region)
+            })
+            || self.audio_admission.current().is_some_and(|admission| {
+                admission.project == pending.project
+                    && matches!(admission.state, AdmissionState::Rejected(_))
+            })
+        {
+            self.section_launch_after_loop = None;
+            return true;
+        }
+        if self.applied_project_revision() != Some(pending.project.revision) {
+            return false;
+        }
+        let section = pending.section;
+        self.section_launch_after_loop = None;
+        self.request_section_launch(section);
+        true
+    }
+
+    pub(super) fn section_launch_waiting(&self) -> bool {
+        self.section_launch_after_loop.is_some() || self.pending_loop_launch()
+    }
+
+    pub(super) fn cancel_section_launch_wait(&mut self) {
+        self.section_launch_after_loop = None;
+        self.cancel_pending_loop_launch();
+    }
 }
+
+#[path = "section_launch/geometry.rs"]
+mod geometry;
+pub(super) use geometry::{ACTION_LEFT, ACTION_SIZE, ACTION_TOP, action_bounds};

@@ -759,7 +759,7 @@ fn gesture_target_matches(key: GraphKey, node_id: u32, target: GestureTarget) ->
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

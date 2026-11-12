@@ -15,7 +15,7 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
     cx.update(crate::editor::bind_editor_keys);
     editor.update(cx, |view, cx| {
         view.edit_cursor = Some(EditCursor {
-            track,
+            track: Some(track),
             frame: 256,
             generation: view.project_generation,
             pulse_color: 0xffffff,

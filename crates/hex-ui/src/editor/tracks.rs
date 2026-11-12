@@ -1,3 +1,14 @@
+#[path = "tracks/clone_source_window.rs"]
+mod clone_source_window;
+#[path = "tracks/group_overlap.rs"]
+mod group_overlap;
+
+pub(super) use group_overlap::group_overlap_spans;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "tracks/midi_trim_unit_tests.rs"]
+mod midi_trim_unit_tests;
+
 use super::clip_boundary::clip_boundary_shell;
 use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
 use super::time_move_preview::{
@@ -8,7 +19,7 @@ use super::trim::{TrimDrag, loop_handles};
 use super::viewport::Viewport;
 use super::waveform::{
     ClipTooltip, button, fade_envelope_samples, toggle_button_with_style,
-    waveform_source_segment_view, waveform_summary_view,
+    waveform_source_segment_view_cached, waveform_summary_view_cached,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -16,6 +27,8 @@ use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb, rgba,
 };
 use hex_project::{BeatTime, Clip, MidiClip, Track};
+
+use clone_source_window::clone_source_window;
 
 /// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
 /// strip excludes handles and cannot define its horizontal thirds. The canvas
@@ -54,6 +67,7 @@ struct ClipGhostDecor {
     selector: &'static str,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     contents: Option<Div>,
+    waveform_cache: std::rc::Rc<super::waveform_geometry::WaveformViewCache>,
 }
 
 /// Body-only clipping leaves the title and outer selection/rounded mask intact.
@@ -110,6 +124,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         selector,
         grid,
         contents,
+        waveform_cache,
     } = decor;
     let stroke = 1.0 / scale.max(1.0);
     let has_border = hex_widgets::rectangle_border_width(width) > 0.0;
@@ -129,6 +144,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             0.0
         },
         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+        header_gradient: None,
         notch: super::clip_boundary::Notch::new(has_border && notched),
     };
     let mut ghost = hex_widgets::rectangle_surface_pixels(left, top, width, height)
@@ -161,8 +177,9 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
         ghost = ghost.children([loop_handles::body(
-            clip_waveform_body(waveform_summary_view(
+            clip_waveform_body(waveform_summary_view_cached(
                 std::sync::Arc::clone(waveform),
+                waveform_cache,
                 theme::waveform_ink_for_fill(fill),
             )),
             looping,
@@ -299,36 +316,6 @@ fn clip_fade_layer(samples: Vec<(f32, f32)>, active: bool) -> impl IntoElement +
     .bottom_0()
 }
 
-/// Map only display coordinates into the known original crop. This is a visual
-/// clone of accepted data, never a newly compiled destination-audio projection.
-fn clone_source_window(
-    source: (u64, u64),
-    destination: (u64, u64),
-    visible: (u64, u64),
-) -> Option<(u64, u64)> {
-    let source_length = source.1.checked_sub(source.0).filter(|n| *n > 0)?;
-    let destination_length = destination
-        .1
-        .checked_sub(destination.0)
-        .filter(|n| *n > 0)?;
-    let left = visible.0.max(destination.0);
-    let right = visible.1.min(destination.1);
-    if left >= right {
-        return None;
-    }
-    let start = u128::from(left.checked_sub(destination.0)?) * u128::from(source_length)
-        / u128::from(destination_length);
-    let end = (u128::from(right.checked_sub(destination.0)?) * u128::from(source_length))
-        .div_ceil(u128::from(destination_length));
-    Some((
-        source.0.checked_add(u64::try_from(start).ok()?)?,
-        source
-            .0
-            .checked_add(u64::try_from(end).ok()?)?
-            .min(source.1),
-    ))
-}
-
 enum ClipPaintSource<'a> {
     Audio(&'a Clip),
     Midi(&'a MidiClip),
@@ -411,29 +398,6 @@ fn drop_overlap_spans(
         }
     }
     merged
-}
-
-/// Paint-only scalar sweep: intersect unions without member × victim work.
-/// Two events per visible member/victim, one sort; no capture/update storage.
-pub(super) fn group_overlap_spans(mut events: Vec<(u64, i32, i32)>) -> Vec<(u64, u64)> {
-    events.sort_unstable();
-    let mut spans: Vec<(u64, u64)> = Vec::new();
-    let (mut cuts, mut victims, mut previous) = (0, 0, 0);
-    for (position, cut, victim) in events {
-        if previous < position && cuts > 0 && victims > 0 {
-            if let Some(last) = spans.last_mut()
-                && last.1 == previous
-            {
-                last.1 = position;
-            } else {
-                spans.push((previous, position));
-            }
-        }
-        cuts += cut;
-        victims += victim;
-        previous = position;
-    }
-    spans
 }
 
 pub(super) fn clip_grid_layer(
@@ -809,6 +773,13 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: super::clip_header_loop::midi(
+                                    &clip,
+                                    Some(preview),
+                                    state.project.tempo_map(),
+                                    visible_start..visible_end,
+                                    pixel_width * scale_factor,
+                                ),
                                 notch: super::clip_boundary::Notch::new(notched),
                             },
                             true,
@@ -956,6 +927,12 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: super::clip_header_loop::audio(
+                                    &preview_clip,
+                                    state.project.tempo_map(),
+                                    visible_start..visible_end,
+                                    pixel_width * scale_factor,
+                                ),
                                 notch: super::clip_boundary::Notch::new(notched),
                             },
                             true,
@@ -1103,6 +1080,7 @@ impl EditorView {
                                     0.0
                                 },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                header_gradient: None,
                                 notch: super::clip_boundary::Notch::new(end == bounds.end_frame),
                             },
                             true,
@@ -1303,14 +1281,16 @@ impl EditorView {
                     .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
                     .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
                 {
-                    drop_preview =
-                        drop_preview.children([clip_waveform_body(waveform_source_segment_view(
+                    drop_preview = drop_preview.children([clip_waveform_body(
+                        waveform_source_segment_view_cached(
                             waveform,
                             preview.start_frame,
                             visible_start,
                             visible_end,
+                            std::rc::Rc::clone(&self.waveform_geometry_cache),
                             crate::theme::color(crate::theme::PaletteRole::Waveform),
-                        ))]);
+                        ),
+                    )]);
                 }
                 if clip_preview.is_some()
                     && self
@@ -1341,6 +1321,7 @@ impl EditorView {
                                 0.0
                             },
                             header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                            header_gradient: None,
                             notch: super::clip_boundary::Notch::new(
                                 visible_end == preview.end_frame,
                             ),
@@ -1620,12 +1601,6 @@ impl EditorView {
                         .into()
                     })
                     .child(theme::text(if folded { ">" } else { "v" }))
-            }))
-            .children(track.is_group().then(|| {
-                div()
-                    .flex_shrink_0()
-                    .debug_selector(move || format!("group-track-marker-{}", track_id.value()))
-                    .child(theme::text("group · "))
             }))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
@@ -2188,8 +2163,15 @@ impl EditorView {
                     && g.ids.binary_search(&id).is_ok()
             })
         };
+        // Section focus shows every clip in each visible row. The canonical
+        // ID cache cannot yet contain the committed duplicate's new IDs.
+        let is_duplicate_view = self
+            .arrangement_duplicate_view()
+            .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
         for clip in track.clips() {
-            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
+            if hides_group_member(clip.id())
+                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+            {
                 continue;
             }
             let Some(end) = clip.start().checked_add(clip.duration()) else {
@@ -2287,12 +2269,15 @@ impl EditorView {
             }
         }
         for clip in track.midi_clips() {
-            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
+            if hides_group_member(clip.id())
+                || (!is_duplicate_view && !self.arrangement_clip_visible(clip.id()))
+            {
                 continue;
             }
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
             };
+            let active = self.displayed_clip_active(clip.id(), clip.active());
             let (start, end) = (preview.frame_start, preview.frame_end);
             if end <= start {
                 continue;
@@ -2317,12 +2302,7 @@ impl EditorView {
                             .get(&track_id)
                             .map_or(0.0, |lane| lane.width),
                         scale_factor,
-                        theme::clip_activity_fill(
-                            track.color(),
-                            clip.flavor(),
-                            false,
-                            clip.active(),
-                        ),
+                        theme::clip_activity_fill(track.color(), clip.flavor(), false, active),
                         clip.id(),
                         clip.name(),
                         clip.looping(),
@@ -2378,7 +2358,7 @@ impl EditorView {
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
             let header_fill =
-                theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active());
+                theme::clip_activity_fill(track.color(), clip.flavor(), false, active);
             let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
@@ -2583,6 +2563,27 @@ impl EditorView {
                         stroke,
                         bottom_radius,
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        header_gradient: if trim_preview.is_some() {
+                            None
+                        } else if let Some(values) =
+                            self.midi_header_loop_values(clip.id(), state.revision)
+                        {
+                            super::clip_header_loop::midi_source(
+                                clip,
+                                values,
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                pixel_width * scale_factor,
+                            )
+                        } else {
+                            super::clip_header_loop::midi(
+                                clip,
+                                None,
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                pixel_width * scale_factor,
+                            )
+                        },
                         notch: notch.clone(),
                     },
                     trim_preview.is_none(),
@@ -2759,6 +2760,7 @@ impl EditorView {
                     super::waveform_geometry::WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: clip.start(),
+                        fade: Some(self.fade_preview(clip.id()).unwrap_or(clip.retained_fade())),
                     },
                     visible_start,
                     visible_end,
@@ -2777,7 +2779,10 @@ impl EditorView {
                     .child(theme::text("missing media")),
             }
         };
-        super::waveform::clip_waveform_activity(body, clip.active())
+        super::waveform::clip_waveform_activity(
+            body,
+            self.displayed_clip_active(clip.id(), clip.active()),
+        )
     }
 
     fn waveform_grid(
@@ -2895,14 +2900,15 @@ impl EditorView {
             .project
             .track(track)
             .map_or(hex_project::ElementColor::default(), |t| t.color());
-        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, clip.active());
+        let active = self.displayed_clip_active(clip.id(), clip.active());
+        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, active);
         let waveform_ink = theme::clip_waveform_ink(
             identity,
             theme::ClipWaveformBackground::Arrangement {
                 flavor: clip.flavor(),
                 selected,
             },
-            clip.active(),
+            active,
         );
         let fill = theme::arrangement_clip_body_fill(header_fill, selected);
         let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
@@ -3176,6 +3182,16 @@ impl EditorView {
                             0.0
                         },
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        header_gradient: if !active_trim_preview {
+                            super::clip_header_loop::audio(
+                                &self.audio_header_loop_clip(clip, state),
+                                state.project.tempo_map(),
+                                visible_start..visible_end,
+                                clip_pixel_width * scale_factor,
+                            )
+                        } else {
+                            None
+                        },
                         notch: notch.clone(),
                     },
                     !active_trim_preview,
@@ -3220,6 +3236,7 @@ impl EditorView {
         if let Some(drag::ClipDropDestination::NewTrack {
             before_track: None,
             position,
+            ..
         }) = payload.destination.get()
         {
             let state = self.state.as_ref()?;
@@ -3264,6 +3281,7 @@ impl EditorView {
                     scale,
                 },
                 ClipGhostDecor {
+                    waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
                     looping: clip_repeats(&state.project, payload.clip),
                     notched: visible_end == preview.end_frame,
                     fill: theme::clip_activity_fill(
@@ -3338,6 +3356,7 @@ impl EditorView {
                 scale,
             },
             ClipGhostDecor {
+                waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
                 looping: self
                     .state
                     .as_ref()
@@ -3796,117 +3815,6 @@ mod overlap_tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn original_crop_clone_mapping_is_checked_and_crops_both_edges() {
-        assert_eq!(
-            clone_source_window((100, 500), (1000, 1800), (1000, 1800)),
-            Some((100, 500))
-        );
-        assert_eq!(
-            clone_source_window((100, 500), (1000, 1800), (1200, 1600)),
-            Some((200, 400))
-        );
-        assert_eq!(
-            clone_source_window((100, 500), (1000, 1800), (0, 1201)),
-            Some((100, 201))
-        );
-        assert_eq!(
-            clone_source_window((100, 500), (1000, 1800), (1601, u64::MAX)),
-            Some((400, 500))
-        );
-        assert_eq!(
-            clone_source_window((u64::MAX - 4, u64::MAX), (0, u64::MAX), (0, u64::MAX)),
-            Some((u64::MAX - 4, u64::MAX))
-        );
-        for (source, destination, visible) in [
-            ((1, 1), (1, 2), (1, 2)),
-            ((2, 1), (1, 2), (1, 2)),
-            ((1, 2), (2, 1), (1, 2)),
-            ((1, 2), (1, 2), (2, 3)),
-            ((1, 2), (1, 2), (2, 1)),
-        ] {
-            assert_eq!(clone_source_window(source, destination, visible), None);
-        }
-    }
-
-    #[test]
-    fn group_overlap_sweep_matches_independent_half_open_occupancy() {
-        let mut intervals = vec![(0, 0)];
-        for a in 0..4 {
-            for b in a + 1..=4 {
-                intervals.push((a, b));
-            }
-        }
-        for &a in &intervals {
-            for &b in &intervals {
-                for &c in &intervals {
-                    for &d in &intervals {
-                        let mut events = Vec::new();
-                        for (start, end) in [a, b] {
-                            if start < end {
-                                events.push((start, 1, 0));
-                                events.push((end, -1, 0));
-                            }
-                        }
-                        for (start, end) in [c, d] {
-                            if start < end {
-                                events.push((start, 0, 1));
-                                events.push((end, 0, -1));
-                            }
-                        }
-                        let actual = group_overlap_spans(events);
-                        assert!(actual.iter().all(|(start, end)| start < end));
-                        assert!(actual.windows(2).all(|pair| pair[0].1 < pair[1].0));
-                        for frame in 0..4 {
-                            let has = |ranges: [(u64, u64); 2]| {
-                                ranges
-                                    .iter()
-                                    .any(|(start, end)| *start <= frame && frame < *end)
-                            };
-                            assert_eq!(
-                                actual
-                                    .iter()
-                                    .any(|(start, end)| *start <= frame && frame < *end),
-                                has([a, b]) && has([c, d])
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn group_overlap_sweep_max_model_shape_reports_paint_storage_separately() {
-        let pairs = hex_project::MAX_CLIPS / 2;
-        let mut events = Vec::with_capacity(pairs * 4);
-        for index in (0..pairs).rev() {
-            let start = index as u64 * 8;
-            events.extend([
-                (start, 1, 0),
-                (start + 6, -1, 0),
-                (start + 3, 0, 1),
-                (start + 8, 0, -1),
-            ]);
-        }
-        let event_bytes = events.capacity() * std::mem::size_of::<(u64, i32, i32)>();
-        let start = std::time::Instant::now();
-        let spans = group_overlap_spans(events);
-        let elapsed = start.elapsed();
-        assert_eq!(spans.len(), pairs);
-        assert_eq!(spans[0], (3, 6));
-        assert_eq!(
-            spans[pairs - 1],
-            ((pairs as u64 - 1) * 8 + 3, (pairs as u64 - 1) * 8 + 6)
-        );
-        eprintln!(
-            "group_paint_sweep events={} event_capacity_bytes={event_bytes} output_capacity_bytes={} elapsed_ns={} debug_only/no_native_deadline; two paint-local Vecs, capture/update allocation unchanged",
-            pairs * 4,
-            spans.capacity() * std::mem::size_of::<(u64, u64)>(),
-            elapsed.as_nanos()
-        );
     }
 
     #[gpui::test]

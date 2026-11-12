@@ -9,12 +9,15 @@
 //! explicitly (the renderer has no pages) and adoption never starts.
 use crate::{AssetId, VerifiedAudioFile};
 use hex_engine::{PreparedRevision, native_device_resources::PreparedDeviceResources};
+use hex_export::ForeignBounceRenderer;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 /// Stateless host capability: render one isolated bounce item to `path` with
-/// independently verified pages, via `hex_export::render_arrangement_bounce_with_pages`.
-pub type StreamedBouncer =
-    fn(&StreamedBounceRequest<'_>) -> Result<hex_export::ExportReport, String>;
+/// independently verified pages and the bounce's optional private processor set.
+pub type StreamedBouncer = fn(
+    &StreamedBounceRequest<'_>,
+    Option<&mut dyn ForeignBounceRenderer>,
+) -> Result<hex_export::ExportReport, String>;
 
 /// Borrowed complete input for one bounce item. Only Session constructs it.
 pub struct StreamedBounceRequest<'a> {
@@ -88,6 +91,7 @@ pub(crate) fn render(
     include_tails: bool,
     control: &hex_export::ExportControl,
     bouncer: Option<StreamedBouncer>,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
 ) -> Result<u64, String> {
     if revision
         .prepared
@@ -96,17 +100,35 @@ pub(crate) fn render(
         .is_some()
         && let Some(bouncer) = bouncer
     {
-        return bouncer(&StreamedBounceRequest {
-            prepared: &revision.prepared,
-            resources,
-            files: &revision.files,
+        return bouncer(
+            &StreamedBounceRequest {
+                prepared: &revision.prepared,
+                resources,
+                files: &revision.files,
+                path,
+                start,
+                frames,
+                include_tails,
+                control,
+            },
+            foreign,
+        )
+        .map(|report| report.frames);
+    }
+    if let Some(foreign) = foreign {
+        return hex_export::render_arrangement_bounce_with_foreign(
             path,
+            revision.prepared,
+            resources,
             start,
             frames,
             include_tails,
             control,
-        })
-        .map(|report| report.frames);
+            None,
+            foreign,
+        )
+        .map(|report| report.frames)
+        .map_err(|error| error.to_string());
     }
     hex_export::render_arrangement_bounce_new(
         path,

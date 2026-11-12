@@ -14,7 +14,7 @@ impl Drop for BrowserRoot {
 pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     hex_audio::worker_fixture::serial_output()
 }
-pub(super) fn headless_status_output() -> (
+pub(in crate::editor) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,
     hex_audio::worker_fixture::HeadlessBackend,
 ) {
@@ -154,7 +154,7 @@ fn eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map(
         "actual adaptive major labels remain readable"
     );
     let expected_hz = (20.0_f32 * 20_000.0).sqrt();
-    visual.simulate_click(plot_bounds.center(), Modifiers::default());
+    eq_double_click(&mut visual, plot_bounds.center());
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -166,7 +166,7 @@ fn eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map(
     visual.run_until_parked();
     let before = editor.read_with(cx, |view, _| read(view, device));
     let labels_area = point(plot_bounds.center().x, plot_bounds.bottom() + px(10.0));
-    visual.simulate_click(labels_area, Modifiers::default());
+    eq_double_click(&mut visual, labels_area);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -259,7 +259,7 @@ fn eq_real_selectors_keep_popup_anchor_keyboard_cancel_and_canonical_history(
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(position, Modifiers::default());
+    eq_double_click(&mut visual, position);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -465,7 +465,7 @@ fn eq_long_numbers_channel_names_and_cut_slopes_fit_and_edit_through_real_contro
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(position, Modifiers::default());
+    eq_double_click(&mut visual, position);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -1243,7 +1243,7 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let position = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(position, Modifiers::default());
+    eq_double_click(&mut visual, position);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -1562,7 +1562,7 @@ fn eq_review_boundary_node_outer_hit_wins_but_blank_axis_never_creates(cx: &mut 
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let center = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(center, Modifiers::default());
+    eq_double_click(&mut visual, center);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -1644,7 +1644,7 @@ fn eq_review_boundary_node_outer_hit_wins_but_blank_axis_never_creates(cx: &mut 
         visual.run_until_parked();
         events.borrow_mut().clear();
         let blank = plot(&mut visual, device, 0.0, 0.25) + point(px(-4.0), px(0.0));
-        visual.simulate_click(blank, Modifiers::default());
+        eq_double_click(&mut visual, blank);
         visual.run_until_parked();
         assert!(
             events.borrow().is_empty(),

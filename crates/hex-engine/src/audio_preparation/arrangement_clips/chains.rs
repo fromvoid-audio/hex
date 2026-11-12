@@ -513,7 +513,9 @@ impl ChainCustody {
                     foreign,
                     project.tempo_map(),
                     project.loop_region(),
-                )? {
+                )
+                .map_err(crate::foreign_automation::candidate::PreparationError::into_storage)?
+                {
                     if !automation.is_empty() {
                         return Err(AudioStorageError::UnsupportedGraph);
                     }

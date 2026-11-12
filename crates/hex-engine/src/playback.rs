@@ -31,6 +31,15 @@ pub enum PlaybackCommand {
     Seek(u64),
 }
 
+/// Browser Enter freezes the grid and the running output's transport epoch.
+/// The callback may install the authored edit after a seek or stop, but the
+/// older press has no authority to audition in the new transport.
+#[derive(Clone, Debug)]
+pub struct BrowserAuditionTiming {
+    pub grid: hex_project::ResolvedInputGrid,
+    pub transport_epoch: u64,
+}
+
 /// Fixed-size action passed through the native callback command ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackAction {
@@ -415,6 +424,28 @@ impl Playback {
             .as_mut()
             .map(|runtime| runtime.request_live_restart())
             .is_some()
+    }
+    /// Arm the resident clip in this exact candidate. Audio remains owned by
+    /// the prepared revision; the gesture carries only track, placement and grid.
+    pub fn arm_browser_audition(
+        &mut self,
+        track: hex_project::TrackId,
+        start: u64,
+        timing: BrowserAuditionTiming,
+    ) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.arm_browser_audition(track, start, timing);
+        }
+    }
+    pub fn bind_browser_audition_transport(&mut self, epoch: u64) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.bind_browser_audition_transport(epoch);
+        }
+    }
+    pub fn browser_audition_retained_bytes_on_control(&self) -> Option<usize> {
+        self.session_runtime
+            .as_ref()
+            .map_or(Some(0), |runtime| runtime.browser_audition_retained_bytes())
     }
     /// Whether `request_live_restart` applies to this candidate's live handoff.
     pub fn live_restart_requested(&self) -> bool {
@@ -1548,8 +1579,8 @@ impl Playback {
     }
 
     /// Apply with the transport declick described in `transport_fade`: a
-    /// Pause/Stop or transport Seek while playing is admitted now and applied
-    /// after its fade, a Seek then ramping in at its target; Play from a
+    /// Pause/Stop, Seek or PlayFrom while playing is admitted now and applied
+    /// after its fade, a Seek or PlayFrom then ramping in at its target; Play from a
     /// paused, nonzero position ramps in. Static refusals are
     /// reported here. A deferred action that fails at its fade end falls back
     /// to Stop and is reported once by `take_transport_fade_failure`.
@@ -1602,6 +1633,14 @@ impl Playback {
     }
 
     fn admit_declicked_stop(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action {
+            return match self.session_runtime.as_deref() {
+                Some(runtime) => runtime
+                    .admits_play_from(frame)
+                    .map_err(PlaybackActionError::Session),
+                None => Ok(()),
+            };
+        }
         let command = match action {
             PlaybackAction::Transport(PlaybackCommand::Pause) => {
                 crate::SessionPlaybackCommand::Pause
@@ -2106,6 +2145,12 @@ impl Playback {
                 self.performance_clock_exhausted = previous.performance_clock_exhausted;
                 self.playing = previous.playing;
             }
+        }
+        if same_control_context
+            && !fenced_restart
+            && let (Some(next), Some(old)) = (&mut self.session_runtime, &previous.session_runtime)
+        {
+            next.inherit_browser_audition(old);
         }
         self.inherit_metronome(previous);
         if let (Some(continued), Some(next), Some(old)) = (

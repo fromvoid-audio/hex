@@ -153,6 +153,10 @@ impl MidiSourcePlayback {
     /// Internal loop seams in the finite audible order; the first-pass
     /// introduction is not repeated when it becomes a reversed tail.
     pub fn repeat_boundaries(self) -> Result<Option<crate::RepeatBoundaryPlan>, Invalid> {
+        Ok(self.repeat_cycles()?.and_then(crate::RepeatCycles::seams))
+    }
+    /// Complete cycle geometry for a finite Arrangement read, in raw beats.
+    pub fn repeat_cycles(self) -> Result<Option<crate::RepeatCycles>, Invalid> {
         let Some((start, end)) = self.loop_range else {
             return Ok(None);
         };
@@ -162,7 +166,8 @@ impl MidiSourcePlayback {
             .checked_add(self.arrangement_duration.raw())
             .ok_or(Invalid("midi repeat window overflow"))?;
         crate::ContentWindow::new(self.playback_offset.raw(), end_of_window, self.reversed)?
-            .repeat_boundaries(end.raw() - self.source_start.raw(), end.raw() - start.raw())
+            .repeat_cycles(end.raw() - self.source_start.raw(), end.raw() - start.raw())
+            .map(Some)
     }
     /// Source phase at an elapsed clip beat, independent of note content. An
     /// ongoing Session loop can repeat beyond `arrangement_duration`; finite

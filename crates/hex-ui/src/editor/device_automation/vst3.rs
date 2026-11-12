@@ -148,7 +148,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_lattice_contract::NativeDeviceState;
@@ -175,6 +175,7 @@ mod tests {
             automation_class: Some([2; 16]),
             page_first: 0,
             metadata_revision: 7,
+            editor_sequence: 0,
         };
         for instrument in [false, true] {
             let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

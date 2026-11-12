@@ -37,6 +37,9 @@ use std::{
     time::Duration,
 };
 
+mod window;
+pub use window::{BROWSER_PREVIEW_WINDOW_FRAMES, PreviewWindowSource};
+
 // Browser audition is independent of canonical resident-import admission. Bound
 // encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
 // Source and converted PCM can coexist during conversion (512 MiB total);

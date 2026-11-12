@@ -236,17 +236,26 @@ impl EditorView {
             self.set_selected_clip(owner, primary, window, cx);
         }
         self.clip_selection = selection;
+        self.fit_clip_editor_to_selected_clip();
         let count = self.selected_clip_ids().len();
         self.status = format!("{count} clips selected");
         cx.notify();
     }
 }
 
+#[cfg(test)]
+#[path = "clip_selection_test_fixture.rs"]
+mod test_fixture;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "clip_selection_unit_tests.rs"]
+mod unit_tests;
+
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
+    use super::test_fixture::fixture;
     use super::*;
     use gpui::{MouseButton, TestAppContext, VisualTestContext};
-    use hex_project::{BeatTime, Command, Created, Editor};
     use std::sync::Arc;
 
     fn window(
@@ -263,52 +272,6 @@ mod tests {
         super::super::clip_drag_ui_test::editor_window(cx, project, Arc::new(preview))
     }
 
-    fn fixture() -> (Project, Vec<ClipId>, ClipId) {
-        let (project, track, target, imported) = super::super::clip_drag_ui_test::audio_project();
-        let asset = project.clip(imported).unwrap().asset();
-        let mut editor = Editor::new(project, 32).unwrap();
-        editor.execute(Command::RemoveClip(imported)).unwrap();
-        let mut clips = Vec::new();
-        for index in 0..5 {
-            let start = index * 36_000;
-            let command = if index % 2 == 0 {
-                Command::PlaceClip {
-                    track,
-                    asset,
-                    start,
-                    duration: 24_000,
-                    source_offset: 0,
-                    source_length: 24_000,
-                    looping: false,
-                }
-            } else {
-                Command::PlaceMidiClip {
-                    track,
-                    start: editor.project().tempo_map().frame_to_beat(start).unwrap(),
-                    length: BeatTime::ONE,
-                }
-            };
-            let Created::Clip(id) = editor.execute(command).unwrap() else {
-                panic!("clip")
-            };
-            clips.push(id);
-        }
-        let Created::Clip(other) = editor
-            .execute(Command::PlaceClip {
-                track: target,
-                asset,
-                start: 0,
-                duration: 24_000,
-                source_offset: 0,
-                source_length: 24_000,
-                looping: false,
-            })
-            .unwrap()
-        else {
-            panic!("other clip")
-        };
-        (editor.project().clone(), clips, other)
-    }
     fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
         let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
         let bounds = visual.debug_bounds(selector).expect("rendered clip header");
@@ -510,33 +473,5 @@ mod tests {
             selected(&editor, &mut visual),
             BTreeSet::from([clips[0], clips[1], clips[3], clips[4]])
         );
-    }
-    #[test]
-    fn additive_range_on_another_track_preserves_toggle_fallback() {
-        let (project, clips, other) = fixture();
-        let owner = |clip| {
-            project
-                .tracks()
-                .iter()
-                .find(|track| {
-                    track.clips().iter().any(|c| c.id() == clip)
-                        || track.midi_clips().iter().any(|c| c.id() == clip)
-                })
-                .unwrap()
-                .id()
-        };
-        let mut selection = super::ClipSelection::default();
-        selection.only(owner(clips[0]), clips[0]);
-        let modifiers = Modifiers {
-            platform: true,
-            shift: true,
-            ..Default::default()
-        };
-        selection.select(&project, owner(other), other, modifiers);
-        assert_eq!(selection.members, BTreeSet::from([clips[0], other]));
-        // If the range anchor has been invalidated, command+shift still toggles.
-        selection.anchor = None;
-        selection.select(&project, owner(other), other, modifiers);
-        assert_eq!(selection.members, BTreeSet::from([clips[0]]));
     }
 }
