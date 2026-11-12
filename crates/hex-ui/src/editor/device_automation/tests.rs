@@ -34,6 +34,7 @@ pub(super) fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId
 
 #[cfg(feature = "ui-test-support")]
 mod native {
+    use super::super::host_tests::dotted_lane_point;
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px, size};
     use std::sync::Arc;
@@ -553,15 +554,8 @@ mod native {
             })
         });
         visual.run_until_parked();
-        let selector = format!(
-            "automation-plot-{}-{}-false",
-            device.value(),
-            parameter.value()
-        );
-        let bounds = visual
-            .debug_bounds(Box::leak(selector.into_boxed_str()))
-            .unwrap();
-        let point = bounds.center();
+        let target = DeviceAutomationTarget::Parameter(parameter);
+        let point = dotted_lane_point(&mut visual, device, target, 0.5);
         visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {
@@ -569,7 +563,7 @@ mod native {
                 view.automation_view.devices.draft.is_some()
                     && view.automation_view.devices.marquee.is_none()
                     && view.automation_view.devices.pending.is_none(),
-                "a plain blank press holds the new point; release commits it"
+                "a press on the rendered envelope holds the new point; release commits it"
             )
         });
         visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
