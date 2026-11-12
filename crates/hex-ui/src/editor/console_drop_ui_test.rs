@@ -126,12 +126,33 @@ fn fixture(
 #[gpui::test]
 fn project_sample_drag_reuses_asset_in_console(cx: &mut TestAppContext) {
     let (handle, editor, track, scene, path) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+        });
+        visual.run_until_parked();
+        let ready = editor.read_with(&visual, |view, _| !view.audio_import_settings.is_loading());
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "audio import settings"
+        );
+        std::thread::yield_now();
+    }
     editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::ImportToTrack {
-            path: path.clone(),
-            track,
-            start: 0,
-        }))
+        assert!(
+            view.enqueue(Request::ImportToTrack {
+                path: path.clone(),
+                track,
+                start: 0,
+            }),
+            "fixture import refused: {:?}",
+            view.error
+        )
     });
     receive_worker(&editor, cx);
     let asset = editor.update(cx, |view, cx| {
@@ -149,7 +170,6 @@ fn project_sample_drag_reuses_asset_in_console(cx: &mut TestAppContext) {
         asset
     });
     std::fs::remove_file(path).unwrap();
-    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let source = visual
         .debug_bounds("browser-project-sample-0")
