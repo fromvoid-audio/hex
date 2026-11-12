@@ -580,6 +580,33 @@ mod tests {
             new.as_bytes()
         );
     }
+    #[cfg(unix)]
+    #[test]
+    fn failed_staged_write_retains_original_and_recovery_file() {
+        const CHILD: &str = "HEX_TUNING_WRITE_FAILURE_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let error = save(Path::new(&directory), 1, "new", Scale::equal(19)).unwrap_err();
+            assert!(error.contains("tuning save did not finish"));
+            return;
+        }
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let original = fs::read(&path).unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -f 0; trap '' XFSZ; exec \"$@\"", "hex-test"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tuning_library::tests::failed_staged_write_retains_original_and_recovery_file",
+            ])
+            .env(CHILD, &d.0)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(d.0.join("slot-1-recovery-01.freqs").is_file());
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn occupied_recovery_symlink_is_preserved() {
