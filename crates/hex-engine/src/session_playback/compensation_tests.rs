@@ -75,6 +75,49 @@ fn removing_an_empty_track_keeps_compensated_pcm_continuous() {
         assert_eq!(actual, expected, "partition {partition}");
     }
 }
+
+#[test]
+fn adding_a_routed_empty_track_keeps_the_conservative_restart() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    let Created::Track(track) = f
+        .editor
+        .execute(Command::AddTrack {
+            name: "routed".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut output = [[0.0; 2]; 16];
+    next.render(&mut output).unwrap();
+    assert_eq!(&output[..7], &[[0.0; 2]; 7]);
+    assert_eq!(output[7], [1.0, -0.5]);
+}
 #[test]
 fn compensated_fader_ramps_at_the_delayed_content_origin() {
     let mut f = fixture(&[&[7]], 1024);
