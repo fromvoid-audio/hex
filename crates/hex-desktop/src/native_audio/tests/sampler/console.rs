@@ -29,7 +29,7 @@ pub(super) fn exercise(
             .advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
     };
-    click(visual, "show console view · tab");
+    click(visual, "workspace-view-toggle");
     let cell =
         Box::leak(format!("console-cell-{}-{}", track.value(), scene.value()).into_boxed_str());
     click(visual, cell);
