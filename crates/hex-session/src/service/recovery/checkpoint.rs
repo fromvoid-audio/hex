@@ -51,6 +51,7 @@ pub(in crate::service) struct RecoveryTracker {
     // metadata and a failure ID, never this storage token or its allocation.
     restart: Option<hex_storage::JournalRestartToken>,
     sequence: u64,
+    worker: Option<super::checkpoint_worker::CheckpointWorker>,
 }
 impl RecoveryTracker {
     fn clear(&mut self) {
@@ -129,8 +130,24 @@ impl RecoveryTracker {
                 // unsupported slot for every successful edit cannot repair it.
                 return Ok(None);
             }
-            PreparedCheckpoint::capture(&context)
-                .and_then(|checkpoint| checkpoint.publish(context.journal))
+            PreparedCheckpoint::capture(&context).and_then(|checkpoint| {
+                if self.worker.is_none() {
+                    self.worker = Some(super::checkpoint_worker::CheckpointWorker::new()?);
+                }
+                let worker = self
+                    .worker
+                    .as_mut()
+                    .ok_or("recovery checkpoint worker is unavailable")?;
+                let result = worker
+                    .start(checkpoint, context.journal)
+                    .and_then(|()| worker.finish(context.journal));
+                if result.is_err() {
+                    // A later explicit restart must be able to create a fresh
+                    // worker even when the previous one disconnected.
+                    self.worker.take();
+                }
+                result
+            })
         } else {
             return Ok(None);
         };
