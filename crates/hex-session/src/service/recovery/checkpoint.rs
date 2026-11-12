@@ -328,6 +328,19 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("untitled.hex-journal");
         let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let diagnostic_rows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let diagnostic_sink = Arc::clone(&diagnostic_rows);
+        service
+            .set_diagnostic_observer(Arc::new(diagnostics::DiagnosticObserver::new(
+                move |event| {
+                    diagnostic_sink.lock().unwrap().push((
+                        event.request,
+                        event.stage,
+                        event.details.clone(),
+                    ));
+                },
+            )))
+            .unwrap();
         next(&service);
         service
             .submit(Request::Edit(Command::AddTrack {
@@ -399,6 +412,55 @@ mod tests {
             clip = first;
             revision = terminal.state.revision;
         }
+        service.submit(Request::Undo).unwrap();
+        let unrelated = next(&service);
+        assert!(unrelated.request_complete && unrelated.error.is_none());
+        let rows = diagnostic_rows.lock().unwrap();
+        for kind in ["duplicate_clips", "duplicate_alias_clips"] {
+            let submitted: Vec<_> = rows
+                .iter()
+                .filter_map(|(request, stage, _)| {
+                    request.filter(|request| {
+                        request.kind == kind
+                            && *stage == diagnostics::DiagnosticStage::SubmitAttempt
+                    })
+                })
+                .collect();
+            let [submitted] = submitted.as_slice() else {
+                panic!("expected one submission for {kind}");
+            };
+            let timed: Vec<_> = rows
+                .iter()
+                .filter(|(request, _, _)| request.as_ref() == Some(submitted))
+                .flat_map(|(_, stage, details)| {
+                    details
+                        .split_whitespace()
+                        .filter_map(|part| part.strip_prefix("duplicate_recovery_us="))
+                        .map(move |value| (stage, value))
+                })
+                .collect();
+            let [
+                (
+                    diagnostics::DiagnosticStage::OutcomeReady {
+                        request_complete: true,
+                        ..
+                    },
+                    value,
+                ),
+            ] = timed.as_slice()
+            else {
+                panic!("expected recovery timing only on the terminal outcome for {kind}");
+            };
+            assert!(value.parse::<u128>().is_ok());
+        }
+        assert!(rows.iter().all(|(request, _, details)| {
+            request.is_some_and(|request| {
+                matches!(request.kind, "duplicate_clips" | "duplicate_alias_clips")
+            }) || !details
+                .split_whitespace()
+                .any(|part| part.starts_with("duplicate_recovery_us="))
+        }));
+        drop(rows);
         service.shutdown(std::time::Duration::from_secs(2)).unwrap();
         drop(service);
         std::fs::remove_dir_all(directory).unwrap();

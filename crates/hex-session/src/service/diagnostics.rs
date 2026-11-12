@@ -286,8 +286,8 @@ impl Hooks {
             details_truncated,
         });
     }
-    /// `worker` (WorkerBegin to OutcomeReady) and `section` phases are worker
-    /// observations; client receipt reports neither.
+    /// `worker` (WorkerBegin to OutcomeReady), `section` phases and duplicate
+    /// recovery maintenance are observations recorded on the worker outcome.
     pub fn outcome(
         &self,
         request: Option<DiagnosticRequest>,
@@ -295,6 +295,7 @@ impl Hooks {
         received: bool,
         worker: Option<Duration>,
         section: Option<SectionPhases>,
+        duplicate_recovery: Option<Duration>,
     ) {
         if self.observer.get().is_none() {
             return;
@@ -335,6 +336,12 @@ impl Hooks {
             ] {
                 description.field(name, format_args!("{}", value.as_micros()));
             }
+        }
+        if !received && let Some(duration) = duplicate_recovery {
+            description.field(
+                "duplicate_recovery_us",
+                format_args!("{}", duration.as_micros()),
+            );
         }
         if let Some(ack) = &event.gesture_ack {
             description.field("gesture_generation", format_args!("{}", ack.key.generation));
@@ -393,7 +400,7 @@ impl EventReceiver {
     }
     fn received(&self, observed: ObservedEvent) -> Event {
         self.diagnostics
-            .outcome(observed.request, &observed.event, true, None, None);
+            .outcome(observed.request, &observed.event, true, None, None, None);
         observed.event
     }
     pub fn try_recv(&self) -> Result<Event, std::sync::mpsc::TryRecvError> {

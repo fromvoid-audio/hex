@@ -8926,11 +8926,11 @@ fn run_worker(
                 });
             }
         }
-        if arrangement_duplicate
+        let committed_arrangement_duplicate = arrangement_duplicate
             && canonical_changed
             && error.is_none()
-            && matches!(created, Some(Created::Clips { .. }))
-        {
+            && matches!(created, Some(Created::Clips { .. }));
+        if committed_arrangement_duplicate {
             let _ = duplicate_views.try_send(DuplicateViewObservation {
                 project_generation,
                 previous_revision: revision_before_request,
@@ -8938,18 +8938,25 @@ fn run_worker(
             });
         }
         if let Some(untitled_path) = recovery.as_deref() {
-            let journal_result = recovery_tracker.maintain(
-                recovery::RecoveryContext {
-                    session: &session,
-                    base: media_base.as_deref(),
-                    document: document.as_ref(),
-                    untitled: untitled_path,
-                    journal: &mut journal,
-                    generation: project_generation,
-                },
-                unsaved,
-                revision != revision_before_request,
-            );
+            let mut maintain_recovery = || {
+                recovery_tracker.maintain(
+                    recovery::RecoveryContext {
+                        session: &session,
+                        base: media_base.as_deref(),
+                        document: document.as_ref(),
+                        untitled: untitled_path,
+                        journal: &mut journal,
+                        generation: project_generation,
+                    },
+                    unsaved,
+                    revision != revision_before_request,
+                )
+            };
+            let journal_result = if committed_arrangement_duplicate {
+                events.measure_duplicate_recovery(maintain_recovery)
+            } else {
+                maintain_recovery()
+            };
             match journal_result {
                 Ok(Some(_)) => {
                     status =
