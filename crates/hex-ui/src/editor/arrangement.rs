@@ -7,9 +7,6 @@ use gpui::{
     ScrollWheelEvent, Window, canvas, div, list, point, prelude::*, px, relative, rgb,
 };
 
-// Two readable rows leave room for the existing cursor triangles at the foot.
-const ARRANGEMENT_RULER_HEIGHT: f32 = 36.0;
-
 impl EditorView {
     pub(super) fn begin_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
         let Some(state) = self.state.as_ref() else {
@@ -1034,8 +1031,8 @@ impl EditorView {
         let elapsed = div()
             .debug_selector(|| "arrangement-elapsed-row".into())
             .relative()
-            .flex_1()
-            .min_h_0()
+            .h(relative(0.5))
+            .flex_shrink_0()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .children(
@@ -1051,7 +1048,7 @@ impl EditorView {
                         |tick_view| {
                             tick_view
                                 .pb_0()
-                                .line_height(px(11.0))
+                                .line_height(px(10.0))
                                 .debug_selector(move || {
                                     format!("elapsed-ruler-tick-{}", tick.frame)
                                 })
@@ -1062,8 +1059,8 @@ impl EditorView {
         let beats = div()
             .debug_selector(|| "arrangement-beat-row".into())
             .relative()
-            .flex_1()
-            .min_h_0()
+            .h(relative(0.5))
+            .flex_shrink_0()
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
@@ -1078,7 +1075,8 @@ impl EditorView {
                         )
                         .map(|tick_view| {
                             tick_view
-                                .line_height(px(11.0))
+                                .pb_0()
+                                .line_height(px(10.0))
                                 .debug_selector(move || format!("ruler-tick-{}", tick.frame))
                         })
                     }),
@@ -1207,7 +1205,6 @@ impl EditorView {
                 cx,
             ));
         super::timeline_strip::ruler_surface()
-            .h(px(ARRANGEMENT_RULER_HEIGHT))
             .debug_selector(|| "arrangement-time-ruler".into())
             .flex()
             .items_center()
