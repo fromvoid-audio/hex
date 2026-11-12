@@ -377,8 +377,9 @@ pub struct Event {
 /// Best-effort display observation after a track mute or solo edit commits and before its
 /// ordinary terminal. The bounded mailbox coalesces contiguous revisions and
 /// may drop incompatible observations; only the ordered Event acknowledges the request.
-/// Consumers must match the generation and previous revision before painting,
-/// and retire the observation on the terminal or project replacement. It
+/// Consumers must match the generation and place their installed or retained
+/// revision within the contiguous span before painting, then retire the view
+/// on its terminal or project replacement. It
 /// never acknowledges recovery, transfers project custody or proves audio application.
 pub struct TrackSwitchViewObservation {
     pub project_generation: u64,
