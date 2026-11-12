@@ -213,9 +213,15 @@ impl EditorView {
         &mut self,
         observation: ArrangementEditViewObservation,
     ) -> bool {
+        let Some(installed) = self.state.as_ref().map(|state| state.revision) else {
+            return false;
+        };
+        let predecessor = self
+            .committed_paste_view
+            .as_ref()
+            .map_or(installed, |view| view.revision.max(installed));
         if self.project_generation != observation.project_generation
-            || self.state.as_ref().map(|state| state.revision)
-                != Some(observation.previous_revision)
+            || predecessor != observation.previous_revision
         {
             return false;
         }
