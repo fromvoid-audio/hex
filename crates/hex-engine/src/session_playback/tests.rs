@@ -5184,6 +5184,11 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
     let graph_host_bytes =
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS).unwrap();
+    // The owner slots include the vector headers. Charge their reserved heap
+    // entries independently of the production frozen-parameter quote.
+    let frozen_parameter_bytes_per_owner = hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
+        * (std::mem::size_of::<hex_lattice_contract::ParameterId>()
+            + std::mem::size_of::<Option<hex_lattice_contract::ParameterValue>>());
 
     assert_eq!(
         ledger_bytes,
@@ -5206,9 +5211,7 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
                 * MAX_SIMULTANEOUS_VOICES_PER_TRACK
                 * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
             + (hex_project::MAX_TRACKS + hex_lattice::MAX_STATEFUL_PROCESSORS)
-                * hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
-                * (std::mem::size_of::<hex_lattice_contract::ParameterId>()
-                    + std::mem::size_of::<Option<hex_lattice_contract::ParameterValue>>())
+                * frozen_parameter_bytes_per_owner
             + std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>()
             + crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
                 * std::mem::size_of::<hex_lattice::NativeInstrumentEvent>()
@@ -5226,9 +5229,7 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     let one_track_increment = std::mem::size_of::<
         Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>,
     >() + ledger_bytes
-        + hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
-            * (std::mem::size_of::<hex_lattice_contract::ParameterId>()
-                + std::mem::size_of::<Option<hex_lattice_contract::ParameterValue>>())
+        + frozen_parameter_bytes_per_owner
         + crate::mutable_instrument::MutableInstrumentTrackRuntime::source_live_storage_upper_bound(
         );
     assert_eq!(
