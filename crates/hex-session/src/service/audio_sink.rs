@@ -467,7 +467,7 @@ pub enum ResidentPublicationPolicy {
         requires_plugin_profile: bool,
     },
     FreshIfUnchanged(ResidentFreshRuntimeFence),
-    SectionWhenReady {
+    QuantizedSeekWhenReady {
         fence: ResidentFreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },

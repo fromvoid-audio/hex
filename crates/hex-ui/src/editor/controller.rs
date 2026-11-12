@@ -1413,12 +1413,12 @@ impl EditorView {
                 self.prepared_seek
                     .as_ref()
                     .filter(|seek| Some(seek.request_id) == pending.seek_request_id)
-                    .and_then(|seek| seek.kind.section())
+                    .and_then(|seek| seek.kind.quantization())
                     .map_or(
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
-                        |section| PublicationPolicy::InstallSectionWhenReady {
+                        |quantization| PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
-                            quantization: section.quantization,
+                            quantization,
                         },
                     )
             } else if pending.install_fresh_runtime {

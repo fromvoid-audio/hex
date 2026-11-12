@@ -1,4 +1,4 @@
-//! Admission helpers for fresh, explicit history-preserving and section seeks.
+//! Admission helpers for fresh, history-preserving and quantized Arrangement seeks.
 //!
 //! Preroll runs on the session service worker. This module only validates the
 //! exact source and captures a control-side runtime fence; it never prepares a
@@ -60,6 +60,7 @@ pub(super) enum SeekKind {
     Fresh,
     History,
     Section(hex_session::arrangement_seek::SectionLaunch),
+    Locator(hex_engine::LaunchQuantization),
 }
 
 impl SeekKind {
@@ -69,9 +70,25 @@ impl SeekKind {
             _ => None,
         }
     }
+    pub(super) fn quantization(self) -> Option<hex_engine::LaunchQuantization> {
+        match self {
+            Self::Section(section) => Some(section.quantization),
+            Self::Locator(quantization) => Some(quantization),
+            _ => None,
+        }
+    }
+
+    fn preparation_status(self) -> &'static str {
+        match self {
+            Self::Section(_) => "preparing section launch",
+            Self::Locator(_) => "preparing locator launch",
+            _ => "preparing arrangement seek",
+        }
+    }
+
     pub(super) fn mode(self) -> ArrangementSeekMode {
         match self {
-            Self::Fresh => ArrangementSeekMode::Interactive,
+            Self::Fresh | Self::Locator(_) => ArrangementSeekMode::Interactive,
             Self::History => ArrangementSeekMode::HistoryPreservingInteractive,
             Self::Section(section) => ArrangementSeekMode::SectionLoop(section.region),
         }
@@ -503,11 +520,11 @@ impl EditorView {
         &self,
     ) -> Option<(Option<Arc<hex_engine::PreparedRevision>>, u64, u64)> {
         self.current_seek_requires_preroll()?
-            .then(|| self.current_section_source())
+            .then(|| self.current_prepared_seek_source())
             .flatten()
     }
 
-    fn current_section_source(
+    fn current_prepared_seek_source(
         &self,
     ) -> Option<(Option<Arc<hex_engine::PreparedRevision>>, u64, u64)> {
         let state = self.state.as_ref()?;
@@ -547,37 +564,53 @@ impl EditorView {
         );
     }
 
+    pub(super) fn request_quantized_locator_launch(
+        &mut self,
+        frame: u64,
+        quantization: hex_engine::LaunchQuantization,
+    ) {
+        if self.section_install_pending() {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        self.cancel_section_launch_wait();
+        self.request_prepared_seek_with_kind(frame, true, SeekKind::Locator(quantization));
+    }
+
     fn request_prepared_seek_with_kind(
         &mut self,
         destination_frame: u64,
         start_playing: bool,
         kind: SeekKind,
     ) {
-        let section = kind.section();
         self.wake_poll();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some(
-                if section.is_some() {
-                    "section playback is unavailable in verified streaming mode"
-                } else {
-                    "stateful arrangement seek is unavailable for verified streaming audio"
+                match kind {
+                    SeekKind::Section(_) => {
+                        "section playback is unavailable in verified streaming mode"
+                    }
+                    SeekKind::Locator(_) => {
+                        "locator launch quantization is unavailable in verified streaming mode"
+                    }
+                    _ => "stateful arrangement seek is unavailable for verified streaming audio",
                 }
                 .into(),
             );
             return;
         }
         let Some((prepared_revision, audio_revision, project_revision)) =
-            (if section.is_some() || matches!(kind, SeekKind::History) {
-                self.current_section_source()
+            (if !matches!(kind, SeekKind::Fresh) {
+                self.current_prepared_seek_source()
             } else {
                 self.current_preroll_source()
             })
         else {
             self.error = Some(
-                if section.is_some() {
-                    "section playback source is unavailable"
-                } else {
-                    "stateful arrangement seek source is unavailable"
+                match kind {
+                    SeekKind::Section(_) => "section playback source is unavailable",
+                    SeekKind::Locator(_) => "locator playback source is unavailable",
+                    _ => "stateful arrangement seek source is unavailable",
                 }
                 .into(),
             );
@@ -593,7 +626,7 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
-        if intent.kind.section().is_some() && self.prepared_seek.is_some() {
+        if intent.kind.quantization().is_some() && self.prepared_seek.is_some() {
             self.invalidate_prepared_seek();
         }
         if self.retired_seek_result.is_some() {
@@ -741,12 +774,7 @@ impl EditorView {
                 self.prepared_seek = Some(super::arrangement_seek::PendingSeek::from_intent(
                     request_id, &intent, fence,
                 ));
-                self.status = if intent.kind.section().is_some() {
-                    "preparing section launch"
-                } else {
-                    "preparing arrangement seek"
-                }
-                .into();
+                self.status = intent.kind.preparation_status().into();
                 self.error = None;
             }
             Err(ArrangementSeekSubmitError::RetirementPending) => {
@@ -794,6 +822,10 @@ impl EditorView {
             destination_frame: intent.destination_frame,
             start_playing: intent.start_playing,
             section: intent.kind.section(),
+            locator_quantization: match intent.kind {
+                SeekKind::Locator(quantization) => Some(quantization),
+                _ => None,
+            },
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity,
                 active_audio_revision: fence.expected_active_revision(),
@@ -809,12 +841,7 @@ impl EditorView {
             Ok(()) => {
                 self.seek_request_serial = request_id;
                 self.prepared_seek = Some(pending);
-                self.status = if intent.kind.section().is_some() {
-                    "preparing section launch"
-                } else {
-                    "preparing arrangement seek"
-                }
-                .into();
+                self.status = intent.kind.preparation_status().into();
                 self.error = None;
             }
             Err(hex_session::service::SubmitError::Full(_)) => {
@@ -852,8 +879,10 @@ impl EditorView {
                 == Some(output_identity) =>
             {
                 pending.stage = SeekStage::Published { audio_revision };
-                if pending.kind.section().is_some() {
-                    self.status = "section launch queued".into();
+                match pending.kind {
+                    SeekKind::Section(_) => self.status = "section launch queued".into(),
+                    SeekKind::Locator(_) => self.status = "locator launch queued".into(),
+                    _ => {}
                 }
                 self.recovery
                     .prepared_published(pending.request_id, audio_revision);
@@ -976,13 +1005,11 @@ impl EditorView {
         if self.prepared_seek.is_none()
             && let Some(intent) = self.latched_seek_intent.take()
         {
-            if let Some((_, audio_revision, _)) =
-                if intent.kind.section().is_some() || matches!(intent.kind, SeekKind::History) {
-                    self.current_section_source()
-                } else {
-                    self.current_preroll_source()
-                }
-            {
+            if let Some((_, audio_revision, _)) = if !matches!(intent.kind, SeekKind::Fresh) {
+                self.current_prepared_seek_source()
+            } else {
+                self.current_preroll_source()
+            } {
                 self.admit_prepared_seek(intent, audio_revision);
                 changed = true;
             } else {
@@ -1368,7 +1395,7 @@ pub(super) fn resolve_prepared_seek_terminal(
         return false;
     }
     let cancelled = pending.cancelled;
-    let section = pending.kind.section().is_some();
+    let kind = pending.kind;
     *pending_seek = None;
     if rejected && !cancelled {
         let reason = rejected_revision
@@ -1380,10 +1407,10 @@ pub(super) fn resolve_prepared_seek_terminal(
                 .into(),
         );
     } else if !cancelled {
-        *status = if section {
-            "section launch applied"
-        } else {
-            "cursor ready"
+        *status = match kind {
+            SeekKind::Section(_) => "section launch applied",
+            SeekKind::Locator(_) => "locator launch applied",
+            _ => "cursor ready",
         }
         .into();
     }
