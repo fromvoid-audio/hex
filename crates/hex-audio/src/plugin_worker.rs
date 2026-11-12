@@ -876,6 +876,20 @@ impl NativeWorker {
             .flatten()
     }
 
+    pub(crate) fn program_frontier_on_control(&self) -> hex_engine::ForeignProgramFrontier {
+        use hex_engine::ForeignProgramFrontier;
+        if let Some(received) = self.received_program_on_control() {
+            received.program.map_or(
+                ForeignProgramFrontier::Empty,
+                ForeignProgramFrontier::Program,
+            )
+        } else if self.transport_is_live_on_control() && self.reaper.control.has_no_pcm_pickup() {
+            ForeignProgramFrontier::Empty
+        } else {
+            ForeignProgramFrontier::Unknown
+        }
+    }
+
     /// Last accepted callback quantum on this original pair. This is not an
     /// installed-graph, quiescence, worker-receipt or reclamation witness.
     pub fn committed_quantum_on_control(&self) -> Option<CommittedQuantum> {
