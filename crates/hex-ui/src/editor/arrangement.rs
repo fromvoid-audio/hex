@@ -1088,8 +1088,7 @@ impl EditorView {
             .inset_0()
             .flex()
             .flex_col()
-            .child(elapsed)
-            .child(beats);
+            .children([elapsed, beats]);
         let entity = cx.entity();
         let seek_viewport = viewport;
         let cells = div()
