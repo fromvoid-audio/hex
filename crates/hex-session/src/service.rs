@@ -70,8 +70,8 @@ mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
 pub use clip_audition::{
-    ArrangementMoveAudition, ArrangementPlayStartAudition, ArrangementStretchAudition,
-    PlayStartEdit,
+    ArrangementMoveAudition, ArrangementMoveMode, ArrangementPlayStartAudition,
+    ArrangementStretchAudition, PlayStartEdit,
 };
 mod publication_wait;
 mod resident_audio;
