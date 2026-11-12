@@ -116,8 +116,11 @@ fn existing_asset_placement_uses_batch_warp_overwrite_and_one_undo() {
             .place_existing_asset_revision_using(
                 ProjectSampleImport {
                     asset,
-                    track: id,
-                    start: 12_000,
+                    destination: crate::import_batch::AudioBatchDestination::Track {
+                        track: id,
+                        start: 12_000,
+                    },
+                    new_track_gain: None,
                     warp,
                 },
                 None,
@@ -179,8 +182,11 @@ fn existing_asset_placement_refusal_preserves_project_and_history() {
     let result = s.place_existing_asset_revision_using(
         ProjectSampleImport {
             asset,
-            track: id,
-            start: 12_000,
+            destination: crate::import_batch::AudioBatchDestination::Track {
+                track: id,
+                start: 12_000,
+            },
+            new_track_gain: None,
             warp: hex_project::AudioImportWarp::Beats,
         },
         None,
@@ -223,8 +229,11 @@ fn existing_asset_placement_refuses_unavailable_resident_without_editing() {
     let result = s.place_existing_asset_revision_using(
         ProjectSampleImport {
             asset,
-            track: id,
-            start: 256,
+            destination: crate::import_batch::AudioBatchDestination::Track {
+                track: id,
+                start: 256,
+            },
+            new_track_gain: None,
             warp: hex_project::AudioImportWarp::Off,
         },
         None,
