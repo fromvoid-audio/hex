@@ -2206,7 +2206,14 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
         }));
     }
     visual.simulate_keystrokes("cmd-x");
-    pump(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.automation_view.devices.pending.is_some());
+        let mut terminal = event(&view.service);
+        assert!(terminal.request_complete && terminal.error.is_none());
+        terminal.error = Some("automatic recovery: fixture checkpoint warning".into());
+        view.receive(terminal);
+        cx.notify();
+    });
     assert_eq!(lane_points(&visual, &editor, device, target), original);
     visual.simulate_keystrokes("cmd-v");
     pump(&mut visual, &editor);

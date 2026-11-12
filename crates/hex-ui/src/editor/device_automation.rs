@@ -1384,7 +1384,15 @@ impl EditorView {
         if disposition != Disposition::Waiting
             && let Some(pending) = lanes.pending.take()
             && disposition == Disposition::Terminal
-            && event.error.is_none()
+            && (pending.cut_clipboard.is_some() || pending.select_range.is_some())
+            // Recovery can report a warning on the same terminal as a committed edit.
+            && event.state.revision > pending.revision
+            && pending.target.identity_current(&event.state.project, self.project_generation)
+                .is_some_and(|device| {
+                    let points = device.automation_target(pending.target.kind)
+                        .map_or(&[][..], |lane| lane.points.as_slice());
+                    points == pending.points
+                })
         {
             if let Some(copy) = pending.cut_clipboard {
                 lanes.clipboard = Some(copy);
