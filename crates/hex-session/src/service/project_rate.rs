@@ -159,7 +159,7 @@ fn capture_outgoing(
         project,
         context,
         cancellation,
-        bounce_devices: None,
+        device_filter: None,
     })?;
     if cancellation.is_cancelled() {
         return Err("sample rate change cancelled".into());

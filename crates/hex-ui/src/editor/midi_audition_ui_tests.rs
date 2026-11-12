@@ -1,4 +1,4 @@
-//! Explicit rendered input is the only audition trigger; the real worker owns preparation.
+//! Explicit selection and edit input share audition preparation on the worker.
 use super::creation_tests::{fixture, pump};
 use gpui::{
     Entity, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext,
@@ -65,6 +65,148 @@ fn toggle(visual: &mut VisualTestContext) {
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
 }
+
+#[gpui::test]
+fn paint_drag_and_keyboard_move_audition_the_result_once(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = authored(cx);
+    visual.simulate_keystrokes("b");
+    let silent = position(&mut visual, &editor, 0.55, 62);
+    visual.simulate_click(silent, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.midi_clip()
+                .unwrap()
+                .notes()
+                .iter()
+                .any(|note| note.pitch() == 62)
+        );
+        assert!(v.computer_keyboard.input.is_none());
+    });
+
+    toggle(&mut visual);
+    let paint = position(&mut visual, &editor, 1.78, 63);
+    visual.simulate_click(paint, Modifiers::default());
+    // The edit receipt installs the notes. The next poll prepares their bank.
+    pump(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    let painted = editor.read_with(&visual, |v, _| {
+        let note = v
+            .midi_clip()
+            .unwrap()
+            .notes()
+            .iter()
+            .find(|note| note.pitch() == 63)
+            .unwrap();
+        (note.pitch(), note.velocity())
+    });
+    assert_audition_bank(&editor, &visual, &[painted]);
+
+    visual.simulate_keystrokes("b");
+    let old = position(&mut visual, &editor, 1.125, 60);
+    let target = position(&mut visual, &editor, 2.125, 65);
+    visual.simulate_mouse_down(old, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    assert_audition_bank(&editor, &visual, &[(65, 37)]);
+    visual.simulate_keystrokes("up");
+    pump(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    let active = assert_audition_bank(&editor, &visual, &[(66, 37)]);
+    let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
+    for (shortcut, pitch) in [("cmd-z", 65), ("cmd-shift-z", 66)] {
+        visual.simulate_keystrokes(shortcut);
+        pump(&editor, &mut visual);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.computer_keyboard.request_id, request);
+            assert!(v.computer_keyboard.input.is_none());
+            assert!(
+                v.midi_clip()
+                    .unwrap()
+                    .notes()
+                    .iter()
+                    .any(|note| note.pitch() == pitch && note.velocity() == 37)
+            );
+        });
+    }
+    assert!(active.is_cancelled());
+    let before = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes()
+            .to_vec()
+    });
+    let note = position(&mut visual, &editor, 2.125, 66);
+    visual.simulate_mouse_down(note, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(old, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(old, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_clip().unwrap().notes(), before);
+        assert!(v.computer_keyboard.input.is_none());
+    });
+}
+
+#[gpui::test]
+fn moving_a_selected_chord_auditions_all_of_its_new_pitches(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = authored(cx);
+    toggle(&mut visual);
+    let first = position(&mut visual, &editor, 1.125, 60);
+    let second = position(&mut visual, &editor, 3.125, 64);
+    visual.simulate_click(first, Modifiers::default());
+    pump(&editor, &mut visual);
+    visual.simulate_click(
+        second,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    pump(&editor, &mut visual);
+    assert_audition_bank(&editor, &visual, &[(60, 37), (64, 93)]);
+
+    let target = position(&mut visual, &editor, 1.125, 61);
+    visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    assert_audition_bank(&editor, &visual, &[(61, 37), (65, 93)]);
+}
+
+#[gpui::test]
+fn an_inflight_note_edit_does_not_audition_after_the_speaker_is_reenabled(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = authored(cx);
+    toggle(&mut visual);
+    let at = position(&mut visual, &editor, 0.55, 62);
+    super::creation_tests::double_down(&mut visual, at, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_some()));
+    toggle(&mut visual);
+    toggle(&mut visual);
+    pump(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_audition.enabled);
+        assert!(
+            v.midi_clip()
+                .unwrap()
+                .notes()
+                .iter()
+                .any(|note| note.pitch() == 62)
+        );
+        assert!(v.computer_keyboard.input.is_none());
+    });
+}
+
 #[gpui::test]
 fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint_and_ack_do_not(
     cx: &mut TestAppContext,
@@ -540,11 +682,10 @@ fn assert_audition_bank(
     expected: &[(u8, u8)],
 ) -> Arc<hex_engine::computer_keyboard::ComputerKeyboardInput> {
     editor.read_with(visual, |v, _| {
-        let input = v
-            .computer_keyboard
-            .input
-            .as_ref()
-            .expect("real worker audition input");
+        let input =
+            v.computer_keyboard.input.as_ref().unwrap_or_else(|| {
+                panic!("no worker audition for {expected:?}, error={:?}", v.error)
+            });
         assert!(input.is_note_audition());
         let bank = (0..hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES)
             .filter_map(|slot| {

@@ -1,6 +1,7 @@
 //! View-local panels for exact hosted VST3 controller sources. Persisted rows
 //! supply names and order only. Native Perform receipts can advance the knob's
-//! display. Fresh controller pages still authorize edits.
+//! display. Fresh controller pages authorize new edits. A held pointer uses
+//! the admitted numeric gesture and Session key through its terminal.
 use super::*;
 use gpui::{Entity, Subscription, UniformListScrollHandle, uniform_list};
 use hex_audio::prepared::AppliedAudioSource;
@@ -614,7 +615,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             }
             return;
         }
-        view.device_panel.vst3_parameters.panels.remove(&device);
+        retire_panel(view, device);
     }
     let query = PluginParameterQuery {
         context,
@@ -1259,6 +1260,25 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     }
 }
 
+/// Dropping a cached control also drops its event subscription. Cancel only
+/// the exact pointer edit it owns before relying on GPUI to release capture.
+fn retire_panel(view: &mut EditorView, device: DeviceId) {
+    let Some(panel) = view.device_panel.vst3_parameters.panels.remove(&device) else {
+        return;
+    };
+    if !view.device_gesture.has_pending_terminal()
+        && let Some(active) = view.device_gesture.snapshot()
+        && panel
+            .knobs
+            .values()
+            .chain(panel.follow_knob.iter().map(|(_, knob)| knob))
+            .any(|knob| knob.owns(active.key))
+    {
+        let _ = view.cancel_device_gesture();
+        view.pump_device_gesture();
+    }
+}
+
 fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
     let Some(context) = current_context(view) else {
         return;
@@ -1289,7 +1309,7 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
         })
         .collect::<Vec<_>>();
     for device in &stale {
-        view.device_panel.vst3_parameters.panels.remove(device);
+        retire_panel(view, *device);
     }
     if view
         .device_panel
@@ -2199,65 +2219,61 @@ fn create_knob(
     let event_drag = Rc::clone(&drag);
     let steps = row.steps;
     let is_follow = role == "follow";
-    let subscription =
-        cx.subscribe(
-            &control,
-            move |view, emitter, event: &NumericControlEvent, cx| {
-                let origin = event_origin.get();
-                // Pending metadata suspends new follow gestures, but an admitted
-                // pointer gesture must still reach its existing terminal owner.
-                let continuing_pointer =
-                    event.phase != NumericEventPhase::Begin && event.gesture.is_some();
-                if !continuing_pointer && view.device_gesture.snapshot().is_some() {
+    let subscription = cx.subscribe(
+        &control,
+        move |view, emitter, event: &NumericControlEvent, cx| {
+            let origin = event_origin.get();
+            // A redraw can revoke or replace a page while the same numeric
+            // pointer owns an admitted edit. Its later events are fenced by
+            // the pointer ID and Session gesture key inside knob_event.
+            let continuing_pointer =
+                event.phase != NumericEventPhase::Begin && event.gesture.is_some();
+            if !continuing_pointer {
+                if view.device_gesture.snapshot().is_some()
+                    || current_context(view) != Some(origin.context)
+                {
                     return;
                 }
-                let current =
-                    view.device_panel
-                        .vst3_parameters
-                        .panels
-                        .get(&device)
-                        .filter(|panel| {
-                            (!is_follow
-                                || continuing_pointer
-                                || (panel.pending_touch.is_none() && panel.queued_touch.is_none()))
-                                && panel.source == Some(source)
-                                && panel.query.context == origin.context
-                                && panel.query.output_identity == query.output_identity
-                        })
-                        .and_then(Panel::rows)
-                        .and_then(|rows| rows.iter().find(|row| row.id == origin.parameter))
-                        .is_some_and(|row| {
-                            row.editable
-                                && row.metadata_revision != 0
-                                && row.metadata_revision == origin.metadata_revision
-                                && row.normalized == origin.initial.normalized()
-                        })
-                        && view
-                            .device_panel
-                            .vst3_parameters
-                            .panels
-                            .get(&device)
-                            .is_some_and(|panel| {
-                                panel.knobs.get(&origin.parameter).is_some_and(|knob| {
-                                    knob.control.entity_id() == emitter.entity_id()
-                                }) || panel.follow_knob.as_ref().is_some_and(|(id, knob)| {
-                                    *id == origin.parameter
-                                        && knob.control.entity_id() == emitter.entity_id()
-                                })
-                            });
-                if !current || current_context(view) != Some(origin.context) {
+                let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
+                    return;
+                };
+                let valid_row = panel
+                    .rows()
+                    .and_then(|rows| rows.iter().find(|row| row.id == origin.parameter))
+                    .is_some_and(|row| {
+                        row.editable
+                            && row.metadata_revision != 0
+                            && row.metadata_revision == origin.metadata_revision
+                            && row.normalized == origin.initial.normalized()
+                    });
+                let current_control = panel
+                    .knobs
+                    .get(&origin.parameter)
+                    .is_some_and(|knob| knob.control.entity_id() == emitter.entity_id())
+                    || panel.follow_knob.as_ref().is_some_and(|(id, knob)| {
+                        *id == origin.parameter && knob.control.entity_id() == emitter.entity_id()
+                    });
+                if panel.source != Some(source)
+                    || panel.query.context != origin.context
+                    || panel.query.output_identity != query.output_identity
+                    || (is_follow
+                        && (panel.pending_touch.is_some() || panel.queued_touch.is_some()))
+                    || !valid_row
+                    || !current_control
+                {
                     return;
                 }
-                if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
-                    view.error = Some(reason.into());
-                }
-                if event.phase == NumericEventPhase::Begin {
-                    queue_host_touch(view, device, origin.parameter, cx);
-                }
-                view.pump_device_gesture();
-                cx.notify();
-            },
-        );
+            }
+            if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
+                view.error = Some(reason.into());
+            }
+            if event.phase == NumericEventPhase::Begin {
+                queue_host_touch(view, device, origin.parameter, cx);
+            }
+            view.pump_device_gesture();
+            cx.notify();
+        },
+    );
     Some(Knob {
         source,
         output: query.output_identity,
@@ -2334,6 +2350,8 @@ fn knob_event(
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    mod gesture_release;
 
     #[gpui::test]
     fn vst3_refresh_waits_for_an_installed_output(cx: &mut gpui::TestAppContext) {

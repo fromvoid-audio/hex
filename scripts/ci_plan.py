@@ -213,6 +213,7 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/update.rs": ("update::tests::cancelled_ready_cannot_block_or_replace_a_new_request",),
     "src/context_menu.rs": ("context_menu::tests::",),
     "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/header.rs": ("editor::header::tests::",),
@@ -254,8 +255,15 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/audio_event_editor/paint.rs": ("editor::audio_event_editor::paint::tests::",),
     "src/editor/navigation_metrics.rs": ("editor::navigation_metrics::tests::",),
     "src/editor/poll_cadence.rs": ("editor::poll_cadence::tests::",),
+    "src/editor_backend.rs": ("editor_backend::tests::",),
+    "src/editor/truncated_import.rs": ("editor::truncated_import::unit_tests::",),
+    "src/editor/timeline_strip.rs": ("editor::timeline_strip::tests::",),
+    "src/editor/shortcut_tests.rs": ("editor::shortcut_tests::",),
+    "src/editor/scrub_tests.rs": ("editor::scrub::tests::latest_target_replaces_moves_and_release_survives_an_in_flight_destination",),
+    "src/editor/sample_recorder/beat_guides.rs": ("editor::sample_recorder::beat_guides::tests::",),
     "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
     "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/recovery.rs": ("editor::recovery::cursor_tests::",),
     "src/editor/project_recovery.rs": ("editor::project_recovery::tests::",),
     "src/editor/dialogs.rs": ("editor::dialogs::tests::",),
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
@@ -509,6 +517,12 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor_backend::": (
+        "editor::recovery::tests::explicit_play_from_recovers_degraded_vst3_at_the_requested_frame",
+    ),
+    "editor::shortcut_tests::": (
+        "editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus",
+    ),
     "editor::zoom_fit::tests::": ("editor::zoom_fit::unit_tests::",),
     "editor::browser::ui_test::": ("editor::browser::unit_tests::",),
     "editor::browser::ui_test::scrollbar_ui_tests::": (
@@ -643,6 +657,11 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                       "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
                       "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
+                    {"editor::sample_recorder::beat_guides::tests::",
+                     "editor::sample_recorder::waveform::tests::take_waveform_drag_selects_exact_original_frames"},
+                    {"editor::timeline_strip::tests::",
+                     "editor::timeline_strip_ui_tests::arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces",
+                     "editor::timeline_strip_ui_tests::loop_endpoints_exactly_at_viewport_edges_remain_painted"},
                     {"editor::midi_canvas::geometry::",
                      "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
                     {"editor::midi_pan::tests::",

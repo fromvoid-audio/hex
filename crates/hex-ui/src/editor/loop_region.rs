@@ -1,8 +1,6 @@
 //! Loop controls dispatch canonical edits; DSP and validation belong to the engine/model.
 use super::{EditorMode, EditorView};
 use gpui::{Context, Window};
-use hex_project::Command;
-use hex_session::service::Request;
 
 impl EditorView {
     /// Plain L/W remain musical notes while typing is enabled and retain the
@@ -248,9 +246,5 @@ impl EditorView {
             return Err("selected clip no longer belongs to the arrangement");
         }
         Ok(Some((start, end)))
-    }
-
-    pub(super) fn toggle_loop(&mut self) {
-        self.enqueue(Request::Edit(Command::ToggleLoopRegion));
     }
 }

@@ -154,7 +154,7 @@ fn eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map(
         "actual adaptive major labels remain readable"
     );
     let expected_hz = (20.0_f32 * 20_000.0).sqrt();
-    visual.simulate_click(plot_bounds.center(), Modifiers::default());
+    eq_double_click(&mut visual, plot_bounds.center());
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -166,7 +166,7 @@ fn eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map(
     visual.run_until_parked();
     let before = editor.read_with(cx, |view, _| read(view, device));
     let labels_area = point(plot_bounds.center().x, plot_bounds.bottom() + px(10.0));
-    visual.simulate_click(labels_area, Modifiers::default());
+    eq_double_click(&mut visual, labels_area);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(

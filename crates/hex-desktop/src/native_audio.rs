@@ -1260,18 +1260,35 @@ impl WorkerAudioSink for NativeAudioSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        if self.plugins.finish_reopen(context, accepted)
-            && accepted
-            && self
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        if !self.plugins.finish_reopen(context, result.is_ok())
+            || self
                 .document_rebind
                 .as_ref()
-                .is_none_or(|rebind| rebind.context != context || !rebind.restores_plugins)
+                .is_some_and(|rebind| rebind.context == context && rebind.restores_plugins)
         {
-            // The exact replacement graph was admitted with this unpublished
-            // owner still inventoried. Retire it on control only after success.
-            self.resident
-                .discard_obsolete_pending_after_restore(context);
+            return;
+        }
+        match result {
+            Ok(()) => {
+                // The exact replacement graph was admitted with this unpublished
+                // owner still inventoried. Retire it on control only after success.
+                self.resident
+                    .discard_obsolete_pending_after_restore(context);
+            }
+            Err(reason) => {
+                // The Session error alone has no output identity. Report this
+                // refusal on the fresh output so the editor can finish recovery.
+                self.observe(
+                    context,
+                    "vst3 restore refused",
+                    EditorPublicationState::Refused(reason.into()),
+                );
+            }
         }
     }
     fn prepare_stopped_playback_restore(

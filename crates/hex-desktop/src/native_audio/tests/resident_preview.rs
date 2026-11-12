@@ -183,6 +183,216 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
 }
 
 #[test]
+fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
+    use hex_project::{AudioViewResizeOperation, Command};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let source = files.wav(48_000, 96_000);
+    let imported = h.run(Request::Import(source.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(initial);
+    let mixed = h.run(Request::Import(source));
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(mixed.state.project.tracks().len(), 2);
+    let original = mixed.state.project.snapshot();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+
+    let target = ArrangementPlayStartAudition {
+        context: metadata.context,
+        edit: PlayStartEdit::Audio {
+            clip,
+            position: 48_000,
+        },
+    };
+    let render = |h: &ResidentHarness, gain: f32| {
+        assert!(
+            h.render().iter().all(|f| (f[0] - gain).abs() < 1e-5),
+            "mix should be {gain}"
+        );
+    };
+    let advance = |h: &mut ResidentHarness, previous| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before = status.position.load(Acquire);
+            h.render();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "play-start preview did not apply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    render(&h, 0.5);
+    h.service.audition_arrangement_play_start(Some(target));
+    let preview = advance(&mut h, applied);
+    render(&h, 0.25);
+    assert!(
+        h.service.try_event().is_err(),
+        "preview must leave canonical history alone"
+    );
+
+    h.service.audition_arrangement_play_start(None);
+    let restored = advance(&mut h, preview);
+    render(&h, 0.5);
+
+    h.service.audition_arrangement_play_start(Some(target));
+    let preview = advance(&mut h, restored);
+    h.service.finish_arrangement_play_start_audition();
+    render(&h, 0.25);
+    let committed = h.run(Request::Edit(Command::ResizeAudioClipView {
+        clip,
+        operation: AudioViewResizeOperation::PlayStart { position: 48_000 },
+    }));
+    assert_eq!(committed.state.revision, mixed.state.revision + 1);
+    h.service.retire_arrangement_play_start_audition();
+    let committed = advance(&mut h, preview);
+    render(&h, 0.25);
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let (undone, metadata) = h.applied(committed);
+    render(&h, 0.5);
+
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            ..target
+        }));
+    let preview = advance(&mut h, undone);
+    h.service.finish_arrangement_play_start_audition();
+    h.service
+        .submit(Request::Edit(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { position: u64::MAX },
+        }))
+        .unwrap();
+    let refused = h.next();
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), original);
+    h.service.retire_arrangement_play_start_audition();
+    advance(&mut h, preview);
+    render(&h, 0.5);
+}
+
+#[test]
+fn held_midi_play_start_reschedules_notes_in_the_playing_arrangement() {
+    use hex_project::{BeatTime, Command, Created};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 96_000)));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "midi".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: beat(2),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    let source_edit = |source_start| Command::SetMidiClipSource {
+        clip,
+        source_length: beat(4),
+        source_start,
+        loop_start: BeatTime::ZERO,
+        loop_end: beat(4),
+        looping: true,
+        length: beat(4),
+    };
+    let before = h.run(Request::Edit(source_edit(BeatTime::ZERO)));
+    let (applied, metadata) = h.applied(applied);
+    let first_note_frame = before
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(beat(1))
+        .unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let before_preview = h.render();
+    assert!(before_preview.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            edit: PlayStartEdit::from_midi_command(&source_edit(beat(1))).unwrap(),
+        }));
+    let start = position(&h);
+    let (_, held_metadata) = h.applied(applied);
+    assert_eq!(held_metadata.context, metadata.context);
+    assert!((start..first_note_frame).contains(&position(&h)));
+    let frames_to_note = first_note_frame - position(&h);
+    for _ in 0..frames_to_note.div_ceil(64) {
+        h.render();
+    }
+    assert!((first_note_frame..first_note_frame + 64).contains(&position(&h)));
+    let mixed = h.render();
+    assert!(
+        mixed.iter().any(|f| (f[0] - 0.25).abs() > 0.005),
+        "the shifted MIDI note should sound over the backing audio a beat earlier"
+    );
+    assert!(h.service.try_event().is_err());
+}
+
+#[test]
 fn browser_insert_audition_survives_publication_after_the_entire_clip() {
     for (quantized, looped) in [(false, false), (true, false), (false, true)] {
         late_browser_audition(quantized, looped);
@@ -668,8 +878,12 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        self.inner.finish_plugin_state_restore(context, accepted);
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        self.inner.finish_plugin_state_restore(context, result);
     }
     fn plugin_parameter_requires_stopped_restore(
         &mut self,
@@ -2206,6 +2420,7 @@ impl ResidentHarness {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity: control.output_identity().unwrap(),
                 active_audio_revision: fence.expected_active_revision(),
