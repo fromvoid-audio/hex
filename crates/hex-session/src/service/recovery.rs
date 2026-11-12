@@ -6,6 +6,18 @@ mod checkpoint_worker;
 pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
+#[cfg(test)]
+pub(super) fn install_checkpoint_gate(
+    path: PathBuf,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    checkpoint::CHECKPOINT_GATE
+        .lock()
+        .unwrap()
+        .push((path, entered, release));
+}
+
 /// Explicit source selection. Recovery never adopts an overwrite association.
 #[derive(Clone, Debug)]
 pub enum ProjectSource {
