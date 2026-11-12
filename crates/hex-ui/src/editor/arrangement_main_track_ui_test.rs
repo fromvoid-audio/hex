@@ -57,6 +57,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         playback: None,
         status: None,
         error: None,
+        range_copy_source_unavailable: None,
         recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,

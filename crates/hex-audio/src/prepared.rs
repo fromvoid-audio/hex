@@ -1193,9 +1193,20 @@ impl Status {
     }
 }
 
+/// Classification of a refused ordinary graph publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishErrorKind {
+    /// An original native source was unavailable during reference admission.
+    /// The reason for its unavailability is not implied by this classification.
+    NativeSourceUnavailable,
+    /// Any other publication refusal; consult the diagnostic reason.
+    Other,
+}
+
 /// Failed publication retains the candidate so the caller can retry or dispose
 /// of it off the callback. Revisions advance only after successful publication.
 pub struct PublishError {
+    pub kind: PublishErrorKind,
     pub reason: &'static str,
     pub playback: Playback,
 }
@@ -1219,6 +1230,7 @@ impl std::fmt::Debug for PublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PublishError")
+            .field("kind", &self.kind)
             .field("reason", &self.reason)
             .finish_non_exhaustive()
     }
@@ -1790,6 +1802,7 @@ impl PublicationControl {
     ) -> Result<u64, AdmittedPublishError<E>> {
         let Some(mut resources) = self.device_resources.take() else {
             return Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "ordinary worker publication is not configured",
                 playback,
             }));
@@ -1806,11 +1819,12 @@ impl PublicationControl {
                     .map_err(AdmittedPublishError::Publication)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
-                    AdmittedPublishError::Publication(PublishError { reason: "device resource publication storage reservation exceeded", playback }),
+                    AdmittedPublishError::Publication(PublishError { kind: PublishErrorKind::Other, reason: "device resource publication storage reservation exceeded", playback }),
                 hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
             })
         } else {
             Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation unavailable or overflowing",
                 playback,
             }))
@@ -1866,6 +1880,7 @@ impl PublicationControl {
         let Some(mut resources) = self.device_resources.take() else {
             if playback.contains_device_resource_leases() {
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "device resource publication was not reserved for this output",
                     playback,
                 });
@@ -1882,6 +1897,7 @@ impl PublicationControl {
         if forwarded_pcm {
             self.device_resources = Some(resources);
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "graph publication belongs to the audio worker for this output",
                 playback,
             });
@@ -1893,13 +1909,14 @@ impl PublicationControl {
             resources.publish_on_control(playback, |playback| {
                 self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm, None)
             }).map_err(|error| match error {
-                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError { kind: PublishErrorKind::Other,
                     reason: "device resource publication storage reservation exceeded", playback,
                 },
                 hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
             })
         } else {
             Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation unavailable or overflowing",
                 playback,
             })
@@ -1977,10 +1994,15 @@ impl PublicationControl {
             None
         };
         if let Some(reason) = reason {
-            return Err(PublishError { reason, playback });
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            });
         }
         let Some(pcm_frames) = playback.resident_pcm_capacity_frames() else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm capacity overflow",
                 playback,
             });
@@ -1990,6 +2012,7 @@ impl PublicationControl {
                 .checked_add(if forwarded_pcm { 0 } else { pcm_frames })
         else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation overflow",
                 playback,
             });
@@ -2003,6 +2026,7 @@ impl PublicationControl {
         };
         if !reserved {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "playback publication already pending",
                 playback,
             });
@@ -2024,20 +2048,30 @@ impl PublicationControl {
             Ok(Some(_)) if source_context.is_none() => {
                 self.status.publication_pending.store(false, Release);
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "native graph publication requires a canonical source context",
                     playback,
                 });
             }
             Ok(references) => references,
-            Err(reason) => {
+            Err(failure) => {
                 self.status.publication_pending.store(false, Release);
-                return Err(PublishError { reason, playback });
+                return Err(PublishError {
+                    kind: if failure.is_unavailable() {
+                        PublishErrorKind::NativeSourceUnavailable
+                    } else {
+                        PublishErrorKind::Other
+                    },
+                    reason: failure.message(),
+                    playback,
+                });
             }
         };
         let streams = if self.candidate_root.ordinary_streams_configured() {
             let Some(context) = source_context else {
                 self.status.publication_pending.store(false, Release);
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "ordinary stream context unavailable",
                     playback,
                 });
@@ -2049,7 +2083,11 @@ impl PublicationControl {
                 Ok(streams) => Some(streams),
                 Err(reason) => {
                     self.status.publication_pending.store(false, Release);
-                    return Err(PublishError { reason, playback });
+                    return Err(PublishError {
+                        kind: PublishErrorKind::Other,
+                        reason,
+                        playback,
+                    });
                 }
             }
         } else {
@@ -2074,6 +2112,7 @@ impl PublicationControl {
             publication.release_streams_on_control(&self.candidate_root);
             self.status.publication_pending.store(false, Release);
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "playback publication queue full",
                 playback: *publication.playback,
             });

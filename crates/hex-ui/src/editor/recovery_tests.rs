@@ -914,6 +914,7 @@ impl WorkerAudioSink for Sink {
             && self.reject_next_fresh.swap(false, AcqRel)
         {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "fixture refused stopped restoration".into(),
             });
@@ -936,6 +937,7 @@ impl WorkerAudioSink for Sink {
             ResidentPublicationPolicy::InheritRuntime => PublicationPolicy::InheritRuntime,
             ResidentPublicationPolicy::InheritRuntimeAt(_) => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture does not capture resident loop witnesses".into(),
                 });
@@ -951,6 +953,7 @@ impl WorkerAudioSink for Sink {
             }
             ResidentPublicationPolicy::RestorePluginState => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture has no fresh native plugin restoration".into(),
                 });
@@ -967,6 +970,7 @@ impl WorkerAudioSink for Sink {
                         && actual.output_fault_epoch() == expected.output_fault_epoch
                 }) else {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: "fixture fence changed".into(),
                     });
@@ -983,12 +987,14 @@ impl WorkerAudioSink for Sink {
             }
             ResidentPublicationPolicy::ArrangementEdit => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture does not publish stopped arrangement replacements".into(),
                 });
             }
             ResidentPublicationPolicy::ReplaceDocument { .. } => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture does not replace documents".into(),
                 });
@@ -1010,13 +1016,25 @@ impl WorkerAudioSink for Sink {
             .map_err(|error| match error {
                 AdmittedPublishError::Admission { reason, playback } => {
                     ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: reason,
                     }
                 }
-                AdmittedPublishError::Publication(error) => ResidentPublicationRefusal {
-                    playback: error.playback,
-                    error: error.reason.into(),
+                AdmittedPublishError::Publication(error) => {
+                    let kind = match error.kind {
+                        hex_audio::prepared::PublishErrorKind::NativeSourceUnavailable => {
+                            hex_session::service::ResidentPublicationFailure::NativeSourceUnavailable
+                        }
+                        hex_audio::prepared::PublishErrorKind::Other => {
+                            hex_session::service::ResidentPublicationFailure::Other
+                        }
+                    };
+                    ResidentPublicationRefusal {
+                        kind,
+                        playback: error.playback,
+                        error: error.reason.into(),
+                    }
                 },
             })?;
         if cancel_fresh {

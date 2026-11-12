@@ -72,11 +72,14 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
     use hex_engine::PlaybackCommand;
     use hex_engine::eq::{Node, NodeId, NodeParameter};
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+    use std::sync::atomic::Ordering::Acquire;
 
     let node = NodeId::new(1).unwrap();
     let gain = node.parameter(NodeParameter::Gain).unwrap();
+    let dragged = NodeId::new(2).unwrap();
     let mut eq = EqState::default();
     eq.add(Node::new(node, 1000.0, 0.0, 0).unwrap()).unwrap();
+    eq.add(Node::new(dragged, 5000.0, 0.0, 0).unwrap()).unwrap();
     let insert = Command::InsertTrackWithDevice {
         name: "eq source".into(),
         before_track: None,
@@ -153,6 +156,113 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
             0.0
         );
     }
+
+    let applied = || {
+        fixture
+            .backend
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire)
+    };
+    let before_preview = applied();
+    let [start_x, start_y] = graph.read_with(&visual, |graph, _| {
+        graph.node_position(dragged.value()).unwrap()
+    });
+    let start = plot(&mut visual, device, start_x, start_y);
+    let end = plot(&mut visual, device, start_x - 0.1, 0.65);
+    let modifiers = Modifiers::default();
+    visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
+
+    let deadline = crate::test_wait::hang_deadline();
+    let preview = loop {
+        editor.update(&mut visual, |view, cx| view.tick(cx));
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let revision = fixture
+            .backend
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire);
+        if revision > before_preview {
+            break revision;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "preview callback never applied"
+        );
+        std::thread::yield_now();
+    };
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.audible_playback.as_ref().unwrap().audio_revision,
+            before_preview
+        );
+        assert!(view.device_gesture.snapshot().is_some());
+        cx.notify();
+    });
+    // Paint while the real callback is ahead of the view's metadata.
+    visual.run_until_parked();
+    assert!(
+        (y(&visual) - 0.75).abs() < 0.01,
+        "automation fell back to the original node position while preview {preview} was awaiting its view receipt"
+    );
+    graph.read_with(&visual, |graph, _| {
+        let [x, y] = graph.node_position(dragged.value()).unwrap();
+        assert!((x - (start_x - 0.1)).abs() < 0.01);
+        assert!((y - 0.65).abs() < 0.01);
+    });
+    pump_until(&editor, cx, |view| {
+        view.audible_playback.as_ref().unwrap().audio_revision == preview
+    });
+    assert!((y(&visual) - 0.75).abs() < 0.01);
+
+    visual.simulate_mouse_up(end, MouseButton::Left, modifiers);
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let committed = editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            cx.notify();
+            settled(view)
+                && view.audible_playback.as_ref().is_some_and(|candidate| {
+                    candidate.audio_revision > preview
+                        && candidate.device_preview_identity.is_none()
+                })
+        });
+        if committed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "drag commit never applied"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!((y(&visual) - 0.75).abs() < 0.01);
+    editor.update(&mut visual, |view, _| {
+        view.queue_audio_command(PlaybackCommand::Pause);
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    while fixture.backend.status().unwrap().playing.load(Acquire) {
+        editor.update(&mut visual, |view, cx| view.tick(cx));
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert!(std::time::Instant::now() < deadline, "pause never applied");
+        std::thread::yield_now();
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.tick(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        (y(&visual) - 0.5).abs() < 0.001,
+        "paused node y: {}",
+        y(&visual)
+    );
+    fixture.finish(cx);
 }
 
 #[gpui::test]

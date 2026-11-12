@@ -1533,7 +1533,6 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
     });
     assert!(!cx.update(|app| app.has_active_drag()));
     for _ in 0..3 {
-        editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
         assert_eq!(
             visual.debug_bounds("trim-live-preview"),
@@ -3272,6 +3271,7 @@ fn cropped_clip_move_chooses_from_the_full_audio_and_midi_span(cx: &mut TestAppC
             MouseButton::Left,
             Modifiers::default(),
         );
+        editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             let drag = view.active_clip_drag.as_ref().unwrap();
@@ -4662,6 +4662,10 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
             .debug_bounds("clip-audition-audible-marker")
             .is_none()
     );
+    // Restore the real pointer location before releasing; the synthetic
+    // destination cancellation above only changed the drag payload.
+    visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -4906,4 +4910,300 @@ fn held_clip_audition_admission_latency(cx: &mut TestAppContext) {
     });
     drop(visual);
     fixture.finish(cx);
+}
+
+#[gpui::test]
+fn held_new_track_audition_uses_captured_defaults_for_release_and_undo(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+
+    for (alt, platform) in [(false, false), (true, false), (true, true)] {
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let mut commands = Vec::new();
+        let mut edit = |command: Command| {
+            let result = project.execute(command.clone()).unwrap();
+            commands.push(command);
+            result
+        };
+        let Created::Track(source) = edit(Command::AddTrack {
+            name: "source".into(),
+        }) else {
+            panic!("track")
+        };
+        let Created::Track(second) = edit(Command::AddTrack {
+            name: "second".into(),
+        }) else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = edit(Command::PlaceMidiClip {
+            track: source,
+            start: BeatTime::ONE,
+            length: BeatTime::from_quarters(2).unwrap(),
+        }) else {
+            panic!("clip")
+        };
+        edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        });
+        let mut fixture =
+            super::worker_ui_fixture::open_with_audition_readiness(cx, commands, true);
+        let editor = fixture.editor.clone();
+        editor.update(cx, |view, _| {
+            view.track_defaults.set_test_state(0.5, false, true);
+            view.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(hex_engine::PlaybackCommand::Play)
+                .unwrap();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.5, false, true);
+        });
+        let original = editor.read_with(&visual, |view, _| {
+            Arc::clone(&view.state.as_ref().unwrap().project)
+        });
+        let surface = visual
+            .debug_bounds(Box::leak(
+                format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let down = surface.center();
+        let modifiers = Modifiers {
+            alt,
+            platform,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        let bounds = editor.read_with(&visual, |view, _| view.arrangement_bounds.unwrap());
+        let mut target = point(
+            lane.origin.x + lane.size.width * 0.73,
+            px(bounds.top + bounds.height - 8.0),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let identity = editor.update(&mut visual, |view, _| {
+            view.sync_held_clip_move_audition();
+            let identity = view.expected_clip_preview.expect("new-track target");
+            assert!(matches!(
+                identity.destination,
+                hex_session::service::ClipMovePreviewDestination::NewTrack { before_track: None }
+            ));
+            let expected_mode = match (alt, platform) {
+                (true, true) => hex_session::service::ArrangementMoveMode::AliasCopy,
+                (true, false) => hex_session::service::ArrangementMoveMode::Copy,
+                _ => hex_session::service::ArrangementMoveMode::Move,
+            };
+            assert_eq!(identity.mode, expected_mode);
+            assert_eq!(
+                view.state.as_ref().unwrap().project.as_ref(),
+                original.as_ref()
+            );
+            let drag = view.active_clip_drag.as_ref().unwrap().clone();
+            let destination = drag.destination.get();
+            drag.destination.set(None);
+            assert!(view.sync_held_clip_move_audition());
+            assert!(view.expected_clip_preview.is_none());
+            drag.destination.set(destination);
+            assert!(view.sync_held_clip_move_audition());
+            let identity = view.expected_clip_preview.unwrap();
+            view.track_defaults.set_test_state(0.25, false, true);
+            identity
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("new-track-audition-audible-marker")
+                .is_none()
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(&mut visual, |view, cx| {
+                if view.tick(cx) {
+                    cx.notify();
+                }
+                view.applied_clip_preview
+                    .is_some_and(|(_, actual)| actual == identity)
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "new-track preview did not reach callback"
+            );
+            std::thread::yield_now();
+        }
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("new-track-audition-audible-marker")
+                .is_some()
+        );
+        let actual_a = editor.read_with(&visual, |view, _| {
+            view.new_track_audible_marker()
+                .expect("callback-applied new-track marker")
+        });
+        let saved = editor.update(&mut visual, |view, cx| {
+            let saved = view.applied_clip_preview.unwrap();
+            view.applied_clip_preview = Some((saved.0 + 1, saved.1));
+            cx.notify();
+            saved
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("new-track-audition-audible-marker")
+                .is_none()
+        );
+        editor.update(&mut visual, |view, cx| {
+            let mut wrong_source = saved.1;
+            wrong_source.context.project_generation += 1;
+            view.applied_clip_preview = Some((saved.0, wrong_source));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("new-track-audition-audible-marker")
+                .is_none()
+        );
+        editor.update(&mut visual, |view, cx| {
+            view.applied_clip_preview = Some(saved);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            let epoch = view.drag_lane_epochs.remove(&second).unwrap();
+            assert!(view.new_track_audible_marker().is_none());
+            view.drag_lane_epochs.insert(second, epoch);
+        });
+        let second_lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", second.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        target = point(target.x + px(40.0), second_lane.origin.y);
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let next = editor.update(&mut visual, |view, cx| {
+            view.sync_held_clip_move_audition();
+            let next = view.expected_clip_preview.unwrap();
+            assert_ne!(next, identity);
+            assert!(matches!(next.destination, hex_session::service::ClipMovePreviewDestination::NewTrack { before_track: Some(track) } if track == second));
+            cx.notify();
+            next
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            editor.read_with(&visual, |view, _| view.new_track_audible_marker()),
+            Some(actual_a)
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(&mut visual, |view, cx| {
+                if view.tick(cx) {
+                    cx.notify();
+                }
+                view.applied_clip_preview
+                    .is_some_and(|(_, actual)| actual == next)
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "second new-track preview did not reach callback"
+            );
+            std::thread::yield_now();
+        }
+        visual.run_until_parked();
+        let actual_b = editor.read_with(&visual, |view, _| {
+            view.new_track_audible_marker()
+                .expect("updated callback-applied marker")
+        });
+        assert_ne!(actual_a, actual_b);
+        let destination = editor.update(&mut visual, |view, cx| {
+            let drag = view.active_clip_drag.as_ref().unwrap().clone();
+            let destination = drag.destination.get();
+            drag.destination.set(None);
+            assert!(view.sync_held_clip_move_audition());
+            cx.notify();
+            destination
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("new-track-audition-audible-marker")
+                .is_none()
+        );
+        editor.update(&mut visual, |view, cx| {
+            view.active_clip_drag
+                .as_ref()
+                .unwrap()
+                .destination
+                .set(destination);
+            assert!(view.sync_held_clip_move_audition());
+            cx.notify();
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.pending_clip_move.is_none() && view.worker_requests_pending == 0
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "new-track release did not settle"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, _| {
+            let result = &view.state.as_ref().unwrap().project;
+            assert_eq!(result.tracks().len(), original.tracks().len() + 1);
+            assert_eq!(result.tracks()[1].gain(), 0.5);
+            assert!(view.enqueue(hex_session::service::Request::Undo));
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.worker_requests_pending == 0
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "undo did not settle");
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            let result = &view.state.as_ref().unwrap().project;
+            assert_eq!(result.tracks(), original.tracks());
+        });
+        drop(visual);
+        fixture.finish(cx);
+    }
 }

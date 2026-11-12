@@ -322,6 +322,13 @@ impl EditorView {
     /// Show the callback-confirmed anchor for the held gesture. Never infer an
     /// audible position from a submitted pointer target.
     pub(super) fn audible_clip_move_anchor(&self) -> Option<(hex_project::TrackId, u64)> {
+        let (destination, frame) = self.audible_clip_move_position()?;
+        Some((destination.existing_track()?, frame))
+    }
+
+    pub(super) fn audible_clip_move_position(
+        &self,
+    ) -> Option<(hex_session::service::ClipMovePreviewDestination, u64)> {
         let drag = self.active_clip_drag.as_ref()?;
         let (audio_revision, applied) = self.applied_clip_preview?;
         let desired = self.expected_clip_preview?;
@@ -346,7 +353,7 @@ impl EditorView {
                 state.project.tempo_map().beat_to_frame(beat).ok()?
             }
         };
-        Some((applied.destination.existing_track()?, frame))
+        Some((applied.destination, frame))
     }
 
     pub(super) fn pending_clip_move_matches(&self, request: &Request) -> bool {
