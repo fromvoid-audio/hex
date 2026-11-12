@@ -130,7 +130,9 @@ enum WaveformPlacementKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct CoarseEntryKey {
-    clip_id: u64,
+    source_address: usize,
+    clip_id: Option<u64>,
+    timeline_origin: u64,
     frames_per_bin: u64,
     pixel_pitch: u32,
 }
@@ -151,7 +153,8 @@ enum WaveformMappingKey {
         detail: bool,
     },
     Clip {
-        id: u64,
+        id: Option<u64>,
+        transformed: bool,
         start: u64,
         duration: u64,
         source_offset: u64,
@@ -212,7 +215,7 @@ impl WaveformGeometryCache {
     ) -> Option<Arc<WaveformGeometry>> {
         // The index can reject absent signatures only; resident hits still
         // require exact source and complete geometry-key equality below.
-        if coarse_entry_key(key)
+        if coarse_entry_key(key, source)
             .is_some_and(|coarse_key| !self.coarse_entry_counts.contains_key(&coarse_key))
         {
             return None;
@@ -257,10 +260,10 @@ impl WaveformGeometryCache {
                 break;
             };
             self.columns = self.columns.saturating_sub(removed.columns);
-            self.remove_coarse_entry(coarse_entry_key(&removed.key));
+            self.remove_coarse_entry(coarse_entry_key(&removed.key, &removed.source));
         }
         self.columns = self.columns.saturating_add(columns);
-        let coarse_entry_key = coarse_entry_key(&key);
+        let coarse_entry_key = coarse_entry_key(&key, &source);
         if let Some(coarse_key) = coarse_entry_key {
             *self.coarse_entry_counts.entry(coarse_key).or_default() += 1;
         }
@@ -381,8 +384,16 @@ impl WaveformGeometryCache {
     }
 }
 
-fn coarse_entry_key(key: &WaveformGeometryKey) -> Option<CoarseEntryKey> {
-    let WaveformMappingKey::Clip { id, .. } = &key.mapping else {
+fn coarse_entry_key(
+    key: &WaveformGeometryKey,
+    source: &Arc<CachedWaveform>,
+) -> Option<CoarseEntryKey> {
+    let WaveformMappingKey::Clip {
+        id,
+        timeline_origin,
+        ..
+    } = &key.mapping
+    else {
         return None;
     };
     let WaveformPlacementKey::Coarse {
@@ -394,7 +405,9 @@ fn coarse_entry_key(key: &WaveformGeometryKey) -> Option<CoarseEntryKey> {
         return None;
     };
     Some(CoarseEntryKey {
+        source_address: Arc::as_ptr(source) as usize,
         clip_id: *id,
+        timeline_origin: *timeline_origin,
         frames_per_bin: *frames_per_bin,
         pixel_pitch: *pixel_pitch,
     })
@@ -574,6 +587,17 @@ pub(super) fn cached_waveform_geometry(
     {
         let columns = WaveformLayout::new(request)?;
         if let Some(local) = columns.coarse_placement(request.bounds) {
+            // Plain clips with the same complete source and timeline projection
+            // can share the retained local path across tracks. Placement still
+            // owns the exact absolute bins, scale, height and sampling budget.
+            if let WaveformMappingKey::Clip {
+                id,
+                transformed: false,
+                ..
+            } = &mut key.mapping
+            {
+                *id = None;
+            }
             key.placement = local.key;
             pitch = Some(local.pitch);
             offset = local.offset;
@@ -639,7 +663,8 @@ fn waveform_geometry_key(
             timeline_origin,
             fade,
         } => WaveformMappingKey::Clip {
-            id: clip.id().value(),
+            id: Some(clip.id().value()),
+            transformed: clip.audio_edit().is_some(),
             gain: clip.gain().millidb(),
             start: clip.start(),
             duration: clip.duration(),
@@ -1092,7 +1117,8 @@ mod tests {
         WaveformGeometryKey {
             reference_stereo: reference_stereo(),
             mapping: WaveformMappingKey::Clip {
-                id: clip_id,
+                id: Some(clip_id),
+                transformed: false,
                 start: first_frame,
                 duration: 256,
                 source_offset: 0,
@@ -1623,6 +1649,98 @@ mod tests {
 
     #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
+    fn coarse_aligned_clips_share_only_equivalent_geometry() {
+        use hex_project::{Command, Created, Editor, Project};
+
+        let start = 96_000;
+        let duration = 48_000;
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: start,
+            })
+            .unwrap()
+        else {
+            panic!("imported source")
+        };
+        let place = |editor: &mut Editor, track, source_offset| {
+            let Created::Clip(id) = editor
+                .execute(Command::PlaceClip {
+                    track,
+                    asset,
+                    start,
+                    duration,
+                    source_offset,
+                    source_length: duration,
+                    looping: false,
+                })
+                .unwrap()
+            else {
+                panic!("placed clip")
+            };
+            id
+        };
+        let first = place(&mut editor, track, 0);
+        let others = [0, 1_024].map(|source_offset| {
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: "copy".into(),
+                })
+                .unwrap()
+            else {
+                panic!("added track")
+            };
+            place(&mut editor, track, source_offset)
+        });
+        let source = waveform();
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let cached = |id, timeline_origin, y| {
+            let mapping = WaveformMapping::Clip {
+                clip: editor.project().clip(id).unwrap().clone(),
+                timeline_origin,
+                fade: None,
+            };
+            cached_waveform_geometry(
+                &cache,
+                &source,
+                &WaveformGeometryRequest {
+                    mapping: &mapping,
+                    amplitude_scale: WaveformAmplitudeScale::default(),
+                    visible_start: start,
+                    visible_end: start + duration,
+                    bounds: Bounds::new(point(px(202.25), px(y)), size(px(96.0), px(80.0))),
+                    scale: 2.0,
+                    columns: 144,
+                    grid: Some(WaveformGrid {
+                        start: 0,
+                        end: start + duration,
+                        left: 10.25,
+                        width: 288.0,
+                        columns: 144,
+                        binned: true,
+                    }),
+                },
+            )
+            .unwrap()
+        };
+        let (first_geometry, first_offset) = cached(first, start, 34.25);
+        let (second_geometry, second_offset) = cached(others[0], start, 134.25);
+        let outline = &first_geometry.channels[0].outline;
+        assert!(outline.iter().any(|point| point.y != outline[0].y));
+        assert!(Arc::ptr_eq(&first_geometry, &second_geometry));
+        assert_eq!(first_offset.x, second_offset.x);
+        assert_eq!(second_offset.y - first_offset.y, px(100.0));
+        assert_eq!(cache.borrow().entry_count(), 1);
+        for (id, origin) in [(others[1], start), (others[0], start + 1)] {
+            assert!(!Arc::ptr_eq(&first_geometry, &cached(id, origin, 134.25).0));
+        }
+    }
+
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[test]
     fn coarse_clip_cache_reuses_paths_across_aligned_grid_shifts() {
         use crate::editor::viewport::Viewport;
         use hex_project::{Command, Created, Editor, Project};
@@ -2061,7 +2179,7 @@ mod tests {
         let geometry = geometry(&source, 0, bounds());
         let first = coarse_key(1, 0);
         let second = coarse_key(1, 256);
-        let index_key = coarse_entry_key(&first).unwrap();
+        let index_key = coarse_entry_key(&first, &source).unwrap();
         let mut cache = WaveformGeometryCache::default();
         for key in [first.clone(), second.clone()] {
             cache.insert(key, Arc::clone(&source), Arc::clone(&geometry), 1);
