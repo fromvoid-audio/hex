@@ -129,11 +129,13 @@ impl RecoveryTracker {
                 Err("no recovery checkpoint is pending".into()),
             );
         };
-        let result = self
-            .worker
-            .as_mut()
-            .ok_or("recovery checkpoint worker is unavailable".to_string())
-            .and_then(|worker| worker.finish(journal));
+        let (completed, result) = match self.worker.as_mut() {
+            Some(worker) => worker.finish_timed(journal),
+            None => (
+                std::time::Instant::now(),
+                Err("recovery checkpoint worker is unavailable".into()),
+            ),
+        };
         match &result {
             Ok(_) => self.clear(),
             Err(reason) => {
@@ -141,7 +143,7 @@ impl RecoveryTracker {
                 self.failed(path, generation, reason.clone(), None);
             }
         }
-        (started.elapsed(), result)
+        (completed.saturating_duration_since(started), result)
     }
     fn clear(&mut self) {
         self.failure = None;
