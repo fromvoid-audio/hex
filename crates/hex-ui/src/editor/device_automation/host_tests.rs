@@ -2162,6 +2162,13 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
         assert_eq!(clips.len(), 1, "{:?}", view.error);
         view.selected_clip = Some(clips[0].id());
         view.time_selection = Some(background_range);
+        view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
+            track: Some(track),
+            frame: background_range.anchor_frame,
+            generation: view.project_generation,
+            pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+            pulse_started: Instant::now(),
+        });
         clips
     });
     let from = lane_point(&mut visual, device, target, [0.1, 0.78]);
@@ -2178,10 +2185,20 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
 
     visual.simulate_keystrokes("cmd-c");
     assert_eq!(lane_points(&visual, &editor, device, target), original);
+    visual.simulate_click(to, CMD);
+    visual.simulate_keystrokes("cmd-v");
+    pump(&mut visual, &editor);
+    let pasted = lane_points(&visual, &editor, device, target);
+    assert_eq!(pasted.len(), 5);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), original);
+
+    lane_drag(&mut visual, from, to, CMD);
     visual.simulate_keystrokes("d");
     pump(&mut visual, &editor);
     let duplicate = lane_points(&visual, &editor, device, target);
-    assert_eq!(duplicate.len(), 5);
+    assert_eq!(duplicate, pasted);
     for point in &original[..2] {
         assert!(duplicate.contains(&AutomationPoint {
             beat: BeatTime::from_raw(point.beat.raw() + width),
