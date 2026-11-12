@@ -691,7 +691,8 @@ impl VerifiedLane {
         }
         self.attempted = Some(target.clone());
         let Some(cancel) = mailbox.claim(Target::Move(target.clone())) else {
-            return false;
+            self.attempted = None;
+            return true;
         };
         let started = Instant::now();
         let candidate = VerifiedClipMoveSource::capture(Arc::clone(source), target.clone());
