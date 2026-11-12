@@ -2041,7 +2041,7 @@ mod tests {
         let before = editor.project().clone();
 
         editor.execute(Command::ToggleLoopRegion).unwrap();
-        let keeps_worker = |project| {
+        let keeps_worker = |project: &Project| {
             prepare(project).same_authored_plugin_program(
                 &prepare(&before),
                 device.value(),
