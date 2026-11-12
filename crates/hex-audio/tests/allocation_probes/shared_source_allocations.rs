@@ -294,10 +294,19 @@ fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
     assert!(!input.is_cancelled());
     assert!(control.status.rejected_revision().is_none());
     assert!(control.status.render_fault_snapshot().is_none());
-    for key in 0..17 {
-        input.set_key(key, None)?;
+    let mut queue_full = false;
+    for _ in 0..1024 {
+        if control.command(PlaybackCommand::Pause).is_err() {
+            queue_full = true;
+            break;
+        }
     }
+    assert!(queue_full, "command queue must reach capacity");
+    control.stop();
     render(&mut callback, &mut output)?;
+    assert!(input.is_cancelled(), "stop must cancel held live keys");
+    assert_eq!(output, [[0.0; 2]; 256], "stop must silence the source");
+    assert!(control.status.render_fault_snapshot().is_none());
     control.request_shutdown();
     render(&mut callback, &mut output)?;
     control.reclaim();
