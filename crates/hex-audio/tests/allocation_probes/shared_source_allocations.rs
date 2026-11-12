@@ -145,6 +145,219 @@ fn shared_analytic_receiver_handoff_pause_and_live_off_allocate_and_free_nothing
 -> Result<(), Box<dyn Error>> {
     shared_source_callback(true)
 }
+#[test]
+fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    use hex_devices::operator_state::parameter;
+    use hex_lattice_contract::ParameterId;
+
+    let mut editor = Editor::new(Project::new(48_000)?, 32)?;
+    let registry = hex_devices::native_instrument_registry()?;
+    let state = registry.default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)?;
+    let state =
+        registry.patch_parameter(&state, parameter::GLOBAL_MODE, ParameterValue::Choice(1))?;
+    let mut state = registry.patch_parameter(
+        &state,
+        ParameterId::from_static(601),
+        ParameterValue::Choice(7),
+    )?;
+    for operator in 1..=4 {
+        state = registry.patch_parameter(
+            &state,
+            parameter::envelope(operator, parameter::EnvelopeField::Release),
+            ParameterValue::Float(1.0),
+        )?;
+    }
+    let Created::Track(receiver) = editor.execute(Command::InsertTrackWithDevice {
+        name: "receiver".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state,
+    })?
+    else {
+        return Err("receiver missing".into());
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .and_then(|track| track.source_id())
+        .ok_or("source missing")?;
+    let Created::Track(contributor) = editor.execute(Command::AddMidiTrack {
+        name: "contributor".into(),
+    })?
+    else {
+        return Err("contributor missing".into());
+    };
+    editor.execute(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    })?;
+    for (track, pitches) in [
+        (receiver, vec![60, 61]),
+        (contributor, (0..45).collect::<Vec<u8>>()),
+    ] {
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })?
+        else {
+            return Err("clip missing".into());
+        };
+        for pitch in pitches {
+            editor.execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                velocity: 100,
+                channel: 0,
+            })?;
+        }
+    }
+    let Created::Scene(scene) = editor.execute(Command::AddScene {
+        name: "pressure".into(),
+    })?
+    else {
+        return Err("scene missing".into());
+    };
+    let Created::SessionClip(session_clip) = editor.execute(Command::CreateSessionMidiClip {
+        track: receiver,
+        scene,
+        name: "pressure".into(),
+        source_length: BeatTime::ONE,
+    })?
+    else {
+        return Err("session clip missing".into());
+    };
+    for pitch in 60..78 {
+        editor.execute(Command::AddMidiNote {
+            clip: session_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch,
+            velocity: 100,
+            channel: 0,
+        })?;
+    }
+    let input = Arc::new(ComputerKeyboardInput::default());
+    let initial = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        receiver,
+        Arc::clone(&input),
+    )?;
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    control
+        .publish_with_policy_and_context_generation(initial, PublicationPolicy::InheritRuntime, 7)
+        .map_err(|error| error.reason)?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "play queue full")?;
+    let mut output = [[0.0; 2]; 256];
+    let render = |callback: &mut prepared::Callback,
+                  output: &mut [[f32; 2]; 256]|
+     -> Result<(), Box<dyn Error>> {
+        let mut result = None;
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            result = Some(callback.render(output));
+        });
+        result.ok_or("render missing")??;
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        Ok(())
+    };
+    render(&mut callback, &mut output)?;
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001)
+    );
+    editor.execute(Command::Mute {
+        track: contributor,
+        muted: true,
+    })?;
+    let candidate = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        receiver,
+        Arc::clone(&input),
+    )?;
+    let muted_revision = control
+        .publish_with_policy_and_context_generation(candidate, PublicationPolicy::InheritRuntime, 7)
+        .map_err(|error| error.reason)?;
+    render(&mut callback, &mut output)?;
+    assert_eq!(
+        control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        muted_revision
+    );
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001),
+        "the shared peer must remain audible"
+    );
+    for key in 0..17 {
+        input.set_key(key, Some((67 + key as u8, 100, key as u64 + 1)))?;
+    }
+    render(&mut callback, &mut output)?;
+    assert!(input.rejected(), "live press must report capacity refusal");
+    assert!(!input.is_cancelled());
+    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status.render_fault_snapshot().is_none());
+    let ticket = control
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip: session_clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .map_err(|_| "session command queue full")?;
+    render(&mut callback, &mut output)?;
+    assert_eq!(
+        control.status.rejected_action(),
+        Some((
+            ticket,
+            hex_engine::playback::PlaybackActionRejection::SharedSourceVoiceCapacity
+        ))
+    );
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.000_001)
+    );
+    assert!(control.status.render_fault_snapshot().is_none());
+    let mut queue_full = false;
+    for _ in 0..1024 {
+        if control.command(PlaybackCommand::Pause).is_err() {
+            queue_full = true;
+            break;
+        }
+    }
+    assert!(queue_full, "command queue must reach capacity");
+    control.stop();
+    render(&mut callback, &mut output)?;
+    assert!(input.is_cancelled(), "stop must cancel held live keys");
+    assert_eq!(output, [[0.0; 2]; 256], "stop must silence the source");
+    assert!(control.status.render_fault_snapshot().is_none());
+    control.request_shutdown();
+    render(&mut callback, &mut output)?;
+    control.reclaim();
+    Ok(())
+}
+
 fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 32)?;
     let Created::Track(a) = editor.execute(Command::InsertTrackWithDevice {
