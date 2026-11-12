@@ -83,7 +83,7 @@ impl Clipboard {
         if points.len() > hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
             return Err("automation lane point limit reached");
         }
-        points.sort_unstable_by_key(|point| point.beat);
+        points.sort_by_key(|point| point.beat);
         Ok((range, points))
     }
 }

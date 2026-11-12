@@ -498,6 +498,66 @@ mod retained_tests {
         );
     }
     #[test]
+    fn shared_beat_vst3_jump_stages_without_callback_allocation_or_drop() {
+        use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+        use hex_project::{
+            AutomationInterpolation::Linear, AutomationPoint, AutomationReadSelection,
+            AutomationValue, BeatTime, DeviceAutomation, DeviceAutomationTarget,
+        };
+
+        let project = hex_project::Project::new(8000).unwrap();
+        let jump = BeatTime::from_ratio(1, 1000).unwrap();
+        let lane = DeviceAutomation {
+            read_selection: AutomationReadSelection::Authored,
+            target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+            vst3_class: Some([1; 16]),
+            points: [(BeatTime::ZERO, 0.0), (jump, 1.0), (jump, 0.25)]
+                .map(|(beat, value)| AutomationPoint {
+                    beat,
+                    value: AutomationValue::new(value).unwrap(),
+                    outgoing: Linear,
+                })
+                .to_vec(),
+            touch: Vec::new(),
+        };
+        let program = Program::prepare(
+            &[lane],
+            [1; 16],
+            &[ParameterCapability {
+                id: 0,
+                steps: 0,
+                normalized_base_bits: 0,
+            }],
+            project.tempo_map(),
+            QuantumProfile::arbitrary(8, 1),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::new(1).unwrap(), program, bytes)
+                .unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+        stage(&mut callback, 8, 0, &program);
+        let request = worker.receive_request().unwrap().unwrap();
+        let emitted: Vec<_> = request
+            .block
+            .parameters
+            .as_slice()
+            .iter()
+            .map(|point| (point.frame, point.normalized))
+            .collect();
+        assert_eq!(emitted, [(0, 0.0), (3, 0.75), (4, 0.25), (7, 0.25)]);
+        worker.complete(request.block).unwrap();
+    }
+
+    #[test]
     fn full_constant_base_program_stages_without_callback_allocation_or_drop() {
         let project = hex_project::Project::new(8000).unwrap();
         let capabilities = (0..MAX_FOREIGN_AUTOMATION_TARGETS as u32)
