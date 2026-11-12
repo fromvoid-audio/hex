@@ -99,23 +99,21 @@ fn in_flight_duplicate_recovers_a_revoked_native_source(cx: &mut gpui::TestAppCo
     {
         let mut slot = callback.lock().unwrap();
         let backend = slot.as_mut().unwrap();
-        for _ in 0..64 {
-            backend
-                .render_native_direct(&mut [[0.0; 2]; 256], &mut [0.0; 512])
-                .unwrap();
-        }
+        assert!(backend.revoke_native_sources_for_test());
     }
     let failed_cursor = view(cx).transport.unwrap().0;
     resume.send(()).unwrap();
     let mut saw_recovery = false;
-    let step = |cx: &mut gpui::TestAppContext, visual: &mut VisualTestContext| {
+    let mut old_closed = false;
+    let mut step = |cx: &mut gpui::TestAppContext, visual: &mut VisualTestContext| {
         let mut slot = callback.lock().unwrap();
         if slot
             .as_ref()
             .is_some_and(HeadlessBackend::shutdown_requested)
         {
             slot.take().unwrap().close();
-        } else if let Some(backend) = slot.as_mut() {
+            old_closed = true;
+        } else if old_closed && let Some(backend) = slot.as_mut() {
             backend
                 .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
                 .unwrap();
@@ -123,11 +121,12 @@ fn in_flight_duplicate_recovers_a_revoked_native_source(cx: &mut gpui::TestAppCo
         drop(slot);
         super::super::ui::repaint(cx, visual);
     };
-    super::super::ui::until("copy recovers and commits", || {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
         step(cx, &mut visual);
         let snapshot = view(cx);
         saw_recovery |= snapshot.status.contains("restarting audio");
-        snapshot
+        let ready = snapshot
             .state
             .as_ref()
             .is_some_and(|state| state.revision == revision + 1)
@@ -137,11 +136,50 @@ fn in_flight_duplicate_recovers_a_revoked_native_source(cx: &mut gpui::TestAppCo
             })
             && snapshot
                 .transport
-                .is_some_and(|(position, playing)| playing && position >= failed_cursor)
-    });
+                .is_some_and(|(position, playing)| playing && position >= failed_cursor);
+        if ready {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "recovery timeout: revision={:?}, old={old_output}, applied={:?}, transport={:?}, failed_cursor={failed_cursor}, status={}, error={:?}, pending={}, queued={}, saw_recovery={saw_recovery}",
+            snapshot.state.as_ref().map(|state| state.revision),
+            snapshot.applied,
+            snapshot.transport,
+            snapshot.status,
+            snapshot.error,
+            snapshot.pending,
+            snapshot.queued_requests
+        );
+        std::thread::yield_now();
+    }
     assert!(
         saw_recovery,
         "real source refusal must initiate audio recovery"
+    );
+    let mut peak = 0.0_f32;
+    for _ in 0..12 {
+        let mut pcm = [[0.0; 2]; 256];
+        let mut slot = callback.lock().unwrap();
+        let backend = slot.as_mut().unwrap();
+        backend
+            .render_native_direct(&mut pcm, &mut [0.0; 512])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while backend.native_workers_idle_on_control() != Some(true) {
+            assert!(Instant::now() < deadline, "recovered native worker stalled");
+            std::thread::yield_now();
+        }
+        peak = peak.max(
+            pcm.iter()
+                .flatten()
+                .map(|value| value.abs())
+                .fold(0.0, f32::max),
+        );
+    }
+    assert!(
+        peak > 0.01,
+        "recovered graph must deliver audible PCM: {peak}"
     );
     let copied = view(cx).state.unwrap();
     assert!(copied.project.track(track).unwrap().clips().len() > 1);
