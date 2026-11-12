@@ -458,12 +458,28 @@ the previous target and failed report; changing the location is not evidence tha
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
 
-`FreshTargetReservation` is an explicit, bounded, lock-owning primitive for a
-canonical absolute target which is absent or empty before the caller starts
-Cargo. It pins directory ancestry, revalidates exact identity and emptiness,
-and invalidates authority when closed. Existing CLI, programmatic and release
-entrypoints do not use it yet. Raw Cargo and other processes which ignore the
-cooperative target lock remain outside this observation; it is not a sandbox.
+For a one-time dev target admission, set an explicit absolute `CARGO_TARGET_DIR`
+with existing ancestors and pass `--fresh-target` to a full or scoped run.
+
+```sh
+mkdir -p artifacts
+CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target" \
+  python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile full --fresh-target
+```
+
+The target must be absent or empty and have no existing owner. The reservation
+pins directory ancestry and holds the same lock across planner metadata, runner
+metadata, create-only owner publication and guarded checks. Metadata temporarily
+disables the rustc information cache, then must report the selected workspace
+and target and leave the directory fresh. The report records `claim-fresh` and
+the admitted target identity. Use the ordinary command to reuse that owned cache
+later. Resume and adoption have their own ownership contracts. Config-inferred
+targets use the ordinary path.
+
+The programmatic dev and release guards can also accept a live
+`FreshTargetReservation` acquired before the caller starts Cargo. The reservation
+invalidates authority when closed. Raw Cargo and other processes which ignore the
+cooperative target lock remain outside this observation.
 A target-wide `.admission-pending` sentinel beside its lock makes cooperating
 lock users refuse before cleanup or build, including explicit adoption and
 release recovery. Its contents are not trusted: any entry, including a dangling
@@ -475,16 +491,15 @@ sentinel. A failed final directory sync denies handoff after the verified owner
 has been made durable. After a crash the sentinel can still be present, in which
 case the target remains unavailable to cooperating consumers.
 The refusal relies on the same intact lock-state directory; a replaced state
-directory can hide the sentinel. Older runner versions and raw Cargo do not
-honor it. Current guarded paths may run initial Cargo metadata before locking.
+directory can hide the sentinel. Use a target dedicated to current cooperating
+runners. The ordinary guarded path may run initial Cargo metadata before locking.
 For the opt-in identity-resolution API, the caller must acquire a reservation
 before its first Cargo operation and retain it through the later custody
 decision. Metadata must report exactly the explicit target and leave it fresh;
 resolution alone neither admits the target nor publishes ownership. A target
 inferred only from Cargo configuration does not meet this API's proof contract.
-The standalone dev publisher currently accepts existing empty directories after
-the caller has captured Git, Cargo and dependency inputs. Release publication,
-absent-target creation and guarded entrypoint adoption are separate boundaries.
+The dev publisher uses the existing owner schema for absent and empty targets.
+An absent target is materialized under the held lock before owner publication.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
