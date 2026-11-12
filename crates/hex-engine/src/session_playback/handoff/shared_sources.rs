@@ -1759,6 +1759,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_mute_preserves_saturated_unchanged_arrangement() {
+        on_control(|| {
+            let mut f = fixture();
+            let receiver_clip = f.editor.project().track(f.receiver).unwrap().midi_clips()[0].id();
+            let contributor_clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for (clip, pitches) in [
+                (receiver_clip, vec![67]),
+                (contributor_clip, (0..13).collect()),
+            ] {
+                for pitch in pitches {
+                    f.editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::ZERO,
+                            duration: BeatTime::ONE,
+                            pitch,
+                            channel: 0,
+                            velocity: 127,
+                        })
+                        .unwrap();
+                }
+            }
+            let mut old = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            assert!(
+                old.revision
+                    .retained_source_configuration_matches(&candidate.revision, f.source),
+                "source configuration changed"
+            );
+            for track in [f.receiver, f.contributor] {
+                assert!(
+                    old.revision.bounded_mutable_arrangement_sources_match(
+                        &candidate.revision,
+                        track,
+                        16
+                    ),
+                    "arrangement identity changed for {track:?}"
+                );
+            }
+            candidate
+                .try_inherit_state_from(&mut old)
+                .expect("muting cannot add future source demand");
+            candidate.render(&mut [[0.0; 2]; 64]).unwrap();
+        });
+    }
+
+    #[test]
     fn shared_source_future_notes_do_not_overrun_retained_authored_releases() {
         on_control(|| {
             let mut f = fixture();
