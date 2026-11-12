@@ -668,7 +668,7 @@ impl SessionPlayback {
             .map(|_| receiver)
     }
 
-    /// Reserve the existing source ledger plus every prospective contributor's
+    /// Reserve authored and live source ledgers plus every prospective contributor's
     /// full admitted voice envelope. Released voices stay charged through their
     /// quiet deadline. Silence is always allowed to release notes, even when a
     /// new launch would exceed the source's capacity.
@@ -708,7 +708,9 @@ impl SessionPlayback {
                 .transition_proofs(speculative)
                 .iter()
                 .filter(|occurrence| occurrence.quiet_deadline_frame > frame)
-                .count();
+                .count()
+                .checked_add(runtime.transition_live_count(speculative))
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             for &contributor in contributors {
                 let index = usize::from(contributor);
                 let track = &self.revision.arrangement().tracks()[index];
@@ -731,9 +733,7 @@ impl SessionPlayback {
                     .max_active_occurrences()
                     .min(runtime.transition_proof_capacity())
             {
-                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                    "shared source launch exceeds retained voice capacity",
-                ));
+                return Err(SessionPlaybackError::SharedSourceVoiceCapacity);
             }
         }
         Ok(())

@@ -156,6 +156,8 @@ pub enum SessionPlaybackError {
     /// silent transitions instead (Pulse #4558).
     DeviceTransitionBusy,
     MutableInstrumentRuntime,
+    /// Existing authored and live voices leave insufficient room for the launch.
+    SharedSourceVoiceCapacity,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
     MutableInstrumentLoopUnsupported,
@@ -206,6 +208,9 @@ impl SessionPlaybackError {
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
+            }
+            Self::SharedSourceVoiceCapacity => {
+                "shared source voice capacity is full · release notes or wait for tails, then retry"
             }
             Self::MutableInstrumentDiagnostic(message) => message,
             Self::MutableInstrumentEvents => {
