@@ -212,8 +212,12 @@ fn open(
                     label: label.into(),
                 }),
             };
-            let tracks = state.project.tracks().iter().filter_map(move |linked| {
-                (linked.source_id() == Some(source.id())).then(|| {
+            let tracks = state
+                .project
+                .tracks()
+                .iter()
+                .filter(move |linked| linked.source_id() == Some(source.id()))
+                .map(move |linked| {
                     let role = if source.receiver() == Some(linked.id()) {
                         "receiver"
                     } else {
@@ -236,8 +240,7 @@ fn open(
                             .into(),
                         }),
                     }
-                })
-            });
+                });
             std::iter::once(assignment).chain(tracks)
         })
         .collect::<Vec<_>>();
