@@ -37,9 +37,20 @@ def install_delivery_source_fixture(root: Path) -> None:
     """Install independent copies of the actual delivery input sources."""
     scripts = root / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+    for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
                  "ci_checkpoint.py", "ci_target_storage.py"):
         (scripts / name).write_bytes((SCRIPT.parent / name).read_bytes())
+
+
+def load_delivery_source_fixture(name):
+    path = SCRIPT.with_name("hex-test-build.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    source = path.read_bytes()
+    module._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+    return module
 
 
 FAKE_TOOL = """#!/bin/sh
@@ -1512,10 +1523,7 @@ fi
 
         # Exercise the delivery consumer against this small complete fake plan;
         # no native build or signing is invoked.
-        spec = importlib.util.spec_from_file_location("checkpoint_delivery", SCRIPT.with_name("hex-test-build.py"))
-        delivery = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = delivery
-        spec.loader.exec_module(delivery)
+        delivery = load_delivery_source_fixture("checkpoint_delivery")
         with patch.object(delivery.ci, "FULL_STEPS", case.steps):
             self.assertEqual(delivery.validate_ci(resumed.summary_path, resumed, report["commit"]), report)
             forged = json.loads(resumed.summary_path.read_text())
