@@ -1822,6 +1822,24 @@ impl PreparedRevision {
         }
     }
 
+    /// Callback-bounded equality of immutable Arrangement source identities.
+    /// Source identity uses copy-on-write pointer equality, not note traversal.
+    pub(crate) fn bounded_mutable_arrangement_sources_match(
+        &self,
+        candidate: &Self,
+        track: TrackId,
+        maximum: usize,
+    ) -> bool {
+        self.mutable_track_revision(track)
+            .zip(candidate.mutable_track_revision(track))
+            .is_some_and(|(old, new)| {
+                old.midi_source_track == new.midi_source_track
+                    && old.arrangement_midi_sources.len() <= maximum
+                    && new.arrangement_midi_sources.len() <= maximum
+                    && old.arrangement_sources_match(new)
+            })
+    }
+
     fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
         self.mutable_track_revisions
             .binary_search_by_key(&track, |revision| revision.id)
