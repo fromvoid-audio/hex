@@ -22,7 +22,7 @@ impl Callback {
             false
         }
     }
-    pub(super) fn revoke_native_effects(&mut self) {
+    pub(crate) fn revoke_native_effects(&mut self) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.native_sources.has_endpoints() {
             self.native_sources.reject_rendering();

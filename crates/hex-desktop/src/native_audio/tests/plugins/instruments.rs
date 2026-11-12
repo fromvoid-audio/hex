@@ -5,6 +5,7 @@ use hex_project::BeatTime;
 
 mod automation_start;
 mod section_edit;
+mod section_recovery;
 mod track_duplicate;
 
 #[test]
