@@ -116,9 +116,7 @@ impl History {
 
 impl EditorView {
     fn browser_history_entry(&self, cx: &App) -> Entry {
-        let count = self.browser_visible_entries(cx).len()
-            + self.browser_visible_devices(cx).len()
-            + self.browser_visible_plugins(cx).len();
+        let count = self.browser_result_count(cx);
         let top = self.browser_history_top_index(count, cx);
         Entry {
             location: Location {
@@ -405,6 +403,10 @@ impl EditorView {
             .and_then(|key| self.browser_history_index(key, cx));
         self.browser.results_focused = selected.is_some();
         self.browser.selected_index = selected.unwrap_or(0);
+        self.browser.project_sample_selection = entry
+            .position
+            .selected
+            .filter(|key| selected.is_some() && matches!(key, BrowserItemKey::ProjectSample(..)));
         let top = entry
             .position
             .top

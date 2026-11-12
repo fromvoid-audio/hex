@@ -1104,11 +1104,14 @@ impl EditorView {
 
     pub(super) fn browser_selected_label(&self, cx: &App) -> String {
         match self.browser_item_at(self.browser.selected_index, cx) {
-            Some(BrowserItemKey::ProjectSample(_, _, asset)) => self
-                .browser_project_samples(cx)
-                .iter()
-                .find(|row| row.asset == asset)
-                .map_or_else(|| "no item selected".into(), |row| row.entry.name.clone()),
+            Some(key @ BrowserItemKey::ProjectSample(..)) => self
+                .browser_history_index(&key, cx)
+                .and_then(|index| {
+                    self.browser_project_samples(cx)
+                        .get(index)
+                        .map(|row| row.name.clone())
+                })
+                .unwrap_or_else(|| "no item selected".into()),
             Some(BrowserItemKey::Plugin(path, id)) => self
                 .browser_visible_plugins(cx)
                 .iter()

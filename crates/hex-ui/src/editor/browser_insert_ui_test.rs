@@ -131,23 +131,53 @@ fn select_sample(
 
 #[gpui::test]
 fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContext) {
-    let (handle, editor, _directory, _path) = fixture(cx);
+    let (handle, editor, _directory, path) = fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1400.0), px(900.0)));
     let track = select_sample(&editor, visual);
     visual.simulate_keystrokes("enter");
     receive_worker(&editor, cx, false);
-    let (asset, revision, generation) = editor.update(cx, |view, cx| {
+    let (asset, revision, generation) = editor.update(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
         let asset = state.project.assets().next().unwrap().id();
+        assert_eq!(state.project.assets().count(), 1);
         let revision = state.revision;
         let generation = view.project_generation;
-        view.select_browser_source(BrowserSection::ProjectSamples, cx);
         view.offline_cursor = 100;
         (asset, revision, generation)
     });
+    let source = visual.debug_bounds("browser-project-samples").unwrap();
+    visual.simulate_click(source.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("Loop");
     visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::ProjectSamples);
+        let rows = view.browser_project_samples(cx);
+        assert_eq!(
+            rows.len(),
+            1,
+            "project sample search should retain the asset"
+        );
+        assert_eq!(rows[0].name, "Loop.WAV");
+        assert_eq!(rows[0].asset, asset);
+    });
     let row = visual.debug_bounds("browser-project-sample-0").unwrap();
     visual.simulate_click(row.center(), Modifiers::default());
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.browser_selected_item(cx),
+            Some(BrowserItemKey::ProjectSample(generation, revision, asset))
+        );
+        assert!(
+            view.project_sample_waveform(&BrowserItemKey::ProjectSample(
+                generation, revision, asset
+            ))
+            .is_some()
+        );
+    });
+    // Placement owns the retained project asset and must not reopen the source path.
+    std::fs::remove_file(&path).unwrap();
     visual.simulate_keystrokes("enter");
     receive_worker(&editor, cx, false);
     editor.read_with(cx, |view, _| {
@@ -156,6 +186,7 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
         let clips = project.track(track).unwrap().clips();
         assert_eq!(clips.len(), 2);
         assert!(clips.iter().all(|clip| clip.asset() == asset));
+        assert_eq!(clips[1].start(), 100);
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     receive_worker(&editor, cx, false);
@@ -167,6 +198,8 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
             asset,
             track,
             start: 200,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: None,
         }));
     });
     receive_worker(&editor, cx, false);
@@ -179,6 +212,22 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
                 .as_deref()
                 .is_some_and(|error| error.contains("project changed"))
         );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips()
+                .len(),
+            2
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.assets().count(), 1);
     });
 }
 

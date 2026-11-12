@@ -4301,7 +4301,7 @@ fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mu
             output_generation: 1,
             output_identity: 1,
             start_fraction: 0.5,
-            path: sample.clone(),
+            source: super::BrowserPlaybackSource::File(sample.clone()),
             sample_rate: 48_000,
         });
     });
