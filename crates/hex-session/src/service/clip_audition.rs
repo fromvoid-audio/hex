@@ -627,6 +627,7 @@ impl VerifiedLane {
         &mut self,
         mailbox: &Mailbox,
         state: &ViewState,
+        project: &Project,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         available: bool,
@@ -635,14 +636,12 @@ impl VerifiedLane {
         let canonical = state.canonical_audio_source.as_ref().filter(|source| {
             available
                 && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                && source.context().project_generation == context.project_generation
-                && source.context().editor_revision == state.revision
-                && source.context() == context
+                && state.project.as_ref() == project
+                && state.audio_authoring_revision(context) == Some(state.revision)
+                && context.editor_revision == state.revision
         });
         let held = match (&intent, canonical) {
-            (Intent::Held(Target::Move(target)), Some(source))
-                if target.context == source.context() =>
-            {
+            (Intent::Held(Target::Move(target)), Some(source)) if target.context == context => {
                 Some((target, source))
             }
             _ => None,
@@ -695,7 +694,12 @@ impl VerifiedLane {
             return true;
         };
         let started = Instant::now();
-        let candidate = VerifiedClipMoveSource::capture(Arc::clone(source), target.clone());
+        let candidate = VerifiedClipMoveSource::capture_current(
+            Arc::clone(source),
+            target.clone(),
+            project,
+            state,
+        );
         let mut accepted = false;
         let mut deliverable = false;
         if let Ok(candidate) = candidate

@@ -3030,6 +3030,7 @@ fn run_worker(
                     let verified_pending = verified_clip_audition_lane.drive(
                         &clip_audition,
                         &state,
+                        session.project(),
                         hex_engine::AudioSourceContext {
                             project_generation,
                             editor_revision: revision,
