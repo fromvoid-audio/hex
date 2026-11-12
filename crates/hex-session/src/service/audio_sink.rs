@@ -1318,28 +1318,7 @@ impl WorkerEvents {
         self.send_pending_with_control_poll(pending, control_poll)
     }
 
-    pub(super) fn capture_outcome(&mut self, event: Event) -> PendingOutcome {
-        PendingOutcome {
-            event,
-            diagnostic: self.diagnostic.take(),
-            diagnostic_started: self.diagnostic_started.take(),
-            section_phases: self.section_phases.take(),
-            recovery_timing: self.recovery_timing.take(),
-        }
-    }
-
-    pub(super) fn send_pending_with_control_poll<R>(
-        &mut self,
-        pending: PendingOutcome,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
-    ) -> bool {
-        let PendingOutcome {
-            mut event,
-            diagnostic,
-            diagnostic_started,
-            section_phases: section,
-            recovery_timing,
-        } = pending;
+    pub(super) fn capture_outcome(&mut self, mut event: Event) -> PendingOutcome {
         if let Some(source) = &event.state.canonical_audio_source {
             self.canonical_source_changed(source);
         }
@@ -1390,6 +1369,27 @@ impl WorkerEvents {
                     })
             })
             .map(|active| (active.key, active.sequence));
+        PendingOutcome {
+            event,
+            diagnostic: self.diagnostic.take(),
+            diagnostic_started: self.diagnostic_started.take(),
+            section_phases: self.section_phases.take(),
+            recovery_timing: self.recovery_timing.take(),
+        }
+    }
+
+    pub(super) fn send_pending_with_control_poll<R>(
+        &mut self,
+        pending: PendingOutcome,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+    ) -> bool {
+        let PendingOutcome {
+            mut event,
+            diagnostic,
+            diagnostic_started,
+            section_phases: section,
+            recovery_timing,
+        } = pending;
         let worker = diagnostic_started.map(|start| start.elapsed());
         self.diagnostics
             .outcome(diagnostic, &event, false, worker, section, recovery_timing);
@@ -1815,6 +1815,29 @@ mod tests {
         events.begin_diagnostics(&queued, 0, second.state.revision);
         let second_revision = second.state.revision;
         let second = events.capture_outcome(second);
+        {
+            let sources = observed.sources.lock().unwrap();
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|(generation, revision, _)| (*generation, *revision))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (
+                        first_context.project_generation,
+                        first_context.editor_revision
+                    ),
+                    (
+                        second_context.project_generation,
+                        second_context.editor_revision
+                    ),
+                ]
+            );
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         assert!(events.send_pending_with_control_poll(first, |_| ()));
         assert!(events.send_pending_with_control_poll(second, |_| ()));
         let first = receiver.try_recv().unwrap();
@@ -1832,23 +1855,6 @@ mod tests {
                 second.event.state.revision
             ),
             (2, second_revision)
-        );
-        let sources = observed.sources.lock().unwrap();
-        assert_eq!(
-            sources
-                .iter()
-                .map(|(generation, revision, _)| (*generation, *revision))
-                .collect::<Vec<_>>(),
-            vec![
-                (
-                    first_context.project_generation,
-                    first_context.editor_revision
-                ),
-                (
-                    second_context.project_generation,
-                    second_context.editor_revision
-                ),
-            ]
         );
     }
     #[derive(Default)]
