@@ -314,10 +314,12 @@ impl NativeWorker {
             }
         };
         let cancellation = instance.cancellation_on_control();
+        let offline = instance.is_offline_on_control();
         match spawn_processor_with(
             control,
             worker,
             Processor::Native(Box::new(instance)),
+            offline,
             spawn,
         ) {
             Ok(reaper) => Ok((
