@@ -565,6 +565,7 @@ impl Playback {
     pub(crate) fn resource_control_metadata_bytes_on_control(
         &self,
     ) -> Result<usize, crate::AudioStorageError> {
+        let continuation_bytes = self.foreign_continuation_metadata_bytes_on_control()?;
         self.resource_factory_inline_bytes_on_control()?
             .checked_add(
                 self.prepared_revision
@@ -576,14 +577,18 @@ impl Playback {
                     revision.session().instrument_automation_storage_bytes()
                 }))
             })
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    self.session_runtime
-                        .as_ref()
-                        .and_then(|runtime| runtime.foreign_continuation.as_ref())
-                        .map_or(Some(0), |states| states.retained_bytes())?,
-                )
-            })
+            .and_then(|bytes| bytes.checked_add(continuation_bytes))
+            .ok_or(crate::AudioStorageError::Overflow)
+    }
+    /// Conservative backing owned by this unpublished or admitted graph. The
+    /// enclosing resource book or unpublished inventory must charge it once.
+    pub(crate) fn foreign_continuation_metadata_bytes_on_control(
+        &self,
+    ) -> Result<usize, crate::AudioStorageError> {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.foreign_continuation.as_ref())
+            .map_or(Some(0), |states| states.retained_bytes())
             .ok_or(crate::AudioStorageError::Overflow)
     }
     /// Retain the exact two state allocations for a prospective ordinary

@@ -1522,6 +1522,75 @@ fn retained_foreign_continuation_is_charged_and_returned_when_capacity_refuses()
 }
 
 #[test]
+fn unpublished_foreign_continuation_is_included_in_resource_union() {
+    use crate::native_device_resources::{
+        DeviceResourceAdmission, DeviceResourcePhase, inspect_device_resource_union,
+    };
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 256,
+        handle_rows: 256,
+        root_rows: 64,
+        max_retained_bytes: 16 * 1024 * 1024,
+        max_construction_peak_bytes: 16 * 1024 * 1024,
+    };
+    let inspect = |playback: &crate::playback::Playback, reservation| {
+        let selected = [DeviceResourceAdmission::unpublished_on_control(
+            playback, None,
+        )];
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered: &selected,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        inspect_device_resource_union(&phase, &phase, reservation)
+    };
+    let baseline = inspect(&playback, limits).unwrap().retained;
+    let state = |value| {
+        NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![value; 128 * 1024],
+        )
+        .unwrap()
+    };
+    let before = state(1);
+    let after = state(2);
+    let required = before.retained_control_metadata_bytes().unwrap()
+        + after.retained_control_metadata_bytes().unwrap();
+    let budget = baseline.retained_bytes + required / 2;
+    let tight = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: budget,
+        max_construction_peak_bytes: budget,
+        ..limits
+    };
+    assert!(inspect(&playback, tight).is_ok());
+    playback
+        .retain_foreign_continuation_states_on_control(identity, binding, before, after)
+        .unwrap();
+    assert!(
+        inspect(&playback, limits).unwrap().retained.data_bytes >= baseline.data_bytes + required,
+        "pending graph must include its retained state backing"
+    );
+    assert!(
+        inspect(&playback, tight).is_err(),
+        "pending state must respect the actual union budget"
+    );
+}
+
+#[test]
 fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
     struct Probe {
         calls: Vec<(u64, usize)>,
