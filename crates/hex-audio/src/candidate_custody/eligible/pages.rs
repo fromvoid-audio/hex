@@ -27,6 +27,16 @@ pub(super) struct DomainPages {
     pub(super) last_failure: Option<hex_stream::StreamFailure>,
 }
 impl DomainEnvelope {
+    /// Test-only access for constructing an actual pending readiness intent on
+    /// this callback's loan. Production retains its existing custody boundary.
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_loan_and_epoch(
+        &mut self,
+    ) -> Option<(&mut hex_stream::ConstructorPageLoan, &mut u64, u64)> {
+        let inner = &mut self.inner;
+        Some((inner.loan.as_mut()?, &mut inner.epoch, inner.token.root))
+    }
+
     pub(super) fn new(
         token: AudioCandidateDomainToken,
         loan: hex_stream::ConstructorPageLoan,

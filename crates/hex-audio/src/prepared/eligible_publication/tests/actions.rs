@@ -10,6 +10,177 @@ fn zero(measured: allocation_counter::AllocationInfo) {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn current_streamed_audio_continues_while_active_span_is_pending() {
+    use hex_stream::{ProtectionRole, ReadinessProgress, ReadinessStamp, StreamPageExtent};
+
+    let _serial = serial();
+    assert!(hex_engine::audio_storage_constructor_layout_supported());
+    let project = readiness::project_with_frames(12_288);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(12_288);
+    let definition = wav.definition(asset, 11);
+    let key = definition.metadata.key();
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 7,
+        }),
+    );
+    let identity = owner.identity();
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair_with_pool(vec![definition], 5),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|refused| panic!("{}", refused.reason));
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut baseline = [[0.0; 2]; 8];
+    while baseline.iter().all(|frame| *frame == [0.0; 2]) {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut baseline).unwrap();
+            })
+        }));
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+
+    let extent = |page_index| StreamPageExtent {
+        source: key,
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let candidate = [extent(2)];
+    let span = [extent(0), extent(1)];
+    let mut candidate_stamp = None;
+    let mut pending_stamp = None;
+    data.owner_mut().unwrap().run(|c, _| {
+        let prefix = c.stream_prefix;
+        let pages = c.domain_pages.iter_mut().flatten().next().unwrap();
+        let (loan, epoch, root) = pages.test_loan_and_epoch().unwrap();
+        *epoch += 1;
+        let stamp = ReadinessStamp {
+            request_epoch: *epoch,
+            artifact: identity.into(),
+            project_generation: 0,
+            editor_revision: 7,
+            device_epoch: root,
+            device_rate: 48_000,
+            predecessor: None,
+            admitted_command_prefix: prefix,
+            window: hex_engine::StreamChunkWindow {
+                performance_frame: 0,
+                arrangement_frame: 0,
+                route_generation: 0,
+                frames: 8,
+            },
+        };
+        loan.submit(ProtectionRole::Candidate, stamp, &candidate)
+            .unwrap();
+        candidate_stamp = Some(stamp);
+    });
+    let candidate_stamp = candidate_stamp.unwrap();
+    loop {
+        let mut ready = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            let pages = c.domain_pages.iter_mut().flatten().next().unwrap();
+            let (loan, _, _) = pages.test_loan_and_epoch().unwrap();
+            ready = loan
+                .service(ProtectionRole::Candidate, candidate_stamp, 3, 3)
+                .unwrap()
+                == ReadinessProgress::InstalledProtected;
+            if ready {
+                assert!(loan.acknowledge(ProtectionRole::Candidate, candidate_stamp, &candidate));
+            }
+        });
+        if ready {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    data.owner_mut().unwrap().run(|c, _| {
+        let pages = c.domain_pages.iter_mut().flatten().next().unwrap();
+        let (loan, epoch, _) = pages.test_loan_and_epoch().unwrap();
+        *epoch += 1;
+        let mut pending = candidate_stamp;
+        pending.request_epoch = *epoch;
+        loan.submit(ProtectionRole::Active, pending, &span).unwrap();
+        pending_stamp = Some(pending);
+    });
+    let pending_stamp = pending_stamp.unwrap();
+
+    let before = control.status.performance_frame.load(Acquire);
+    let mut actual = [[0.0; 2]; 8];
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut actual).unwrap();
+        })
+    }));
+    let after = control.status.performance_frame.load(Acquire);
+    data.owner_mut().unwrap().run(|c, _| {
+        let pages = c.domain_pages.iter_mut().flatten().next().unwrap();
+        let (loan, _, _) = pages.test_loan_and_epoch().unwrap();
+        assert!(loan.matches_intent(ProtectionRole::Active, pending_stamp, &span));
+        assert!(loan.is_protected(ProtectionRole::Candidate, candidate_stamp, &candidate));
+        assert!(loan.cancel(ProtectionRole::Active, pending_stamp.request_epoch));
+        assert!(loan.cancel(ProtectionRole::Candidate, candidate_stamp.request_epoch));
+    });
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    let _ = retirement.advance().unwrap();
+    let ready = recover(&mut control, &ticket);
+    assert_eq!(ready.disposed.identity(), identity);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(ready);
+    drop(control);
+    finish(&mut retirement);
+    assert_eq!(
+        (actual, after),
+        (baseline, before + 8),
+        "pending span must not silence or hold the current window"
+    );
+}
 #[test]
 fn split_client_streams_and_retires_its_domain_after_quiescence() {
     split_client_stream_case(StreamCase::Legacy);
