@@ -59,6 +59,7 @@ pub(super) use device_picker::{
 };
 pub(super) use source_manager::Action as SourceManagerAction;
 pub(super) use source_manager::bind_keys as bind_source_manager_keys;
+pub(super) use source_manager::{name_overlay as source_name_overlay, naming as source_naming};
 pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
@@ -478,6 +479,11 @@ pub(super) fn device_layout_style() -> ControlStyle {
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
 /// A bad typed value stays in its field and blocks the caller.
 pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
+    if source_manager::naming(view) {
+        view.error = Some("finish or cancel the source name before continuing".into());
+        cx.notify();
+        return false;
+    }
     finalize_controls_except(view, cx, &[])
 }
 

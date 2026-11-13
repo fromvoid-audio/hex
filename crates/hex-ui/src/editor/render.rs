@@ -624,7 +624,9 @@ impl Render for EditorView {
         let console_drag_entity = cx.entity();
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
-        let key_context = if super::device_panel::picker_is_open(self) {
+        let key_context = if super::device_panel::source_naming(self) {
+            "hex_source_name hex_text_editing"
+        } else if super::device_panel::picker_is_open(self) {
             "hex_device_picker_root"
         } else if self.changelog.is_open() {
             "hex_changelog"
@@ -1825,6 +1827,7 @@ impl Render for EditorView {
             .children(self.changelog_overlay(cx))
             .children(self.missing_media_overlay(cx))
             .children(super::device_panel::picker_overlay(self, window, cx))
+            .children(super::device_panel::source_name_overlay(self, cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()
