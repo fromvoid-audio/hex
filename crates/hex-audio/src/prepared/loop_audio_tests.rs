@@ -229,7 +229,24 @@ fn shared_source_utility_gain_and_mute_retarget_without_callback_allocations() {
         (true, true, Some(12)),
     ] {
         for partition in [1, 7, 64, 128, 257] {
-            source_utility_matrix_callback_retarget(mute, settled, partition, prefix);
+            source_utility_matrix_callback_retarget(mute, settled, partition, prefix, None);
+        }
+    }
+}
+
+#[test]
+fn shared_source_filtered_utility_mute_handoff_is_allocation_free() {
+    for filter in [11, 12] {
+        for settled in [false, true] {
+            for partition in [1, 7, 64, 128, 257] {
+                source_utility_matrix_callback_retarget(
+                    true,
+                    settled,
+                    partition,
+                    None,
+                    Some(filter),
+                );
+            }
         }
     }
 }
@@ -239,6 +256,7 @@ fn source_utility_matrix_callback_retarget(
     settled: bool,
     partition: usize,
     prefix: Option<u32>,
+    filter: Option<u32>,
 ) {
     use hex_project::BeatTime;
     let target_gain = if mute { 0.0 } else { 2.0 };
@@ -286,14 +304,24 @@ fn source_utility_matrix_callback_retarget(
             })
             .unwrap();
     }
+    let mut state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    if let Some(filter) = filter {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &state,
+            hex_lattice_contract::ParameterId::from_static(filter),
+            hex_lattice_contract::ParameterValue::Bool(true),
+        )
+        .unwrap();
+    }
     let Created::Device(effect) = editor
         .execute(Command::InsertNestedDevice {
             parent: instrument,
-            state: hex_engine::default_native_device_state_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                hex_engine::DeviceTypeId::from_static("hex.utility"),
-            )
-            .unwrap(),
+            state,
         })
         .unwrap()
     else {
