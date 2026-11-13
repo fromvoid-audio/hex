@@ -9298,7 +9298,40 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     let balance_control =
         Box::leak(format!("device-{}-parameter-2-value", device.value()).into_boxed_str());
     assert!(visual.debug_bounds(balance_control).is_none());
+    let width_control =
+        Box::leak(format!("device-{}-parameter-3-value", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(width_control).is_none());
     click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
+    let mut mapping_targets = 0;
+    for parameter in 1..=10 {
+        let key = Box::leak(format!("map-target-{}-{parameter}", device.value()).into_boxed_str());
+        if let Some(target) = visual.debug_bounds(key) {
+            mapping_targets += 1;
+            if !bounds.contains(&target.center()) {
+                visual.simulate_event(gpui::ScrollWheelEvent {
+                    position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+                    delta: gpui::ScrollDelta::Pixels(point(
+                        px(0.0),
+                        bounds.center().y - target.center().y,
+                    )),
+                    ..Default::default()
+                });
+                visual.run_until_parked();
+            }
+            let target = visual.debug_bounds(key).unwrap();
+            assert!(
+                bounds.contains(&target.center()),
+                "mapping target {parameter} unreachable: {target:?} vs {bounds:?}"
+            );
+        }
+    }
+    assert!(mapping_targets > 1);
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
     click_modulator_control(
         &mut visual,
         format!("map-output-gain-{}", device.value()),
@@ -9364,6 +9397,32 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     pump_until(&editor, cx, |view| route_count(view) == 1);
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(&editor, cx, |view| route_count(view) == 2);
+    visual.run_until_parked();
+    let last_target = Box::leak(format!("map-target-{}-10", device.value()).into_boxed_str());
+    let target = visual
+        .debug_bounds(last_target)
+        .expect("last supported Utility target");
+    if !bounds.contains(&target.center()) {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - target.center().y)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    let target = visual.debug_bounds(last_target).unwrap();
+    assert!(bounds.contains(&target.center()));
+    visual.simulate_click(target.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| route_count(view) == 3);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| route_count(view) == 2);
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.selected_track = Some(contributor);
         cx.notify();

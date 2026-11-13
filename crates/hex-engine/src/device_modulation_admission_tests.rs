@@ -568,7 +568,7 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
         assert!(!crate::project_source_utility_matrix_edit_supported(
             editor.project(),
             id,
-            parameter::WIDTH
+            parameter::MUTE
         ));
         let gain = crate::project_source_utility_matrix_edit_supported(
             editor.project(),
@@ -592,6 +592,28 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
         })
         .unwrap();
     assert!(eligible(&editor, device));
+    let width = |editor: &Editor| {
+        crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            parameter::WIDTH,
+        )
+    };
+    assert!(width(&editor));
+    for (id, value) in [
+        (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(true)),
+        (parameter::CHANNEL, ParameterValue::Choice(1)),
+    ] {
+        let state = UTILITY_DEFINITION
+            .patch_parameter(editor.project().device(device).unwrap().state(), id, value)
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        assert!(!width(&editor));
+        assert!(eligible(&editor, device));
+        assert!(editor.undo());
+    }
     for filter in [parameter::DC_REMOVE, parameter::BASS_MONO] {
         let state = UTILITY_DEFINITION
             .patch_parameter(
@@ -604,6 +626,7 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
             .execute(Command::ReplaceDeviceState { device, state })
             .unwrap();
         assert!(eligible(&editor, device));
+        assert!(width(&editor));
         assert!(editor.undo());
     }
     editor

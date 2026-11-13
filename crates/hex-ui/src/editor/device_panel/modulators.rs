@@ -473,7 +473,7 @@ impl HostGainStages {
 
 pub(super) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
-/// Static Utility gain and balance share the verified matrix handoff.
+/// Static Utility matrix controls share the verified source handoff.
 pub(super) fn source_utility_gain_available(
     project: &hex_project::Project,
     device: &Device,
@@ -517,7 +517,7 @@ pub(super) fn source_effect_card(
     let mut body = crate::device_composition::body()
         .flex()
         .flex_col()
-        .gap(px(3.0));
+        .gap(px(1.0));
     body = body.child(theme::text("source effect"));
     let controls = [
         (utility_panel::GAIN, "gain", None),
@@ -525,6 +525,11 @@ pub(super) fn source_effect_card(
             utility_panel::BALANCE,
             "balance",
             Some(numeric_display::NumericDisplayCodec::Balance),
+        ),
+        (
+            utility_panel::WIDTH,
+            "width",
+            Some(numeric_display::NumericDisplayCodec::Percent),
         ),
     ]
     .map(|(parameter, label, codec)| {
@@ -550,12 +555,13 @@ pub(super) fn source_effect_card(
                 row.descriptor.id,
             )
     });
+    let mut control_row = div().flex().flex_wrap().w_full().gap(px(2.0));
     for (row, label, codec) in controls.iter().flatten() {
         let identity = DeviceControlIdentity {
             class: NativeDeviceClass::Effect,
             type_id: metadata.type_id,
         };
-        body = body.child(parameter_control_with_presentation(
+        control_row = control_row.child(parameter_control_with_presentation(
             view,
             cx,
             id,
@@ -568,12 +574,11 @@ pub(super) fn source_effect_card(
             },
         ));
     }
+    if controls.iter().any(Option::is_some) {
+        body = body.child(control_row);
+    }
     for row in &metadata.parameters {
-        if !controls
-            .iter()
-            .flatten()
-            .any(|(control, _, _)| control.descriptor.id == row.descriptor.id)
-        {
+        if controls.iter().all(Option::is_none) {
             body = body.child(
                 div()
                     .relative()
