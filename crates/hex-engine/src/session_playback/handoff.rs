@@ -1075,9 +1075,6 @@ impl SessionPlayback {
             .as_ref()
             .zip(previous.compensation.as_ref())
             .and_then(|(candidate, old)| {
-                if candidate.can_copy_from(old, None) {
-                    return None;
-                }
                 history_track
                     .map(crate::signal_graph::FreshHistory::Track)
                     .or_else(|| {
@@ -1086,6 +1083,7 @@ impl SessionPlayback {
                             .added_isolated_return_from(&old.graph)
                             .map(crate::signal_graph::FreshHistory::Return)
                     })
+                    .filter(|_| !candidate.can_copy_from(old, None))
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
