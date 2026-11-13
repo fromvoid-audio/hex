@@ -831,6 +831,25 @@ fn borrowing_transition_windows_preserves_active_span_and_candidate() {
         assert!(loan.acknowledge(role, receipt, extents));
     }
 
+    // The two span pages and the candidate leave only one of four pool
+    // slots. A two-page window must refuse without displacing either role.
+    assert_eq!(
+        loan.submit(
+            ProtectionRole::Transition,
+            stamp(&owner, 3),
+            &[extent(3), extent(4)],
+        ),
+        Err(ReadinessRefusal::Capacity)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, span_stamp, &span)
+            .is_some()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Candidate, candidate_stamp, &candidate)
+            .is_some()
+    );
+
     for (epoch, page) in [(3, 0), (4, 1)] {
         let window = [extent(page)];
         let receipt = stamp(&owner, epoch);
@@ -876,6 +895,14 @@ fn borrowing_transition_windows_preserves_active_span_and_candidate() {
                 .is_some()
         );
         assert!(loan.cancel(ProtectionRole::Transition, receipt.request_epoch));
+        assert!(
+            loan.protected_pages(ProtectionRole::Active, span_stamp, &span)
+                .is_some()
+        );
+        assert!(
+            loan.protected_pages(ProtectionRole::Candidate, candidate_stamp, &candidate)
+                .is_some()
+        );
     }
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
