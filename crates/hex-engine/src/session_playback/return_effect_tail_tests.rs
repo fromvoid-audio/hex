@@ -1518,7 +1518,7 @@ fn detached_track_tail_reaches_group_once_and_unsafe_reparent_refuses() {
     old.tail_output_active[0] = true;
     let mut refused = SessionPlayback::new(prepare(false)).unwrap();
     assert!(matches!(
-        refused.preview_stream_handoff(&mut old, 1, None, &mut |_| Ok(())),
+        refused.preview_stream_handoff_with_report(&mut old, 1, None, &mut |_| Ok(())),
         Err(SessionPlaybackError::GroupTailRoutingBusy)
     ));
     assert!(matches!(

@@ -906,10 +906,29 @@ fn moving_a_loop_behind_the_cursor_keeps_source_effect_history() {
         assert_eq!(runtime.arrangement_frame(), 96);
     }
     let mut edited = make(64);
+    let (_, preview) = edited
+        .preview_stream_handoff_with_policy_and_report(
+            &mut playing,
+            32,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+        )
+        .unwrap();
+    assert!(!preview.running_audio_restart());
+    let mut donor_after_preview = [[0.0; 2]; 32];
+    let mut oracle_after_preview = donor_after_preview;
+    playing.render(&mut donor_after_preview).unwrap();
+    oracle.render(&mut oracle_after_preview).unwrap();
+    assert_eq!(
+        donor_after_preview, oracle_after_preview,
+        "preview must not transfer source-effect history"
+    );
     edited.try_inherit_state_live_from(&mut playing).unwrap();
     assert_eq!(
         (edited.arrangement_frame(), edited.performance_frame()),
-        (96, 1120)
+        (128, 1152)
     );
     // Neither runtime reaches a wrap during this block. Matching PCM proves
     // the retained effect (with a one-sample memory) did not restart at the edit.
@@ -920,7 +939,7 @@ fn moving_a_loop_behind_the_cursor_keeps_source_effect_history() {
     assert_eq!(actual, expected);
     assert_eq!(
         (edited.arrangement_frame(), edited.performance_frame()),
-        (128, 1152)
+        (160, 1184)
     );
 }
 
@@ -2247,6 +2266,87 @@ fn live_source_utility_filter_gain_preserves_filter_history_and_local_audio() {
             }
         }
     }
+}
+
+#[test]
+fn ordinary_preview_preserves_owned_source_delay_history() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let (mut editor, asset) = authored_fixture(0, false);
+    let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+    let definition = &hex_devices::delay::DEFINITION;
+    let mut state = definition.default_state().unwrap();
+    for id in [hex_devices::delay::LEFT_SYNC, hex_devices::delay::FILTER] {
+        state = definition
+            .patch_parameter(&state, id, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    state = definition
+        .patch_parameter(
+            &state,
+            hex_devices::delay::TIME,
+            ParameterValue::Float(10.0),
+        )
+        .unwrap();
+    state = definition
+        .patch_parameter(
+            &state,
+            hex_devices::delay::DRY_WET,
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 700]).unwrap();
+    }
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    candidate
+        .preview_stream_handoff_with_policy_and_report(
+            &mut previous,
+            64,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+        )
+        .unwrap();
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-5));
+    assert_eq!(
+        actual, expected,
+        "preview must preserve the donor's owned delay history"
+    );
+    candidate
+        .try_inherit_state_live_from(&mut previous)
+        .unwrap();
+    candidate.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(
+        actual, expected,
+        "commit must transfer the live donor history"
+    );
 }
 
 #[test]
