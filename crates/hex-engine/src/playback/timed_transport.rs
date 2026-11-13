@@ -1,5 +1,5 @@
 //! Bounded immediate transport replay within a resident output buffer.
-use super::{Playback, PlaybackAction, PlaybackActionError, PlaybackCommand};
+use super::{Playback, PlaybackAction, PlaybackActionError, PlaybackCommand, ShiftedForeign};
 use crate::{Frame, Invalid};
 
 /// Maximum commands admitted in one timed render call.
@@ -13,8 +13,9 @@ pub struct TimedTransportCommand {
 }
 
 /// Invalid schedules are refused before any output or playback state changes.
-/// Later failures retain earlier actions and completed samples; the remaining
-/// output from the failed span is zeroed and no later action is applied.
+/// Later failures retain earlier actions and skip later actions. The resident
+/// renderer preserves completed samples and zeros the remaining output; the
+/// foreign renderer rejects its staged callback and zeros the entire output.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TimedTransportError {
     TooManyCommands,
@@ -48,20 +49,50 @@ impl Playback {
         output: &mut [Frame],
         commands: &[TimedTransportCommand],
     ) -> Result<(), TimedTransportError> {
-        if commands.len() > MAX_TIMED_TRANSPORT_COMMANDS {
-            return Err(TimedTransportError::TooManyCommands);
+        validate(output.len(), commands)?;
+        self.render_timed_validated(output, commands, |playback, part, _| playback.render(part))
+    }
+
+    /// Render one resident foreign-processor callback with timed transport.
+    /// Processor offsets remain relative to the complete output buffer, even
+    /// when commands split it. Endpoint ownership and commit remain with the
+    /// caller. Schedule refusal leaves output and endpoints untouched; a later
+    /// failure rejects the staged foreign callback and clears the whole output.
+    /// Earlier transport state changes are not rolled back. Pages, signal taps,
+    /// callback admission and declicked command policy are not supplied here.
+    pub fn render_with_timed_transport_and_foreign_processors(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), TimedTransportError> {
+        validate(output.len(), commands)?;
+        let result = self.render_timed_validated(output, commands, |playback, part, offset| {
+            let mut shifted = ShiftedForeign {
+                inner: foreign,
+                offset,
+            };
+            playback.render_with_foreign_processors(part, None, None, None, &mut shifted)
+        });
+        if result.is_err() {
+            // Revocation is idempotent; the inner renderer may already have
+            // rejected, or may fail after a successfully rendered part.
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
         }
-        let mut previous = 0;
-        for (index, command) in commands.iter().enumerate() {
-            if command.offset < previous || command.offset > output.len() {
-                return Err(TimedTransportError::InvalidOffset { index });
-            }
-            previous = command.offset;
-        }
+        result
+    }
+
+    fn render_timed_validated(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        mut render: impl FnMut(&mut Self, &mut [Frame], usize) -> Result<(), Invalid>,
+    ) -> Result<(), TimedTransportError> {
         let mut cursor = 0;
         for (index, command) in commands.iter().enumerate() {
             if cursor < command.offset {
-                if let Err(error) = self.render(&mut output[cursor..command.offset]) {
+                if let Err(error) = render(self, &mut output[cursor..command.offset], cursor) {
                     output[cursor..].fill([0.0; 2]);
                     return Err(TimedTransportError::Render {
                         offset: cursor,
@@ -76,7 +107,7 @@ impl Playback {
             }
         }
         if cursor < output.len()
-            && let Err(error) = self.render(&mut output[cursor..])
+            && let Err(error) = render(self, &mut output[cursor..], cursor)
         {
             output[cursor..].fill([0.0; 2]);
             return Err(TimedTransportError::Render {
@@ -86,6 +117,20 @@ impl Playback {
         }
         Ok(())
     }
+}
+
+fn validate(length: usize, commands: &[TimedTransportCommand]) -> Result<(), TimedTransportError> {
+    if commands.len() > MAX_TIMED_TRANSPORT_COMMANDS {
+        return Err(TimedTransportError::TooManyCommands);
+    }
+    let mut previous = 0;
+    for (index, command) in commands.iter().enumerate() {
+        if command.offset < previous || command.offset > length {
+            return Err(TimedTransportError::InvalidOffset { index });
+        }
+        previous = command.offset;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
