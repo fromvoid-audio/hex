@@ -3342,3 +3342,116 @@ fn appending_neutral_source_utility_preserves_filter_history_and_shared_audio() 
         }
     }
 }
+
+#[test]
+fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_stop() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    for remove_first in [true, false] {
+        for partition in [1, 7, 64, 128, 257] {
+            let (mut editor, asset) = authored_fixture(0, false);
+            let receiver = editor.project().tracks()[0].id();
+            let source = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .source_id()
+                .unwrap();
+            let instrument = editor
+                .project()
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .id();
+            let filter = UTILITY_DEFINITION
+                .patch_parameter(
+                    &UTILITY_DEFINITION.default_state().unwrap(),
+                    parameter::BASS_MONO,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            let filter = UTILITY_DEFINITION
+                .patch_parameter(&filter, parameter::BALANCE, ParameterValue::Float(1.0))
+                .unwrap();
+            let Created::Device(first) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: filter,
+                })
+                .unwrap()
+            else {
+                panic!("first")
+            };
+            let Created::Device(last) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: UTILITY_DEFINITION.default_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("last")
+            };
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+            let table = Arc::new(crate::SineTable::new());
+            let prepare = |editor: &Editor| {
+                Arc::new(
+                    PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                        .unwrap(),
+                )
+            };
+            let original = prepare(&editor);
+            let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+            let mut reference = SessionPlayback::new(original).unwrap();
+            for playback in [&mut donor, &mut reference] {
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                playback.render(&mut [[0.0; 2]; 64]).unwrap();
+            }
+            editor
+                .execute(Command::RemoveDevice(if remove_first {
+                    first
+                } else {
+                    last
+                }))
+                .unwrap();
+            let remaining = prepare(&editor);
+            let mut candidate = SessionPlayback::new(Arc::clone(&remaining)).unwrap();
+            let position = donor.performance_frame();
+            assert!(candidate.try_inherit_state_live_from(&mut donor).is_err());
+            assert_eq!(donor.performance_frame(), position);
+            let mut actual = [[0.0; 2]; 128];
+            let mut expected = actual;
+            for chunk in actual.chunks_mut(partition) {
+                donor.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                reference.render(chunk).unwrap();
+            }
+            assert!(
+                expected
+                    .iter()
+                    .any(|frame| (frame[0] - CLIP[0]).abs() > 1e-5)
+            );
+            assert_eq!(
+                actual, expected,
+                "refused removal changed donor: first={remove_first} partition={partition}"
+            );
+            donor.apply(SessionPlaybackCommand::Stop).unwrap();
+            candidate.try_inherit_state_live_from(&mut donor).unwrap();
+            let mut fresh = SessionPlayback::new(remaining).unwrap();
+            for playback in [&mut candidate, &mut fresh] {
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+            }
+            for chunk in actual.chunks_mut(partition) {
+                candidate.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                fresh.render(chunk).unwrap();
+            }
+            assert_eq!(
+                actual, expected,
+                "stopped retry: first={remove_first} partition={partition}"
+            );
+        }
+    }
+}
