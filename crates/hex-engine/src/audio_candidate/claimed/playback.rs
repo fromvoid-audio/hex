@@ -9,6 +9,8 @@ pub struct AudioCandidateRuntimeStatus {
     pub position: u64,
     pub performance_frame: u64,
     pub playing: bool,
+    /// Session Arrangement loop pass and active region, if supported.
+    pub arrangement_loop_state: Option<crate::session_playback::ArrangementLoopState>,
     pub metronome_enabled: bool,
     pub session_capability: crate::SessionCapabilityStatus,
     /// True only for a successfully admitted, installed private CURRENT runtime.
@@ -43,6 +45,7 @@ impl ClaimedAudioCandidateRuntime {
             position: playback.position(),
             performance_frame: playback.performance_frame(),
             playing: playback.playing(),
+            arrangement_loop_state: playback.arrangement_loop_state(),
             metronome_enabled: playback.metronome_enabled(),
             session_capability: playback.session_capability_status(),
             sampler_console: self

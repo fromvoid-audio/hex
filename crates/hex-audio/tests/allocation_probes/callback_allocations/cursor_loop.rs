@@ -28,7 +28,7 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         Arc::new(SineTable::new()),
         None,
     )?);
-    let playback = Playback::try_from_prepared_with_session(graph)?;
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&graph))?;
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
         .publish(playback)
@@ -44,6 +44,12 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         .ok_or("missing transport observation")?;
     assert_eq!(observation.arrangement_frame, 18);
     assert!(observation.playing);
+    assert_eq!(
+        observation
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, None))
+    );
     assert_eq!(
         output,
         [
@@ -67,7 +73,26 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
     control
         .command(PlaybackCommand::PlayFrom(2))
         .map_err(|_| "pre-loop start failed")?;
+    measured_block(&mut callback, &mut []);
+    let before_loop = control.status.transport_observation().unwrap();
+    assert_eq!(before_loop.arrangement_frame, 2);
+    assert_eq!(
+        before_loop
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, Some((4, 8))))
+    );
     measured_block(&mut callback, &mut output);
+    let region = (4, 8);
+    assert_eq!(
+        control
+            .status
+            .transport_observation()
+            .unwrap()
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((1, Some(region)))
+    );
     // The loop's last sample fades to zero; its next attack stays unattenuated.
     assert_eq!(
         output,
@@ -75,8 +100,32 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
     );
     measured_block(&mut callback, &mut output);
     assert_eq!(
+        control
+            .status
+            .transport_observation()
+            .unwrap()
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((2, Some(region)))
+    );
+    assert_eq!(
         output,
         [[5.0; 2], [6.0; 2], [7.0; 2], [0.0; 2], [5.0; 2], [6.0; 2]]
+    );
+    let replacement = control
+        .publish_with_policy(
+            Playback::try_from_prepared_with_session(graph)?,
+            prepared::PublicationPolicy::InstallFreshRuntime,
+        )
+        .map_err(|_| "replacement publication failed")?;
+    measured_block(&mut callback, &mut output);
+    let observation = control.status.transport_observation().unwrap();
+    assert_eq!(observation.audio_revision, replacement);
+    assert_eq!(
+        observation
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, Some(region)))
     );
     control.request_shutdown();
     assert_eq!(control.status.transport_observation(), None);
