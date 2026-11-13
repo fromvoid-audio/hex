@@ -33,6 +33,24 @@ impl NodeId {
             if id == track.value())
     }
 }
+/// One silent owner whose new compensation edges start empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FreshHistory {
+    Track(TrackId),
+    Return(ReturnId),
+}
+
+impl FreshHistory {
+    fn contains(self, node: NodeId) -> bool {
+        match self {
+            Self::Track(id) => node.belongs_to_track(id),
+            Self::Return(id) => {
+                matches!(node, NodeId::ReturnInput(value) | NodeId::ReturnOutput(value) if value == id.value())
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Send {
     pub target: usize,
@@ -1128,7 +1146,7 @@ impl SignalGraph {
     fn pair_retained_pre_main_edges(
         &self,
         other: &Self,
-        fresh: Option<TrackId>,
+        fresh: Option<FreshHistory>,
         mut visit: impl FnMut(usize, usize),
     ) -> bool {
         let key = |graph: &Self, position: usize| {
@@ -1139,11 +1157,11 @@ impl SignalGraph {
         let delay = |graph: &Self, index: usize| graph.plan.edges()[index].delay_frames;
         let (mut a, mut b) = (0, 0);
         loop {
-            if fresh.is_some_and(|track| self.pre_main_edge_touches_track(a, track)) {
+            if fresh.is_some_and(|owner| self.pre_main_edge_touches_owner(a, owner)) {
                 a += 1;
                 continue;
             }
-            if fresh.is_some_and(|track| other.pre_main_edge_touches_track(b, track)) {
+            if fresh.is_some_and(|owner| other.pre_main_edge_touches_owner(b, owner)) {
                 b += 1;
                 continue;
             }
@@ -1175,9 +1193,9 @@ impl SignalGraph {
             }
         }
     }
-    fn pre_main_edge_touches_track(&self, position: usize, track: TrackId) -> bool {
+    fn pre_main_edge_touches_owner(&self, position: usize, owner: FreshHistory) -> bool {
         self.pre_main_endpoints(position)
-            .is_some_and(|(from, to)| from.belongs_to_track(track) || to.belongs_to_track(track))
+            .is_some_and(|(from, to)| owner.contains(from) || owner.contains(to))
     }
 
     /// Only local source/fader edges and this track's direct contribution to
@@ -1200,6 +1218,50 @@ impl SignalGraph {
             }
         })
     }
+    /// One new empty Return may begin with silent history only when retained
+    /// Returns keep their order and no edge feeds it or routes it beyond Main.
+    pub(crate) fn added_isolated_return_from(&self, other: &Self) -> Option<ReturnId> {
+        if self.returns.len() != other.returns.len().checked_add(1)? {
+            return None;
+        }
+        let index = self
+            .returns
+            .iter()
+            .zip(&other.returns)
+            .position(|(candidate, old)| candidate.id != old.id)
+            .unwrap_or(other.returns.len());
+        if !self
+            .returns
+            .iter()
+            .skip(index + 1)
+            .map(|bus| bus.id)
+            .eq(other.returns.iter().skip(index).map(|bus| bus.id))
+        {
+            return None;
+        }
+        let bus = self.returns.get(index)?;
+        if !bus.devices.is_empty() || !bus.feeds.is_empty() || !bus.audio_feeds.is_empty() {
+            return None;
+        }
+        let input = NodeId::ReturnInput(bus.id.value());
+        let output = NodeId::ReturnOutput(bus.id.value());
+        self.pre_main_edges
+            .iter()
+            .enumerate()
+            .all(|(index, _)| {
+                let Some((from, to)) = self.pre_main_endpoints(index) else {
+                    return false;
+                };
+                match (from == input || from == output, to == input || to == output) {
+                    (true, true) => from == input && to == output,
+                    (true, false) => from == output && to == NodeId::Main,
+                    (false, true) => false,
+                    (false, false) => true,
+                }
+            })
+            .then_some(bus.id)
+    }
+
     /// Relaxed `pre_main_compatible` for copying delay history into a fresh
     /// graph (Pulse #4188). Owners, routing targets and every routed edge's
     /// typed endpoints are unchanged, and nodes on both sides keep their actual
@@ -1212,7 +1274,11 @@ impl SignalGraph {
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
         self.retained_pre_main_history_maps_from(other, None)
     }
-    fn retained_pre_main_history_maps_from(&self, other: &Self, fresh: Option<TrackId>) -> bool {
+    fn retained_pre_main_history_maps_from(
+        &self,
+        other: &Self,
+        fresh: Option<FreshHistory>,
+    ) -> bool {
         let owner_key = |graph: &Self, owner| match owner {
             Owner::Track(index) => graph.tracks[index].id.map(|id| (false, id.value())),
             Owner::Return(index) => Some((true, graph.returns[index].id.value())),
@@ -1220,15 +1286,31 @@ impl SignalGraph {
         let retained_order = |graph: &Self, owner| {
             let key = owner_key(graph, owner);
             fresh
-                .is_none_or(|track| key != Some((false, track.value())))
+                .is_none_or(|owner| {
+                    key != Some(match owner {
+                        FreshHistory::Track(id) => (false, id.value()),
+                        FreshHistory::Return(id) => (true, id.value()),
+                    })
+                })
                 .then_some(key)
         };
         if self.key_stages != other.key_stages
-            || self.returns.len() != other.returns.len()
-            || if let Some(track) = fresh {
+            || match fresh {
+                Some(FreshHistory::Track(_)) | None => self.returns.len() != other.returns.len(),
+                Some(FreshHistory::Return(id)) => {
+                    self.added_isolated_return_from(other) != Some(id)
+                        && other.added_isolated_return_from(self) != Some(id)
+                }
+            }
+            || if let Some(owner) = fresh {
                 self.main_latency() != other.main_latency()
-                    || !self.is_isolated_main_track(track)
-                    || !other.is_isolated_main_track(track)
+                    || match owner {
+                        FreshHistory::Track(track) => {
+                            !self.is_isolated_main_track(track)
+                                || !other.is_isolated_main_track(track)
+                        }
+                        FreshHistory::Return(_) => self.tracks.len() != other.tracks.len(),
+                    }
                     || !self
                         .owner_order
                         .iter()
@@ -1249,9 +1331,12 @@ impl SignalGraph {
         };
         let same_sends = |a: &[Send], b: &[Send]| {
             a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|(a, b)| a.target == b.target && same_edge(a.edge, b.edge))
+                && a.iter().zip(b).all(|(a, b)| {
+                    // Return insertion/removal shifts runtime indices;
+                    // the typed endpoints still identify the same route.
+                    (matches!(fresh, Some(FreshHistory::Return(_))) || a.target == b.target)
+                        && same_edge(a.edge, b.edge)
+                })
         };
         let same_output = |a: TrackOutput, b: TrackOutput| match (a, b) {
             (TrackOutput::Main { edge: a }, TrackOutput::Main { edge: b }) => same_edge(a, b),
@@ -1267,7 +1352,9 @@ impl SignalGraph {
             ) => ta == tb && same_edge(a, b),
             _ => false,
         };
-        let retained = |track: &&TrackPlan| fresh.is_none_or(|id| track.id != Some(id));
+        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id)) if track.id == Some(id));
+        let retained_return =
+            |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
         if !self
             .tracks
             .iter()
@@ -1279,12 +1366,17 @@ impl SignalGraph {
                     && same_sends(&a.sends, &b.sends)
                     && same_sends(&a.audio_feeds, &b.audio_feeds)
             })
-            || !self.returns.iter().zip(&other.returns).all(|(a, b)| {
-                a.id == b.id
-                    && same_edge(a.main, b.main)
-                    && same_sends(&a.feeds, &b.feeds)
-                    && same_sends(&a.audio_feeds, &b.audio_feeds)
-            })
+            || !self
+                .returns
+                .iter()
+                .filter(retained_return)
+                .zip(other.returns.iter().filter(retained_return))
+                .all(|(a, b)| {
+                    a.id == b.id
+                        && same_edge(a.main, b.main)
+                        && same_sends(&a.feeds, &b.feeds)
+                        && same_sends(&a.audio_feeds, &b.audio_feeds)
+                })
         {
             return false;
         }
@@ -1297,14 +1389,14 @@ impl SignalGraph {
         while i < self.typed.len() || j < other.typed.len() {
             if i < self.typed.len()
                 && (self.main_devices.contains(&i)
-                    || fresh.is_some_and(|id| self.typed[i].belongs_to_track(id)))
+                    || fresh.is_some_and(|owner| owner.contains(self.typed[i])))
             {
                 i += 1;
                 continue;
             }
             if j < other.typed.len()
                 && (other.main_devices.contains(&j)
-                    || fresh.is_some_and(|id| other.typed[j].belongs_to_track(id)))
+                    || fresh.is_some_and(|owner| owner.contains(other.typed[j])))
             {
                 j += 1;
                 continue;
@@ -1622,27 +1714,27 @@ impl SignalRuntime {
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
     }
-    pub(crate) fn can_copy_from(&self, other: &Self, fresh: Option<TrackId>) -> bool {
-        let compatible = if let Some(id) = fresh {
-            let silent_track =
+    pub(crate) fn can_copy_from(&self, other: &Self, fresh: Option<FreshHistory>) -> bool {
+        let compatible = if let Some(owner) = fresh {
+            let silent_owner =
                 |runtime: &Self| {
                     runtime.delay_graph.pre_main_edges.iter().enumerate().all(
                         |(position, &edge)| {
                             !runtime
                                 .delay_graph
-                                .pre_main_edge_touches_track(position, id)
+                                .pre_main_edge_touches_owner(position, owner)
                                 || runtime.delays.edge_history_is_silent(edge)
                         },
                     )
                 };
             self.graph
-                .retained_pre_main_history_maps_from(&other.graph, Some(id))
+                .retained_pre_main_history_maps_from(&other.graph, Some(owner))
                 && self.delays.is_closed()
                 && other.delays.is_closed()
                 && self.delay_graph.history_compatible(&self.graph)
                 && other.delay_graph.history_compatible(&other.graph)
-                && silent_track(self)
-                && silent_track(other)
+                && silent_owner(self)
+                && silent_owner(other)
         } else {
             self.can_continue_pre_main(other)
         };
@@ -1666,7 +1758,7 @@ impl SignalRuntime {
     pub(crate) fn copy_from(
         &mut self,
         other: &Self,
-        fresh: Option<TrackId>,
+        fresh: Option<FreshHistory>,
     ) -> Result<(), Invalid> {
         if !self.can_copy_from(other, fresh) {
             return Err(Invalid("signal history mapping is incompatible"));

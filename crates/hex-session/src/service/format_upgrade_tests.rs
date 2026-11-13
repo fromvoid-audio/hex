@@ -32,13 +32,13 @@ fn request(service: &Service, request: Request) -> Event {
 }
 
 #[test]
-fn retained_receiver_open_refuses_without_changing_project_or_original_bytes() {
+fn retained_receiver_open_edit_and_reopen_preserves_source_and_original_bytes() {
     let files = Files::new();
     let path = files.0.join("retained.hex");
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
-    let initial = next(&service);
-    let previous = initial.state.project.snapshot();
-    let mut editor = hex_project::Editor::new(initial.state.project.as_ref().clone(), 8).unwrap();
+    next(&service);
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(32_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
         .execute(hex_project::Command::AddMidiTrack {
             name: "receiver".into(),
@@ -53,20 +53,150 @@ fn retained_receiver_open_refuses_without_changing_project_or_original_bytes() {
             state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap();
+    let source = editor.project().track(track).unwrap().source_id().unwrap();
+    let hex_project::Created::Track(peer) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer")
+    };
+    editor
+        .execute(hex_project::Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let hex_project::Created::Clip(peer_clip) = editor
+        .execute(hex_project::Command::PlaceMidiClip {
+            track: peer,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("peer clip")
+    };
+    editor
+        .execute(hex_project::Command::AddMidiNote {
+            clip: peer_clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let media = files.0.join("printed.wav");
+    ramp_wav(&media, 3_200);
+    let original_media = fs::read(&media).unwrap();
+    let hex_project::Created::Asset(asset) = editor
+        .execute(hex_project::Command::AddAsset {
+            path: media.clone(),
+            sample_rate: 32_000,
+            frames: 3_200,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    editor
+        .execute(hex_project::Command::PlaceClip {
+            track,
+            asset,
+            start: 0,
+            duration: 3_200,
+            source_offset: 0,
+            source_length: 3_200,
+            looping: false,
+        })
+        .unwrap();
     let mut snapshot = editor.project().snapshot();
     snapshot.retained_source_paths.push(track.value());
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
     let original = hex_storage::encode(&project).unwrap();
     fs::write(&path, &original).unwrap();
-    let refused = request(&service, Request::Open(path.clone()));
-    assert!(
-        refused
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("retained source path"))
-    );
-    assert_eq!(refused.state.project.snapshot(), previous);
+    let mut opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert_eq!(opened.state.project.snapshot(), project.snapshot());
     assert_eq!(fs::read(&path).unwrap(), original);
+    let mut playback = opened.playback.take().expect("opened playback");
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let mut rendered = [[0.0; 2]; 128];
+    playback.render(&mut rendered).unwrap();
+    assert!(rendered.iter().flatten().any(|sample| *sample != 0.0));
+    let mut muted = request(
+        &service,
+        Request::Edit(hex_project::Command::Mute {
+            track: peer,
+            muted: true,
+        }),
+    );
+    assert!(muted.error.is_none(), "{:?}", muted.error);
+    let mut without_peer = muted.playback.take().expect("muted playback");
+    without_peer.apply(hex_engine::PlaybackCommand::Play);
+    let mut printed_only = [[0.0; 2]; 128];
+    without_peer.render(&mut printed_only).unwrap();
+    assert_ne!(
+        rendered, printed_only,
+        "the linked peer must contribute audio"
+    );
+    assert!(printed_only.iter().flatten().any(|sample| *sample != 0.0));
+    let restored = request(&service, Request::Undo);
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    assert_eq!(restored.state.project.snapshot(), project.snapshot());
+    let renamed = request(
+        &service,
+        Request::Edit(hex_project::Command::RenameTrack {
+            track,
+            name: "renamed".into(),
+        }),
+    );
+    assert!(renamed.error.is_none(), "{:?}", renamed.error);
+    let changed = renamed.state.project.snapshot();
+    for command in [
+        hex_project::Command::BindTrackSource {
+            track,
+            source: None,
+        },
+        hex_project::Command::SetNativeSourceReceiver {
+            source,
+            track: Some(peer),
+        },
+        hex_project::Command::RemoveTrack(track),
+    ] {
+        let refused = request(&service, Request::Edit(command));
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project.snapshot(), changed);
+    }
+    let undone = request(&service, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project.snapshot(), project.snapshot());
+    let redone = request(&service, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project.snapshot(), changed);
+    let saved_path = files.0.join("retained-copy.hex");
+    let failed = request(
+        &service,
+        Request::SaveNew(files.0.join("missing").join("copy.hex")),
+    );
+    assert!(failed.error.is_some());
+    assert_eq!(failed.state.project.snapshot(), changed);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let saved = request(&service, Request::SaveNew(saved_path.clone()));
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let malformed_path = files.0.join("malformed.hex");
+    fs::write(&malformed_path, b"not a project").unwrap();
+    let malformed = request(&service, Request::Open(malformed_path.clone()));
+    assert!(malformed.error.is_some());
+    assert_eq!(malformed.state.project.snapshot(), changed);
+    assert_eq!(fs::read(malformed_path).unwrap(), b"not a project");
+    let reopened = request(&service, Request::Open(saved_path));
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project.snapshot(), changed);
+    assert_eq!(fs::read(media).unwrap(), original_media);
 }
 
 #[test]

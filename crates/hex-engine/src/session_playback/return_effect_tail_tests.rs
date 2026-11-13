@@ -1580,3 +1580,65 @@ fn detached_track_tail_reaches_group_once_and_unsafe_reparent_refuses() {
     );
     assert_eq!(main, [[0.125, -0.25]; 4]);
 }
+
+#[test]
+fn removing_unused_return_refuses_while_a_retained_return_tail_is_active() {
+    for later_return in [false, true] {
+        retained_tail_refuses_unused_return_removal(later_return);
+    }
+}
+
+fn retained_tail_refuses_unused_return_removal(later_return: bool) {
+    use hex_project::{Command, Created, Editor};
+
+    let mut editor = Editor::new(super::tests::project(1.0, 0, 8 << 32), 8).unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    if later_return {
+        editor
+            .execute(Command::AddReturnTrack {
+                name: "later".into(),
+            })
+            .unwrap();
+    }
+    let mut previous = playback(editor.project());
+    let mut reference = playback(editor.project());
+    for runtime in [&mut previous, &mut reference] {
+        warm(runtime);
+        let bus_ref = &runtime.revision.arrangement().return_buses()[0];
+        let tail = ReturnEffectTail::new(active_chain(bus, StereoMatrix::identity()), bus_ref);
+        runtime.return_effect_tails.slots_mut()[0] = Some(tail);
+    }
+    editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let mut candidate = playback(editor.project());
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    );
+    assert!(
+        previous.return_effect_tails.slots()[0]
+            .as_ref()
+            .unwrap()
+            .output_active
+    );
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}

@@ -3556,6 +3556,9 @@ impl EditorView {
                 | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
                 | Request::DeleteRetainedSource { .. }
                 | Request::CreateRetainedNativeSource { .. }
                 | Request::RenameRetainedSource { .. }
@@ -3921,6 +3924,9 @@ impl EditorView {
                 | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
                 | Request::DeleteRetainedSource { .. }
                 | Request::CreateRetainedNativeSource { .. }
                 | Request::RenameRetainedSource { .. }

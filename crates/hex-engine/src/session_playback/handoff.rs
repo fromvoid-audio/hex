@@ -1117,11 +1117,35 @@ impl SessionPlayback {
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old).or_else(|| cold_added_track(old, new))
         });
-        let fresh_history = history_track.filter(|_| {
-            self.compensation
-                .as_ref()
-                .zip(previous.compensation.as_ref())
-                .is_some_and(|(candidate, old)| !candidate.can_copy_from(old, None))
+        let compensation_pair = self
+            .compensation
+            .as_ref()
+            .zip(previous.compensation.as_ref());
+        let removed_return = compensation_pair
+            .and_then(|(candidate, old)| old.graph.added_isolated_return_from(&candidate.graph));
+        // A retained Return tail still owns audible output outside the current
+        // graph. Do not let the fallback reset it while removing a cold bus.
+        if removed_return.is_some()
+            && previous
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active)
+        {
+            return Err(SessionPlaybackError::LatencyLayoutChanged);
+        }
+        let fresh_history = compensation_pair.and_then(|(candidate, old)| {
+            history_track
+                .map(crate::signal_graph::FreshHistory::Track)
+                .or_else(|| {
+                    candidate
+                        .graph
+                        .added_isolated_return_from(&old.graph)
+                        .or(removed_return)
+                        .map(crate::signal_graph::FreshHistory::Return)
+                })
+                .filter(|_| !candidate.can_copy_from(old, None))
         });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))

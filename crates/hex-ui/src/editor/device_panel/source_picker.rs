@@ -114,6 +114,7 @@ impl Choice {
             return;
         }
         if view.edit_pending()
+            || view.sampler_parameter.numeric_draft_active()
             || view.tuning.client.snapshot().is_some()
             || view.tuning.client.has_pending_requests()
         {
@@ -282,6 +283,7 @@ fn open(
         return;
     }
     if view.edit_pending()
+        || view.sampler_parameter.numeric_draft_active()
         || view.tuning.client.snapshot().is_some()
         || view.tuning.client.has_pending_requests()
     {
