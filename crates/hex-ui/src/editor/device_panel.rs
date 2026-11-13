@@ -985,6 +985,20 @@ fn render_track(
                 },
             ),
         })
+        .chain(
+            source_effects
+                .iter()
+                .filter(|device| modulators::source_utility_gain_available(&state.project, device))
+                .map(|device| {
+                    (
+                        device.id(),
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Effect,
+                            type_id: device.state().type_id(),
+                        },
+                    )
+                }),
+        )
         .collect();
     let alive: HashSet<_> = identities
         .keys()

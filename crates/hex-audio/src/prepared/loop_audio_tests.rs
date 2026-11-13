@@ -308,7 +308,6 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
     for ctl in [&mut control, &mut reference_control] {
         ctl.publish(Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap())
             .unwrap();
-        ctl.command(PlaybackCommand::Play).unwrap();
     }
     let mut prefix = [[0.0; 2]; 64];
     callback.begin_block();
@@ -323,6 +322,49 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         hex_lattice_contract::ParameterValue::Float(2.0),
     )
     .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: effect,
+            state: state.clone(),
+        })
+        .unwrap();
+    let stopped_revision = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut prefix).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        stopped_revision
+    );
+    assert!(prefix.iter().all(|frame| *frame == [0.0; 2]));
+    control.reclaim();
+    assert!(editor.undo());
+    let restored = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut prefix).unwrap();
+    assert_eq!(control.status.applied_revision.load(Acquire), restored);
+    control.reclaim();
+    for ctl in [&mut control, &mut reference_control] {
+        ctl.command(PlaybackCommand::Play).unwrap();
+    }
+    callback.begin_block();
+    callback.render(&mut prefix).unwrap();
+    reference.begin_block();
+    reference.render(&mut prefix).unwrap();
     editor
         .execute(Command::ReplaceDeviceState {
             device: effect,
