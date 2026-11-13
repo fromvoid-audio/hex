@@ -55,6 +55,7 @@ mod stream_miss_fade;
 mod streamed_loop_seam;
 mod streamed_publication_boundary;
 mod timed_foreign_transport_allocations;
+mod timed_stream_transport_allocations;
 mod timed_transport_allocations;
 mod touch_playback_allocations;
 mod track_gain_allocations;
