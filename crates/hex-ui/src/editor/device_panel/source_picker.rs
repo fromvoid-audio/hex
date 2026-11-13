@@ -31,6 +31,7 @@ pub(in crate::editor) struct Choice {
     expected_source: Option<SourceId>,
     unlink: bool,
     destination: Option<TrackId>,
+    receiver: Option<(Option<TrackId>, TrackId)>,
     pub(in crate::editor) label: SharedString,
 }
 
@@ -57,6 +58,16 @@ impl Choice {
         if !self.current(view)
             || !view.state.as_ref().is_some_and(|state| {
                 state.project.native_source(self.source).is_some()
+                    && self.receiver.is_none_or(|(expected, target)| {
+                        state
+                            .project
+                            .native_source(self.source)
+                            .is_some_and(|source| source.receiver() == expected)
+                            && state
+                                .project
+                                .track(target)
+                                .is_some_and(|track| track.source_id() == Some(self.source))
+                    })
                     && self.destination.is_none_or(|target| {
                         state
                             .project
@@ -70,6 +81,8 @@ impl Choice {
         {
             view.error = Some(if self.destination.is_some() {
                 "source navigation canceled · selection changed".into()
+            } else if self.receiver.is_some() {
+                "source receiver selection canceled · selection changed".into()
             } else {
                 "source assignment canceled · selection changed".into()
             });
@@ -121,6 +134,17 @@ impl Choice {
                     view.status = "track selected · hidden by the current view".into();
                 }
             }
+            cx.notify();
+            return;
+        }
+        if let Some((expected_receiver, track)) = self.receiver {
+            let _ = view.enqueue(Request::ChooseNativeSourceReceiver {
+                project_generation: self.generation,
+                revision: self.revision,
+                source: self.source,
+                expected_receiver,
+                track,
+            });
             cx.notify();
             return;
         }
@@ -227,6 +251,7 @@ fn open(
                     expected_source,
                     unlink: false,
                     destination: None,
+                    receiver: None,
                     label: label.into(),
                 }),
             };
@@ -235,13 +260,13 @@ fn open(
                 .tracks()
                 .iter()
                 .filter(move |linked| linked.source_id() == Some(source.id()))
-                .map(move |linked| {
+                .flat_map(move |linked| {
                     let role = if source.receiver() == Some(linked.id()) {
                         "receiver"
                     } else {
                         "midi"
                     };
-                    MenuItem {
+                    let navigate = MenuItem {
                         label: "source track",
                         swatch: None,
                         checked: false,
@@ -253,13 +278,37 @@ fn open(
                             expected_source,
                             unlink: false,
                             destination: Some(linked.id()),
+                            receiver: None,
                             label: format!(
                                 "  go to · {role} · {}",
                                 hex_session::service::text::verbatim(linked.name())
                             )
                             .into(),
                         }),
-                    }
+                    };
+                    let choose_receiver = (expected_source == Some(source.id())
+                        && source.receiver() != Some(linked.id()))
+                    .then(|| MenuItem {
+                        label: "choose receiver",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::SourcePicker(Choice {
+                            generation,
+                            revision: state.revision,
+                            track,
+                            source: source.id(),
+                            expected_source,
+                            unlink: false,
+                            destination: None,
+                            receiver: Some((source.receiver(), linked.id())),
+                            label: format!(
+                                "  make receiver · {}",
+                                hex_session::service::text::verbatim(linked.name())
+                            )
+                            .into(),
+                        }),
+                    });
+                    std::iter::once(navigate).chain(choose_receiver)
                 });
             std::iter::once(assignment).chain(tracks)
         })
@@ -275,6 +324,7 @@ fn open(
                 expected_source,
                 unlink: true,
                 destination: None,
+                receiver: None,
                 label: "unlink source".into(),
             }),
         }))

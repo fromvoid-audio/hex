@@ -616,14 +616,187 @@ fn bound_source_picker_reassigns_unlinks_and_preserves_history(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn bound_source_picker_explicitly_changes_receiver_and_undoes(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(receiver).unwrap().source_id().unwrap();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let Created::Track(contributor) = receive_service_event(&service).created.unwrap() else {
+        panic!("track")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let original = event.state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, contributor);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let (choice, index) = editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        let menu = view.context_menu.as_ref().unwrap();
+        let index = menu
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("make receiver · contributor")
+            })
+            .unwrap();
+        let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
+            panic!("choice")
+        };
+        (choice.clone(), index)
+    });
+    editor.update(&mut visual, |view, _| {
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track: contributor },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            choice.clone().perform(view, window, cx);
+            assert!(view.device_gesture.snapshot().is_some());
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+        })
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.context_menu = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    for _ in 0..index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project.native_source(source).unwrap().receiver() == Some(contributor)
+            })
+    });
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(receiver).unwrap().source_id(), Some(source));
+        assert_eq!(
+            project.track(contributor).unwrap().source_id(),
+            Some(source)
+        );
+        assert_eq!(
+            project.track(receiver).unwrap().devices(),
+            original.track(receiver).unwrap().devices()
+        );
+        assert_eq!(
+            project.track(contributor).unwrap().devices(),
+            original.track(contributor).unwrap().devices()
+        );
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            choice.clone().perform(view, window, cx);
+            assert!(!view.edit_pending());
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("source receiver selection canceled"))
+            );
+        })
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project.native_source(source).unwrap().receiver() == Some(receiver)
+            })
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project.native_source(source).unwrap().receiver() == Some(contributor)
+            })
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveTrack(contributor))))
+    });
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.project.track(contributor).is_none())
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            choice.perform(view, window, cx);
+            assert!(!view.edit_pending());
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("source receiver selection canceled"))
+            );
+        })
+    });
+}
+
+#[gpui::test]
 fn rebind_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
+    source_edit_cancels_a_published_seek(cx, false);
+}
+
+#[gpui::test]
+fn receiver_choice_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
+    source_edit_cancels_a_published_seek(cx, true);
+}
+
+fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, choose_receiver: bool) {
     let _guard =
         crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     use crate::editor::arrangement_seek::{PendingSeek, SeekIntent, SeekStage};
     use hex_audio::prepared::PublicationPolicy;
     use std::sync::atomic::Ordering::Acquire;
-    let (service, state, track, _, _, _) = actor_utility_fixture();
-    let source = state.project.track(track).unwrap().source_id().unwrap();
+    let (service, initial, receiver, _, _, _) = actor_utility_fixture();
+    let source = initial
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let Created::Track(track) = receive_service_event(&service).created.unwrap() else {
+        panic!("track")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
     let revision = state.revision;
     let prepared = Arc::new(
         hex_engine::PreparedRevision::prepare(
@@ -697,13 +870,24 @@ fn rebind_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.prepared_seek = Some(pending);
-        assert!(view.enqueue(Request::RebindNativeSource {
-            project_generation: 0,
-            revision,
-            track,
-            expected_source: Some(source),
-            source: None,
-        }));
+        let request = if choose_receiver {
+            Request::ChooseNativeSourceReceiver {
+                project_generation: 0,
+                revision,
+                source,
+                expected_receiver: Some(receiver),
+                track,
+            }
+        } else {
+            Request::RebindNativeSource {
+                project_generation: 0,
+                revision,
+                track,
+                expected_source: Some(source),
+                source: None,
+            }
+        };
+        assert!(view.enqueue(request));
         assert!(view.prepared_seek.as_ref().unwrap().cancelled);
     });
     backend.render(&mut block).unwrap();

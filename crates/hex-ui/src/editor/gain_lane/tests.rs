@@ -188,6 +188,17 @@ pub(in crate::editor) mod native {
     #[gpui::test]
     fn source_rebind_is_refused_while_gain_draft_is_owned(cx: &mut TestAppContext) {
         let (_handle, entity, track) = window(cx);
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::NativeSource(source) = model
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
         entity.update(cx, |view, _| {
             view.gain_lane.draft = Some(Draft {
                 generation: 0,
@@ -205,6 +216,15 @@ pub(in crate::editor) mod native {
                 source: None,
             };
             assert!(!view.admit_independent_edit_with_local_draft(&request));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::ChooseNativeSourceReceiver {
+                    project_generation: 0,
+                    revision: 1,
+                    source,
+                    expected_receiver: None,
+                    track,
+                }
+            ));
             assert!(view.gain_lane.draft.is_some());
             assert!(
                 view.error
