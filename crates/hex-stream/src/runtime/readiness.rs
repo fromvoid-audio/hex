@@ -607,6 +607,26 @@ impl ConstructorPageLoan {
         &mut self,
         extents: &[StreamResourceExtent],
     ) -> Result<CurrentQuantumReservation, CurrentQuantumRefusal> {
+        self.reserve_quantum_resident_subset(extents, false)
+            .map(|(reservation, _)| reservation)
+    }
+
+    /// Reserve the already-complete resident subset of an exact current demand.
+    /// The boolean reports whether every requested extent was resident; neither
+    /// result establishes readiness. A successful empty subset still requires
+    /// release or cancellation before returning the loan.
+    pub fn reserve_resident_current_quantum(
+        &mut self,
+        extents: &[StreamResourceExtent],
+    ) -> Result<(CurrentQuantumReservation, bool), CurrentQuantumRefusal> {
+        self.reserve_quantum_resident_subset(extents, true)
+    }
+
+    fn reserve_quantum_resident_subset(
+        &mut self,
+        extents: &[StreamResourceExtent],
+        allow_incomplete: bool,
+    ) -> Result<(CurrentQuantumReservation, bool), CurrentQuantumRefusal> {
         if self.readiness.current_quantum_epoch.is_some() {
             return Err(CurrentQuantumRefusal::Busy);
         }
@@ -615,38 +635,51 @@ impl ConstructorPageLoan {
                 (pair[0].source, pair[0].page_index) >= (pair[1].source, pair[1].page_index)
             })
             || extents.iter().any(|extent| extent.start >= extent.end)
+            || (allow_incomplete
+                && extents
+                    .iter()
+                    .any(|extent| extent.end > hex_engine::STREAM_PAGE_FRAMES))
         {
             return Err(CurrentQuantumRefusal::InvalidExtents);
         }
-        if extents
-            .iter()
-            .any(|extent| !self.pages.endpoint.has_extent(*extent))
-        {
+        let mut complete = true;
+        self.readiness.current_quantum.clear();
+        for extent in extents {
+            if self.pages.endpoint.has_extent(*extent) {
+                self.readiness.current_quantum.push(*extent);
+            } else {
+                complete = false;
+            }
+        }
+        if !complete && !allow_incomplete {
+            self.readiness.current_quantum.clear();
             return Err(CurrentQuantumRefusal::NotResident);
         }
         if !self.readiness.fits_pool(
             3,
-            ExtentSlice::Resources(extents),
+            ExtentSlice::Resources(&self.readiness.current_quantum),
             self.pages.endpoint.cache_capacity(),
         ) {
+            self.readiness.current_quantum.clear();
             return Err(CurrentQuantumRefusal::Capacity);
         }
-        let epoch = self
-            .readiness
-            .quantum_epoch
-            .checked_add(1)
-            .ok_or(CurrentQuantumRefusal::EpochExhausted)?;
-        self.pages
-            .endpoint
-            .replace_protection(crate::endpoint::CURRENT_QUANTUM_PIN, extents);
-        self.readiness.current_quantum.clear();
-        self.readiness.current_quantum.extend_from_slice(extents);
+        let Some(epoch) = self.readiness.quantum_epoch.checked_add(1) else {
+            self.readiness.current_quantum.clear();
+            return Err(CurrentQuantumRefusal::EpochExhausted);
+        };
+        self.pages.endpoint.replace_protection(
+            crate::endpoint::CURRENT_QUANTUM_PIN,
+            &self.readiness.current_quantum,
+        );
         self.readiness.quantum_epoch = epoch;
         self.readiness.current_quantum_epoch = Some(epoch);
-        Ok(CurrentQuantumReservation {
-            readiness_id: self.readiness.readiness_id,
-            epoch,
-        })
+        Ok((
+            CurrentQuantumReservation {
+                readiness_id: self.readiness.readiness_id,
+                epoch,
+            },
+            complete,
+        ))
     }
 
     /// Release only the exact reservation returned by this loan. A wrong or
