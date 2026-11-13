@@ -1899,13 +1899,11 @@ impl NativeRuntimeChain {
             && previous.len().checked_add(1) == Some(self.len())
             && self.entries.last().is_some_and(|appended| {
                 matches!(appended.owner, ProcessorChainOwner::Source(_))
-                    && previous.entries.first().is_some_and(|old| {
-                        old.owner == appended.owner && old.sample_rate == appended.sample_rate
+                    && previous.entries.iter().all(|old| {
+                        old.owner == appended.owner
+                            && old.sample_rate == appended.sample_rate
+                            && old.device_id != appended.device_id
                     })
-                    && previous
-                        .entries
-                        .iter()
-                        .all(|old| old.device_id != appended.device_id)
                     && matches!(appended.runtime, RuntimeOwnership::Memoryless)
                     && appended.configuration.is_some()
                     && !appended.bypassed
@@ -5767,6 +5765,27 @@ mod tests {
             let candidate = NativeRuntimeChain::new(bad).unwrap();
             assert!(!candidate.can_transfer_source_recipe_history_from(&old, true));
         }
+        let mixed_owner =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(2, 6, 1.0, 3)]).unwrap();
+        let mixed_owner_candidate = NativeRuntimeChain::new(vec![
+            entry(1, 4, 1.0, 1),
+            entry(2, 6, 1.0, 3),
+            entry(1, 5, 1.0, 2),
+        ])
+        .unwrap();
+        assert!(!mixed_owner_candidate.can_transfer_source_recipe_history_from(&mixed_owner, true));
+        let mut other_rate = entry(1, 6, 1.0, 3);
+        other_rate.sample_rate = 44_100;
+        let mixed_rate = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), other_rate]).unwrap();
+        let mut other_rate_candidate = entry(1, 6, 1.0, 3);
+        other_rate_candidate.sample_rate = 44_100;
+        let mixed_rate_candidate = NativeRuntimeChain::new(vec![
+            entry(1, 4, 1.0, 1),
+            other_rate_candidate,
+            entry(1, 5, 1.0, 2),
+        ])
+        .unwrap();
+        assert!(!mixed_rate_candidate.can_transfer_source_recipe_history_from(&mixed_rate, true));
         let mut wrong_rate = entry(1, 5, 1.0, 2);
         wrong_rate.sample_rate = 44_100;
         let wrong_rate = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), wrong_rate]).unwrap();
