@@ -357,6 +357,174 @@ fn prepared_tempo_anchor_after_loop_is_linear() {
     run_prepared_loop_anchor(true);
 }
 
+#[test]
+fn projected_tempo_cut_matches_running_loop() {
+    run_projected_tempo_cut(false);
+}
+
+#[test]
+fn projected_tempo_cut_after_loop_is_linear() {
+    run_projected_tempo_cut(true);
+}
+
+fn run_projected_tempo_cut(post_loop: bool) {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let (_, looped, media) = limiter_loop_fixture();
+            let prepare = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare(
+                        project,
+                        &media,
+                        Arc::new(hex_devices::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let source = prepare(&looped);
+            let mut snapshot = looped.snapshot();
+            snapshot.tempo_points = vec![TempoPoint::new(
+                BeatTime::ZERO,
+                Tempo::new(90_000_000).unwrap(),
+            )];
+            let candidate = prepare(&legacy_project_from_snapshot(snapshot).unwrap());
+            for block in [1, 257] {
+                let distances: &[u64] = if post_loop {
+                    &[0, 2300]
+                } else {
+                    &[299, 300, 2300, 4301]
+                };
+                for &distance in distances {
+                    let mut old = SessionPlayback::new(Arc::clone(&source)).unwrap();
+                    let mut reference = SessionPlayback::new(Arc::clone(&source)).unwrap();
+                    for runtime in [&mut old, &mut reference] {
+                        if post_loop {
+                            runtime.play_from(3000).unwrap();
+                        } else {
+                            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                            runtime.render(&mut [[0.0; 2]; 100]).unwrap();
+                        }
+                    }
+                    let observed_frame = old.arrangement_frame();
+                    let observed_performance = old.performance_frame();
+                    let state = old.arrangement_loop_state();
+                    let anchor = PreparedTempoAnchor::prepare_from_running_observation(
+                        Arc::clone(&source),
+                        Arc::clone(&candidate),
+                        observed_frame,
+                        observed_performance,
+                        state,
+                        observed_performance + distance,
+                    )
+                    .unwrap();
+                    for runtime in [&mut old, &mut reference] {
+                        let mut remaining = distance as usize;
+                        let mut buffer = [[0.0; 2]; 257];
+                        while remaining > 0 {
+                            let count = remaining.min(block);
+                            runtime.render(&mut buffer[..count]).unwrap();
+                            remaining -= count;
+                        }
+                    }
+                    let mut projected = SessionPlayback::new(Arc::clone(&candidate)).unwrap();
+                    projected
+                        .try_inherit_state_with_tempo_anchor(&mut old, &anchor)
+                        .unwrap();
+                    let mut ordinary = SessionPlayback::new(Arc::clone(&candidate)).unwrap();
+                    ordinary
+                        .try_inherit_state_live_from(&mut reference)
+                        .unwrap();
+                    assert_eq!(projected.arrangement_frame(), ordinary.arrangement_frame());
+                    let mut actual = [[0.0; 2]; 257];
+                    let mut expected = actual;
+                    projected.render(&mut actual).unwrap();
+                    ordinary.render(&mut expected).unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "post_loop={post_loop} block={block} distance={distance}"
+                    );
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn projected_tempo_cut_refuses_invalid_observation_and_overflow() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (_, looped, media) = limiter_loop_fixture();
+            let source = Arc::new(
+                PreparedRevision::prepare(
+                    &looped,
+                    &media,
+                    Arc::new(hex_devices::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let attempt = |frame, performance, state, cut| {
+                PreparedTempoAnchor::prepare_from_running_observation(
+                    Arc::clone(&source),
+                    Arc::clone(&source),
+                    frame,
+                    performance,
+                    state,
+                    cut,
+                )
+            };
+            let state = ArrangementLoopState {
+                pass: 0,
+                active_region: Some((400, 2400)),
+            };
+            assert!(attempt(100, 100, state, 99).is_err());
+            assert!(
+                attempt(
+                    100,
+                    100,
+                    ArrangementLoopState {
+                        active_region: None,
+                        ..state
+                    },
+                    101
+                )
+                .is_err()
+            );
+            assert!(
+                attempt(
+                    100,
+                    100,
+                    ArrangementLoopState {
+                        pass: u64::MAX,
+                        ..state
+                    },
+                    2400
+                )
+                .is_err()
+            );
+            assert!(
+                attempt(
+                    u64::MAX - 1,
+                    1,
+                    ArrangementLoopState {
+                        pass: 0,
+                        active_region: None
+                    },
+                    3
+                )
+                .is_err()
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn run_prepared_loop_anchor(post_loop: bool) {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
