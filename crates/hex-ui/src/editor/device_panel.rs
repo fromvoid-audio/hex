@@ -937,12 +937,12 @@ fn render_source(
                 .flex()
                 .items_center()
                 .gap(px(4.0))
-                .child(manager)
+                .children(std::iter::once(manager))
                 .child(theme::text(format!(
                     "source · {}",
                     hex_session::service::text::verbatim(definition.name())
                 )))
-                .child(close),
+                .children(std::iter::once(close)),
         )
         .child(body)
 }
