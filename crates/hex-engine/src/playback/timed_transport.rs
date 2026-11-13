@@ -53,6 +53,25 @@ impl Playback {
         self.render_timed_validated(output, commands, |playback, part, _| playback.render(part))
     }
 
+    /// Render resident timed transport while observing native node input and output.
+    /// Observer offsets refer to the complete output buffer. Observations are
+    /// speculative until the caller accepts the complete render; invalid
+    /// schedules invoke no observer and leave playback and output unchanged.
+    /// Other error and transport semantics match [`Playback::render_with_timed_transport`].
+    pub fn render_with_timed_transport_and_node_observer(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        observer: &mut crate::NodeSignalObserver<'_>,
+    ) -> Result<(), TimedTransportError> {
+        validate(output.len(), commands)?;
+        self.render_timed_validated(output, commands, |playback, part, offset| {
+            super::with_shifted_observer(Some(&mut *observer), offset, |observer| {
+                playback.render_with_node_signal_observer(part, observer)
+            })
+        })
+    }
+
     /// Render with borrowed stream pages and immediate timed transport actions.
     /// The page provider is borrowed only for this call. Page misses use the
     /// existing renderer's silence/request behavior; this does not perform
