@@ -262,6 +262,11 @@ impl Endpoint {
     }
 
     #[cfg(feature = "test-support")]
+    pub(crate) fn test_coalesced_prefetch(&self, key: ResourcePageKey) -> bool {
+        self.prefetch_key == Some(key) && self.prefetch_readiness_mask != 0
+    }
+
+    #[cfg(feature = "test-support")]
     pub(crate) fn test_ready_page(&self, key: ResourcePageKey) -> bool {
         self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
     }
