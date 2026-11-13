@@ -462,6 +462,43 @@ fn signed_round(numerator: i128, denominator: u128) -> Result<i128, Invalid> {
 }
 
 impl AudioClipEdit {
+    /// Reconstruct an exact V2 plain-pitch edit from a plain clip. This does not
+    /// establish asset extent or source custody; normal project validation does.
+    pub fn reconstruct_plain_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
+        if clip.audio_edit().is_some() || cents == 0 || !(-4_800..=4_800).contains(&cents) {
+            return Err(Invalid("invalid plain pitch reconstruction"));
+        }
+        let mut edit = Self::capture(clip);
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.pitch_cents = cents;
+        domain.warp_resampler = WarpResampler::V2;
+        if !edit.is_plain_pitch_capture(clip) {
+            return Err(Invalid(
+                "plain pitch requires a complete neutral frame clip",
+            ));
+        }
+        Ok(edit)
+    }
+
+    /// Exact V2 full-frame plain pitch captured from a neutral, unlooped clip.
+    /// Callers must also establish that the clip covers the complete asset.
+    pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
+        if self.domain.pitch_cents == 0
+            || clip.source_offset != 0
+            || clip.source_length != clip.duration
+            || clip.looping
+            || clip.source_phase != 0
+            || !clip.fade.is_neutral()
+        {
+            return false;
+        }
+        let mut expected = Self::capture(clip);
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.pitch_cents = self.domain.pitch_cents;
+        domain.warp_resampler = WarpResampler::V2;
+        self == &expected
+    }
+
     /// Whether this is exactly the reversal created from an unedited clip.
     /// Unlike the playback shape query, this proves that removing and then
     /// recreating the edit preserves every authored field.
@@ -927,6 +964,7 @@ impl AudioClipEdit {
         }
         length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
             && (self.is_plain_reversed_capture(clip)
+                || self.is_plain_pitch_capture(clip)
                 || (self.plain_frame_event_root()
                     && self.domain.events.as_ref().is_some_and(|events| {
                         events
@@ -1095,6 +1133,12 @@ impl AudioClipEdit {
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
         if !self.accepts_projected_extent(length, clip) {
             return Err(transform_domain_limit(tempo.sample_rate()));
+        }
+        if length > MAX_AUDIO_DOMAIN_FRAMES
+            && self.is_plain_pitch_capture(clip)
+            && clip.source_length != asset_frames
+        {
+            return Err(Invalid("long pitch requires the complete audio source"));
         }
         if length == 0 || view_start >= view_end {
             return Err(EMPTY_DOMAIN_CROP);
@@ -1540,3 +1584,6 @@ mod limit_tests {
 #[path = "audio_edit/aliases.rs"]
 mod aliases;
 pub(crate) use aliases::rebase_alias_content;
+
+#[cfg(test)]
+mod long_pitch_tests;
