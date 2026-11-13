@@ -540,6 +540,8 @@ pub struct SessionPlayback {
     // contribute to that graph's current send and feed edges.
     tail_route_sends: [bool; SESSION_TAIL_GROUP_CAPACITY],
     has_tail_route_sends: bool,
+    // A pure foreign suffix admitted with an unchanged grouped clock and graph.
+    tail_proven_grouped: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
@@ -971,6 +973,7 @@ impl SessionPlayback {
             tail_track_ids: _,
             tail_route_sends: _,
             has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes: _,
             tail_suffix_starts: _,
@@ -2197,6 +2200,7 @@ impl SessionPlayback {
             tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_route_sends: [false; SESSION_TAIL_GROUP_CAPACITY],
             has_tail_route_sends: false,
+            tail_proven_grouped: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
