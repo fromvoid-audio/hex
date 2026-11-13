@@ -667,8 +667,10 @@ impl PublicationControl {
     /// original effect or loan control. None is pending; Some consumes at most
     /// eight receipts. Call regularly while observing an editor: bounded full
     /// queues backpressure, never coalesce gesture boundaries. Wrong/closed/
-    /// revoked sources refuse. Native receipts grant no canonical automation or
-    /// future-liveness authority; source terminal cancels pending observations.
+    /// revoked sources refuse admission. Once admitted, a pending read or
+    /// consumed receipt is returned even if close races the call. Native
+    /// receipts grant no canonical automation or future-liveness authority;
+    /// source terminal cancels pending observations.
     pub fn poll_native_source_parameter_edits_on_control(
         &mut self,
         binding: Binding,
@@ -676,11 +678,7 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native edit output is closing");
         }
-        let result = self.candidate_root.native_source_parameter_edits(binding)?;
-        if self.status.closing.load(Acquire) {
-            return Err("native edit output is closing");
-        }
-        Ok(result)
+        self.candidate_root.native_source_parameter_edits(binding)
     }
     /// Observe the exact live worker's edit receipts and uncovered latency
     /// restart. Opt in only when the consumer can restore the stopped source.
