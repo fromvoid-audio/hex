@@ -383,6 +383,8 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let parameter_source = self.plugins.override_publication_source(metadata.context);
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
         let edit_cancellation = self
@@ -607,6 +609,17 @@ impl NativeAudioSink {
                 }
                 ResidentPublicationPolicy::InheritRuntime
                 | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some((source, transport_epoch, playing)) = parameter_source {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        }
+                    } else {
+                        hex_audio::prepared::PublicationPolicy::InheritRuntime
+                    }
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {

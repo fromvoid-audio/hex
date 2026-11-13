@@ -1389,6 +1389,11 @@ struct ResidentSink {
     file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
+}
+struct ConfirmationProbe {
+    ready: SyncSender<()>,
+    resume: mpsc::Receiver<()>,
 }
 struct PublicationProbe {
     ready: SyncSender<()>,
@@ -1632,6 +1637,11 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
     ) -> Result<(), hex_session::service::PluginParameterGestureError> {
+        let probe = self.confirmation_probe.lock().unwrap().take();
+        if let Some(probe) = probe {
+            probe.ready.send(()).unwrap();
+            probe.resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
         self.inner
             .confirm_plugin_parameter_publication(context, acceptance)
     }
@@ -1991,6 +2001,7 @@ pub(super) struct ResidentHarness {
     file_publication_waiting: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
@@ -2223,6 +2234,7 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        let confirmation_probe = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let control_polls = Arc::new(AtomicU64::new(0));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2245,6 +2257,7 @@ impl ResidentHarness {
                 file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
                 publication_probe: Arc::clone(&publication_probe),
+                confirmation_probe: Arc::clone(&confirmation_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -2269,6 +2282,7 @@ impl ResidentHarness {
             file_publication_waiting,
             pending_observation_generation,
             publication_probe,
+            confirmation_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
@@ -2572,6 +2586,21 @@ impl ResidentHarness {
             // are released, without poisoning Root's production Work mutex.
             assert_eq!(result, Some(Ok(())));
         })
+    }
+    pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+        let (ready, entered) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        assert!(
+            self.confirmation_probe
+                .lock()
+                .unwrap()
+                .replace(ConfirmationProbe {
+                    ready,
+                    resume: resumed
+                })
+                .is_none()
+        );
+        (entered, resume)
     }
     pub(super) fn probe_next_native_publication(
         &self,
