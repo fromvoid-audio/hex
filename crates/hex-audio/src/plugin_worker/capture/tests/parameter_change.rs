@@ -7,6 +7,156 @@ mod unprogrammed;
 
 const HELD_PROCESS_FIXTURE: u32 = 140;
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_can_change_worker_after_live_capture() {
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(89, &name) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let capture = begin(&mut owner);
+    let before = complete(&mut owner, &capture);
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"editor",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch)) if batch.ready > 0 => break,
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 3.0, &[]);
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch))
+                if batch.as_slice().iter().any(|edit| {
+                    edit.kind == hex_plugin_host::protocol::ParameterEditKind::Perform
+                }) =>
+            {
+                break;
+            }
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor receipt: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let capture = begin(&mut owner);
+    let after = complete(&mut owner, &capture);
+    let gain = |state: &NativeDeviceState| {
+        let decoded = hex_plugin_state::decode(state).unwrap();
+        f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap())
+    };
+    assert_eq!(gain(&before), 1.0);
+    assert_eq!(gain(&after), 3.0);
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_can_change_worker_during_manual_hold() {
+    use crate::plugin_worker::NativeParameterHold;
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(147, &name) {
+        return;
+    }
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let hold = owner
+        .parameter_hold_on_control(NativeParameterHold::Begin {
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 2.0, &[]);
+    }
+    assert!(matches!(
+        terminal(&mut owner, &hold),
+        NativeWorkerParameterProgress::Processed(_)
+    ));
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"editor",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch)) if batch.ready > 0 => break,
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    for sequence in 3..6 {
+        callback(
+            &owner,
+            &mut endpoint,
+            sequence,
+            if sequence < 5 { 2.0 } else { 3.0 },
+            &[],
+        );
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch))
+                if batch.as_slice().iter().any(|edit| {
+                    edit.kind == hex_plugin_host::protocol::ParameterEditKind::Perform
+                }) =>
+            {
+                break;
+            }
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor receipt: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let capture = begin(&mut owner);
+    let after = complete(&mut owner, &capture);
+    let decoded = hex_plugin_state::decode(&after).unwrap();
+    assert_eq!(
+        f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap()),
+        3.0
+    );
+    let update = owner
+        .parameter_hold_on_control(NativeParameterHold::Change {
+            hold: &hold,
+            normalized: 0.5,
+        })
+        .unwrap();
+    callback(&owner, &mut endpoint, 6, 3.0, &[]);
+    assert!(matches!(
+        terminal(&mut owner, &update),
+        NativeWorkerParameterProgress::Processed(_)
+    ));
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
 fn begin_change(owner: &mut NativeWorker, id: u32, value: f64) -> NativeWorkerParameterChange {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
