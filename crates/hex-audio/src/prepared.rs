@@ -349,6 +349,11 @@ pub(crate) struct Publication {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_references: Option<crate::candidate_custody::OrdinaryNativeReferences>,
 }
+
+struct RenderOutcome {
+    audible_recorded: bool,
+    start: Option<(u64, u64, bool)>,
+}
 // Exactly one active musical runtime, including the constructor-owned path.
 enum ActivePublication {
     Eligible(crate::candidate_custody::ActiveEligibleCandidate),
@@ -4270,7 +4275,14 @@ impl Callback {
                         return;
                     }
                     let diagnostic_context = next.source_context;
+                    let reset_audible = matches!(
+                        next.policy,
+                        PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+                    );
                     let previous = self.active.replace(ActivePublication::Legacy(next));
+                    if reset_audible {
+                        self.audible_clock.clear();
+                    }
                     self.release_current_quantum_pins();
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
@@ -4834,7 +4846,7 @@ impl Callback {
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
-        let result = self.render_inner(output);
+        let result = self.render_inner(output, block);
         self.release_current_quantum_pins();
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -4849,24 +4861,31 @@ impl Callback {
             }
             self.settle_transport_fade();
         }
+        if let Ok(outcome) = &result
+            && !outcome.audible_recorded
+        {
+            self.record_audible_run(outcome.start, output.len());
+        }
+        self.publish_audible_position();
+        self.flush_stream_outcomes();
+        result.map(|_| ())
+    }
+
+    fn record_audible_run(&mut self, block: Option<(u64, u64, bool)>, frames: usize) {
         if let Some((position, performance, true)) = block
-            && result.is_ok()
-            && !output.is_empty()
+            && frames != 0
         {
             // A declicked Pause/Stop can end inside the block; only the frames
             // its performance clock advanced were played (#4151).
             let frames = match self.scheduled_transport() {
                 Some((_, after, false)) => usize::try_from(after.saturating_sub(performance))
-                    .map_or(output.len(), |played| played.min(output.len())),
-                _ => output.len(),
+                    .map_or(frames, |played| played.min(frames)),
+                _ => frames,
             };
             if frames > 0 {
                 self.audible_clock.push(position, performance, frames);
             }
         }
-        self.publish_audible_position();
-        self.flush_stream_outcomes();
-        result
     }
 
     /// Scheduled position, performance frame and playing state of the current graph.
@@ -4898,15 +4917,31 @@ impl Callback {
             );
         }
     }
-    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    /// Returns whether a split seek recorded its own suffix and the clock used
+    /// for ordinary bookkeeping, adjusted for a pre-render streamed section.
+    fn render_inner(
+        &mut self,
+        output: &mut [Frame],
+        initial: Option<(u64, u64, bool)>,
+    ) -> Result<RenderOutcome, Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
             }
             output.fill([0.0; 2]);
-            return Ok(());
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         let yield_successor = self.yield_stream_successor_once;
+        let quantized_revision = self.deferred.as_ref().and_then(|next| {
+            matches!(
+                next.policy,
+                PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+            )
+            .then_some(next.revision)
+        });
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
         }
@@ -4944,7 +4979,10 @@ impl Callback {
                 self.prepare_native_parameter_quantum();
             }
             output.fill([0.0; 2]);
-            return Ok(());
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         if self.output_transport.is_some() {
             self.sample_recording
@@ -4952,14 +4990,34 @@ impl Callback {
         } else {
             self.sample_recording.begin(output.len());
         }
-        if self.status.closing.load(Acquire) || !self.render_quantized_seek(output)? {
+        // A ready streamed section can install above, before any frames
+        // render. Only that transition replaces the original block start.
+        let render_start = if quantized_revision.is_some_and(|revision| {
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_some_and(|active| active.revision == revision)
+        }) {
+            self.scheduled_transport()
+        } else {
+            initial
+        };
+        let quantized = if self.status.closing.load(Acquire) {
+            section_launch::QuantizedSeekRender::NotHandled
+        } else {
+            self.render_quantized_seek(output)?
+        };
+        if matches!(quantized, section_launch::QuantizedSeekRender::NotHandled) {
             self.render_project(output, 0)?;
         }
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
-        Ok(())
+        Ok(RenderOutcome {
+            audible_recorded: matches!(quantized, section_launch::QuantizedSeekRender::Switched),
+            start: render_start,
+        })
     }
 
     fn render_project(
