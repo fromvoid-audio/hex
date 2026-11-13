@@ -62,6 +62,18 @@ fn pair_with_frames(
     StreamCallbackPages,
     StreamSourceKey,
 ) {
+    pair_with_frames_and_pool(hooks, frames, 4)
+}
+fn pair_with_frames_and_pool(
+    hooks: Option<crate::worker::TestWorkerHooks>,
+    frames: u16,
+    page_buffers: usize,
+) -> (
+    crate::worker::tests::Fixture,
+    StreamControl,
+    StreamCallbackPages,
+    StreamSourceKey,
+) {
     let wav = crate::worker::tests::Fixture::pcm16_frames(frames);
     let limits = VerifiedWavReaderLimits::new(
         WavReaderLimits::new(2 * 1024 * 1024, u64::from(frames), 128, 32768),
@@ -93,7 +105,7 @@ fn pair_with_frames(
     .unwrap();
     drop(reader);
     let mut runtime = StreamRuntime::new_inner(
-        StreamConfig::with_pool_pages(4),
+        StreamConfig::with_pool_pages(page_buffers),
         vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
         hooks,
         #[cfg(feature = "test-support")]
@@ -790,7 +802,7 @@ fn active_audio_and_transition_target_keep_distinct_protection_until_commit() {
 #[test]
 fn borrowing_transition_windows_preserves_active_span_and_candidate() {
     let Some(mut owner) = artifact() else { return };
-    let (_wav, control, pages, key) = pair_with_frames(None, 24000);
+    let (_wav, control, pages, key) = pair_with_frames_and_pool(None, 24000, 5);
     let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
         control,
         pages,
@@ -904,6 +916,51 @@ fn borrowing_transition_windows_preserves_active_span_and_candidate() {
                 .is_some()
         );
     }
+
+    // While a replacement Active intent is pending, a Transition can still
+    // lend its protected page directly, but promotion cannot be prepared.
+    let window = [extent(0)];
+    let transition = stamp(&owner, 5);
+    loan.submit(ProtectionRole::Transition, transition, &window)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Transition, transition, 0, 0),
+        Ok(ReadinessProgress::InstalledProtected)
+    );
+    assert!(loan.acknowledge(ProtectionRole::Transition, transition, &window));
+    let replacement = stamp(&owner, 6);
+    let larger_span = [extent(0), extent(1), extent(3)];
+    loan.submit(ProtectionRole::Active, replacement, &larger_span)
+        .unwrap();
+    assert!(
+        loan.prepare_promotion(ProtectionRole::Transition, transition, &window)
+            .is_none()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Transition, transition, &window)
+            .unwrap()
+            .page(key, 0)
+            .is_some()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, span_stamp, &span)
+            .is_some()
+    );
+    // Current cancel releases the entire role, including its old installed
+    // protection; it is not an operation that cancels only the new intent.
+    assert!(loan.cancel(ProtectionRole::Active, replacement.request_epoch));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, span_stamp, &span)
+            .is_none()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Candidate, candidate_stamp, &candidate)
+            .is_some()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Transition, transition, &window)
+            .is_some()
+    );
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
     let report = finish(&mut domain);
