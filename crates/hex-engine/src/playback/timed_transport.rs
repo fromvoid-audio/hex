@@ -72,6 +72,28 @@ impl Playback {
         })
     }
 
+    /// Render resident timed transport with speculative node, project and
+    /// project-clock observations. All offsets are relative to the complete
+    /// output buffer, including nested declick render parts. Tap state is
+    /// restored for reuse. Invalid schedules make no observations or changes;
+    /// later failures retain the existing partial-progress semantics.
+    pub fn render_with_timed_transport_and_signal_observers(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), TimedTransportError> {
+        validate(output.len(), commands)?;
+        self.render_timed_validated(output, commands, |playback, part, offset| {
+            super::with_part_offset(project.as_deref_mut(), offset, |project| {
+                super::with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                    playback.render_with_signal_observers(part, observer, project)
+                })
+            })
+        })
+    }
+
     /// Render with borrowed stream pages and immediate timed transport actions.
     /// The page provider is borrowed only for this call. Page misses use the
     /// existing renderer's silence/request behavior; this does not perform

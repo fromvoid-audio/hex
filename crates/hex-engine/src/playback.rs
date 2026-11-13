@@ -2924,9 +2924,10 @@ fn with_part_offset<'a, 'observer, R>(
 ) -> R {
     match project {
         Some(tap) => {
-            tap.set_part_offset(offset);
+            let previous = tap.part_offset();
+            tap.replace_part_offset(previous.saturating_add(offset));
             let result = render(Some(&mut *tap));
-            tap.set_part_offset(0);
+            tap.replace_part_offset(previous);
             result
         }
         None => render(None),
