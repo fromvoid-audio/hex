@@ -21,13 +21,23 @@ fn explicit_native_history_matches_linear_pcm_and_keeps_refused_old_owner() {
 fn streamed_pending_fresh_seek_preserves_undo_and_redo() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(streamed_pending_history_case)
+        .spawn(|| streamed_pending_history_case(false))
         .unwrap()
         .join()
         .unwrap();
 }
 
-fn streamed_pending_history_case() {
+#[test]
+fn streamed_pending_section_preserves_undo_and_redo() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| streamed_pending_history_case(true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn streamed_pending_history_case(section: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(4);
@@ -49,8 +59,18 @@ fn streamed_pending_history_case() {
             .values()
             .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
     );
-    let before = imported.state.project.snapshot();
     let track = imported.state.project.tracks()[0].id();
+    let before = if section {
+        let configured = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 129,
+            end: 513,
+            enabled: true,
+        }));
+        applied = h.applied(applied).0;
+        configured.state.project.snapshot()
+    } else {
+        imported.state.project.snapshot()
+    };
     let renamed = h.run(Request::Edit(Command::RenameTrack {
         track,
         name: "history target".into(),
@@ -67,8 +87,15 @@ fn streamed_pending_history_case() {
     ] {
         let mut intent = h.seek_intent(request_id, revision, None, None);
         intent.destination_frame = 129;
+        if section {
+            intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+                region: hex_project::LoopRegion::new(129, 513, true).unwrap(),
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            });
+        }
         h.service.submit_resident_arrangement_seek(intent).unwrap();
-        assert!(h.next().error.is_none());
+        let submitted = h.next();
+        assert!(submitted.error.is_none(), "{:?}", submitted.error);
         let accepted = h.seek_result().result.unwrap();
         let hex_session::service::ResidentPublicationAcceptance::Submitted {
             audio_revision, ..
@@ -109,6 +136,12 @@ fn streamed_pending_history_case() {
         let (installed, metadata) = h.applied(applied);
         assert_eq!(installed, audio_revision);
         assert_eq!(metadata.seek_request, Some(request_id));
+        if section {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert!((129..513).contains(&status.position.load(Acquire)));
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+        }
         applied = installed;
         let retried = h.run(if request_id == 1 {
             Request::Undo
