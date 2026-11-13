@@ -240,6 +240,14 @@ pub(in crate::editor) mod native {
                     name: "source".into(),
                 }
             ));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::RenameRetainedSource {
+                    project_generation: 0,
+                    revision: 1,
+                    source,
+                    name: "renamed".into(),
+                }
+            ));
             assert!(view.gain_lane.draft.is_some());
             assert!(
                 view.error

@@ -779,11 +779,17 @@ fn source_creation_cancels_a_published_seek_before_callback(cx: &mut TestAppCont
     source_edit_cancels_a_published_seek(cx, SourceEdit::Create);
 }
 
+#[gpui::test]
+fn source_rename_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
+    source_edit_cancels_a_published_seek(cx, SourceEdit::Rename);
+}
+
 enum SourceEdit {
     Rebind,
     Receiver,
     Delete,
     Create,
+    Rename,
 }
 
 fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdit) {
@@ -917,6 +923,12 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdi
                 revision,
                 type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
                 name: "new source".into(),
+            },
+            SourceEdit::Rename => Request::RenameRetainedSource {
+                project_generation: 0,
+                revision,
+                source: unused,
+                name: "renamed".into(),
             },
             SourceEdit::Rebind => Request::RebindNativeSource {
                 project_generation: 0,
@@ -1269,6 +1281,278 @@ fn source_manager_creates_an_unassigned_instrument_from_empty_project(cx: &mut T
                 .source_id(),
             None
         )
+    });
+}
+
+#[gpui::test]
+fn source_manager_renames_without_losing_draft_or_binding(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(track).unwrap().source_id().unwrap();
+    let original_name = state
+        .project
+        .native_source(source)
+        .unwrap()
+        .name()
+        .to_owned();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let index = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    == "manage sources"
+            })
+            .unwrap()
+    });
+    for _ in 0..index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let rename = editor.read_with(&visual, |view, _| {
+        let EditorContextAction::SourceManager(action) =
+            &view.context_menu.as_ref().unwrap().items[1].action
+        else {
+            panic!("rename")
+        };
+        action.clone()
+    });
+    editor.update(&mut visual, |view, _| {
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            rename.perform(view, window, cx);
+            assert!(!super::super::source_naming(view));
+            assert!(view.device_gesture.snapshot().is_some());
+        })
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("source-name-editor").is_some());
+    visual.simulate_input("Shared Ω");
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.save_project(cx);
+            assert!(super::super::source_naming(view));
+            assert!(!view.saving_project);
+            view.open_dialog(hex_session::DocumentAudioMode::Resident, window, cx);
+            assert!(super::super::source_naming(view));
+            view.request_quit(window, cx);
+            assert!(super::super::source_naming(view));
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .native_source(source)
+                    .unwrap()
+                    .name(),
+                original_name
+            );
+        })
+    });
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project
+                    .native_source(source)
+                    .is_some_and(|s| s.name() == "Shared Ω")
+            })
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .source_id(),
+            Some(source)
+        )
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project
+                    .native_source(source)
+                    .is_some_and(|s| s.name() == original_name)
+            })
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project
+                    .native_source(source)
+                    .is_some_and(|s| s.name() == "Shared Ω")
+            })
+    });
+}
+
+#[gpui::test]
+fn unassigned_source_name_refuses_invalid_and_stale_drafts(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, _, track, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unused".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::NativeSource(source) = event.created.unwrap() else {
+        panic!("source")
+    };
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let manager = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    == "manage sources"
+            })
+            .unwrap()
+    });
+    for _ in 0..manager {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let unused = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("unused · 0 midi")
+            })
+            .unwrap()
+    });
+    for _ in 0..unused {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_input(" ");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(super::super::source_naming(view));
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .name(),
+            "unused"
+        );
+        assert!(view.error.as_deref().is_some_and(|e| e.contains("invalid")));
+    });
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("new name");
+    editor.update(&mut visual, |view, _| view.project_generation += 1);
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(super::super::source_naming(view));
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .name(),
+            "unused"
+        );
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|e| e.contains("project or edit changed"))
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(!super::super::source_naming(view));
+        view.project_generation -= 1;
+    });
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    for _ in 0..manager {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    for _ in 0..unused {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_input("new name");
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view.state.as_ref().is_some_and(|s| {
+                s.project
+                    .native_source(source)
+                    .is_some_and(|s| s.name() == "new name")
+            })
+    });
+    editor.read_with(&visual, |view, _| {
+        let s = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(source)
+            .unwrap();
+        assert_eq!(s.receiver(), None);
     });
 }
 
