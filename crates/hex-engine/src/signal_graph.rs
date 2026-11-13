@@ -1218,19 +1218,28 @@ impl SignalGraph {
             }
         })
     }
-    /// One newly appended empty Return may begin with silent history only
-    /// when no routing edge can feed it or take its output anywhere but Main.
+    /// One new empty Return may begin with silent history only when retained
+    /// Returns keep their order and no edge feeds it or routes it beyond Main.
     pub(crate) fn added_isolated_return_from(&self, other: &Self) -> Option<ReturnId> {
-        if self.returns.len() != other.returns.len().checked_add(1)?
-            || !self
-                .returns
-                .iter()
-                .zip(&other.returns)
-                .all(|(a, b)| a.id == b.id)
+        if self.returns.len() != other.returns.len().checked_add(1)? {
+            return None;
+        }
+        let index = self
+            .returns
+            .iter()
+            .zip(&other.returns)
+            .position(|(candidate, old)| candidate.id != old.id)
+            .unwrap_or(other.returns.len());
+        if !self
+            .returns
+            .iter()
+            .skip(index + 1)
+            .map(|bus| bus.id)
+            .eq(other.returns.iter().skip(index).map(|bus| bus.id))
         {
             return None;
         }
-        let bus = self.returns.last()?;
+        let bus = self.returns.get(index)?;
         if !bus.devices.is_empty() || !bus.feeds.is_empty() || !bus.audio_feeds.is_empty() {
             return None;
         }
@@ -1322,9 +1331,12 @@ impl SignalGraph {
         };
         let same_sends = |a: &[Send], b: &[Send]| {
             a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|(a, b)| a.target == b.target && same_edge(a.edge, b.edge))
+                && a.iter().zip(b).all(|(a, b)| {
+                    // Return insertion/removal shifts runtime indices;
+                    // the typed endpoints still identify the same route.
+                    (matches!(fresh, Some(FreshHistory::Return(_))) || a.target == b.target)
+                        && same_edge(a.edge, b.edge)
+                })
         };
         let same_output = |a: TrackOutput, b: TrackOutput| match (a, b) {
             (TrackOutput::Main { edge: a }, TrackOutput::Main { edge: b }) => same_edge(a, b),

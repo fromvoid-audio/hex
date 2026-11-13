@@ -307,6 +307,127 @@ fn removing_an_unused_return_keeps_compensated_pcm_continuous() {
 }
 
 #[test]
+fn removing_and_undoing_an_earlier_unused_return_preserves_later_send() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 2048);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 2048]).unwrap();
+        }
+        let Created::ReturnTrack(unused) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("unused return")
+        };
+        let Created::ReturnTrack(active) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "active".into(),
+            })
+            .unwrap()
+        else {
+            panic!("active return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: active,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor
+            .execute(Command::RemoveReturnTrack(unused))
+            .unwrap();
+        for restored in [false, true] {
+            if restored {
+                assert!(f.editor.undo());
+                assert_eq!(f.editor.project().return_tracks()[0].id(), unused);
+            }
+            let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut actual = vec![[0.0; 2]; 257];
+            let mut expected = actual.clone();
+            for chunk in actual.chunks_mut(partition) {
+                next.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                reference.render(chunk).unwrap();
+            }
+            assert_eq!(
+                actual, expected,
+                "partition {partition}, restored={restored}"
+            );
+            assert!(expected.iter().any(|frame| frame[0] > 1.0));
+            old = next;
+        }
+    }
+}
+
+#[test]
+fn removing_an_unused_return_does_not_hide_a_changed_send_destination() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut returns = Vec::new();
+    for name in ["unused", "first", "second"] {
+        let Created::ReturnTrack(id) = f
+            .editor
+            .execute(Command::AddReturnTrack { name: name.into() })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        returns.push(id);
+    }
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: returns[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(Command::RemoveReturnTrack(returns[0]))
+        .unwrap();
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: returns[1],
+            gain: 0.0,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: returns[2],
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 16];
+    next.render(&mut actual).unwrap();
+    assert_eq!(&actual[..7], &[[0.0; 2]; 7]);
+    assert!(actual[7][0] > 0.0);
+}
+
+#[test]
 fn removing_a_routed_return_keeps_the_conservative_restart() {
     use hex_project::{Command, Created};
     let mut f = fixture(&[&[7]], 1024);
