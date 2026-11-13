@@ -124,11 +124,17 @@ pub fn project_source_utility_matrix_edit_supported(
     parameter: ParameterId,
 ) -> bool {
     use hex_devices::utility::parameter::{
-        BALANCE, GAIN, MID_SIDE_BALANCE, MID_SIDE_ENABLED, MONO, WIDTH,
+        BALANCE, GAIN, INVERT_LEFT, INVERT_RIGHT, MID_SIDE_BALANCE, MID_SIDE_ENABLED, MONO, WIDTH,
     };
     if !matches!(
         parameter,
-        GAIN | BALANCE | WIDTH | MID_SIDE_BALANCE | MID_SIDE_ENABLED | MONO
+        GAIN | BALANCE
+            | WIDTH
+            | MID_SIDE_BALANCE
+            | MID_SIDE_ENABLED
+            | MONO
+            | INVERT_LEFT
+            | INVERT_RIGHT
     ) {
         return false;
     }
