@@ -436,6 +436,31 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
     );
     assert!(loan.is_resource_protected(ProtectionRole::Active, active_stamp, &audio_extents));
     assert!(loan.release_current_quantum(&reservation));
+    let partial_extents = [
+        StreamResourceExtent {
+            source: audio_key.into(),
+            page_index: 1,
+            start: 0,
+            end: 8,
+        },
+        extents[0],
+    ];
+    #[cfg(feature = "allocation-probe")]
+    let mut partial_result = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        partial_result = Some(loan.reserve_resident_current_quantum(&partial_extents));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocations);
+    #[cfg(feature = "allocation-probe")]
+    let (partial, complete) = partial_result.unwrap().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let (partial, complete) = loan
+        .reserve_resident_current_quantum(&partial_extents)
+        .unwrap();
+    assert!(!complete);
+    assert!(loan.release_current_quantum(&partial));
     assert!(loan.promote_resources_to_active(ProtectionRole::Candidate, stamp, &extents));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
