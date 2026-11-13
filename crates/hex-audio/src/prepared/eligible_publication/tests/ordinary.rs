@@ -1472,7 +1472,7 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
         ordinary_result = Some(
             ordinary
                 .stream_playback(context)
-                .visit_current_stream_quantum(256, None, &mut |extent| {
+                .visit_current_stream_quantum_at(128, 256, None, &mut |extent| {
                     ordinary_extents.push(extent);
                     Ok(())
                 }),
@@ -1481,14 +1481,14 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
     let mut constructor_extents = Vec::with_capacity(32);
     let mut constructor_result = None;
     let constructor_allocations = allocation_counter::measure(|| {
-        constructor_result = Some(constructor.stream_playback().visit_current_stream_quantum(
-            256,
-            None,
-            &mut |extent| {
-                constructor_extents.push(extent);
-                Ok(())
-            },
-        ));
+        constructor_result = Some(
+            constructor
+                .stream_playback()
+                .visit_current_stream_quantum_at(128, 256, None, &mut |extent| {
+                    constructor_extents.push(extent);
+                    Ok(())
+                }),
+        );
     });
     for allocations in [ordinary_allocations, constructor_allocations] {
         assert_eq!(
