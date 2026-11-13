@@ -472,3 +472,111 @@ fn distinct_instrument_parameters_commit_and_read_back_while_playing() {
         start.elapsed().as_secs_f64()
     );
 }
+
+#[test]
+#[cfg(feature = "allocation-probe")]
+#[ignore = "investigates actual SDK editor input during a desktop effect commit"]
+fn late_editor_edit_survives_host_parameter_commit() {
+    const DRIVER: &str = "HEX_DESKTOP_LATE_EDITOR_DRIVER";
+    if std::env::var_os(DRIVER).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let root =
+            std::env::temp_dir().join(format!("hex-desktop-late-editor-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let release = root.join("release");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &name,
+                "--ignored",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(DRIVER, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", root.join("trace"))
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", &release)
+            .env("HEX_TEST_LATE_EDITOR_INTERCEPT", &release)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            output.status.success(),
+            "child stdout: {}\nchild stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    let wave = files.wav(48_000, 524_288);
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        48_000,
+        524_288,
+        directory.join("unused-catalog.json"),
+        directory.join("effect.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(wave));
+    assert!(imported.error.is_none());
+    let (applied, _) = h.applied(applied);
+    let insert = request(&imported.state, PluginEffectDestination::Main);
+    h.run(Request::InsertPluginEffect(insert));
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none());
+    let device = inserted.state.project.main_devices()[0].id();
+    let (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        h.render_worker_step();
+    }
+    let mut serial = 0;
+    let initial = query(&mut h, device, None, &mut serial);
+    let row = initial
+        .rows
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == 7)
+        .unwrap();
+    let origin = PluginParameterOrigin {
+        context: initial.query.context,
+        device,
+        parameter: row.id,
+        page_first: row.page_first,
+        metadata_revision: row.metadata_revision,
+        initial: PluginParameterValue::new(row.normalized).unwrap(),
+    };
+    let mut client = GestureClient::default();
+    client.begin_plugin(origin).unwrap();
+    send(&mut h, &mut client);
+    let value = PluginParameterValue::new(0.5).unwrap();
+    client.change_plugin(value).unwrap();
+    send(&mut h, &mut client);
+    client.finish_plugin(value).unwrap();
+    send(&mut h, &mut client);
+    h.applied(applied);
+    let current = query(&mut h, device, None, &mut serial);
+    let row = current
+        .rows
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == 7)
+        .unwrap();
+    assert_eq!(
+        row.normalized, 0.75,
+        "late accepted editor value must survive host commit"
+    );
+}

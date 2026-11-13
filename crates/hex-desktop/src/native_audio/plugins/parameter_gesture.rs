@@ -779,6 +779,12 @@ impl Gesture {
             match control.poll_native_source_state_capture_on_control(self.binding, request) {
                 Ok(NativeWorkerCaptureProgress::Captured(state)) => {
                     self.capture = None;
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    if self.before.is_some()
+                        && let Some(path) = std::env::var_os("HEX_TEST_LATE_EDITOR_INTERCEPT")
+                    {
+                        late_editor_test_intercept(control, self, &path);
+                    }
                     return Ok(state);
                 }
                 Ok(NativeWorkerCaptureProgress::Pending) | Err("native preparation is busy") => {}
@@ -798,6 +804,62 @@ impl Gesture {
             }
             edits::poll_control(control);
         }
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+fn late_editor_test_intercept(
+    control: &mut PublicationControl,
+    gesture: &Gesture,
+    path: &std::ffi::OsStr,
+) {
+    std::fs::write(path, b"editor").unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let (observed, _) = validate_current_parameter(
+            control,
+            gesture.binding,
+            gesture.origin,
+            gesture.steps,
+            true,
+        )
+        .unwrap();
+        if observed.normalized() == 0.75 {
+            break;
+        }
+        assert!(Instant::now() < until, "late editor input not delivered");
+        std::thread::yield_now();
+    }
+    std::fs::remove_file(path).unwrap();
+    // Do not drain the editor FIFO: capture the original processor separately
+    // to establish that its PCM-side state also received the edit.
+    loop {
+        let capture = admit(control, |control| {
+            control.begin_native_source_state_capture_on_control(gesture.binding)
+        })
+        .unwrap();
+        let state = loop {
+            match control.poll_native_source_state_capture_on_control(gesture.binding, &capture) {
+                Ok(NativeWorkerCaptureProgress::Captured(state)) => break Some(state),
+                Ok(NativeWorkerCaptureProgress::Pending) | Err("native preparation is busy") => {
+                    edits::poll_control(control);
+                }
+                Ok(NativeWorkerCaptureProgress::Refused(_)) => break None,
+                other => panic!("late editor capture: {other:?}"),
+            }
+            assert!(Instant::now() < until, "late editor capture timed out");
+        };
+        if let Some(state) = state {
+            let decoded = hex_plugin_state::decode(&state).unwrap();
+            let gain = f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap());
+            if gain == 3.0 {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < until,
+            "late editor did not reach the processor"
+        );
     }
 }
 
