@@ -1433,3 +1433,81 @@ fn actual_worker_renders_each_saved_conversion_law() {
         assert_ne!(laws[0], laws[1]);
     }
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn real_worker_recovers_competing_demand_while_prefetch_is_in_flight() {
+    let page_frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, page_frames * 4);
+    let key = StreamSourceKey::new(89, asset_id(pcm.len(), 48_000));
+    let reader = VerifiedWavReader::open(wav.path(), reader_limits(pcm.len())).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        pcm.len() as u64,
+        pcm.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    let definition =
+        SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(pcm.len()));
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(PageKey {
+        source: key,
+        page_index: 2,
+    });
+    let mut runtime =
+        StreamRuntime::new_with_page_gate(StreamConfig::with_pool_pages(3), vec![definition], gate)
+            .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let warm = [
+        PageKey {
+            source: key,
+            page_index: 0,
+        },
+        PageKey {
+            source: key,
+            page_index: 1,
+        },
+    ];
+    for page in warm {
+        runtime.request_page(page.source, page.page_index);
+    }
+    assert!(wait_for_pages(&mut runtime, &warm, Duration::from_secs(2)));
+    runtime.prefetch_page(key, 2);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    runtime.request_page(key, 3);
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut failures = [hex_stream::StreamFailure {
+        key: key.into(),
+        page_index: 0,
+        kind: hex_stream::StreamFailureKind::DecodeFailed,
+    }; 4];
+    loop {
+        runtime.pump_ready(3);
+        if runtime.page(key, 3).is_some() {
+            break;
+        }
+        let count = runtime.take_failures(&mut failures);
+        for failure in &failures[..count] {
+            assert_eq!(failure.key, key.into());
+            assert_eq!(failure.page_index, 3);
+            assert_eq!(
+                failure.kind,
+                hex_stream::StreamFailureKind::CapacityExhausted
+            );
+            runtime.request_page(key, 3);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "competing demand did not recover"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    let page = runtime.page(key, 3).unwrap();
+    assert_eq!(page.frames, &pcm[page_frames * 3..]);
+    let report = runtime.shutdown().unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+}

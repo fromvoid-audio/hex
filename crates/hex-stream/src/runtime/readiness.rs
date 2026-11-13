@@ -681,6 +681,11 @@ impl ConstructorPageLoan {
     pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
         self.pages.endpoint.has_extent(extent)
     }
+    /// Test-only observation of the next worker-ready page; it grants no custody.
+    #[cfg(feature = "test-support")]
+    pub fn test_ready_page(&self, key: crate::ResourcePageKey) -> bool {
+        self.pages.endpoint.test_ready_page(key)
+    }
     fn acknowledge_view(
         &mut self,
         role: ProtectionRole,
