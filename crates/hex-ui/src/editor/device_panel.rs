@@ -909,7 +909,13 @@ fn render_source(
         device.state(),
     ) {
         Ok(metadata) => metadata,
-        Err(_) => return empty_panel("unsupported instrument state"),
+        Err(_) => {
+            let manager = source_manager::button(view, window, cx);
+            let close = source_manager::close_button(view, window, cx);
+            return empty_panel("unsupported instrument state")
+                .children(std::iter::once(manager))
+                .children(std::iter::once(close));
+        }
     };
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Instrument,

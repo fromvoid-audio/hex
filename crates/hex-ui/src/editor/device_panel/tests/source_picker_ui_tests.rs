@@ -3672,3 +3672,43 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
         );
     });
 }
+
+#[gpui::test]
+fn unsupported_unassigned_source_view_can_be_closed(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, _, receiver, _, _, _) = actor_utility_fixture();
+    let invalid = hex_lattice_contract::NativeDeviceState::new(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.fm4"),
+        u32::MAX,
+        Vec::new(),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unsupported fm".into(),
+            devices: vec![invalid],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let created = receive_service_event(&service);
+    assert!(created.error.is_none(), "{:?}", created.error);
+    let (handle, editor) = actor_editor_window(cx, service, created.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    open_unassigned_fm(&mut visual, &editor, "unsupported fm · 0 midi");
+    visual
+        .debug_bounds("source-manager-button")
+        .expect("manager remains available");
+    let close = visual
+        .debug_bounds("close-source-view")
+        .expect("unsupported view can be closed");
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Track(receiver))
+        )
+    });
+}
