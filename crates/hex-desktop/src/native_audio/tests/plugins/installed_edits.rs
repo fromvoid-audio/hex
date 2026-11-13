@@ -545,6 +545,7 @@ fn late_editor_edit_survives_host_parameter_commit() {
     }
     let mut serial = 0;
     let initial = query(&mut h, device, None, &mut serial);
+    let original_source = initial.source;
     let row = initial
         .rows
         .unwrap()
@@ -569,6 +570,7 @@ fn late_editor_edit_survives_host_parameter_commit() {
     send(&mut h, &mut client);
     h.applied(applied);
     let current = query(&mut h, device, None, &mut serial);
+    let current_source = current.source;
     let row = current
         .rows
         .unwrap()
@@ -577,6 +579,6 @@ fn late_editor_edit_survives_host_parameter_commit() {
         .unwrap();
     assert_eq!(
         row.normalized, 0.75,
-        "late accepted editor value must survive host commit"
+        "late accepted editor value must survive host commit; original={original_source:?}, installed={current_source:?}"
     );
 }
