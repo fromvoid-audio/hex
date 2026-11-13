@@ -17,8 +17,10 @@ use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 
 // Installed roles use bits 0–2, legacy pinning uses bit 3, and pending
-// readiness roles use bits 4–6. Legacy pins retain their replacement policy.
-const INSTALLED_PINS: u8 = 0b0000_0111;
+// readiness roles use bits 4–6, and the current quantum uses bit 7.
+// Legacy pins retain their replacement policy.
+pub(crate) const CURRENT_QUANTUM_PIN: u8 = 0b1000_0000;
+const INSTALLED_PINS: u8 = 0b0000_0111 | CURRENT_QUANTUM_PIN;
 const PENDING_PINS: u8 = 0b0111_0000;
 
 #[derive(Clone, Copy, Debug)]
@@ -1457,6 +1459,15 @@ mod tests {
             test.endpoint.cache[index],
             CacheSlot::Occupied { pinned: 0, .. }
         ));
+        test.endpoint
+            .replace_protection(CURRENT_QUANTUM_PIN, &[extent.into()]);
+        let mut longer = page(key);
+        longer.valid_frames = 9;
+        assert!(!test.endpoint.insert_ready_with_mask(longer, 16));
+        assert!(
+            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, pinned } if page.frames.as_ptr() == original && *pinned == CURRENT_QUANTUM_PIN)
+        );
+        test.endpoint.replace_protection(CURRENT_QUANTUM_PIN, &[]);
     }
 
     #[test]

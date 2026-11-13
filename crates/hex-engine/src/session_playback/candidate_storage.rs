@@ -56,6 +56,8 @@ impl SessionPlayback {
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
