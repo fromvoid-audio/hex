@@ -222,7 +222,8 @@ pub use session::{
 };
 pub mod timebase;
 pub use edit::{
-    Command, Created, InstrumentLoadPlacement, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+    Command, Created, InstrumentAssetOwner, InstrumentLoadPlacement, MidiNoteInsert,
+    MidiNoteUpdate, TrackDeviceSlot,
 };
 pub use history::{Editor, SampleRateHistoryAction};
 mod import_existing;
