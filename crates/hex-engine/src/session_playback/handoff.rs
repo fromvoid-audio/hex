@@ -652,8 +652,10 @@ impl SessionPlayback {
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
     /// unavailable source history...) does not refuse: the planner rejects it
     /// in its pure preflight (nothing committed), then audio restarts at the
-    /// cursor through the reset handoff. Voices and tails reset and gate-active
-    /// notes are chased on the next played block; the transport is never
+    /// cursor through the reset handoff. An active detached Return tail refuses
+    /// an ordinary reset so the predecessor keeps its audible output. Voices
+    /// and other tails reset and gate-active notes are chased on the next
+    /// played block; the transport is never
     /// stopped and no note-off is lost. A changed tempo map or loop relocates
     /// to the musically equivalent frame while playing. Source-owned effects
     /// need an exact continuation and cannot fall back to a restart.
