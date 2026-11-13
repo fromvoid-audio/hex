@@ -97,3 +97,95 @@ fn timed_stream_replay_does_not_allocate_or_free() {
     assert_eq!(&output[8..], &[[0.0; 2]; 4]);
     assert_eq!(pages.requests, 0);
 }
+
+#[test]
+fn timed_stream_signal_observation_does_not_allocate_or_free() {
+    use hex_engine::{PreparedRevision, SineTable, compile::PreparedAudioSource};
+    use std::collections::BTreeMap;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Imported { asset, track, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "stream".into(),
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let key = StreamSourceKey::new(7, asset);
+    let source =
+        StreamedSourceMetadata::new(key, 48_000, 48_000, 8192, 8192, 0, [0x5a; 32]).unwrap();
+    let media = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(source)))]);
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            editor.project(),
+            &media,
+            7,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(revision);
+    let mut pages = Pages {
+        key,
+        pcm: vec![[0.25; 2]; 8192],
+        requests: 0,
+    };
+    let commands = [
+        TimedTransportCommand {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(4090),
+        },
+        TimedTransportCommand {
+            offset: 8,
+            command: PlaybackCommand::Seek(2),
+        },
+    ];
+    let mut output = [[0.0; 2]; 16];
+    let mut node_calls = 0;
+    let mut project_calls = 0;
+    let mut timing_calls = 0;
+    let mut node = |_, _, _, _: &[Frame]| node_calls += 1;
+    let mut observe = |_, _, _: &[Frame]| project_calls += 1;
+    let mut timing = |_, _, _, _: &hex_engine::PreparedTempoMap| timing_calls += 1;
+    let tracks = [track.value()];
+    let mut tap = hex_engine::ProjectOutputTap::new(&tracks, &mut observe)
+        .unwrap()
+        .with_timing(&mut timing);
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_timed_transport_pages_and_signal_observers(
+            &mut output,
+            &commands,
+            &mut pages,
+            Some(&mut node),
+            Some(&mut tap),
+        );
+    });
+    assert!(result.is_ok());
+    assert!(node_calls > 0 && project_calls > 0 && timing_calls > 0);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(output, [[0.25; 2]; 16]);
+    assert_eq!(pages.requests, 0);
+}
