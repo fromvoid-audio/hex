@@ -1,4 +1,4 @@
-//! Schema117 stores exact, full-source long plain pitch over a prior document.
+//! Schema117 stores exact, full-source V2 long plain pitch over a prior document.
 //! Each row recreates the canonical pitch edit on an otherwise plain clip.
 use crate::{LONG_PITCH_SCHEMA_VERSION, Project, StorageError};
 use hex_project::{AudioClipEdit, MAX_AUDIO_DOMAIN_FRAMES, MAX_CLIPS, TrackContentSnapshot};
@@ -224,13 +224,41 @@ mod tests {
         let encoded = crate::encode(&pitched).unwrap();
         let document: Document<'_> = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(document.base.get().as_bytes(), base_bytes);
-        assert_eq!(crate::decode(&encoded).unwrap(), pitched);
+        let reopened = crate::decode(&encoded).unwrap();
+        assert_eq!(reopened, pitched);
+        let mut pitch_count = 0;
+        for clip in reopened.tracks().iter().flat_map(|track| track.clips()) {
+            if let Some(edit) = clip
+                .audio_edit()
+                .filter(|edit| edit.is_plain_pitch_capture(clip))
+            {
+                pitch_count += 1;
+                assert_eq!(edit.domain.warp_resampler, hex_project::WarpResampler::V2);
+            }
+        }
+        assert_eq!(pitch_count, 2);
         assert_eq!(crate::decode(&base_bytes).unwrap(), base);
     }
 
     #[test]
     fn malformed_pitch_inventory_and_newer_base_are_refused() {
         let (_, pitched, clip) = fixture();
+        let mut wrong_law = pitched.snapshot();
+        for track in &mut wrong_law.tracks {
+            let clips = match &mut track.content {
+                TrackContentSnapshot::Audio(clips) => clips,
+                TrackContentSnapshot::Hybrid { audio_clips, .. } => audio_clips,
+                TrackContentSnapshot::Instrument(_) => continue,
+            };
+            for entry in clips {
+                if entry.id == clip {
+                    let edit = entry.edit.as_mut().unwrap();
+                    std::sync::Arc::make_mut(&mut edit.domain).warp_resampler =
+                        hex_project::WarpResampler::V1;
+                }
+            }
+        }
+        assert!(Project::from_snapshot(wrong_law).is_err());
         let original: Value = serde_json::from_slice(&crate::encode(&pitched).unwrap()).unwrap();
         for rows in [
             serde_json::json!([]),

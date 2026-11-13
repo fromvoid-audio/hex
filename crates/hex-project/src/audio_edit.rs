@@ -462,14 +462,16 @@ fn signed_round(numerator: i128, denominator: u128) -> Result<i128, Invalid> {
 }
 
 impl AudioClipEdit {
-    /// Reconstruct an exact plain-pitch edit from a plain clip. This does not
+    /// Reconstruct an exact V2 plain-pitch edit from a plain clip. This does not
     /// establish asset extent or source custody; normal project validation does.
     pub fn reconstruct_plain_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
         if clip.audio_edit().is_some() || cents == 0 || !(-4_800..=4_800).contains(&cents) {
             return Err(Invalid("invalid plain pitch reconstruction"));
         }
         let mut edit = Self::capture(clip);
-        Arc::make_mut(&mut edit.domain).pitch_cents = cents;
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.pitch_cents = cents;
+        domain.warp_resampler = WarpResampler::V2;
         if !edit.is_plain_pitch_capture(clip) {
             return Err(Invalid(
                 "plain pitch requires a complete neutral frame clip",
@@ -478,7 +480,7 @@ impl AudioClipEdit {
         Ok(edit)
     }
 
-    /// Exact, full-frame plain pitch captured from a neutral, unlooped clip.
+    /// Exact V2 full-frame plain pitch captured from a neutral, unlooped clip.
     /// Callers must also establish that the clip covers the complete asset.
     pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
         if self.domain.pitch_cents == 0
@@ -491,7 +493,9 @@ impl AudioClipEdit {
             return false;
         }
         let mut expected = Self::capture(clip);
-        Arc::make_mut(&mut expected.domain).pitch_cents = self.domain.pitch_cents;
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.pitch_cents = self.domain.pitch_cents;
+        domain.warp_resampler = WarpResampler::V2;
         self == &expected
     }
 

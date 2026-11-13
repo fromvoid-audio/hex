@@ -419,10 +419,14 @@ pub(crate) fn apply(
         }
         _ => return Err(Invalid("unsupported audio editing command")),
     }
-    if reset_pitch
-        && clip.duration > MAX_AUDIO_DOMAIN_FRAMES
-        && *owned_edit == AudioClipEdit::capture(&clip)
-    {
+    let reset_long_pitch = if reset_pitch && clip.duration > MAX_AUDIO_DOMAIN_FRAMES {
+        let mut expected = AudioClipEdit::capture(&clip);
+        Arc::make_mut(&mut expected.domain).warp_resampler = WarpResampler::V2;
+        *owned_edit == expected
+    } else {
+        false
+    };
+    if reset_long_pitch {
         clip.edit = None;
     } else {
         clip.edit = Some(owned_edit);

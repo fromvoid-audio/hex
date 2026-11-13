@@ -41,6 +41,17 @@ fn full_long_pitch_round_trips_history_and_reset_without_admitting_processed_sha
     assert_eq!(editor.project().snapshot(), plain);
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), pitched);
+    let project = editor.project();
+    let retained = project.clip(clip).unwrap().retained_snapshot();
+    assert!(
+        project
+            .restore_retained_audio_root(
+                1,
+                retained,
+                std::sync::Arc::new(project.tempo_map().clone())
+            )
+            .is_err()
+    );
     for command in [
         Command::SetClipFades {
             clip,
