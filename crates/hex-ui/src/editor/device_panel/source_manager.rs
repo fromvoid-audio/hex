@@ -93,6 +93,7 @@ enum Operation {
     ChooseInstrument,
     Create(hex_engine::DeviceTypeId),
     Rename(SourceId),
+    Navigate(SourceId, TrackId),
 }
 
 #[derive(Clone)]
@@ -128,6 +129,13 @@ impl Action {
                         | Operation::Rename(source) => {
                             state.project.native_source(source).is_some()
                         }
+                        Operation::Navigate(source, track) => {
+                            state.project.native_source(source).is_some()
+                                && state
+                                    .project
+                                    .track(track)
+                                    .is_some_and(|track| track.source_id() == Some(source))
+                        }
                     }
             })
     }
@@ -147,6 +155,18 @@ impl Action {
             Operation::Open => open(view, self.position, window, cx),
             Operation::Details(source) => details(view, source, self.position, window, cx),
             Operation::Rename(source) => begin_name(view, source, window, cx),
+            Operation::Navigate(_, track) => {
+                if view.edit_pending()
+                    || view.tuning.client.snapshot().is_some()
+                    || view.tuning.client.has_pending_requests()
+                {
+                    view.error =
+                        Some("source navigation canceled · finish the current edit".into());
+                    cx.notify();
+                    return;
+                }
+                super::source_picker::navigate_to_track(view, track, window, cx);
+            }
             Operation::ChooseInstrument => instruments(view, self.position, window, cx),
             Operation::Create(type_id) => {
                 if view.edit_pending()
@@ -338,32 +358,57 @@ fn details(
         operation: Operation::Delete(source),
         label: label.into(),
     };
-    show(
-        view,
-        position,
-        vec![
-            MenuItem {
-                label: "delete source",
-                swatch: None,
-                checked: false,
-                action: EditorContextAction::SourceManager(action),
-            },
-            MenuItem {
-                label: "rename source",
-                swatch: None,
-                checked: false,
-                action: EditorContextAction::SourceManager(Action {
-                    generation: view.project_generation,
-                    revision: state.revision,
-                    position,
-                    operation: Operation::Rename(source),
-                    label: "rename source".into(),
-                }),
-            },
-        ],
-        window,
-        cx,
+    let mut items = vec![
+        MenuItem {
+            label: "delete source",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::SourceManager(action),
+        },
+        MenuItem {
+            label: "rename source",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::SourceManager(Action {
+                generation: view.project_generation,
+                revision: state.revision,
+                position,
+                operation: Operation::Rename(source),
+                label: "rename source".into(),
+            }),
+        },
+    ];
+    items.extend(
+        state
+            .project
+            .tracks()
+            .iter()
+            .filter(|track| track.source_id() == Some(source))
+            .map(|track| {
+                let role = if definition.receiver() == Some(track.id()) {
+                    "receiver"
+                } else {
+                    "midi"
+                };
+                MenuItem {
+                    label: "source track",
+                    swatch: None,
+                    checked: false,
+                    action: EditorContextAction::SourceManager(Action {
+                        generation: view.project_generation,
+                        revision: state.revision,
+                        position,
+                        operation: Operation::Navigate(source, track.id()),
+                        label: format!(
+                            "go to · {role} · {}",
+                            hex_session::service::text::verbatim(track.name())
+                        )
+                        .into(),
+                    }),
+                }
+            }),
     );
+    show(view, position, items, window, cx);
 }
 
 fn begin_name(

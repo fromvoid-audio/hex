@@ -1022,6 +1022,7 @@ fn source_manager_lists_and_deletes_without_assigning(cx: &mut TestAppContext) {
     visual.run_until_parked();
     let action = editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.context_menu.as_ref().unwrap().items.len(), 2);
         let EditorContextAction::SourceManager(action) =
             &view.context_menu.as_ref().unwrap().items[0].action
         else {
@@ -1988,4 +1989,119 @@ fn bus_panels_keep_project_source_manager_reachable(cx: &mut TestAppContext) {
             })
         });
     }
+}
+
+#[gpui::test]
+fn source_manager_navigates_linked_tracks_without_assignment(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(receiver).unwrap().source_id().unwrap();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "Contributor".into(),
+        }))
+        .unwrap();
+    let Created::Track(contributor) = receive_service_event(&service).created.unwrap() else {
+        panic!("contributor")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let original = event.state.project.clone();
+    let revision = event.state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, event.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = None;
+        view.track_selection.replace(&[]);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds("source-manager-button").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let (receiver_action, contributor_action) = editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        let find = |needle: &str| {
+            let item = menu
+                .items
+                .iter()
+                .find(|item| {
+                    theme::text(crate::editor::context_menu::context_item_label(item))
+                        .contains(needle)
+                })
+                .unwrap();
+            let EditorContextAction::SourceManager(action) = &item.action else {
+                panic!("manager navigation")
+            };
+            action.clone()
+        };
+        (find("go to · receiver"), find("go to · midi · Contributor"))
+    });
+    editor.update(&mut visual, |view, _| {
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track: receiver },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            receiver_action.clone().perform(view, window, cx);
+            assert_eq!(view.selected_track(), None);
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+        })
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.project_generation += 1;
+            receiver_action.clone().perform(view, window, cx);
+            assert_eq!(view.selected_track(), None);
+            view.project_generation -= 1;
+        })
+    });
+    // Navigate through the displayed menu with the keyboard.
+    visual.simulate_keystrokes("down down enter");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_track(), Some(receiver));
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            contributor_action.perform(view, window, cx);
+            assert_eq!(view.selected_track(), Some(contributor));
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert!(!view.edit_pending());
+        })
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RenameNativeSource {
+            source,
+            name: "renamed source".into(),
+        })));
+    });
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending() && view.state.as_ref().unwrap().revision > revision
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let changed = view.state.as_ref().unwrap().project.clone();
+            receiver_action.perform(view, window, cx);
+            assert_eq!(view.selected_track(), Some(contributor));
+            assert_eq!(view.state.as_ref().unwrap().project, changed);
+        })
+    });
 }

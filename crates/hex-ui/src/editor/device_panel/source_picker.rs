@@ -98,43 +98,7 @@ impl Choice {
             return;
         }
         if let Some(track) = self.destination {
-            view.select_track(track, window);
-            view.focus.focus(window);
-            if view.mode == EditorMode::Arrangement {
-                let row = view.state.as_ref().and_then(|state| {
-                    state
-                        .project
-                        .tracks()
-                        .iter()
-                        .position(|item| item.id() == track)
-                        .and_then(|index| view.arrangement_row_index(index))
-                });
-                if let Some(row) = row {
-                    view.track_scroll
-                        .scroll_to_item(row, gpui::ScrollStrategy::Top);
-                } else {
-                    view.status = "track selected · hidden by the current view".into();
-                }
-            } else {
-                let visible = view.state.as_ref().is_some_and(|state| {
-                    view.arrangement_focus
-                        .projection
-                        .console_indices
-                        .iter()
-                        .any(|index| {
-                            state
-                                .project
-                                .tracks()
-                                .get(*index)
-                                .is_some_and(|item| item.id() == track)
-                        })
-                });
-                view.reveal_session_position(Some(track), None);
-                if !visible {
-                    view.status = "track selected · hidden by the current view".into();
-                }
-            }
-            cx.notify();
+            navigate_to_track(view, track, window, cx);
             return;
         }
         if let Some((expected_receiver, track)) = self.receiver {
@@ -170,6 +134,51 @@ impl Choice {
         let _ = view.enqueue(request);
         cx.notify();
     }
+}
+
+pub(super) fn navigate_to_track(
+    view: &mut EditorView,
+    track: TrackId,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    view.select_track(track, window);
+    view.focus.focus(window);
+    if view.mode == EditorMode::Arrangement {
+        let row = view.state.as_ref().and_then(|state| {
+            state
+                .project
+                .tracks()
+                .iter()
+                .position(|item| item.id() == track)
+                .and_then(|index| view.arrangement_row_index(index))
+        });
+        if let Some(row) = row {
+            view.track_scroll
+                .scroll_to_item(row, gpui::ScrollStrategy::Top);
+        } else {
+            view.status = "track selected · hidden by the current view".into();
+        }
+    } else {
+        let visible = view.state.as_ref().is_some_and(|state| {
+            view.arrangement_focus
+                .projection
+                .console_indices
+                .iter()
+                .any(|index| {
+                    state
+                        .project
+                        .tracks()
+                        .get(*index)
+                        .is_some_and(|item| item.id() == track)
+                })
+        });
+        view.reveal_session_position(Some(track), None);
+        if !visible {
+            view.status = "track selected · hidden by the current view".into();
+        }
+    }
+    cx.notify();
 }
 
 pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Window) -> bool {
