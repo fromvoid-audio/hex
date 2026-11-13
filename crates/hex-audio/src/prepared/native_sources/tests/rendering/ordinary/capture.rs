@@ -377,6 +377,33 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
                 )
                 .is_err()
         );
+        let observed = loop {
+            match f
+                .control
+                .observe_native_sequenced_capture_input_on_control(f.binding, &fact)
+            {
+                Ok(Some(source)) => break source,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native capture mailbox is busy",
+                ) => {}
+                _ => panic!("current original capture must produce an endpoint observation"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert!(
+            f.control
+                .observe_native_sequenced_capture_input_on_control(
+                    Binding {
+                        epoch: f.binding.epoch + 1,
+                        ..f.binding
+                    },
+                    &fact
+                )
+                .is_err()
+        );
         assert_eq!(
             f.control
                 .native_source_approves_captured_state_on_control(f.binding, fact.state()),
@@ -563,6 +590,30 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
             assert!(Instant::now() < until);
             std::thread::yield_now();
         };
+        loop {
+            match f
+                .control
+                .observe_native_sequenced_capture_input_on_control(f.binding, &fact)
+            {
+                Ok(None) => break,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native capture mailbox is busy",
+                ) => {}
+                _ => panic!("a new host input must invalidate the source observation"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        f.control.status.closing.store(true, Release);
+        assert!(matches!(
+            f.control
+                .observe_native_sequenced_capture_input_on_control(f.binding, &fact),
+            Err("native capture output is closing")
+        ));
+        f.control.status.closing.store(false, Release);
+        drop(observed); // The weak source token is reclaimed on control.
         loop {
             match f
                 .control

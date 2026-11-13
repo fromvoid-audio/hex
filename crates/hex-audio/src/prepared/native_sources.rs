@@ -815,6 +815,26 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Observe the original endpoint of an exact processed input and capture.
+    /// This weak control-owned observation can become stale immediately; it
+    /// does not admit a candidate, identify its state, or authorize a handoff.
+    /// Return and destroy it on control, outside the audio callback.
+    pub fn observe_native_sequenced_capture_input_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .observe_sequenced_capture_input(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]

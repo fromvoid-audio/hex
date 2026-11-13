@@ -200,6 +200,12 @@ impl NativeEffect {
     ) -> Result<bool, &'static str> {
         self.worker.sequenced_capture_is_current_on_control(fact)
     }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.worker.observe_sequenced_capture_input_on_control(fact)
+    }
     #[allow(clippy::result_large_err)] // Refusal retains the entire original pair, without an error-path allocation.
     pub(crate) fn loan_on_control(
         self,
@@ -348,6 +354,12 @@ impl NativeEffectControl {
         fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
     ) -> Result<bool, &'static str> {
         self.worker.sequenced_capture_is_current_on_control(fact)
+    }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.worker.observe_sequenced_capture_input_on_control(fact)
     }
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         self.worker.transport_is_live_on_control()

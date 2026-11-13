@@ -382,6 +382,17 @@ impl Custody {
             _ => Err("native capture owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn observe_sequenced_capture_input(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.observe_sequenced_capture_input(fact),
+            Owner::Loaned(owner) => owner.observe_sequenced_capture_input(fact),
+            _ => Err("native capture owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn capture_native_source(
         &self,
         binding: Binding,
@@ -744,6 +755,19 @@ impl CandidateRoot {
             .0
             .eligible
             .sequenced_capture_is_current(binding, fact)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .observe_sequenced_capture_input(binding, fact)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
