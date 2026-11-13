@@ -1263,6 +1263,7 @@ fn render_track(
             .is_ok()
     });
     let mut local_index = 0;
+    let mut source_housing: Option<Div> = None;
     for node in nodes {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
@@ -1279,15 +1280,29 @@ fn render_track(
                 chain_window::spacer(device.id(), width)
             };
             let card = card.mr(px(DEVICE_CHAIN_PADDING));
-            chain = chain.child(card);
+            if let Some(group) = source_housing.take() {
+                source_housing = Some(group.child(card));
+            } else {
+                chain = chain.child(card);
+            }
             continue;
+        }
+        if class != NativeDeviceClass::Instrument
+            && let Some(group) = source_housing.take()
+        {
+            let group = finish_source_housing(group);
+            chain = chain.child(group);
         }
         let index = local_index;
         local_index += 1;
         if !mounted {
             let card = chain_window::spacer(device.id(), device_card_width(view, class, device))
                 .mr(px(DEVICE_CHAIN_PADDING));
-            chain = chain.child(card);
+            if class == NativeDeviceClass::Instrument && track.source_id().is_some() {
+                source_housing = Some(source_housing_element().child(card));
+            } else {
+                chain = chain.child(card);
+            }
             continue;
         }
         let rendered = match class {
@@ -1320,7 +1335,15 @@ fn render_track(
             let line = sample_insertion_marker();
             card = card.child(line);
         }
-        chain = chain.child(card);
+        if class == NativeDeviceClass::Instrument && track.source_id().is_some() {
+            source_housing = Some(source_housing_element().child(card));
+        } else {
+            chain = chain.child(card);
+        }
+    }
+    if let Some(group) = source_housing {
+        let group = finish_source_housing(group);
+        chain = chain.child(group);
     }
     let mut panel = render_device_end_target(
         view,
@@ -1410,6 +1433,26 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+fn source_housing_element() -> Div {
+    div()
+        .debug_selector(|| "source-chain-housing".into())
+        .relative()
+        .flex()
+        .flex_shrink_0()
+}
+
+fn finish_source_housing(group: Div) -> Div {
+    // The outline is an overlay so it does not change card offsets used by
+    // chain-window virtualization, scrolling, focus or drag geometry.
+    group.child(
+        div()
+            .absolute()
+            .inset_0()
+            .border_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border))),
+    )
 }
 
 fn source_summary_card(summary: &source_summary::SourceSummary) -> Stateful<Div> {
