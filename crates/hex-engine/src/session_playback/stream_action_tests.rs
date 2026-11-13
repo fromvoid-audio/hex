@@ -400,6 +400,14 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
             .is_err()
     );
     assert_eq!(
+        actual.visit_current_stream_quantum_at(0, 16, None, false, &mut |_| {
+            Err(crate::Invalid("visitor refused"))
+        }),
+        Err(crate::StreamQuantumProjectionError::Visitor(
+            crate::Invalid("visitor refused")
+        ))
+    );
+    assert_eq!(
         (
             actual.position(),
             actual.performance_frame(),
@@ -424,10 +432,9 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
         Ok(8)
     );
     assert_eq!(after_due, projected);
-    assert!(
-        actual
-            .visit_current_stream_quantum_at(u64::MAX, 8, None, false, &mut |_| Ok(()))
-            .is_err()
+    assert_eq!(
+        actual.visit_current_stream_quantum_at(u64::MAX, 8, None, false, &mut |_| Ok(())),
+        Err(crate::StreamQuantumProjectionError::ClockOverflow)
     );
     assert_eq!(
         (

@@ -2574,10 +2574,12 @@ impl Playback {
         playing: Option<bool>,
         ordinary: bool,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<usize, Invalid> {
+    ) -> Result<usize, crate::StreamQuantumProjectionError> {
         self.session_runtime
             .as_mut()
-            .ok_or(Invalid("session runtime unavailable"))?
+            .ok_or(crate::StreamQuantumProjectionError::Projection(Invalid(
+                "session runtime unavailable",
+            )))?
             .visit_current_stream_quantum_at(start_offset, maximum_frames, playing, ordinary, visit)
     }
     pub(crate) fn preview_stream_handoff_with_report(

@@ -1506,6 +1506,49 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
     assert_eq!(ordinary_extents, constructor_extents);
     assert!(ordinary_extents.iter().any(|extent| extent.page_index == 0));
     assert!(ordinary_extents.iter().any(|extent| extent.page_index == 1));
+    let mut ordinary_failure = None;
+    let allocation = allocation_counter::measure(|| {
+        ordinary_failure = Some(
+            ordinary
+                .stream_playback(context)
+                .visit_current_stream_quantum_at(128, 256, None, &mut |_| {
+                    Err(hex_engine::Invalid("visitor full"))
+                }),
+        );
+    });
+    assert_eq!(
+        (
+            allocation.count_total,
+            allocation.bytes_total,
+            allocation.count_current,
+            allocation.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    let mut constructor_failure = None;
+    let allocation = allocation_counter::measure(|| {
+        constructor_failure = Some(
+            constructor
+                .stream_playback()
+                .visit_current_stream_quantum_at(128, 256, None, &mut |_| {
+                    Err(hex_engine::Invalid("visitor full"))
+                }),
+        );
+    });
+    assert_eq!(
+        (
+            allocation.count_total,
+            allocation.bytes_total,
+            allocation.count_current,
+            allocation.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    let expected = Some(Err(hex_engine::StreamQuantumProjectionError::Visitor(
+        hex_engine::Invalid("visitor full"),
+    )));
+    assert_eq!(ordinary_failure, expected);
+    assert_eq!(constructor_failure, expected);
 }
 
 #[test]

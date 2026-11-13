@@ -201,7 +201,7 @@ impl StreamPlayback<'_> {
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<usize, Invalid> {
+    ) -> Result<usize, crate::StreamQuantumProjectionError> {
         match &mut self.runtime {
             Runtime::Constructor(r) => {
                 r.visit_current_stream_quantum_at(start_offset, maximum_frames, playing, visit)
