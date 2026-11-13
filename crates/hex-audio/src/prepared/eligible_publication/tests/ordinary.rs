@@ -483,6 +483,74 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
             outcome: ActionOutcome::Applied
         })
     );
+    let resume = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let resume_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        measured_block(&mut data);
+        if let Some(receipt) = reader.try_take() {
+            assert_eq!(
+                receipt,
+                ActionOutcomeReceipt {
+                    ticket: resume,
+                    outcome: ActionOutcome::Applied
+                }
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < resume_deadline,
+            "resume current playback"
+        );
+        std::thread::yield_now();
+    }
+    let pending_seek = client
+        .command_with_ticket(PlaybackCommand::Seek(8192))
+        .unwrap();
+    data.owner_mut().unwrap().run(|callback, _| {
+        callback.begin_block();
+        assert!(callback.stream_action_pending());
+    });
+    let successor = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata.clone(), &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let successor_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        measured_block(&mut data);
+        if let Some(receipt) = reader.try_take() {
+            assert_eq!(
+                receipt,
+                ActionOutcomeReceipt {
+                    ticket: pending_seek,
+                    outcome: ActionOutcome::Rejected(
+                        PlaybackActionRejection::StreamActionCancelled
+                    ),
+                }
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < successor_deadline,
+            "legacy action cancellation"
+        );
+        std::thread::yield_now();
+    }
+    while client.status().unwrap().applied_revision.load(Acquire) != successor {
+        measured_block(&mut data);
+        assert!(
+            std::time::Instant::now() < successor_deadline,
+            "legacy successor installation"
+        );
+        std::thread::yield_now();
+    }
+    control.reclaim();
     let stale = client.command_with_ticket(PlaybackCommand::Play).unwrap();
     let stale_second = client
         .command_with_ticket(PlaybackCommand::PlayFrom(32))
@@ -1555,36 +1623,78 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
 
 #[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
-    pending_replacement_case(true, false, None);
+    pending_replacement_case(true, false, None, false, false, false, false);
 }
 
 #[test]
 fn ordinary_short_one_shot_replacement_at_device_cadence() {
-    pending_replacement_case(false, false, None);
+    pending_replacement_case(false, false, None, false, false, false, false);
 }
 
 #[test]
 fn fenced_retained_restart_waits_for_missing_pages_without_displacing_current_audio() {
-    pending_replacement_case(false, true, None);
+    pending_replacement_case(false, true, None, false, false, false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_loop_seek_keeps_resident_destination_while_prefetching() {
-    pending_replacement_case(true, false, Some(false));
-    pending_replacement_case(true, false, Some(true));
+    pending_replacement_case(true, false, Some(false), false, false, false, false);
+    pending_replacement_case(true, false, Some(true), false, false, false, false);
 }
 
-fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Option<bool>) {
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_pending_replacement_preserves_resident_loop_page_in_same_callback() {
+    pending_replacement_case(true, false, None, true, false, false, false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_pending_replacement_preserves_resident_loop_pages_in_long_callback() {
+    pending_replacement_case(true, false, None, true, true, false, false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn oversized_current_demand_refuses_successor_after_bounded_attempts() {
+    pending_replacement_case(false, false, None, false, false, true, false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn quantized_streamed_handoff_releases_old_page_before_new_suffix() {
+    pending_replacement_case(true, false, None, false, false, false, true);
+}
+
+fn pending_replacement_case(
+    looping: bool,
+    retained_restart: bool,
+    lookahead: Option<bool>,
+    _short_loop: bool,
+    _long_callback: bool,
+    _oversized: bool,
+    _quantized: bool,
+) {
     use hex_project::{Command, Created, Editor};
 
     let _serial = serial();
-    let frames =
-        (hex_engine::STREAM_PAGE_FRAMES * if lookahead == Some(true) { 3 } else { 2 }) as u64;
+    let frames = (hex_engine::STREAM_PAGE_FRAMES
+        * if _oversized {
+            32
+        } else if lookahead == Some(true) {
+            3
+        } else {
+            2
+        }) as u64;
     let mut snapshot = super::readiness::project_with_frames(frames).snapshot();
     if looping {
-        snapshot.loop_region = Some(if lookahead.is_some() {
+        snapshot.loop_region = Some(if _quantized {
+            hex_project::LoopRegion::new(3840, 6004, true).unwrap()
+        } else if lookahead.is_some() {
             hex_project::LoopRegion::new(3840, 6272, true).unwrap()
+        } else if _short_loop {
+            hex_project::LoopRegion::new(3840, 4224, true).unwrap()
         } else {
             hex_project::LoopRegion::new(0, frames, true).unwrap()
         });
@@ -1641,7 +1751,7 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
         .execute(Command::AddAsset {
             path: "replacement.wav".into(),
             sample_rate: 48_000,
-            frames,
+            frames: if _quantized { frames * 2 } else { frames },
         })
         .unwrap()
     else {
@@ -1653,7 +1763,7 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
             asset: b_asset,
             start: 0,
             duration: frames,
-            source_offset: 0,
+            source_offset: if _quantized { 2192 } else { 0 },
             source_length: frames,
             looping: false,
         })
@@ -1685,11 +1795,18 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
         editor.project().clone()
     };
     let a_wav = stream_fixture::Wav::with_frames(frames.try_into().unwrap());
-    let b_wav = stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |_| 16_384);
+    let b_wav = stream_fixture::Wav::with_samples(
+        (if _quantized { frames * 2 } else { frames })
+            .try_into()
+            .unwrap(),
+        |_| 16_384,
+    );
     let a_definition = a_wav.definition(a_asset, 11);
     let b_definition = b_wav.definition(b_asset, 11);
     #[cfg(feature = "stream-test-support")]
     let a_key = a_definition.metadata.key();
+    #[cfg(feature = "stream-test-support")]
+    let b_key = b_definition.metadata.key();
     let metadata = vec![a_definition.metadata.clone(), b_definition.metadata.clone()];
     let store = ResidentDeviceAssets::default();
     let context = hex_engine::AudioSourceContext {
@@ -1729,7 +1846,10 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
         (runtime.split().ok().unwrap(), Some((entered, release)))
     } else {
         (
-            stream_fixture::pair_with_pool(vec![a_definition, b_definition], 3),
+            stream_fixture::pair_with_pool(
+                vec![a_definition, b_definition],
+                if _quantized { 4 } else { 3 },
+            ),
             None,
         )
     };
@@ -1781,6 +1901,176 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
         hex_engine::STREAM_PAGE_FRAMES as u64
     );
     let mut output = [[0.0; 2]; 256];
+
+    #[cfg(feature = "stream-test-support")]
+    if _oversized {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 4096 {
+            measured_render(&mut data, &mut output[..64]);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "warm oversized boundary"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(feature = "stream-test-support")]
+    if _quantized {
+        // Keep old A0/A1 and new B1 resident, with B2 already decoded but
+        // still queued. Old A0/A1 pins must be released at the actual swap so
+        // the new graph can consume B2 in the same callback.
+        control.command(PlaybackCommand::Seek(5996)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) != 5997 {
+            measured_render(&mut data, &mut output[..1]);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "warm quantized old page"
+            );
+            std::thread::yield_now();
+        }
+        let first = hex_engine::StreamResourceExtent {
+            source: b_key.into(),
+            page_index: 1,
+            start: hex_engine::STREAM_PAGE_FRAMES - 2,
+            end: hex_engine::STREAM_PAGE_FRAMES,
+        };
+        let mut stamp = None;
+        data.owner_mut().unwrap().run(|c, _| {
+            let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                panic!("active graph")
+            };
+            let (loan, epoch) = active
+                .streams
+                .as_ref()
+                .unwrap()
+                .test_loan_for(&mut c.domain_pages, first.source)
+                .unwrap();
+            *epoch += 1;
+            let value = hex_stream::ReadinessStamp {
+                request_epoch: *epoch,
+                artifact: hex_stream::ReadinessArtifact::Ordinary {
+                    publication: a_revision,
+                },
+                project_generation: context.project_generation,
+                editor_revision: context.editor_revision,
+                device_epoch: 1,
+                device_rate: 48_000,
+                predecessor: None,
+                admitted_command_prefix: 0,
+                window: hex_engine::StreamChunkWindow {
+                    performance_frame: 0,
+                    arrangement_frame: 0,
+                    route_generation: 0,
+                    frames: 2,
+                },
+            };
+            loan.submit_resources(hex_stream::ProtectionRole::Candidate, value, &[first])
+                .unwrap();
+            stamp = Some(value);
+        });
+        let stamp = stamp.unwrap();
+        loop {
+            let mut ready = false;
+            data.owner_mut().unwrap().run(|c, _| {
+                let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                    panic!("active graph")
+                };
+                let (loan, _) = active
+                    .streams
+                    .as_ref()
+                    .unwrap()
+                    .test_loan_for(&mut c.domain_pages, first.source)
+                    .unwrap();
+                ready = loan
+                    .service(hex_stream::ProtectionRole::Candidate, stamp, 1, 1)
+                    .unwrap()
+                    == hex_stream::ReadinessProgress::InstalledProtected;
+            });
+            if ready {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "warm new first page");
+            std::thread::yield_now();
+        }
+        data.owner_mut().unwrap().run(|c, _| {
+            let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                panic!("active graph")
+            };
+            let (loan, _) = active
+                .streams
+                .as_ref()
+                .unwrap()
+                .test_loan_for(&mut c.domain_pages, first.source)
+                .unwrap();
+            loan.test_prefetch_audio_page(b_key, 2);
+        });
+        loop {
+            let mut ready = false;
+            data.owner_mut().unwrap().run(|c, _| {
+                let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                    panic!("active graph")
+                };
+                let (loan, _) = active
+                    .streams
+                    .as_ref()
+                    .unwrap()
+                    .test_loan_for(&mut c.domain_pages, first.source)
+                    .unwrap();
+                ready = loan.test_ready_page(hex_stream::ResourcePageKey {
+                    source: b_key.into(),
+                    page_index: 2,
+                });
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queue new second page"
+            );
+            std::thread::yield_now();
+        }
+        data.owner_mut().unwrap().run(|c, _| {
+            let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                panic!("active graph")
+            };
+            let (loan, _) = active
+                .streams
+                .as_ref()
+                .unwrap()
+                .test_loan_for(&mut c.domain_pages, first.source)
+                .unwrap();
+            assert!(loan.cancel(hex_stream::ProtectionRole::Candidate, stamp.request_epoch));
+        });
+        data.owner_mut().unwrap().run(|c, _| {
+            let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                panic!("active graph")
+            };
+            let streams = active.streams.as_ref().unwrap();
+            for extent in [
+                hex_engine::StreamResourceExtent {
+                    source: a_key.into(),
+                    page_index: 0,
+                    start: 3840,
+                    end: 3841,
+                },
+                hex_engine::StreamResourceExtent {
+                    source: a_key.into(),
+                    page_index: 1,
+                    start: 1904,
+                    end: 1905,
+                },
+                first,
+            ] {
+                assert!(
+                    streams.test_has_extent(&mut c.domain_pages, extent),
+                    "fixture page missing: {extent:?}"
+                );
+            }
+        });
+    }
 
     #[cfg(feature = "stream-test-support")]
     if let Some(long_source) = lookahead {
@@ -1897,6 +2187,137 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
         return;
     }
 
+    #[cfg(feature = "stream-test-support")]
+    let loop_baseline = if _short_loop {
+        // Warm A1 and leave its first 64 frames active; A0 remains resident.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 4096 {
+            measured_render(&mut data, &mut output[..64]);
+            assert!(std::time::Instant::now() < deadline, "warm A1");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.status.position.load(Acquire), 4160);
+        let a0 = hex_engine::StreamResourceExtent {
+            source: a_key.into(),
+            page_index: 0,
+            start: 3840,
+            end: 3841,
+        };
+        let mut cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, a0);
+            }
+        });
+        assert!(cached, "loop destination must be resident");
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.stream_buffering.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 4032);
+        let baseline = output;
+        control.command(PlaybackCommand::Seek(4096)).unwrap();
+        while control.status.position.load(Acquire) != 4160 {
+            measured_render(&mut data, &mut output[..64]);
+            assert!(std::time::Instant::now() < deadline, "restore A1 boundary");
+            std::thread::yield_now();
+        }
+        let long_baseline = if _long_callback {
+            let mut long = [[0.0; 2]; 512];
+            measured_render(&mut data, &mut long);
+            assert!(!control.status.stream_buffering.load(Acquire));
+            assert_eq!(control.status.position.load(Acquire), 3904);
+            control.command(PlaybackCommand::Seek(4096)).unwrap();
+            while control.status.position.load(Acquire) != 4160 {
+                measured_render(&mut data, &mut output[..64]);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "restore long callback boundary"
+                );
+                std::thread::yield_now();
+            }
+            Some(long)
+        } else {
+            None
+        };
+        cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, a0);
+            }
+        });
+        assert!(
+            cached,
+            "loop destination must remain resident before successor"
+        );
+        Some((baseline, long_baseline))
+    } else {
+        None
+    };
+    #[cfg(feature = "stream-test-support")]
+    if looping && !retained_restart && !_short_loop && !_quantized {
+        // Exercise A1 once so it can remain resident after returning to A0.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 4096 {
+            measured_render(&mut data, &mut output);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "baseline A1 readiness"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(control.status.position.load(Acquire), 4352);
+        assert_eq!(output, [[0.25; 2]; 256], "baseline A1 PCM");
+        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        while control.status.position.load(Acquire) != 4096 {
+            measured_render(&mut data, &mut output[..128]);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "return to A0 boundary"
+            );
+            std::thread::yield_now();
+        }
+        let extent = hex_engine::StreamResourceExtent {
+            source: a_key.into(),
+            page_index: 1,
+            start: 0,
+            end: 1,
+        };
+        let mut cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, extent);
+            }
+        });
+        assert!(cached, "A1 must be resident before candidate publication");
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.stream_buffering.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 4352);
+        assert_eq!(output, [[0.25; 2]; 256], "resident A1 baseline PCM");
+        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        while control.status.position.load(Acquire) != 4096 {
+            measured_render(&mut data, &mut output[..128]);
+            assert!(std::time::Instant::now() < deadline, "restore A0 boundary");
+            std::thread::yield_now();
+        }
+        cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, extent);
+            }
+        });
+        assert!(
+            cached,
+            "A1 must remain resident for the candidate comparison"
+        );
+    }
+
     // The last committed chunk protects A0. The next candidate needs B1, which
     // has never been requested: its first service must return Pending even if
     // the real worker finishes immediately afterward. The current graph then
@@ -1917,13 +2338,59 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
     if retained_restart {
         assert!(b_playback.request_live_restart());
     }
+    let mut policy = fence.map_or(
+        PublicationPolicy::InheritRuntime,
+        PublicationPolicy::InheritUnderArrangement,
+    );
+    let mut quantized_prefix = None;
+    if _quantized {
+        b_playback.apply(PlaybackCommand::PlayFrom(5998));
+        // A real route boundary limits initial candidate demand to B1; the
+        // next stream chunk needs the queued B2 without changing audible B.
+        b_playback
+            .try_apply_action(hex_engine::PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::StopTrack {
+                    track: a_track,
+                    quantization: hex_engine::LaunchQuantization::ThirtySecond,
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            b_playback
+                .session_route_status(0)
+                .unwrap()
+                .pending
+                .unwrap()
+                .performance_frame,
+            6000,
+            "candidate route boundary must split its first page from the next",
+        );
+        let mut prefix = None;
+        data.owner_mut().unwrap().run(|c, _| {
+            let Some(ActivePublication::Legacy(active)) = c.active.as_ref() else {
+                panic!("active graph")
+            };
+            let due = active
+                .playback
+                .quantized_seek_frame(hex_engine::LaunchQuantization::ThirtySecond)
+                .unwrap();
+            prefix = Some(usize::try_from(due - active.playback.performance_frame()).unwrap());
+        });
+        let prefix = prefix.unwrap();
+        assert!(
+            prefix > 0 && prefix < 16,
+            "handoff must be inside the callback"
+        );
+        quantized_prefix = Some(prefix);
+        policy = PublicationPolicy::InstallQuantizedSeekWhenReady {
+            fence: control.capture_fresh_runtime_fence().unwrap(),
+            quantization: hex_engine::LaunchQuantization::ThirtySecond,
+        };
+    }
     let b_revision = control
         .publish_with_admission_and_source_on_control(
             b_playback,
-            fence.map_or(
-                PublicationPolicy::InheritRuntime,
-                PublicationPolicy::InheritUnderArrangement,
-            ),
+            policy,
             hex_engine::AudioSourceContext {
                 editor_revision: 4,
                 ..context
@@ -1931,6 +2398,109 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
             |_| Ok::<_, ()>(()),
         )
         .unwrap_or_else(|_| panic!("replacement publication"));
+    #[cfg(feature = "stream-test-support")]
+    if let Some(prefix) = quantized_prefix {
+        let mut split = [[0.0; 2]; 16];
+        measured_render(&mut data, &mut split);
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            b_revision,
+            "pending={} rejection={:?} buffering={} position={} prefix={prefix}",
+            control.status.publication_pending.load(Acquire),
+            control.status.rejected_revision(),
+            control.status.stream_buffering.load(Acquire),
+            control.status.position.load(Acquire)
+        );
+        assert!(!control.status.stream_buffering.load(Acquire));
+        for (index, frame) in split[..prefix].iter().enumerate() {
+            let remaining = 6004 - (5997 + index);
+            assert_eq!(*frame, [0.25 * (remaining - 1) as f32 / 127.0; 2]);
+        }
+        for (index, frame) in split[prefix..].iter().enumerate() {
+            let position = 3840 + ((5998 - 3840 + index) % (6004 - 3840));
+            let remaining = 6004 - position;
+            let gain = if remaining <= 128 {
+                (remaining - 1) as f32 / 127.0
+            } else {
+                1.0
+            };
+            assert_eq!(*frame, [0.5 * gain; 2]);
+        }
+        assert_eq!(
+            control.status.position.load(Acquire),
+            3840 + ((5998 - 3840 + split.len() - prefix) % (6004 - 3840)) as u64
+        );
+        assert!(control.retire_audio_candidate_domain(domain));
+        control.request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "source reclamation");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+        drop(data);
+        drop(errors);
+        drop(control);
+        finish(&mut retirement);
+        return;
+    }
+    #[cfg(not(feature = "stream-test-support"))]
+    let _ = quantized_prefix;
+    #[cfg(feature = "stream-test-support")]
+    if _oversized {
+        let mut large = vec![[0.0; 2]; hex_engine::STREAM_PAGE_FRAMES * 2 + 1];
+        let mut total_committed = 0;
+        for _ in 0..8 {
+            let before = control.status.position.load(Acquire);
+            measured_render(&mut data, &mut large);
+            let committed = if control.status.stream_buffering.load(Acquire) {
+                usize::try_from(control.status.stream_committed_frames.load(Acquire)).unwrap()
+            } else {
+                large.len()
+            };
+            assert!(committed <= large.len());
+            assert_eq!(
+                control.status.position.load(Acquire),
+                before + committed as u64
+            );
+            for (index, frame) in large.iter().enumerate() {
+                assert_eq!(*frame, [if index < committed { 0.25 } else { 0.0 }; 2]);
+            }
+            total_committed += committed;
+            std::thread::yield_now();
+        }
+        assert!(total_committed > 0, "current playback must continue");
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((b_revision, PlaybackHandoffRejection::StreamedPageCapacity))
+        );
+        assert!(!control.status.publication_pending.load(Acquire));
+        assert!(control.retire_audio_candidate_domain(domain));
+        control.request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "source reclamation");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+        drop(data);
+        drop(errors);
+        drop(control);
+        finish(&mut retirement);
+        return;
+    }
     let render_checked = |data: &mut _, output: &mut [Frame; 256]| {
         let before = control.status.position.load(Acquire);
         let performance_before = control.status.performance_frame.load(Acquire);
@@ -1982,7 +2552,70 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, lookahead: Op
             );
         }
     };
+    #[cfg(feature = "stream-test-support")]
+    if let Some((baseline, long_baseline)) = loop_baseline {
+        let mut long_output = [[0.0; 2]; 512];
+        if long_baseline.is_some() {
+            measured_render(&mut data, &mut long_output);
+        } else {
+            measured_render(&mut data, &mut output);
+        }
+        assert!(
+            !control.status.stream_buffering.load(Acquire),
+            "successor displaced resident loop destination"
+        );
+        if let Some(long_baseline) = long_baseline {
+            assert_eq!(control.status.position.load(Acquire), 3904);
+            assert_eq!(
+                long_output, long_baseline,
+                "successor changed long callback PCM"
+            );
+            for _ in 0..7 {
+                let before = control.status.position.load(Acquire);
+                measured_render(&mut data, &mut long_output);
+                assert!(!control.status.stream_buffering.load(Acquire));
+                assert_eq!(
+                    control.status.position.load(Acquire),
+                    3840 + ((before - 3840 + 512) % (4224 - 3840))
+                );
+            }
+            assert_eq!(
+                control.status.rejected_revision(),
+                Some((b_revision, PlaybackHandoffRejection::StreamedPageCapacity))
+            );
+            assert!(!control.status.publication_pending.load(Acquire));
+        } else {
+            assert_eq!(control.status.position.load(Acquire), 4032);
+            assert_eq!(output, baseline, "successor changed current callback PCM");
+        }
+        assert!(control.retire_audio_candidate_domain(domain));
+        control.request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "source reclamation");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+        drop(data);
+        drop(errors);
+        drop(control);
+        finish(&mut retirement);
+        return;
+    }
     render_checked(&mut data, &mut output);
+    #[cfg(feature = "stream-test-support")]
+    if looping && !retained_restart {
+        assert!(
+            !control.status.stream_buffering.load(Acquire),
+            "a pending successor displaced the resident current page"
+        );
+    }
     let refused = control.status.stream_readiness_refused.load(Acquire);
     let rejected = control.status.rejected_revision();
     let pending = control.status.publication_pending.load(Acquire);

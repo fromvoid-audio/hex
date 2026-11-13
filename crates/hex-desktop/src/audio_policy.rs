@@ -115,11 +115,11 @@ impl AudioPolicy {
                 .checked_sub(1)
                 .ok_or("invalid page capacity")?,
         };
-        // Two extent lists plus conservative private workspace backing. The
+        // Demand and quantum extent lists for two domains plus conservative private backing. The
         // host boundary checks actual capacities against this before admission.
         let ordinary_stream_metadata_bytes = readiness
             .extents_per_role
-            .checked_mul(2)
+            .checked_mul(4)
             .and_then(|n| n.checked_mul(std::mem::size_of::<hex_stream::StreamResourceExtent>()))
             .and_then(|n| n.checked_add(4096))
             .ok_or("ordinary stream metadata overflow")?;

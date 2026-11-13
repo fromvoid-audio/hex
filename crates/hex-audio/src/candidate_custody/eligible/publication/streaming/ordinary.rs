@@ -28,7 +28,7 @@ impl OrdinaryReservation {
         }
         if self
             .extents
-            .checked_mul(2)
+            .checked_mul(4)
             .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<OrdinaryStreams>()))
             .is_none_or(|n| n > self.metadata_bytes)
@@ -46,6 +46,23 @@ pub(crate) struct OrdinaryStreams {
     workspace: Option<Workspace>,
 }
 impl OrdinaryStreams {
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_loan_for<'a>(
+        &self,
+        domains: &'a mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> Option<(&'a mut hex_stream::ConstructorPageLoan, &'a mut u64)> {
+        let token = self.refs.iter().flatten().copied().find(|token| {
+            domains
+                .get(token.slot)
+                .and_then(Option::as_ref)
+                .filter(|pages| pages.inner.token == *token)
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.covers_resource_key(source))
+        })?;
+        let pages = &mut super::demand::envelope(domains, token).ok()?.inner;
+        Some((pages.loan.as_mut()?, &mut pages.epoch))
+    }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_has_extent(
         &self,
@@ -77,6 +94,16 @@ impl OrdinaryStreams {
             workspace.role == Some(hex_stream::ProtectionRole::Candidate)
                 && workspace.stamps.iter().any(Option::is_some)
         })
+    }
+    pub(crate) fn capacity_conflict(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.capacity_conflict)
+    }
+    pub(crate) fn retry_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_capacity_conflict)
     }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_coalesced_prefetch(
