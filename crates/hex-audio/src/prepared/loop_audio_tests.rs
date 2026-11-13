@@ -1083,7 +1083,12 @@ fn appending_neutral_source_utility_preserves_audio_without_callback_allocations
 fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocations() {
     use hex_lattice_contract::{ParameterId, ParameterValue};
     use hex_project::BeatTime;
-    for (remove_first, append_third) in [(true, false), (false, false), (false, true)] {
+    for (remove_first, append_third, reorder) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
         for partition in [1, 7, 64, 128, 257] {
             let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
             let Created::Track(receiver) = editor
@@ -1195,10 +1200,21 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
             else {
                 panic!("first")
             };
+            let last_state = if reorder {
+                hex_engine::patch_native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    &default,
+                    ParameterId::from_static(7),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap()
+            } else {
+                default.clone()
+            };
             let Created::Device(last) = editor
                 .execute(Command::InsertNestedDevice {
                     parent: instrument,
-                    state: default.clone(),
+                    state: last_state,
                 })
                 .unwrap()
             else {
@@ -1236,13 +1252,16 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
                 cb.begin_block();
                 cb.render(&mut [[0.0; 2]; 64]).unwrap();
             }
-            editor
-                .execute(Command::RemoveDevice(if remove_first {
-                    first
-                } else {
-                    last
-                }))
-                .unwrap();
+            let edit = if reorder {
+                Command::MoveNativeSourceDevice {
+                    source,
+                    device: last,
+                    before: Some(first),
+                }
+            } else {
+                Command::RemoveDevice(if remove_first { first } else { last })
+            };
+            editor.execute(edit).unwrap();
             let removed = control
                 .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
                 .unwrap();

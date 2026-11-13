@@ -1699,3 +1699,240 @@ fn remove_source_utility_leaf(target: usize) {
         );
     }
 }
+
+#[test]
+fn captured_source_utility_reorder_revalidates_siblings_and_history() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(receiver) = added.created.unwrap() else {
+        panic!("receiver")
+    };
+    let source = added
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let instrument = added
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }),
+    );
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    run(
+        &service,
+        Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }),
+    );
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let mut current = run(
+        &service,
+        Request::Edit(Command::InsertDevice {
+            track: receiver,
+            before: None,
+            state: utility.clone(),
+        }),
+    );
+    let local = current
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .devices()
+        .to_vec();
+    for _ in 0..3 {
+        current = run(
+            &service,
+            Request::Edit(Command::InsertNestedDevice {
+                parent: instrument,
+                state: utility.clone(),
+            }),
+        );
+    }
+    let original = current
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()
+        .to_vec();
+    let first = original[0].id();
+    let middle = original[1].id();
+    let last = original[2].id();
+    let request = |revision, track, effect, neighbor, direction| Request::MoveSourceUtility {
+        project_generation: 0,
+        revision,
+        track,
+        source,
+        instrument,
+        effect,
+        neighbor,
+        direction,
+    };
+    refused(
+        &service,
+        &current,
+        request(
+            current.state.revision - 1,
+            contributor,
+            first,
+            middle,
+            SourceUtilityMove::Later,
+        ),
+        "project changed",
+    );
+    refused(
+        &service,
+        &current,
+        request(
+            current.state.revision,
+            contributor,
+            first,
+            last,
+            SourceUtilityMove::Later,
+        ),
+        "source chain changed",
+    );
+    let key = GestureKey {
+        generation: 0,
+        token: 7828,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track: contributor },
+        }),
+    );
+    assert!(begun.active_device_gesture.is_some());
+    refused(
+        &service,
+        &begun,
+        request(
+            begun.state.revision,
+            contributor,
+            first,
+            middle,
+            SourceUtilityMove::Later,
+        ),
+        "active gesture",
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let moved = run(
+        &service,
+        request(
+            cancelled.state.revision,
+            contributor,
+            first,
+            middle,
+            SourceUtilityMove::Later,
+        ),
+    );
+    let expected = vec![
+        original[1].clone(),
+        original[0].clone(),
+        original[2].clone(),
+    ];
+    assert_eq!(
+        moved
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        expected
+    );
+    assert_eq!(
+        moved.state.project.track(receiver).unwrap().devices(),
+        local
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        undone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        original
+    );
+    let redone = run(&service, Request::Redo);
+    assert_eq!(
+        redone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        expected
+    );
+    let back = run(
+        &service,
+        request(
+            redone.state.revision,
+            receiver,
+            first,
+            middle,
+            SourceUtilityMove::Earlier,
+        ),
+    );
+    assert_eq!(
+        back.state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        original
+    );
+    let nested = run(
+        &service,
+        Request::Edit(Command::InsertNestedDevice {
+            parent: first,
+            state: utility,
+        }),
+    );
+    let Created::Device(child) = nested.created.unwrap() else {
+        panic!("child")
+    };
+    refused(
+        &service,
+        &nested,
+        request(
+            nested.state.revision,
+            receiver,
+            first,
+            child,
+            SourceUtilityMove::Later,
+        ),
+        "children",
+    );
+}

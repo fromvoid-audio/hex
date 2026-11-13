@@ -29,6 +29,12 @@ enum SourceUtilityAction {
         instrument: DeviceId,
         effect: DeviceId,
     },
+    Move {
+        instrument: DeviceId,
+        effect: DeviceId,
+        neighbor: DeviceId,
+        direction: hex_session::service::SourceUtilityMove,
+    },
 }
 
 #[derive(Clone)]
@@ -52,7 +58,7 @@ impl Choice {
         view.project_generation == self.generation
             && (!matches!(
                 self.utility_action,
-                Some(SourceUtilityAction::Remove { .. })
+                Some(SourceUtilityAction::Remove { .. } | SourceUtilityAction::Move { .. })
             ) || view
                 .audio_status()
                 .is_none_or(|status| !status.playing.load(std::sync::atomic::Ordering::Acquire)))
@@ -134,6 +140,21 @@ impl Choice {
                         effect,
                     }
                 }
+                SourceUtilityAction::Move {
+                    instrument,
+                    effect,
+                    neighbor,
+                    direction,
+                } => Request::MoveSourceUtility {
+                    project_generation: self.generation,
+                    revision: self.revision,
+                    track: self.track,
+                    source: self.source,
+                    instrument,
+                    effect,
+                    neighbor,
+                    direction,
+                },
             };
             let _ = view.enqueue(request);
             cx.notify();
@@ -452,6 +473,73 @@ fn open(
                     }
                 })
                 .collect::<Vec<_>>()
+        }))
+        .chain(expected_source.into_iter().flat_map(|source_id| {
+            let Some(source) = state.project.native_source(source_id) else {
+                return Vec::new();
+            };
+            let Ok(default) = hex_project::default_instrument_state() else {
+                return Vec::new();
+            };
+            let effects = source.post_instrument_effects();
+            if source.receiver().is_none()
+                || source.instrument().state().type_id() != default.type_id()
+                || effects.iter().any(|item| {
+                    item.state().type_id()
+                        != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                })
+            {
+                return Vec::new();
+            }
+            let mut actions = Vec::new();
+            for (index, pair) in effects.windows(2).enumerate() {
+                let [first, second] = pair else { continue };
+                if first.parent() != second.parent()
+                    || source.devices().any(|item| {
+                        item.parent() == Some(first.id()) || item.parent() == Some(second.id())
+                    })
+                {
+                    continue;
+                }
+                for (effect, neighbor, direction, label) in [
+                    (
+                        first.id(),
+                        second.id(),
+                        hex_session::service::SourceUtilityMove::Later,
+                        format!("move utility {} later · stop first", index + 1),
+                    ),
+                    (
+                        second.id(),
+                        first.id(),
+                        hex_session::service::SourceUtilityMove::Earlier,
+                        format!("move utility {} earlier · stop first", index + 2),
+                    ),
+                ] {
+                    actions.push(MenuItem {
+                        label: "move source utility",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::SourcePicker(Choice {
+                            generation,
+                            revision: state.revision,
+                            track,
+                            source: source_id,
+                            expected_source,
+                            unlink: false,
+                            destination: None,
+                            receiver: None,
+                            utility_action: Some(SourceUtilityAction::Move {
+                                instrument: source.instrument().id(),
+                                effect,
+                                neighbor,
+                                direction,
+                            }),
+                            label: label.into(),
+                        }),
+                    });
+                }
+            }
+            actions
         }))
         .chain(expected_source.map(|source| MenuItem {
             label: "unlink source",
