@@ -786,3 +786,100 @@ fn active_audio_and_transition_target_keep_distinct_protection_until_commit() {
     assert!(report.accounting_complete && report.worker_joined);
     owner.dispose_on_control().unwrap();
 }
+
+#[test]
+fn borrowing_transition_windows_preserves_active_span_and_candidate() {
+    let Some(mut owner) = artifact() else { return };
+    let (_wav, control, pages, key) = pair_with_frames(None, 24000);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let extent = |page_index| StreamPageExtent {
+        source: key,
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let span = [extent(0), extent(1)];
+    let candidate = [extent(2)];
+    let span_stamp = stamp(&owner, 1);
+    let candidate_stamp = stamp(&owner, 2);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    for (role, receipt, extents) in [
+        (ProtectionRole::Active, span_stamp, span.as_slice()),
+        (
+            ProtectionRole::Candidate,
+            candidate_stamp,
+            candidate.as_slice(),
+        ),
+    ] {
+        loan.submit(role, receipt, extents).unwrap();
+        while loan.service(role, receipt, 4, 4).unwrap() != ReadinessProgress::InstalledProtected {
+            assert!(std::time::Instant::now() < deadline, "page did not arrive");
+            std::thread::yield_now();
+        }
+        assert!(loan.acknowledge(role, receipt, extents));
+    }
+
+    for (epoch, page) in [(3, 0), (4, 1)] {
+        let window = [extent(page)];
+        let receipt = stamp(&owner, epoch);
+        loan.submit(ProtectionRole::Transition, receipt, &window)
+            .unwrap();
+        assert_eq!(
+            loan.service(ProtectionRole::Transition, receipt, 0, 0),
+            Ok(ReadinessProgress::InstalledProtected)
+        );
+        assert!(loan.acknowledge(ProtectionRole::Transition, receipt, &window));
+        let found = std::cell::Cell::new(false);
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| {
+            let mut prepared = loan
+                .prepare_promotion(ProtectionRole::Transition, receipt, &window)
+                .unwrap();
+            found.set(prepared.pages().page(key, page).is_some());
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut prepared = loan
+                .prepare_promotion(ProtectionRole::Transition, receipt, &window)
+                .unwrap();
+            found.set(prepared.pages().page(key, page).is_some());
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(found.get());
+        assert!(
+            loan.protected_pages(ProtectionRole::Active, span_stamp, &span)
+                .is_some()
+        );
+        assert!(
+            loan.protected_pages(ProtectionRole::Candidate, candidate_stamp, &candidate)
+                .is_some()
+        );
+        assert!(loan.cancel(ProtectionRole::Transition, receipt.request_epoch));
+    }
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
+}
