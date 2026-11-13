@@ -227,6 +227,31 @@ fn prepared_with_latency(
                 ProcessorChainOwner::Return(bus.value()),
             )
         }
+        3 => {
+            let Created::Track(track) = f
+                .editor
+                .execute(Command::AddMidiTrack {
+                    name: "midi".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            f.editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap();
+            (
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(19).unwrap(),
+                },
+                ProcessorChainOwner::Track(track.value()),
+            )
+        }
         _ => (
             Command::InsertMainDevice {
                 before: None,
@@ -668,6 +693,102 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
 }
 
 struct QuietTrackEffect;
+
+#[test]
+fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
+    struct Probe {
+        calls: Vec<(u64, usize)>,
+        drained: bool,
+        fail_tail: bool,
+        rejected: bool,
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let epoch = node.prepared.binding().unwrap().epoch;
+            assert_eq!(frames.len(), 1);
+            if epoch == 1 {
+                assert_eq!(frames, &[[0.0; 2]]);
+            }
+            self.calls.push((epoch, offset));
+            if epoch == 1 && self.fail_tail {
+                return Err(DeviceContractError::ForeignProcessingFailed);
+            }
+            frames.fill(if epoch == 1 && !self.drained {
+                [0.2, 0.2]
+            } else {
+                [0.0, 0.0]
+            });
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+            self.drained && node.prepared.binding().unwrap().epoch == 1
+        }
+        fn reject_callback(&mut self) {
+            self.rejected = true;
+        }
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(3, false, 0, Some(2)).0).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut probe = Probe {
+        calls: vec![],
+        drained: false,
+        fail_tail: false,
+        rejected: false,
+    };
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.tail_groups.iter().any(Option::is_some));
+    probe.calls.clear();
+    let mut output = [[0.0; 2]; 8];
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    assert_eq!(
+        probe.calls,
+        (0..8)
+            .flat_map(|offset| [(2, offset), (1, offset)])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(output, [[0.2, 0.2]; 8]);
+    probe.drained = true;
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    probe.calls.clear();
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    assert!(probe.calls.iter().all(|(epoch, _)| *epoch == 2));
+
+    let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(3, false, 0, Some(2)).0).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    probe.drained = false;
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let previous_frame = candidate.performance_frame;
+    probe.fail_tail = true;
+    output.fill([9.0; 2]);
+    assert!(
+        candidate
+            .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+            .is_err()
+    );
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert_eq!(candidate.performance_frame, previous_frame);
+    assert!(probe.rejected);
+}
 impl ForeignProcessors for QuietTrackEffect {
     fn process_segment(
         &mut self,

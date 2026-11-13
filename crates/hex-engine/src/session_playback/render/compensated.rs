@@ -570,6 +570,7 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 Some(detached),
+                foreign,
             )?;
         }
         let region = self.active_loop_region();
@@ -1099,7 +1100,14 @@ impl SessionPlayback {
         // Only zero-latency routed layouts admit detached old chains. Positive
         // latency revisions refuse those transitions before moving audible owners.
         if !grouped {
-            self.render_detached_tails(performance_frame, output, frame_offset, capture, None)?;
+            self.render_detached_tails(
+                performance_frame,
+                output,
+                frame_offset,
+                capture,
+                None,
+                foreign,
+            )?;
         }
         if self.playing {
             self.return_effect_tails

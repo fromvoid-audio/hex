@@ -345,6 +345,89 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
     physical_block::<8>(f)
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
+    let _serial = serial();
+    let mut f = fixture_at("processing", 0);
+    let old = f.binding;
+    let track = f.editor.project().tracks()[0].id();
+    let device = f.editor.project().tracks()[0].devices()[0].id();
+    f.editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let first = compile(&f, true);
+    publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    let root = f.control.native_candidate_root();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, old, 1);
+    let saved = f.control.native_source_prepared_state(old).unwrap();
+    let state = hex_plugin_state::decode(&saved).unwrap();
+    let mut component = state.component.unwrap().to_vec();
+    component[8..12].copy_from_slice(&0.75_f32.to_le_bytes());
+    let restored = hex_plugin_state::encode(hex_plugin_state::State {
+        component: Some(&component),
+        ..state
+    })
+    .unwrap();
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(track.value()), device.value())
+            .unwrap();
+    let next = source_for_profile(&mut f.control, identity, "processing", 8, Some(restored));
+    assert_ne!(old, next);
+    let captured = f.control.native_source_prepared_state(next).unwrap();
+    f.editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: captured,
+        })
+        .unwrap();
+    f.control.publish_native_source_endpoint(next).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    f.binding = next;
+    let successor = compile(&f, true);
+    let revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+    let mut output = [[0.0; 2]; 32];
+    for (index, chunk) in output.chunks_mut(8).enumerate() {
+        chunk.copy_from_slice(&block(&mut f));
+        if index == 0 {
+            replacement::wait_for_blocks(&root, old, 2);
+        }
+        replacement::wait_for_blocks(&root, next, index as u64 + 1);
+    }
+    assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+    assert_eq!(&output[..8], &[[0.0; 2]; 8]);
+    assert_eq!(&output[8..16], &[[0.125, -0.25]; 8]);
+    assert_eq!(&output[16..24], &[[0.09375, -0.1875]; 8]);
+    assert_eq!(&output[24..], &[[0.1171875, -0.234375]; 8]);
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    for binding in [old, next] {
+        let returned = recover(&mut control, binding);
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
+    drop(control);
+    finish(&mut retirement);
+}
+
 fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAMES] {
     let mut output = [[0.0; 2]; FRAMES];
     let mut host = [0.0_f32; 512];

@@ -1974,7 +1974,14 @@ impl SessionPlayback {
             }
             self.render_work.finish(work_start);
         }
-        self.render_detached_tails(performance_frame, output, frame_offset, capture, None)?;
+        self.render_detached_tails(
+            performance_frame,
+            output,
+            frame_offset,
+            capture,
+            None,
+            foreign,
+        )?;
         self.render_return_buses(
             output,
             frame_offset,
@@ -2135,6 +2142,7 @@ impl SessionPlayback {
         frame_offset: usize,
         capture: &mut Option<&mut dyn CaptureSink>,
         mut routed: Option<&mut [Frame]>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
@@ -2263,7 +2271,14 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let effect_count = chain.len();
                 chain
-                    .process_range(suffix_start..effect_count, tail_output)
+                    .process_range_with_foreign(
+                        suffix_start..effect_count,
+                        tail_output,
+                        frame_offset,
+                        None,
+                        None,
+                        foreign,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
                 *self
@@ -2349,7 +2364,14 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let effect_count = chain.len();
                 chain
-                    .process_range(suffix_start..effect_count, tail_output)
+                    .process_range_with_foreign(
+                        suffix_start..effect_count,
+                        tail_output,
+                        frame_offset,
+                        None,
+                        None,
+                        foreign,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
                 *self
@@ -2424,7 +2446,14 @@ impl SessionPlayback {
             let mut tail_buffer = [[0.0; 2]; 256];
             let tail_output = &mut tail_buffer[..output.len()];
             chain
-                .process_range(suffix_start..effect_count, tail_output)
+                .process_range_with_foreign(
+                    suffix_start..effect_count,
+                    tail_output,
+                    frame_offset,
+                    None,
+                    None,
+                    foreign,
+                )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
             *self
