@@ -419,6 +419,7 @@ impl ReturnEffectTailPlan {
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<Self, SessionPlaybackError> {
         if old_buses.len() > MAX_RETURN_TRACKS
             || new_buses.len() > MAX_RETURN_TRACKS
@@ -470,7 +471,12 @@ impl ReturnEffectTailPlan {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let same_topology = old_chain.len() == new_chain.len();
                 let same_configuration = same_topology
-                    && old_chain.configuration_matches_range(new_chain, 0..old_chain.len());
+                    && super::handoff::configuration_matches_continuation(
+                        old_chain,
+                        new_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 let retargetable_configuration = !same_configuration
                     && same_topology
                     && new_chain.can_retarget_parameters_from_range(old_chain, 0..old_chain.len());
@@ -530,12 +536,17 @@ impl ReturnEffectTailPlan {
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let mut start = 0;
         let mut arrival = pre_main_arrival;
         while start < old.len().min(current.len())
-            && (old.configuration_matches_range(current, start..start + 1)
-                || current.can_retarget_parameters_from_range(old, start..start + 1))
+            && (super::handoff::configuration_matches_continuation(
+                old,
+                current,
+                start..start + 1,
+                continuation,
+            ) || current.can_retarget_parameters_from_range(old, start..start + 1))
         {
             arrival = arrival
                 .checked_add(

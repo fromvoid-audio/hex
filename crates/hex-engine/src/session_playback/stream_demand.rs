@@ -126,8 +126,14 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        let report =
-            self.inherit_state_planned(previous, None, Some(&mut demand), true, fenced_restart)?;
+        let report = self.inherit_state_planned(
+            previous,
+            None,
+            Some(&mut demand),
+            true,
+            fenced_restart,
+            None,
+        )?;
         let window = demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;

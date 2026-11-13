@@ -1154,6 +1154,125 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
 }
 
 #[test]
+fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_chain() {
+    struct NonQuiet;
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in 0..=2 {
+        let (revision, endpoint, _) = prepared_with_latency(location, false, 0, Some(1));
+        let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch: 1,
+        };
+        let previous = Arc::new(state(19).unwrap());
+        let candidate = Arc::new(state(20).unwrap());
+        let chain = |state: Arc<NativeDeviceState>| {
+            hex_lattice::NativeRuntimeChain::new_prepared(vec![
+                hex_lattice::PreparedRuntimeInstance {
+                    meter: Default::default(),
+                    owner: endpoint.owner,
+                    device_id: endpoint.device,
+                    device_type: Definition.type_id(),
+                    matrix: StereoMatrix::identity(),
+                    bypassed: false,
+                    sample_rate: 48_000,
+                    configuration: Some(state),
+                    modulation: None,
+                    automation: Default::default(),
+                    definition: Some(PreparedProcessorFactory::Foreign(
+                        PreparedForeignProcessor::new(8, 0, 16)
+                            .unwrap()
+                            .with_output_tail(hex_lattice::OutputTail::Finite {
+                                max_tail_frames: 16,
+                            })
+                            .with_binding(binding)
+                            .unwrap(),
+                    )),
+                },
+            ])
+            .unwrap()
+        };
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut refused = SessionPlayback::new(revision).unwrap();
+        match location {
+            0 => {
+                old.device_chains[0] = chain(Arc::clone(&previous));
+                next.device_chains[0] = chain(Arc::clone(&candidate));
+                refused.device_chains[0] = chain(Arc::clone(&candidate));
+            }
+            1 => {
+                old.return_chains[0] = chain(Arc::clone(&previous));
+                next.return_chains[0] = chain(Arc::clone(&candidate));
+                refused.return_chains[0] = chain(Arc::clone(&candidate));
+            }
+            _ => {
+                old.main_chain = chain(Arc::clone(&previous));
+                next.main_chain = chain(Arc::clone(&candidate));
+                refused.main_chain = chain(Arc::clone(&candidate));
+            }
+        }
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        let old_frame = old.performance_frame;
+        assert!(matches!(
+            refused.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let wrong = Arc::new(state(21).unwrap());
+        let wrong_proof = hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &wrong,
+        )
+        .unwrap();
+        assert!(matches!(
+            refused.inherit_state_planned(&mut old, None, None, false, false, Some(&wrong_proof)),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let proof = hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &candidate,
+        )
+        .unwrap();
+        let mut visit = |_| Ok(());
+        let mut demand = super::stream_demand::HandoffDemand {
+            ordinary: true,
+            maximum_frames: 8,
+            playing: None,
+            visit: &mut visit,
+            window: None,
+        };
+        next.inherit_state_planned(&mut old, None, Some(&mut demand), true, false, Some(&proof))
+            .unwrap();
+        assert!(demand.window.is_some());
+        assert_eq!(old.performance_frame, old_frame);
+        next.inherit_state_planned(&mut old, None, None, false, false, Some(&proof))
+            .unwrap();
+        assert_eq!(next.performance_frame, old_frame);
+        next.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+    }
+}
+
+#[test]
 fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
     struct Probe {
         calls: Vec<(u64, usize)>,

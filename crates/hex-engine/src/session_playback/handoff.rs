@@ -3,6 +3,24 @@ use crate::{MidiTiming, Track};
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
+// Comparison only: the caller must independently authenticate the candidate,
+// source, and transport before using any selected plan for publication.
+pub(super) fn configuration_matches_continuation(
+    old: &hex_lattice::NativeRuntimeChain,
+    candidate: &hex_lattice::NativeRuntimeChain,
+    range: std::ops::Range<usize>,
+    continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+) -> bool {
+    match continuation {
+        Some(continuation) => old.configuration_matches_range_with_foreign_continuation(
+            candidate,
+            range,
+            continuation,
+        ),
+        None => old.configuration_matches_range(candidate, range),
+    }
+}
+
 /// Retained-path creation/removal needs the stopped bounce fence and a fresh
 /// graph. Do not let an ordinary handoff preserve voices or tails across it.
 /// Compare the actual prepared receiver. Pure analytic providers need not
@@ -417,7 +435,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, None, None, false, false)
+        self.inherit_state_planned(previous, None, None, false, false, None)
     }
     /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
     pub(super) fn inherit_state_live(
@@ -425,13 +443,13 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None, true, false)
+        self.inherit_state_planned(previous, groups, None, true, false, None)
     }
     pub(super) fn inherit_state_fenced_restart(
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, None, None, true, true)
+        self.inherit_state_planned(previous, None, None, true, true, None)
     }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
@@ -449,7 +467,12 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
         fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if continuation.is_some() && (fenced_restart || self.live_restart) {
+            // A reset does not continue the live worker's history.
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         let source_effect_handoff =
             !self.source_effects.is_empty() || !previous.source_effects.is_empty();
         let source_transfer = if source_effect_handoff {
@@ -496,7 +519,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
         if live && self.live_restart && self.candidate_admission_open {
-            return self.inherit_state_planned_once(previous, None, demand, true, None);
+            return self.inherit_state_planned_once(previous, None, demand, true, None, None);
         }
         let is_preview = demand.is_some();
         let result = match self.inherit_state_planned_once(
@@ -505,6 +528,7 @@ impl SessionPlayback {
             demand.as_deref_mut(),
             false,
             source_transfer.as_ref(),
+            continuation,
         ) {
             // An open admission proves the refusal came from the pure
             // preflight: neither runtime changed, so the reset handoff may
@@ -522,11 +546,12 @@ impl SessionPlayback {
             }
             Err(error)
                 if live
+                    && continuation.is_none()
                     && !source_effect_handoff
                     && self.candidate_admission_open
                     && restartable(error) =>
             {
-                self.inherit_state_planned_once(previous, None, demand, true, None)
+                self.inherit_state_planned_once(previous, None, demand, true, None, None)
             }
             result => result,
         };
@@ -621,6 +646,7 @@ impl SessionPlayback {
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         force_restart: bool,
         source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -3519,6 +3545,7 @@ impl SessionPlayback {
             &mut tail_processor_count,
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
+            continuation,
         )?;
         return_tail_plan.preflight_main(
             &previous.main_chain,
@@ -3533,6 +3560,7 @@ impl SessionPlayback {
             &mut tail_processor_count,
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
+            continuation,
         )?;
         if clock_transfer == 2
             && self.compensation.is_none()
@@ -3748,13 +3776,23 @@ impl SessionPlayback {
                 };
                 let candidate_suffix_start = candidate_track.instrument_position();
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
-                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                    && configuration_matches_continuation(
+                        old_chain,
+                        candidate_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 // Appending the first lookahead suffix leaves this exact old
                 // prefix in the current chain. Transfer its history normally;
                 // classifying it as detached would duplicate/strand the tail.
                 let retained_prefix_extension = first_compensation
                     && old_chain.len() < candidate_chain.len()
-                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                    && configuration_matches_continuation(
+                        old_chain,
+                        candidate_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 let retargetable_effect_configuration = !exact_chain_configuration
                     && old_chain.len() == candidate_chain.len()
                     && old_track.instrument_position() == candidate_suffix_start

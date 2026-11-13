@@ -1227,6 +1227,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
         )
         .is_ok()
     );
@@ -1248,6 +1249,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1266,6 +1268,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1284,6 +1287,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
