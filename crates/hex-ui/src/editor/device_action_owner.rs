@@ -14,10 +14,23 @@ pub(super) fn device_in_panel(
     class: NativeDeviceClass,
 ) -> Option<&hex_project::Device> {
     use device_panel::DevicePanelOwner;
+    if let DevicePanelOwner::Source(source) = panel {
+        if project
+            .tracks()
+            .iter()
+            .any(|track| track.source_id() == Some(source))
+        {
+            return None;
+        }
+        let definition = project.native_source(source)?;
+        let device = definition.instrument();
+        return (class == NativeDeviceClass::Instrument && device.id() == id).then_some(device);
+    }
     let chain = match panel {
         DevicePanelOwner::Main => DeviceChainOwner::Main,
         DevicePanelOwner::Track(track) => DeviceChainOwner::Track(track),
         DevicePanelOwner::Return(bus) => DeviceChainOwner::Return(bus),
+        DevicePanelOwner::Source(_) => return None,
     };
     let location = project.device_in_chain(chain, id)?;
     let actual = match location.class {
