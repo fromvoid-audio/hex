@@ -119,6 +119,8 @@ use spectrum_stages::SpectrumStage;
 use spectrum_stages::SpectrumStages;
 mod streaming;
 mod transport_fade;
+mod transport_observation;
+pub use transport_observation::TransportObservation;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -674,6 +676,7 @@ pub struct Status {
     pub session_capability: AtomicU32,
     sampler_console: AtomicBool,
     pub shutdown_complete: AtomicBool,
+    transport_observation: transport_observation::TransportObservationSlot,
     route_sequence: AtomicU64,
     route_revision: AtomicU64,
     route_count: AtomicU32,
@@ -884,6 +887,7 @@ impl Status {
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             sampler_console: AtomicBool::new(false),
             shutdown_complete: AtomicBool::new(false),
+            transport_observation: Default::default(),
             route_sequence: AtomicU64::new(0),
             route_revision: AtomicU64::new(0),
             route_count: AtomicU32::new(0),
@@ -1043,6 +1047,18 @@ impl Status {
             }
         }
         None
+    }
+
+    /// Read one coherent callback-published transport observation, or `None`
+    /// when no supported active runtime is published, the output is closing,
+    /// or a bounded read conflicts with a concurrent callback. The result is
+    /// telemetry only and can become stale immediately.
+    pub fn transport_observation(&self) -> Option<TransportObservation> {
+        if self.closing.load(Acquire) {
+            return None;
+        }
+        let value = self.transport_observation.read()?;
+        (!self.closing.load(Acquire)).then_some(value)
     }
 
     fn begin_route_snapshot(&self) {
@@ -5585,6 +5601,23 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
+        let observation = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .and_then(|active| {
+                active
+                    .playback
+                    .transport()
+                    .map(|(position, performance, playing)| TransportObservation {
+                        audio_revision: active.revision,
+                        control_generation: active.control_context_generation,
+                        arrangement_frame: position,
+                        performance_frame: performance,
+                        playing,
+                    })
+            });
+        self.status.transport_observation.publish(observation);
         self.status
             .recording_source
             .publish(self.recording_source());
