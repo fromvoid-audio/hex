@@ -619,6 +619,14 @@ pub enum Request {
         revision: u64,
         source: hex_project::SourceId,
     },
+    /// Create an unassigned source from a registered native instrument default.
+    /// The project stamps must still match; callers must reject unsent gestures.
+    CreateRetainedNativeSource {
+        project_generation: u64,
+        revision: u64,
+        type_id: Box<hex_lattice_contract::DeviceTypeId>,
+        name: String,
+    },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
     /// Replace one device's bank against the displayed canonical revision.
@@ -3507,6 +3515,34 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::CreateRetainedNativeSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                type_id,
+                name,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source creation canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before creating a source".into(),
+                    );
+                }
+                let state = hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Instrument,
+                    **type_id,
+                )
+                .map_err(|reason| format!("native instrument unavailable · {reason}"))?;
+                Ok(Command::CreateNativeSource {
+                    name: name.clone(),
+                    devices: vec![state],
+                    instrument_index: 0,
+                })
+            })()),
             Request::RenameRetainedSource {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5577,7 +5613,8 @@ fn run_worker(
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
                 | Request::RenameRetainedSource { .. }
-                | Request::DeleteRetainedSource { .. } => {
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. } => {
                     error = Some("source assignment was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
