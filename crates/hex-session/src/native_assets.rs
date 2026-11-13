@@ -222,7 +222,7 @@ impl Session {
                 state,
                 source_slot,
             } => Command::ImportDeviceAssetReplacingInstrument {
-                track,
+                owner: hex_project::InstrumentAssetOwner::Track(track),
                 device,
                 expected_state,
                 path,
