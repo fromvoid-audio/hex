@@ -790,6 +790,77 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
     }
 }
 
+/// Borrowed exact old/new state identities for a possible foreign effect continuation.
+/// The comparison allows only the same unautomated, unmodulated effect with
+/// unchanged host gains, bypass and prepared endpoint. This matcher owns no
+/// source, endpoint, graph, or publication authority. The
+/// host must independently authenticate and fence its particular candidate and
+/// predecessor before passing it to a handoff; it must retain both states and
+/// all associated resources until the callback returns the graph on control.
+pub struct ForeignConfigurationContinuation<'a> {
+    identity: ProcessorInstanceIdentity,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    previous: &'a NativeDeviceState,
+    candidate: &'a NativeDeviceState,
+}
+
+impl<'a> ForeignConfigurationContinuation<'a> {
+    pub fn new(
+        identity: ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        previous: &'a NativeDeviceState,
+        candidate: &'a NativeDeviceState,
+    ) -> Result<Self, DeviceContractError> {
+        if !binding.is_valid() || binding.instance != identity.device_id() {
+            return Err(DeviceContractError::InvalidId);
+        }
+        previous.require_asset_free_processing()?;
+        candidate.require_asset_free_processing()?;
+        if previous.type_id() != candidate.type_id()
+            || previous.state_version() != candidate.state_version()
+            || previous.input_gain_millidb() != candidate.input_gain_millidb()
+            || previous.output_gain_millidb() != candidate.output_gain_millidb()
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        Ok(Self {
+            identity,
+            binding,
+            previous,
+            candidate,
+        })
+    }
+
+    fn matches(
+        &self,
+        previous: &RuntimeEntry,
+        candidate: &RuntimeEntry,
+        previous_state: &NativeDeviceState,
+        candidate_state: &NativeDeviceState,
+    ) -> bool {
+        previous.owner == self.identity.owner()
+            && previous.device_id == self.identity.device_id()
+            && previous.bypassed == candidate.bypassed
+            && previous.input_gain == candidate.input_gain
+            && previous.output_gain == candidate.output_gain
+            && previous.automation.is_empty()
+            && candidate.automation.is_empty()
+            && previous.modulation.is_none()
+            && candidate.modulation.is_none()
+            && previous.runtime.foreign_modulation().is_none()
+            && candidate.runtime.foreign_modulation().is_none()
+            && matches!((&previous.runtime, &candidate.runtime),
+                (RuntimeOwnership::Foreign(old), RuntimeOwnership::Foreign(new))
+                    if old.prepared == new.prepared
+                        && !old.prepared.is_instrument_profile()
+                        && old.prepared.binding() == Some(self.binding))
+            && previous_state.shares_payload_storage_with(self.previous)
+            && candidate_state.shares_payload_storage_with(self.candidate)
+            && previous_state == self.previous
+            && candidate_state == self.candidate
+    }
+}
+
 struct RuntimeEntry {
     modulation: Option<ModulationRuntime>,
     automation: PreparedParameterAutomation,
@@ -1834,6 +1905,27 @@ impl NativeRuntimeChain {
     /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
     /// worst case. Larger VST3 state must share its immutable payload allocation.
     pub fn configuration_matches_range(&self, other: &Self, range: std::ops::Range<usize>) -> bool {
+        self.configuration_matches_range_inner(other, range, None)
+    }
+
+    /// Compare a single host-authenticated foreign continuation alongside the
+    /// ordinary immutable graph rules. This is comparison only: it neither
+    /// validates the host's witness nor transfers source or tail custody.
+    pub fn configuration_matches_range_with_foreign_continuation(
+        &self,
+        other: &Self,
+        range: std::ops::Range<usize>,
+        continuation: &ForeignConfigurationContinuation<'_>,
+    ) -> bool {
+        self.configuration_matches_range_inner(other, range, Some(continuation))
+    }
+
+    fn configuration_matches_range_inner(
+        &self,
+        other: &Self,
+        range: std::ops::Range<usize>,
+        continuation: Option<&ForeignConfigurationContinuation<'_>>,
+    ) -> bool {
         if range.start > range.end
             || range.end > self.entries.len()
             || range.end > other.entries.len()
@@ -1872,8 +1964,12 @@ impl NativeRuntimeChain {
                         })
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
-                        (Some(left), Some(right)) => {
-                            std::sync::Arc::ptr_eq(left, right) || left.processing_eq_on_callback(right)
+                        (Some(previous_state), Some(candidate_state)) => {
+                            std::sync::Arc::ptr_eq(previous_state, candidate_state)
+                                || previous_state.processing_eq_on_callback(candidate_state)
+                                || continuation.is_some_and(|proof| {
+                                    proof.matches(left, right, previous_state, candidate_state)
+                                })
                         }
                         _ => false,
                     }
