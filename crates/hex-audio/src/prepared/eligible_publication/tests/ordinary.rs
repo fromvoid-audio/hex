@@ -1440,33 +1440,48 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
 
 #[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
-    pending_replacement_case(true, false, false);
+    pending_replacement_case(true, false, None, false);
 }
 
 #[test]
 fn ordinary_short_one_shot_replacement_at_device_cadence() {
-    pending_replacement_case(false, false, false);
+    pending_replacement_case(false, false, None, false);
 }
 
 #[test]
 fn fenced_retained_restart_waits_for_missing_pages_without_displacing_current_audio() {
-    pending_replacement_case(false, true, false);
+    pending_replacement_case(false, true, None, false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_loop_seek_keeps_resident_destination_while_prefetching() {
+    pending_replacement_case(true, false, Some(false), false);
+    pending_replacement_case(true, false, Some(true), false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_pending_replacement_preserves_resident_loop_page_in_same_callback() {
-    pending_replacement_case(true, false, true);
+    pending_replacement_case(true, false, None, true);
 }
 
-fn pending_replacement_case(looping: bool, retained_restart: bool, _short_loop: bool) {
+fn pending_replacement_case(
+    looping: bool,
+    retained_restart: bool,
+    lookahead: Option<bool>,
+    _short_loop: bool,
+) {
     use hex_project::{Command, Created, Editor};
 
     let _serial = serial();
-    let frames = (hex_engine::STREAM_PAGE_FRAMES * 2) as u64;
+    let frames =
+        (hex_engine::STREAM_PAGE_FRAMES * if lookahead == Some(true) { 3 } else { 2 }) as u64;
     let mut snapshot = super::readiness::project_with_frames(frames).snapshot();
     if looping {
-        snapshot.loop_region = Some(if _short_loop {
+        snapshot.loop_region = Some(if lookahead.is_some() {
+            hex_project::LoopRegion::new(3840, 6272, true).unwrap()
+        } else if _short_loop {
             hex_project::LoopRegion::new(3840, 4224, true).unwrap()
         } else {
             hex_project::LoopRegion::new(0, frames, true).unwrap()
@@ -1593,6 +1608,30 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, _short_loop: 
             4096,
         )
         .unwrap();
+    #[cfg(feature = "stream-test-support")]
+    let (pair, prefetch_gate) = if lookahead == Some(true) {
+        let (gate, entered, release) =
+            hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+                source: a_key,
+                page_index: 2,
+            });
+        let mut runtime = hex_stream::StreamRuntime::new_with_page_gate(
+            hex_stream::StreamConfig::with_pool_pages(3),
+            vec![a_definition, b_definition],
+            gate,
+        )
+        .unwrap();
+        runtime
+            .wait_until_ready(std::time::Duration::from_secs(2))
+            .unwrap();
+        (runtime.split().ok().unwrap(), Some((entered, release)))
+    } else {
+        (
+            stream_fixture::pair_with_pool(vec![a_definition, b_definition], 3),
+            None,
+        )
+    };
+    #[cfg(not(feature = "stream-test-support"))]
     let pair = stream_fixture::pair_with_pool(vec![a_definition, b_definition], 3);
     let domain = control
         .register_audio_candidate_domain_with_readiness(
@@ -1640,6 +1679,121 @@ fn pending_replacement_case(looping: bool, retained_restart: bool, _short_loop: 
         hex_engine::STREAM_PAGE_FRAMES as u64
     );
     let mut output = [[0.0; 2]; 256];
+
+    #[cfg(feature = "stream-test-support")]
+    if let Some(long_source) = lookahead {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 4096 {
+            measured_render(&mut data, &mut output);
+            assert!(std::time::Instant::now() < deadline, "warm A1");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.status.position.load(Acquire), 4352);
+        control.command(PlaybackCommand::Seek(3712)).unwrap();
+        while control.status.position.load(Acquire) != 3968 {
+            measured_render(&mut data, &mut output[..128]);
+            assert!(std::time::Instant::now() < deadline, "restore A0");
+            std::thread::yield_now();
+        }
+        let mut cached = [false; 2];
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                for (page_index, result) in cached.iter_mut().enumerate() {
+                    *result = streams.test_has_extent(
+                        &mut c.domain_pages,
+                        hex_engine::StreamResourceExtent {
+                            source: a_key.into(),
+                            page_index: page_index as u64,
+                            start: 0,
+                            end: 1,
+                        },
+                    );
+                }
+            }
+        });
+        assert_eq!(cached, [true; 2], "A0 and A1 must be resident before seek");
+        control.command(PlaybackCommand::Seek(6208)).unwrap();
+        measured_render(&mut data, &mut output[..32]);
+        assert!(!control.status.stream_buffering.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 6240);
+        if long_source {
+            let (entered, release) = prefetch_gate.expect("prefetch gate");
+            entered
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("prefetch entered");
+            release.send(()).expect("release prefetch");
+            let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let mut ready = false;
+                data.owner_mut().unwrap().run(|c, _| {
+                    if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                        && let Some(streams) = active.streams.as_ref()
+                    {
+                        ready = streams.test_ready_page(
+                            &mut c.domain_pages,
+                            hex_stream::ResourcePageKey {
+                                source: a_key.into(),
+                                page_index: 2,
+                            },
+                        );
+                    }
+                });
+                if ready {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < ready_deadline,
+                    "prefetch did not become ready"
+                );
+                std::thread::yield_now();
+            }
+        }
+        measured_render(&mut data, &mut output);
+        assert!(
+            !control.status.stream_buffering.load(Acquire),
+            "resident loop destination was lost, long_source={long_source}"
+        );
+        assert_eq!(control.status.position.load(Acquire), 4064);
+        for (index, frame) in output.iter().enumerate() {
+            let expected = if index < 32 {
+                0.25 * ((31 - index) as f32 / 127.0)
+            } else {
+                0.25
+            };
+            assert_eq!(*frame, [expected; 2], "loop PCM at {index}");
+        }
+        for _ in 0..12 {
+            let before = control.status.position.load(Acquire);
+            measured_render(&mut data, &mut output);
+            assert!(
+                !control.status.stream_buffering.load(Acquire),
+                "loop buffered after lookahead, long_source={long_source}, before={before}"
+            );
+            let expected_position = 3840 + ((before - 3840 + 256) % (6272 - 3840));
+            assert_eq!(control.status.position.load(Acquire), expected_position);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(control.retire_audio_candidate_domain(domain));
+        control.request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "source reclamation");
+            std::thread::yield_now();
+        }
+        drop(data);
+        drop(errors);
+        drop(control);
+        finish(&mut retirement);
+        return;
+    }
 
     #[cfg(feature = "stream-test-support")]
     let loop_baseline = if _short_loop {

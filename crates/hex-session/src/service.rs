@@ -557,6 +557,13 @@ pub enum DeviceClipboardAction {
     },
 }
 
+/// Direction for an adjacent, source-owned Utility move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceUtilityMove {
+    Earlier,
+    Later,
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 // Fixed request storage is bounded by the 32-slot control FIFO.
@@ -586,25 +593,38 @@ pub enum Request {
         track: hex_project::TrackId,
         source: hex_project::SourceId,
     },
-    /// Add the first neutral Utility to the captured bound source. The worker
-    /// validates the project stamps, track binding, instrument and empty suffix;
+    /// Append a neutral Utility to the captured bound source. The worker
+    /// validates the project stamps, track binding, instrument and Utility suffix;
     /// callers must reject their own unsent gestures before submitting.
-    AddFirstSourceUtility {
+    AppendSourceUtility {
         project_generation: u64,
         revision: u64,
         track: hex_project::TrackId,
         source: hex_project::SourceId,
         instrument: hex_project::DeviceId,
     },
-    /// Remove the exact sole Utility from a captured bound source. Publication
-    /// retains the existing live/quiet retirement guard and normal Undo history.
-    RemoveOnlySourceUtility {
+    /// Remove one exact leaf Utility from a captured bound Utility source.
+    /// Publication retains the live/quiet retirement guard and Undo history.
+    RemoveSourceUtility {
         project_generation: u64,
         revision: u64,
         track: hex_project::TrackId,
         source: hex_project::SourceId,
         instrument: hex_project::DeviceId,
         effect: hex_project::DeviceId,
+    },
+    /// Move one captured leaf Utility across its exact adjacent leaf sibling.
+    /// The worker revalidates ownership, order and project stamps; live/quiet
+    /// publication remains with the prepared source stage.
+    MoveSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+        effect: hex_project::DeviceId,
+        neighbor: hex_project::DeviceId,
+        direction: SourceUtilityMove,
     },
     /// Explicitly change a captured track binding, including unlinking. A shared
     /// source's receiver must first be moved when other contributors remain.
@@ -3641,7 +3661,7 @@ fn run_worker(
                     track: Some(*track),
                 })
             })()),
-            Request::AddFirstSourceUtility {
+            Request::AppendSourceUtility {
                 project_generation: captured_generation,
                 revision: captured_revision,
                 track,
@@ -3674,7 +3694,11 @@ fn run_worker(
                 if source.receiver().is_none()
                     || source.instrument().id() != *instrument
                     || source.instrument().state().type_id() != default_instrument.type_id()
-                    || !source.post_instrument_effects().is_empty()
+                    || source.devices().count() >= hex_project::MAX_SOURCE_DEVICES
+                    || source.post_instrument_effects().iter().any(|effect| {
+                        effect.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
                 {
                     return Err(
                         "source effect canceled · source chain changed or unsupported".into(),
@@ -3690,7 +3714,7 @@ fn run_worker(
                     state,
                 })
             })()),
-            Request::RemoveOnlySourceUtility {
+            Request::RemoveSourceUtility {
                 project_generation: captured_generation,
                 revision: captured_revision,
                 track,
@@ -3721,23 +3745,106 @@ fn run_worker(
                     .ok_or("source effect canceled · source no longer exists")?;
                 let default_instrument = hex_project::default_instrument_state()
                     .map_err(|_| "source instrument unavailable")?;
-                let [only_effect] = source.post_instrument_effects() else {
-                    return Err(
-                        "source effect canceled · source chain changed or unsupported".into(),
-                    );
-                };
+                let effects = source.post_instrument_effects();
                 if source.receiver().is_none()
                     || source.instrument().id() != *instrument
                     || source.instrument().state().type_id() != default_instrument.type_id()
-                    || only_effect.id() != *effect
-                    || only_effect.state().type_id()
-                        != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    || !effects.iter().any(|item| item.id() == *effect)
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                    || source.devices().any(|item| item.parent() == Some(*effect))
                 {
                     return Err(
                         "source effect canceled · source chain changed or unsupported".into(),
                     );
                 }
                 Ok(Command::RemoveDevice(*effect))
+            })()),
+            Request::MoveSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+                effect,
+                neighbor,
+                direction,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let definition = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                let effects = definition.post_instrument_effects();
+                if definition.receiver().is_none()
+                    || definition.instrument().id() != *instrument
+                    || definition.instrument().state().type_id() != default_instrument.type_id()
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                let index = effects
+                    .iter()
+                    .position(|item| item.id() == *effect)
+                    .ok_or("source effect canceled · source chain changed")?;
+                let neighbor_index = match direction {
+                    SourceUtilityMove::Earlier => index.checked_sub(1),
+                    SourceUtilityMove::Later => index.checked_add(1),
+                }
+                .ok_or("source effect canceled · source chain changed")?;
+                let target = effects
+                    .get(index)
+                    .ok_or("source effect canceled · source chain changed")?;
+                let adjacent = effects
+                    .get(neighbor_index)
+                    .ok_or("source effect canceled · source chain changed")?;
+                if adjacent.id() != *neighbor
+                    || target.parent() != adjacent.parent()
+                    || definition.devices().any(|item| {
+                        item.parent() == Some(*effect) || item.parent() == Some(*neighbor)
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or contains children".into(),
+                    );
+                }
+                let before = match direction {
+                    SourceUtilityMove::Earlier => Some(*neighbor),
+                    SourceUtilityMove::Later => index
+                        .checked_add(2)
+                        .and_then(|next| effects.get(next))
+                        .map(hex_project::Device::id),
+                };
+                Ok(Command::MoveNativeSourceDevice {
+                    source: *source,
+                    device: *effect,
+                    before,
+                })
             })()),
             Request::RebindNativeSource {
                 project_generation: captured_generation,
@@ -5727,8 +5834,9 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::AddFirstSourceUtility { .. }
-                | Request::RemoveOnlySourceUtility { .. }
+                Request::AppendSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
                 | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }

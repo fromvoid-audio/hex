@@ -667,6 +667,173 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
     );
 }
 
+struct QuietTrackEffect;
+impl ForeignProcessors for QuietTrackEffect {
+    fn process_segment(
+        &mut self,
+        _: ForeignProcessorNode<'_>,
+        _: usize,
+        frames: &mut [Frame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
+        Ok(())
+    }
+    fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
+    fn reject_callback(&mut self) {
+        panic!("quiet planner fixture rejected");
+    }
+}
+
+#[test]
+fn completed_foreign_track_suffix_can_be_replaced_without_losing_history() {
+    let mut active = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let mut next = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(2)).0).unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(!active.device_chains[0].committed_range_is_quiescent(0..1));
+    match next.try_inherit_state_from(&mut active) {
+        Ok(_) => assert!(next.tail_groups.iter().any(Option::is_some)),
+        Err(_) => assert!(active.playing),
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(0, false, 3, Some(2)).0).unwrap();
+    let chain = &mut old.device_chains[0];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert!(candidate.tail_groups.iter().all(Option::is_none));
+    assert_eq!(
+        candidate.device_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+}
+
+#[test]
+fn completed_foreign_track_suffix_does_not_reuse_a_changed_endpoint() {
+    let mut old = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let candidate = SessionPlayback::new(prepared_with_latency(0, false, 4, Some(1)).0).unwrap();
+    let chain = &mut old.device_chains[0];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(matches!(
+        super::handoff::validate_foreign_tail_sources(&candidate, &old.device_chains[0], 0),
+        Err(SessionPlaybackError::ForeignTailSourceBusy)
+    ));
+    assert!(old.playing);
+    assert!(!candidate.playing);
+}
+
+#[test]
+fn completed_foreign_track_does_not_discard_native_suffix_history() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    let prepare = |epoch| {
+        let mut f = fixture(&[&[]], 64);
+        let track = f.tracks[0];
+        let Created::Device(device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: state(19).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let utility = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: utility,
+            })
+            .unwrap();
+        let foreign = BorrowedDefinition {
+            binding_epoch: Some(epoch),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(
+                    ProcessorChainOwner::Track(track.value()),
+                    device.value(),
+                )
+                .unwrap(),
+                3,
+            )],
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&foreign, &UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let revision = PreparedRevision::prepare_with_registries(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+            &instruments,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut old = prepare(1);
+    let mut next = prepare(2);
+    let chain = &mut old.device_chains[0];
+    assert_eq!(chain.len(), 2);
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(next.try_inherit_state_from(&mut old).is_err());
+    assert!(old.playing);
+}
+
 mod shared_source_release;
 
 mod instruments;

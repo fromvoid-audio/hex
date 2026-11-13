@@ -59,6 +59,19 @@ impl OrdinaryStreams {
                 .is_some_and(|loan| loan.test_has_resource_extent(extent))
         })
     }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_ready_page(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        key: hex_stream::ResourcePageKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_ready_page(key))
+        })
+    }
     pub(crate) fn has_install_pending(&self) -> bool {
         self.workspace.as_ref().is_some_and(|workspace| {
             workspace.role == Some(hex_stream::ProtectionRole::Candidate)
