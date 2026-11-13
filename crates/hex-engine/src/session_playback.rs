@@ -579,6 +579,7 @@ pub struct SessionPlayback {
     current_sampler_console: bool,
     route_state_generation: u64,
     candidate_admission_open: bool,
+    pub(crate) foreign_continuation: Option<Box<crate::playback::StoredForeignContinuation>>,
     // Control-side request that the live handoff restart at the cursor rather
     // than carry voices or detached tails the candidate already represents.
     live_restart: bool,
@@ -1002,6 +1003,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open: _,
+            foreign_continuation,
             live_restart: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
@@ -1018,6 +1020,7 @@ impl SessionPlayback {
         let moved_empty_main =
             !self.candidate_admission_open && main_chain.is_empty() && !main_present;
         if (!main_matches && !moved_empty_main)
+            || foreign_continuation.is_some()
             || !foreign_arrangement.is_empty()
             || live_expression.is_some()
             || computer_keyboard.is_some()
@@ -2229,6 +2232,7 @@ impl SessionPlayback {
             current_sampler_console: false,
             route_state_generation: 0,
             candidate_admission_open: true,
+            foreign_continuation: None,
             live_restart: false,
         })
     }

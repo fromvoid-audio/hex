@@ -30,6 +30,7 @@ impl Playback {
             playing: _,
         } = self;
         if resident_pcm_publication.is_some()
+            || self.has_foreign_continuation_states()
             || tuning_audition.is_some()
             || linear_runtime.is_some()
             || session_unavailable.is_some()

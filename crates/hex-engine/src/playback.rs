@@ -407,6 +407,35 @@ impl PlaybackHandoffError {
     }
 }
 
+// Retained by exactly one ordinary graph and destroyed on control with that
+// graph. This is comparison data, not native source or publication authority.
+pub(crate) struct StoredForeignContinuation {
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    previous: hex_lattice_contract::NativeDeviceState,
+    candidate: hex_lattice_contract::NativeDeviceState,
+}
+impl StoredForeignContinuation {
+    fn matcher(
+        &self,
+    ) -> Result<
+        hex_lattice::ForeignConfigurationContinuation<'_>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        hex_lattice::ForeignConfigurationContinuation::new(
+            self.identity,
+            self.binding,
+            &self.previous,
+            &self.candidate,
+        )
+    }
+    fn retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(self.previous.retained_control_metadata_bytes()?)?
+            .checked_add(self.candidate.retained_control_metadata_bytes()?)
+    }
+}
+
 /// Playback graph, with the legacy finite renderer kept as the compatibility path.
 pub struct Playback {
     metronome: Option<Box<Metronome>>,
@@ -547,8 +576,66 @@ impl Playback {
                     revision.session().instrument_automation_storage_bytes()
                 }))
             })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.session_runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.foreign_continuation.as_ref())
+                        .map_or(Some(0), |states| states.retained_bytes())?,
+                )
+            })
             .ok_or(crate::AudioStorageError::Overflow)
     }
+    /// Retain the exact two state allocations for a prospective ordinary
+    /// continuation. This is comparison data only; the host must independently
+    /// authenticate its worker, source, candidate and transport. The graph
+    /// must use the ordinary resource book, and this owner is dropped on control.
+    pub fn retain_foreign_continuation_states_on_control(
+        &mut self,
+        identity: hex_lattice::ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        previous: hex_lattice_contract::NativeDeviceState,
+        candidate: hex_lattice_contract::NativeDeviceState,
+    ) -> Result<(), Invalid> {
+        if self.has_foreign_continuation_states()
+            || self.resident_pcm_publication.is_some()
+            || self
+                .session_runtime
+                .as_ref()
+                .is_none_or(|runtime| runtime.require_fresh_candidate().is_err())
+        {
+            return Err(Invalid(
+                "foreign continuation requires a fresh ordinary graph",
+            ));
+        }
+        hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &candidate,
+        )
+        .map_err(|_| Invalid("foreign continuation states differ"))?;
+        let retained = StoredForeignContinuation {
+            identity,
+            binding,
+            previous,
+            candidate,
+        };
+        retained
+            .retained_bytes()
+            .ok_or(Invalid("foreign continuation storage overflow"))?;
+        let Some(runtime) = self.session_runtime.as_mut() else {
+            return Err(Invalid(
+                "foreign continuation requires a fresh ordinary graph",
+            ));
+        };
+        runtime.foreign_continuation = Some(Box::new(retained));
+        Ok(())
+    }
+    /// This graph retains extra state backing that needs ordinary resource accounting.
+    pub fn has_foreign_continuation_states(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.foreign_continuation.is_some())
+    }
+
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }
@@ -1006,7 +1093,10 @@ impl Playback {
             transport_fade: _,
             playing: _,
         } = self;
-        if tuning_audition.is_some() || resident_pcm_publication.is_some() {
+        if tuning_audition.is_some()
+            || resident_pcm_publication.is_some()
+            || self.has_foreign_continuation_states()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         visit(9, 0, true)?; // actual Project handle
@@ -2038,7 +2128,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false, None)
+        self.try_inherit_runtime_impl(previous, false, false, None, false)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -2056,6 +2146,7 @@ impl Playback {
             generation.is_some() && generation == previous_generation,
             false,
             None,
+            false,
         )
     }
 
@@ -2073,7 +2164,22 @@ impl Playback {
         if generation.is_none() || generation != previous_generation {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, false, Some(continuation))
+        self.try_inherit_runtime_impl(previous, true, false, Some(continuation), false)
+    }
+
+    /// Use the graph-owned comparison data; the publication owner must validate
+    /// the original endpoint and transaction before calling. The data is put
+    /// back on every result and remains owned until control reclaims the graph.
+    pub fn try_inherit_runtime_with_stored_foreign_continuation(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none() || generation != previous_generation {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, false, None, true)
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -2092,7 +2198,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true, None)
+        self.try_inherit_runtime_impl(previous, true, true, None, false)
     }
 
     fn try_inherit_runtime_impl(
@@ -2101,8 +2207,12 @@ impl Playback {
         same_control_context: bool,
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        use_stored_continuation: bool,
     ) -> Result<(), PlaybackHandoffError> {
-        if continuation.is_some()
+        if use_stored_continuation && !self.has_foreign_continuation_states() {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        if (continuation.is_some() || use_stored_continuation)
             && (fenced_restart
                 || self.session_runtime.is_none()
                 || previous.session_runtime.is_none())
@@ -2186,6 +2296,18 @@ impl Playback {
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
+            } else if use_stored_continuation {
+                let Some(states) = next.foreign_continuation.take() else {
+                    return Err(PlaybackHandoffError::RuntimeFenceChanged);
+                };
+                let result = match states.matcher() {
+                    Ok(matcher) => {
+                        next.try_inherit_state_live_with_foreign_continuation_from(old, &matcher)
+                    }
+                    Err(_) => Err(crate::SessionPlaybackError::DeviceRuntime),
+                };
+                next.foreign_continuation = Some(states);
+                result
             } else if let Some(continuation) = continuation {
                 next.try_inherit_state_live_with_foreign_continuation_from(old, continuation)
             } else {
@@ -2691,6 +2813,38 @@ impl Playback {
         )
         .map_err(PlaybackHandoffError::Session)
     }
+    pub(crate) fn preview_stream_handoff_with_stored_foreign_continuation(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
+        let Some(states) = next.foreign_continuation.take() else {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        };
+        let result = match states.matcher() {
+            Ok(matcher) => next
+                .preview_stream_handoff_with_continuation_and_report(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                    true,
+                    false,
+                    Some(&matcher),
+                )
+                .map(|(window, _)| window)
+                .map_err(PlaybackHandoffError::Session),
+            Err(_) => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        };
+        next.foreign_continuation = Some(states);
+        result
+    }
+
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
     pub fn render_with_pages<P: MediaPages>(

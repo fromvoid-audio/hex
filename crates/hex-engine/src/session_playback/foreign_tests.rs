@@ -1326,6 +1326,81 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
                 .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
                 .unwrap();
         }
+        assert!(
+            old_playback
+                .retain_foreign_continuation_states_on_control(
+                    identity,
+                    binding,
+                    (*previous).clone(),
+                    (*candidate).clone(),
+                )
+                .is_err()
+        );
+        assert!(!old_playback.has_foreign_continuation_states());
+        let baseline_bytes = next_playback
+            .resource_control_metadata_bytes_on_control()
+            .unwrap();
+        let previous_handles = previous.payload_storage_observation().1;
+        let candidate_handles = candidate.payload_storage_observation().1;
+        next_playback
+            .retain_foreign_continuation_states_on_control(
+                identity,
+                binding,
+                (*previous).clone(),
+                (*candidate).clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            previous.payload_storage_observation().1,
+            previous_handles + 1
+        );
+        assert_eq!(
+            candidate.payload_storage_observation().1,
+            candidate_handles + 1
+        );
+        assert!(
+            next_playback
+                .resource_control_metadata_bytes_on_control()
+                .unwrap()
+                > baseline_bytes
+        );
+        assert!(
+            next_playback
+                .retain_foreign_continuation_states_on_control(
+                    identity,
+                    binding,
+                    (*previous).clone(),
+                    (*candidate).clone(),
+                )
+                .is_err()
+        );
+        assert!(
+            next_playback
+                .visit_candidate_groups(&mut |_, _, _| Ok(()))
+                .is_err()
+        );
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 512,
+            root_rows: 64,
+            max_retained_bytes: 16 * 1024 * 1024,
+            max_construction_peak_bytes: 16 * 1024 * 1024,
+        };
+        let mut book =
+            crate::native_device_resources::DeviceResourcePublication::reserve_on_control(
+                limits, 8, 2,
+            )
+            .unwrap();
+        let mut next_playback = match book.publish_on_control(next_playback, Ok::<_, ()>) {
+            Ok(playback) => playback,
+            Err(_) => panic!("ordinary continuation resource admission refused"),
+        };
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(
+            next_playback
+                .visit_candidate_groups(&mut |_, _, _| Ok(()))
+                .is_err()
+        );
         let context = crate::AudioSourceContext {
             project_generation: 1,
             editor_revision: 1,
@@ -1346,32 +1421,104 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
         ));
         next_playback
             .stream_playback(context)
-            .preview_ordinary_with_foreign_continuation(
+            .preview_ordinary_with_stored_foreign_continuation(
                 &mut old_playback.stream_playback(context),
                 8,
                 None,
                 &mut |_| Ok(()),
-                &proof,
             )
             .unwrap();
+        assert!(next_playback.has_foreign_continuation_states());
         assert!(matches!(
-            next_playback.try_inherit_runtime_with_foreign_continuation_in_control_context(
+            next_playback.try_inherit_runtime_with_stored_foreign_continuation(
                 &mut old_playback,
                 Some(1),
                 Some(2),
-                &proof
             ),
             Err(crate::playback::PlaybackHandoffError::RuntimeFenceChanged)
         ));
+        assert!(next_playback.has_foreign_continuation_states());
         next_playback
-            .try_inherit_runtime_with_foreign_continuation_in_control_context(
+            .try_inherit_runtime_with_stored_foreign_continuation(
                 &mut old_playback,
                 Some(1),
                 Some(1),
-                &proof,
             )
             .unwrap();
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(book.retire_on_control(Box::new(next_playback)).is_ok());
+        assert_eq!(previous.payload_storage_observation().1, previous_handles);
+        assert_eq!(candidate.payload_storage_observation().1, candidate_handles);
     }
+}
+
+#[test]
+fn retained_foreign_continuation_is_charged_and_returned_when_capacity_refuses() {
+    use crate::native_device_resources::{DeviceResourcePublication, DeviceResourcePublishError};
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let state = |byte| {
+        NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![byte; 128 * 1024],
+        )
+        .unwrap()
+    };
+    let before = state(1);
+    let after = state(2);
+    let before_observer = before.clone();
+    let after_observer = after.clone();
+    let plain =
+        crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    let mut candidate =
+        crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    candidate
+        .retain_foreign_continuation_states_on_control(identity, binding, before, after)
+        .unwrap();
+    assert_eq!(before_observer.payload_storage_observation().1, 2);
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 16,
+        handle_rows: 16,
+        root_rows: 4,
+        max_retained_bytes: 100_000,
+        max_construction_peak_bytes: 100_000,
+    };
+    let mut book = DeviceResourcePublication::reserve_on_control(limits, 0, 2).unwrap();
+    let plain = match book.publish_on_control(plain, Ok::<_, ()>) {
+        Ok(playback) => playback,
+        Err(_) => panic!("same graph without continuation should fit the budget"),
+    };
+    assert!(book.retire_on_control(Box::new(plain)).is_ok());
+    let refused = book.publish_on_control(candidate, |_| -> Result<(), ()> {
+        panic!("enqueue must not run without storage")
+    });
+    let Err(DeviceResourcePublishError::Resources { playback, .. }) = refused else {
+        panic!("proof backing must be charged before publication")
+    };
+    assert!(playback.has_foreign_continuation_states());
+    assert_eq!(book.unreturned_graphs_on_control(), 0);
+    let generous = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: 16 * 1024 * 1024,
+        max_construction_peak_bytes: 16 * 1024 * 1024,
+        ..limits
+    };
+    let mut book = DeviceResourcePublication::reserve_on_control(generous, 0, 2).unwrap();
+    let refused = book.publish_on_control(playback, Err::<(), _>);
+    let Err(DeviceResourcePublishError::Publication(playback)) = refused else {
+        panic!("a queue refusal must return the candidate and its state")
+    };
+    assert!(playback.has_foreign_continuation_states());
+    assert_eq!(book.unreturned_graphs_on_control(), 0);
+    drop(playback);
+    assert_eq!(before_observer.payload_storage_observation().1, 1);
+    assert_eq!(after_observer.payload_storage_observation().1, 1);
 }
 
 #[test]

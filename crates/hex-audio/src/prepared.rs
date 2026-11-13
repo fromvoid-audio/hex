@@ -1902,7 +1902,9 @@ impl PublicationControl {
         forwarded_pcm: bool,
     ) -> Result<u64, PublishError> {
         let Some(mut resources) = self.device_resources.take() else {
-            if playback.contains_device_resource_leases() {
+            if playback.contains_device_resource_leases()
+                || playback.has_foreign_continuation_states()
+            {
                 return Err(PublishError {
                     kind: PublishErrorKind::Other,
                     reason: "device resource publication was not reserved for this output",
@@ -5697,6 +5699,40 @@ mod tests {
         for rate in [8_000, 192_000] {
             assert!(channel(rate).is_ok(), "rejected {rate} hz");
         }
+    }
+
+    #[test]
+    fn foreign_continuation_refuses_publication_without_resource_book() {
+        let (mut control, _callback) = channel(8_000).unwrap();
+        let mut playback = metronome_graph();
+        let identity =
+            hex_lattice::ProcessorInstanceIdentity::new(hex_lattice::ProcessorChainOwner::Main, 17)
+                .unwrap();
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: 17,
+            graph: 1,
+            epoch: 1,
+        };
+        let state = |value| {
+            hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::from_static("test.foreign"),
+                1,
+                vec![value],
+            )
+            .unwrap()
+        };
+        playback
+            .retain_foreign_continuation_states_on_control(identity, binding, state(1), state(2))
+            .unwrap();
+        let Err(refused) = control.publish(playback) else {
+            panic!("unaccounted continuation was published")
+        };
+        assert_eq!(
+            refused.reason,
+            "device resource publication was not reserved for this output"
+        );
+        assert!(refused.playback.has_foreign_continuation_states());
     }
 
     fn spectrum_test_target(

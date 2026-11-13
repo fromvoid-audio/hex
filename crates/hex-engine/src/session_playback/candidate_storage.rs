@@ -87,10 +87,12 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
+            foreign_continuation,
             live_restart: _,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
-        if !source_effects.is_empty()
+        if foreign_continuation.is_some()
+            || !source_effects.is_empty()
             || !foreign_arrangement.is_empty()
             || midi_admission.is_some()
             || live_expression.is_some()
