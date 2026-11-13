@@ -23,7 +23,7 @@ use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
-        AtomicBool, AtomicU8, AtomicU64,
+        AtomicU8, AtomicU64,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
@@ -104,7 +104,6 @@ pub struct CommittedQuantum {
 
 struct Revocation {
     binding: Binding,
-    revoked: AtomicBool,
     callback_fault: AtomicU8,
     received_prefix: AtomicU64,
     received_programs: [AtomicU64; 2],
@@ -117,8 +116,8 @@ struct Revocation {
     // Scope in high bits; low bit means armed. Keep the last serial after end
     // so a stale caller cannot reopen an earlier physical capture scope.
     editor_scope: AtomicU64,
-    // Even values encode the last admitted ordinal; the low bit reserves it
-    // against either another control admission or the paired callback.
+    // The low bit reserves the admitted input, and the high bit records
+    // revocation atomically against a callback's handoff decision.
     parameter_input_generation: AtomicU64,
 }
 impl Revocation {
@@ -127,7 +126,6 @@ impl Revocation {
     fn new(binding: Binding) -> Self {
         Self {
             binding,
-            revoked: AtomicBool::new(false),
             callback_fault: AtomicU8::new(0),
             received_prefix: AtomicU64::new(0),
             received_programs: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -143,11 +141,12 @@ impl Revocation {
     }
 
     fn revoke(&self) {
-        self.revoked.store(true, Release);
+        self.parameter_input_generation
+            .fetch_or(parameter_fence::REVOKED_BIT, AcqRel);
     }
 
     fn is_revoked(&self) -> bool {
-        self.revoked.load(Acquire)
+        self.parameter_input_generation.load(Acquire) & parameter_fence::REVOKED_BIT != 0
     }
 
     // The callback is the sole publisher. Exhaustion permanently makes this

@@ -151,6 +151,93 @@ fn observed_parameter_input_requires_the_original_pair_and_current_generation() 
     );
 }
 
+#[test]
+fn parameter_input_decision_is_ordered_against_revocation() {
+    use std::num::NonZeroU64;
+    let ordinal = NonZeroU64::new(1).unwrap();
+    let (control, callback, _worker) = channel(BINDING, 8).unwrap();
+    control
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    let mut fence = callback
+        .reserve_parameter_input_on_callback(ordinal)
+        .unwrap();
+    std::thread::scope(|scope| scope.spawn(|| control.revoke()).join().unwrap());
+    assert!(!fence.try_order_before_revocation());
+    drop(fence);
+    assert!(callback.is_revoked());
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal)
+            .is_none()
+    );
+
+    let (control, callback, mut worker) = channel(BINDING, 8).unwrap();
+    control
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    let mut fence = callback
+        .reserve_parameter_input_on_callback(ordinal)
+        .unwrap();
+    assert!(fence.try_order_before_revocation());
+    assert!(!fence.try_order_before_revocation());
+    std::thread::scope(|scope| scope.spawn(|| control.revoke()).join().unwrap());
+    assert!(!fence.is_live());
+    assert!(matches!(worker.receive(), Err(Fault::Revoked)));
+    drop(fence);
+    assert!(callback.is_revoked());
+
+    let (control, callback, _worker) = channel(BINDING, 8).unwrap();
+    let admission = control.reserve_parameter_input_on_control(ordinal).unwrap();
+    control.revoke();
+    admission.publish();
+    assert!(control.is_revoked() && callback.is_revoked());
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal)
+            .is_none()
+    );
+}
+
+#[test]
+fn concurrent_revocation_never_loses_the_terminal_marker() {
+    use std::{num::NonZeroU64, sync::Barrier};
+    let ordinal = NonZeroU64::new(1).unwrap();
+    for _ in 0..128 {
+        let (control, callback, mut worker) = channel(BINDING, 8).unwrap();
+        control
+            .reserve_parameter_input_on_control(ordinal)
+            .unwrap()
+            .publish();
+        let mut fence = callback
+            .reserve_parameter_input_on_callback(ordinal)
+            .unwrap();
+        let barrier = Barrier::new(2);
+        std::thread::scope(|scope| {
+            let revoke = scope.spawn(|| {
+                barrier.wait();
+                control.revoke();
+            });
+            barrier.wait();
+            // Either ordering is valid. Once revoked, neither the decision nor
+            // dropping its reservation may erase the terminal marker.
+            let _ordered_before_revocation = fence.try_order_before_revocation();
+            revoke.join().unwrap();
+        });
+        assert!(!fence.is_live());
+        assert!(matches!(worker.receive(), Err(Fault::Revoked)));
+        drop(fence);
+        assert!(callback.is_revoked());
+        assert!(
+            callback
+                .reserve_parameter_input_on_callback(ordinal)
+                .is_none()
+        );
+    }
+}
+
 #[cfg(feature = "allocation-probe")]
 #[test]
 fn parameter_input_reservation_does_not_allocate_or_free_on_callback() {
@@ -163,14 +250,26 @@ fn parameter_input_reservation_does_not_allocate_or_free_on_callback() {
         .publish();
     let observed = control.observe_parameter_input_on_control(ordinal).unwrap();
     let measured = allocation_counter::measure(|| {
-        let fence = callback
+        let mut fence = callback
             .reserve_observed_parameter_input_on_callback(&observed)
             .unwrap();
         assert!(fence.is_live());
+        assert!(fence.try_order_before_revocation());
         drop(fence);
     });
     assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
     assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    let revoked = allocation_counter::measure(|| {
+        let mut fence = callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .unwrap();
+        assert!(fence.try_order_before_revocation());
+        control.revoke();
+        assert!(!fence.is_live());
+        drop(fence);
+    });
+    assert_eq!((revoked.count_total, revoked.bytes_total), (0, 0));
+    assert_eq!((revoked.count_current, revoked.bytes_current), (0, 0));
     drop((control, callback, worker));
 }
 

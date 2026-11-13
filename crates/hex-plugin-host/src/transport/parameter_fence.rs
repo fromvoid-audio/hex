@@ -9,6 +9,18 @@ use std::{
     },
 };
 
+// The upper bit is a permanent revocation marker and the lower bit is a
+// control/callback reservation. Revocation and a commit decision use the same
+// atomic, so their order is explicit even when the two lanes race.
+pub(super) const REVOKED_BIT: u64 = 1 << 63;
+const RESERVED_BIT: u64 = 1;
+fn generation(ordinal: NonZeroU64) -> Option<u64> {
+    ordinal
+        .get()
+        .checked_mul(2)
+        .filter(|value| value & REVOKED_BIT == 0)
+}
+
 /// Control-side observation of one generation on the actual source pair.
 /// This retains only a weak identity, not the worker or permission to publish.
 /// It must be destroyed on control, never in an audio callback.
@@ -29,9 +41,18 @@ pub struct ParameterInputAdmission<'a> {
 impl ParameterInputAdmission<'_> {
     /// Publish only after the caller has installed the complete private input.
     pub fn publish(mut self) {
-        self.signal
+        // Revocation can win after the input was prepared. Keep its marker
+        // sticky; the ordinary revoked-input terminal still owns the slot.
+        if self
+            .signal
             .parameter_input_generation
-            .store(self.next, Release);
+            .compare_exchange(self.previous | RESERVED_BIT, self.next, AcqRel, Acquire)
+            .is_err()
+        {
+            self.signal
+                .parameter_input_generation
+                .fetch_and(!RESERVED_BIT, Release);
+        }
         self.published = true;
     }
 }
@@ -40,7 +61,7 @@ impl Drop for ParameterInputAdmission<'_> {
         if !self.published {
             self.signal
                 .parameter_input_generation
-                .store(self.previous, Release);
+                .fetch_and(!RESERVED_BIT, Release);
         }
     }
 }
@@ -51,6 +72,7 @@ impl Drop for ParameterInputAdmission<'_> {
 pub struct ParameterInputFence<'a> {
     signal: &'a Revocation,
     generation: u64,
+    commit_decided: bool,
 }
 impl ParameterInputFence<'_> {
     /// Observe current revocation. This is only a snapshot: revocation may
@@ -58,12 +80,32 @@ impl ParameterInputFence<'_> {
     pub fn is_live(&self) -> bool {
         !self.signal.is_revoked()
     }
+    /// Establish one ordering point against source revocation without waiting.
+    /// Success orders this decision before later revocation; it does not prove
+    /// any graph, candidate, SDK or transport fact and is not publication
+    /// authority. The host must complete or refuse its transaction separately.
+    pub fn try_order_before_revocation(&mut self) -> bool {
+        if self.commit_decided {
+            return false;
+        }
+        let reserved = self.generation | RESERVED_BIT;
+        if self
+            .signal
+            .parameter_input_generation
+            .compare_exchange(reserved, reserved, AcqRel, Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.commit_decided = true;
+        true
+    }
 }
 impl Drop for ParameterInputFence<'_> {
     fn drop(&mut self) {
         self.signal
             .parameter_input_generation
-            .store(self.generation, Release);
+            .fetch_and(!RESERVED_BIT, Release);
     }
 }
 
@@ -75,7 +117,7 @@ impl Control {
         &self,
         ordinal: NonZeroU64,
     ) -> Option<ParameterInputSource> {
-        let generation = ordinal.get().checked_mul(2)?;
+        let generation = generation(ordinal)?;
         if self.is_revoked() || self.revoked.parameter_input_generation.load(Acquire) != generation
         {
             return None;
@@ -92,12 +134,15 @@ impl Control {
         &self,
         ordinal: NonZeroU64,
     ) -> Result<ParameterInputAdmission<'_>, Fault> {
-        let next = ordinal.get().checked_mul(2).ok_or(Fault::Exhausted)?;
+        let next = generation(ordinal).ok_or(Fault::Exhausted)?;
         if self.is_revoked() {
             return Err(Fault::Revoked);
         }
         let previous = self.revoked.parameter_input_generation.load(Acquire);
-        if previous & 1 != 0 {
+        if previous & REVOKED_BIT != 0 {
+            return Err(Fault::Revoked);
+        }
+        if previous & RESERVED_BIT != 0 {
             return Err(Fault::Saturated);
         }
         if next <= previous {
@@ -105,7 +150,7 @@ impl Control {
         }
         self.revoked
             .parameter_input_generation
-            .compare_exchange(previous, previous | 1, AcqRel, Acquire)
+            .compare_exchange(previous, previous | RESERVED_BIT, AcqRel, Acquire)
             .map_err(|_| Fault::Saturated)?;
         let admission = ParameterInputAdmission {
             signal: &self.revoked,
@@ -140,17 +185,18 @@ impl Callback {
         &self,
         ordinal: NonZeroU64,
     ) -> Option<ParameterInputFence<'_>> {
-        let generation = ordinal.get().checked_mul(2)?;
+        let generation = generation(ordinal)?;
         if self.is_revoked() {
             return None;
         }
         self.revoked
             .parameter_input_generation
-            .compare_exchange(generation, generation | 1, AcqRel, Acquire)
+            .compare_exchange(generation, generation | RESERVED_BIT, AcqRel, Acquire)
             .ok()?;
         let fence = ParameterInputFence {
             signal: &self.revoked,
             generation,
+            commit_decided: false,
         };
         if !fence.is_live() {
             return None;
