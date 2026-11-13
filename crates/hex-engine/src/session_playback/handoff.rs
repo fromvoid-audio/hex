@@ -1,18 +1,22 @@
 use super::*;
 use crate::{MidiTiming, Track};
+use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
 /// A control-prepared, source-bound tempo restart at one exact running cut.
 ///
-/// The plan retains both revisions. Its owner must account for those handles
-/// and reclaim the plan on control; borrowing it for a handoff transfers no
-/// ownership. It does not authorize publication or validate host commands,
-/// routes, output faults, or cancellation. The loop-aware constructor binds a
+/// Weak identities keep the two Arc allocations from being reused, but do not
+/// keep revision contents alive. Their allocations and this token need bounded
+/// custody and control-side reclamation; borrowing transfers no ownership.
+/// Callers retain the actual revisions independently: if the constructor's
+/// arguments are their last strong handles, those revisions expire on return.
+/// This does not authorize publication or validate host commands, routes,
+/// output faults, or cancellation. The loop-aware constructor binds a
 /// canonical loop state; transient section loops remain unsupported.
 pub struct PreparedTempoAnchor {
-    previous: Arc<PreparedRevision>,
-    candidate: Arc<PreparedRevision>,
+    previous: Weak<PreparedRevision>,
+    candidate: Weak<PreparedRevision>,
     arrangement_frame: u64,
     performance_frame: u64,
     loop_state: Option<ArrangementLoopState>,
@@ -21,12 +25,6 @@ pub struct PreparedTempoAnchor {
 }
 
 impl PreparedTempoAnchor {
-    /// The two retained graph roots, for control-side admission accounting.
-    /// The plan owns one shared handle to each root; this borrow transfers none.
-    pub fn retained_revisions(&self) -> [&PreparedRevision; 2] {
-        [&self.previous, &self.candidate]
-    }
-
     /// Compute both tempo conversions on control for the named future cut.
     pub fn prepare(
         previous: Arc<PreparedRevision>,
@@ -150,8 +148,8 @@ impl PreparedTempoAnchor {
         .frame_to_beat(mapped_frame)
         .map_err(|_| SessionPlaybackError::TempoConversion)?;
         Ok(Self {
-            previous,
-            candidate,
+            previous: Arc::downgrade(&previous),
+            candidate: Arc::downgrade(&candidate),
             arrangement_frame,
             performance_frame,
             loop_state,
@@ -445,8 +443,11 @@ impl SessionPlayback {
         previous: &mut Self,
         anchor: &PreparedTempoAnchor,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if !Arc::ptr_eq(&previous.revision, &anchor.previous)
-            || !Arc::ptr_eq(&self.revision, &anchor.candidate)
+        // The weak handles keep allocation identities reserved even after a
+        // graph expires. The two runtimes already own their live revisions;
+        // pointer comparison neither upgrades nor drops a graph on callback.
+        if !std::ptr::eq(Arc::as_ptr(&previous.revision), anchor.previous.as_ptr())
+            || !std::ptr::eq(Arc::as_ptr(&self.revision), anchor.candidate.as_ptr())
             || !previous.playing
             || previous.arrangement_frame != anchor.arrangement_frame
             || previous.performance_frame != anchor.performance_frame
