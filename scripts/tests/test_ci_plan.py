@@ -147,6 +147,20 @@ class PlannerSourceLoaderTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_session_resident_audio_source_and_nested_tests_share_module_boundary(self):
+        root = SCRIPTS.parent
+        owner = "hex-session"
+        inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml"}]
+        source = "crates/hex-session/src/service/resident_audio.rs"
+        tests = "crates/hex-session/src/service/resident_audio/tests/verified_replacement_tests.rs"
+        self.assertEqual(
+            plan.module_test_filters(root, [source, tests], inventory, [owner]),
+            {owner: ["service::resident_audio::"]},
+        )
+        self.assertEqual(
+            plan.module_test_filters(root, [tests], inventory, [owner]),
+            {owner: ["service::resident_audio::tests::verified_replacement_tests::"]},
+        )
     def test_path_included_storage_text_selects_its_real_consumers(self):
         inventory = [
             {"name": "hex-storage", "manifest": "crates/hex-storage/Cargo.toml", "features": {},

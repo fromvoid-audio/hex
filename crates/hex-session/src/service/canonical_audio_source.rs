@@ -6,6 +6,8 @@
 //! empty graphs; private loaded-sampler sources also stay in their worker-owned path rather than
 //! escaping through an Event owner.
 use super::*;
+mod source_content;
+pub use source_content::RawArrangementContentWitness;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
     context: hex_engine::AudioSourceContext,

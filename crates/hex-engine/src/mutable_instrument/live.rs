@@ -16,6 +16,7 @@ pub(super) struct LiveOccurrence {
     pub(super) id: u64,
     pub(super) quiet_age: Option<u64>,
     pub(super) release_requested: bool,
+    pub(super) contributor_fade: Option<ContributorFade>,
 }
 
 pub(super) struct LiveLedger {
@@ -367,6 +368,7 @@ impl MutableInstrumentTrackRuntime {
                         id,
                         quiet_age: None,
                         release_requested: false,
+                        contributor_fade: None,
                     });
                     live.push(NativeInstrumentEvent::NoteOn {
                         frame_offset,
@@ -507,6 +509,7 @@ impl MutableInstrumentTrackRuntime {
                             .gate_frame
                             .map(|gate| tail.saturating_sub(voice.age_frames.saturating_sub(gate))),
                         release_requested: false,
+                        contributor_fade: None,
                     });
                 }
             }
@@ -549,6 +552,7 @@ mod tests {
             id: 7,
             quiet_age: None,
             release_requested: true,
+            contributor_fade: None,
         });
         assert!(!ledger.committed_gates_released());
         ledger.begin();

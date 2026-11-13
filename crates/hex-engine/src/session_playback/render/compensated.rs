@@ -719,6 +719,7 @@ impl SessionPlayback {
                                 })
                                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                             source_live::render_source_live_input(
+                                &self.revision,
                                 self.computer_keyboard.as_mut().map(Box::as_mut),
                                 self.mutable_instruments[index].as_mut(),
                                 &mut self.mutable_onsets,
@@ -796,6 +797,7 @@ impl SessionPlayback {
                             )?;
                             let parameter_block = parameter_context.block();
                             source_live::render_source_live_input(
+                                &self.revision,
                                 self.computer_keyboard.as_mut().map(Box::as_mut),
                                 self.mutable_instruments[index].as_mut(),
                                 &mut self.mutable_onsets,

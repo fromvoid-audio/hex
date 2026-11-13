@@ -314,10 +314,19 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
+            let previous = self.route_scratch[index].owner;
             self.route_scratch[index].owner = self
                 .owner_for_target(pending.target, beat, pending.frame)
                 .map_err(|e| Invalid(e.diagnostic_message()))?;
             self.route_scratch[index].pending = None;
+            let fade = self.audio_release_fade();
+            super::audio_release::begin(
+                &mut self.route_scratch[index],
+                previous,
+                performance,
+                fade,
+            )
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
         }
         Ok(())
     }
