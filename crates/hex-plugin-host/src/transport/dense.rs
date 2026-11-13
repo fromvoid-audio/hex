@@ -248,6 +248,14 @@ impl DenseEffectCallback {
         self.callback.is_revoked()
     }
 
+    /// Reserve the exact input generation on this paired dense endpoint.
+    pub fn reserve_parameter_input_on_callback(
+        &self,
+        ordinal: std::num::NonZeroU64,
+    ) -> Option<super::ParameterInputFence<'_>> {
+        self.callback.reserve_parameter_input_on_callback(ordinal)
+    }
+
     #[cfg(test)]
     pub(super) fn replace_dense_ring_for_test(&mut self, worker: &mut Worker, capacity: usize) {
         let (sender, receiver) = RingBuffer::new(capacity);

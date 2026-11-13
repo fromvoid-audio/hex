@@ -356,15 +356,26 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     let instance = original_instance();
     let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
     let signal = Arc::clone(&owner.reaper.completed);
+    let ordinal = std::num::NonZeroU64::new(1).unwrap();
     let mut refused = None;
     let result: Result<(NativeWorkerParameterChange, ()), _> =
         owner.parameter_change_with_before(0, 0.75, false, |request| {
             assert!(!signal.parameter_change_requested.load(Acquire));
+            assert!(
+                endpoint
+                    .reserve_parameter_input_on_callback(ordinal)
+                    .is_none()
+            );
             refused = request.delivery_identity();
             Err("witness reservation refused")
         });
     assert!(matches!(result, Err("witness reservation refused")));
     assert!(!signal.parameter_change_requested.load(Acquire));
+    assert!(
+        endpoint
+            .reserve_parameter_input_on_callback(ordinal)
+            .is_none()
+    );
     let (request, reserved) = owner
         .parameter_change_with_before(0, 0.5, false, |request| {
             assert!(!signal.parameter_change_requested.load(Acquire));
@@ -374,6 +385,16 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     assert_eq!(Some(reserved), refused);
     assert_eq!(reserved.2, 0);
     assert_eq!(Some(reserved), request.delivery_identity());
+    // An admitted input is not evidence that the SDK has processed it.
+    let fence = endpoint
+        .reserve_parameter_input_on_callback(ordinal)
+        .unwrap();
+    let busy = owner.parameter_change_with_before(0, 0.25, false, |_| Ok(()));
+    assert!(matches!(
+        busy,
+        Err("native parameter input is already pending")
+    ));
+    drop(fence);
     for sequence in 0..3 {
         callback(&owner, &mut endpoint, sequence, 2.0, &[]);
     }
@@ -381,6 +402,21 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
         panic!("actual SDK point must process")
     };
     assert_eq!((actual.point.id, actual.point.normalized), (0, 0.5));
+    let fence = endpoint
+        .reserve_parameter_input_on_callback(ordinal)
+        .unwrap();
+    let busy = owner.parameter_change_with_before(0, 0.25, false, |_| Ok(()));
+    assert!(matches!(busy, Err("native parameter mailbox is busy")));
+    drop(fence);
+    let (next, ()) = owner
+        .parameter_change_with_before(0, 0.25, false, |_| Ok(()))
+        .unwrap();
+    assert!(
+        endpoint
+            .reserve_parameter_input_on_callback(ordinal)
+            .is_none()
+    );
+    assert!(owner.withdraw_parameter_change_on_control(&next).unwrap());
     owner.revoke_on_control();
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());

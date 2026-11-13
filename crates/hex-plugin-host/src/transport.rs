@@ -34,6 +34,8 @@ mod dense;
 pub use dense::{
     DenseEffectCallback, DenseParameterRequest, dense_effect_channel_from_completed_prefix,
 };
+mod parameter_fence;
+pub use parameter_fence::{ParameterInputAdmission, ParameterInputFence};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
@@ -115,6 +117,9 @@ struct Revocation {
     // Scope in high bits; low bit means armed. Keep the last serial after end
     // so a stale caller cannot reopen an earlier physical capture scope.
     editor_scope: AtomicU64,
+    // Even values encode the last admitted ordinal; the low bit reserves it
+    // against either another control admission or the paired callback.
+    parameter_input_generation: AtomicU64,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -133,6 +138,7 @@ impl Revocation {
             quantum_program: AtomicU64::new(0),
             quantum_state: AtomicU8::new(0),
             editor_scope: AtomicU64::new(0),
+            parameter_input_generation: AtomicU64::new(0),
         }
     }
 
