@@ -926,6 +926,30 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        // A restart discards compensation history and cannot take custody of
+        // a proven retained foreign tail. Keep the predecessor alive instead.
+        if relocate
+            && previous
+                .tail_proven_grouped
+                .iter()
+                .enumerate()
+                .any(|(slot, proven)| {
+                    *proven
+                        && (previous
+                            .tail_output_active
+                            .get(slot)
+                            .copied()
+                            .unwrap_or(false)
+                            || previous.releases.iter().any(|release| {
+                                release
+                                    .location
+                                    .tail_group()
+                                    .is_some_and(|group| usize::from(group) == slot)
+                            }))
+                })
+        {
+            return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
+        }
         // A loop edit may carry a source effect only through the continuous
         // handoff. Its committed history belongs to the donor's running clock.
         if relocate && source_transfer.is_some() && new_loop_region != old_loop_region {
@@ -4283,6 +4307,34 @@ impl SessionPlayback {
         // signal graph and the copied compensation history are unchanged.
         // Group-path and ancestor custody were checked above.
         let has_new_track_tail = old_track_tail_slots.iter().any(Option::is_some);
+        let needs_prior_tail_proof = previous.tail_output_active.iter().any(|&active| active)
+            || active_tail_groups.iter().enumerate().any(|(slot, active)| {
+                *active
+                    && previous
+                        .tail_route_sends
+                        .get(slot)
+                        .copied()
+                        .unwrap_or(false)
+            });
+        let unchanged_grouped = needs_prior_tail_proof
+            && !timing_changed
+            && old_loop == new_loop
+            && old_graph.zip(new_graph).is_some_and(|(old, new)| {
+                new.has_group_outputs()
+                    && old == new
+                    && clock_transfer == 1
+                    && self.compensation.is_some()
+                    && previous.compensation.is_some()
+            });
+        let proven_prior_tails = unchanged_grouped
+            && active_tail_groups.iter().enumerate().all(|(slot, active)| {
+                !*active
+                    || previous
+                        .tail_proven_grouped
+                        .get(slot)
+                        .copied()
+                        .unwrap_or(false)
+            });
         let detached_tails_aligned = !has_new_track_tail
             || match (
                 previous.revision.arrangement().signal_graph.as_deref(),
@@ -4314,15 +4366,7 @@ impl SessionPlayback {
             && (return_tail_plan.captures_bus()
                 || old_track_mutable_tail_slots.iter().any(Option::is_some)
                 || !detached_tails_aligned
-                || previous.tail_output_active.iter().any(|&active| active)
-                || active_tail_groups.iter().enumerate().any(|(slot, active)| {
-                    *active
-                        && previous
-                            .tail_route_sends
-                            .get(slot)
-                            .copied()
-                            .unwrap_or(false)
-                })
+                || (needs_prior_tail_proof && !proven_prior_tails)
                 || previous
                     .return_effect_tails
                     .slots()
@@ -4689,6 +4733,7 @@ impl SessionPlayback {
                 self.tail_track_ids[slot] = previous.tail_track_ids[slot];
                 self.tail_route_sends[slot] = previous.tail_route_sends[slot];
                 self.has_tail_route_sends |= self.tail_route_sends[slot];
+                self.tail_proven_grouped[slot] = previous.tail_proven_grouped[slot];
                 if let (Some(candidate_active), Some(previous_active)) = (
                     self.tail_output_active.get_mut(slot),
                     previous.tail_output_active.get(slot).copied(),
@@ -4741,6 +4786,26 @@ impl SessionPlayback {
                 )
                 && candidate.is_none()
             {
+                let suffix_start = old_track_tail_metadata
+                    .get(old_index)
+                    .copied()
+                    .flatten()
+                    .map(|(start, _)| start);
+                self.tail_proven_grouped[slot] = route_new_tail_sends
+                    && suffix_start.is_some_and(|start| {
+                        start < old_chain.len()
+                            && old_chain
+                                .storage_view()
+                                .entries()
+                                .skip(start)
+                                .all(|entry| entry.foreign_processor().is_some())
+                    })
+                    && !self.release_scratch.iter().any(|release| {
+                        release
+                            .location
+                            .tail_group()
+                            .is_some_and(|group| usize::from(group) == slot)
+                    });
                 old_chain.begin_output_tail();
                 *candidate = Some(std::mem::replace(
                     old_chain,
