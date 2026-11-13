@@ -1098,14 +1098,18 @@ fn source_manager_lists_and_deletes_without_assigning(cx: &mut TestAppContext) {
     visual
         .debug_bounds("source-manager-button")
         .expect("no-track manager");
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("shift-tab");
     visual.update(|window, cx| {
         editor.read_with(cx, |view, _| {
-            view.device_panel
-                .source_manager
-                .focus
-                .as_ref()
-                .unwrap()
-                .focus(window)
+            assert!(
+                view.device_panel
+                    .source_manager
+                    .focus
+                    .as_ref()
+                    .unwrap()
+                    .is_focused(window)
+            );
         })
     });
     visual.simulate_keystrokes("enter");
@@ -1554,6 +1558,107 @@ fn unassigned_source_name_refuses_invalid_and_stale_drafts(cx: &mut TestAppConte
             .unwrap();
         assert_eq!(s.receiver(), None);
     });
+}
+
+#[gpui::test]
+fn source_picker_shows_multi_selection_and_keeps_manager_independent(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, _, receiver, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "unbound".into(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::Track(unbound) = event.created.unwrap() else {
+        panic!("track")
+    };
+    let before = event.state.clone();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    for selected in [receiver, unbound] {
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(selected);
+            view.track_selection.replace(&[receiver, unbound]);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("source-picker-multiselect-hint")
+                .is_some()
+        );
+        let picker = visual.debug_bounds("device-source-picker").unwrap();
+        let selection = editor.read_with(&visual, |view, _| view.track_selection.clone());
+        visual.simulate_click(picker.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                view.device_panel
+                    .source_picker
+                    .focus
+                    .as_ref()
+                    .unwrap()
+                    .focus(window);
+            })
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.context_menu.is_none());
+            assert_eq!(view.track_selection, selection);
+            assert_eq!(view.state.as_ref().unwrap().project, before.project);
+        });
+        assert!(visual.debug_bounds("source-manager-button").is_some());
+        visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+        visual.simulate_keystrokes("shift-tab");
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.device_panel
+                        .source_manager
+                        .focus
+                        .as_ref()
+                        .unwrap()
+                        .is_focused(window)
+                );
+            })
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.context_menu.is_some()));
+        visual.simulate_keystrokes("enter"); // browse, never assign
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(view.selected_track, Some(selected));
+            assert_eq!(view.track_selection, selection);
+            assert_eq!(state.project, before.project);
+            assert_eq!(
+                (state.revision, state.can_undo, state.can_redo),
+                (before.revision, before.can_undo, before.can_redo)
+            );
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(unbound);
+        view.track_selection.replace(&[unbound]);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("source-picker-multiselect-hint")
+            .is_none()
+    );
+    assert!(visual.debug_bounds("source-manager-button").is_none());
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| assert!(view.context_menu.is_some()));
 }
 
 #[gpui::test]
