@@ -1006,11 +1006,36 @@ fn render_source(
             ] {
                 fields.push(view.sampler_parameter_control(owner, device, parameter, cx));
             }
-            div().id("source-sampler-scroll").debug_selector(|| "source-sampler-scroll".into())
-                .flex_1().min_h_0().w_full().overflow_x_scroll().overflow_y_hidden()
-                .child(div().w(px(crate::device_composition::SAMPLER_FRAME_WIDTH)).flex_shrink_0().flex().flex_col().gap(px(4.0)).p(px(4.0))
-                    .child(theme::text("waveform view and sample loading from source view are not yet available"))
-                    .child(div().grid().grid_cols(if loop_available { 12 } else { 8 }).gap(px(2.0)).children(fields)))
+            let overview = sampler_overview::render(view, owner, device, "sampler", cx);
+            div()
+                .id("source-sampler-scroll")
+                .debug_selector(|| "source-sampler-scroll".into())
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_x_scroll()
+                .overflow_y_hidden()
+                .child(
+                    div()
+                        .w(px(crate::device_composition::SAMPLER_FRAME_WIDTH))
+                        .h(px(DEVICE_PANEL_HEIGHT - DEVICE_PANEL_HEADER_HEIGHT))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .p(px(4.0))
+                        .child(overview)
+                        .child(theme::text(
+                            "sample loading from source view is not yet available",
+                        ))
+                        .child(
+                            div()
+                                .grid()
+                                .grid_cols(if loop_available { 12 } else { 8 })
+                                .gap(px(2.0))
+                                .children(fields),
+                        ),
+                )
         }
     } else if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
         let body = operator_panel::render_body(view, cx, device.id(), &metadata);
@@ -3241,7 +3266,13 @@ fn render_instrument(
                 "{readiness} · * release inactive in trigger mode{}",
                 loop_error.map_or_else(String::new, |error| format!(" · {error}"))
             )));
-        let overview = sampler_overview::render(view, track, device, &name, cx);
+        let overview = sampler_overview::render(
+            view,
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            &name,
+            cx,
+        );
         let body = crate::device_composition::body()
             .flex()
             .flex_col()

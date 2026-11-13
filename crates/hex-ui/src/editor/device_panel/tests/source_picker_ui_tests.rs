@@ -4241,3 +4241,202 @@ fn unassigned_empty_sampler_explains_loading_unavailable(cx: &mut TestAppContext
         );
     });
 }
+
+#[gpui::test]
+fn unassigned_sampler_waveform_drag_retains_source_preview_until_terminal(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, initial, selected, _, _, _) = actor_utility_fixture();
+    let original_track = initial.project.track(selected).unwrap().clone();
+    let mut model = Editor::new((*initial.project).clone(), 16).unwrap();
+    let Created::Asset(asset) = model
+        .execute(Command::AddAsset {
+            path: "waveform.wav".into(),
+            sample_rate: 48_000,
+            frames: 1024,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let sampler =
+        hex_engine::native_device_resources::current_sampler_fixture::one_shot_state(1024, asset)
+            .unwrap();
+    let Created::NativeSource(source) = model
+        .execute(Command::CreateNativeSource {
+            name: "waveform source".into(),
+            devices: vec![sampler],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let device = model
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let mut initial_event =
+        crate::editor::arrangement_main_track_ui_test::completed_event(&initial);
+    Arc::get_mut(&mut initial_event.state).unwrap().project = Arc::new(model.project().clone());
+    let (handle, editor) = actor_editor_window(cx, service, initial_event.state, selected);
+    let facts = hex_project::OriginalSourceFacts::new(1, [7; 32]).unwrap();
+    let overview = hex_session::source_overview_test_support::Fixture::new(
+        asset,
+        &vec![[0.5, -0.25]; 1024],
+        48_000,
+        facts,
+        None,
+    )
+    .unwrap();
+    editor.update(cx, |view, cx| {
+        let mut event = crate::editor::arrangement_main_track_ui_test::completed_event(
+            view.state.as_ref().unwrap(),
+        );
+        let state = Arc::get_mut(&mut event.state).unwrap();
+        state.source_overviews = overview.view(hex_engine::AudioSourceContext {
+            project_generation: view.project_generation,
+            editor_revision: state.revision,
+        });
+        view.state = Some(event.state);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    open_unassigned_source(&mut visual, &editor, "waveform source · 0 midi");
+    let bounds = visual
+        .debug_bounds("sampler-source-waveform")
+        .expect("waveform");
+    let down = point(bounds.left() + px(1.0), bounds.top() + px(12.0));
+    let moved = point(down.x + bounds.size.width / 4.0, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.sampler_parameter_pending());
+        assert!(view.pending_requests.is_empty());
+    });
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let fraction = |visual: &mut VisualTestContext| {
+        let wave = visual.debug_bounds("sampler-source-waveform").unwrap();
+        let marker = visual.debug_bounds("sampler-source-start").unwrap();
+        f32::from(marker.left() - wave.left()) / f32::from(wave.size.width)
+    };
+    assert!(
+        (fraction(&mut visual) - 0.25).abs() < 0.002,
+        "fraction={} bounds={bounds:?} state={}",
+        fraction(&mut visual),
+        editor.read_with(&visual, |view, _| format!(
+            "owner={:?} error={:?} pending={}",
+            view.device_panel.owner,
+            view.error,
+            view.edit_pending()
+        ))
+    );
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let request = editor.read_with(&visual, |view, _| {
+        let request = crate::editor::sampler_parameter::tests::pending_request(view)
+            .expect("source boundary receipt");
+        assert_eq!(
+            request.owner,
+            hex_session::service::SamplerParameterOwner::Source(source)
+        );
+        assert_eq!(
+            (request.device, request.parameter, request.value),
+            (device, hex_engine::SamplerParameter::StartFrame, 256.0)
+        );
+        request
+    });
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!((fraction(&mut visual) - 0.25).abs() < 0.002);
+    }
+    editor.update(&mut visual, |view, cx| {
+        let mut unrelated = crate::editor::arrangement_main_track_ui_test::completed_event(
+            view.state.as_ref().unwrap(),
+        );
+        Arc::get_mut(&mut unrelated.state).unwrap().revision =
+            view.state.as_ref().unwrap().revision;
+        unrelated.sampler_edit_complete = Some(request.request_id + 1);
+        view.receive(unrelated);
+        assert!(view.sampler_parameter_pending());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!((fraction(&mut visual) - 0.25).abs() < 0.002);
+    editor.update(&mut visual, |view, cx| {
+        let old = view.state.as_ref().unwrap();
+        let mut event = crate::editor::arrangement_main_track_ui_test::completed_event(old);
+        let state = Arc::get_mut(&mut event.state).unwrap();
+        let original = state.project.device(device).unwrap().state();
+        let patched = hex_engine::patch_sampler_parameter_on_control(
+            request.parameter,
+            original,
+            request.value,
+        )
+        .unwrap();
+        let mut model = Editor::new((*state.project).clone(), 16).unwrap();
+        model
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: patched,
+            })
+            .unwrap();
+        state.project = Arc::new(model.project().clone());
+        state.revision += 1;
+        state.source_overviews = overview.view(hex_engine::AudioSourceContext {
+            project_generation: view.project_generation,
+            editor_revision: state.revision,
+        });
+        event.sampler_edit_complete = Some(request.request_id);
+        view.receive(event);
+        assert!(!view.sampler_parameter_pending());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(selected)
+                .unwrap(),
+            &original_track
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!((fraction(&mut visual) - 0.25).abs() < 0.002);
+    let marker = visual.debug_bounds("sampler-source-start").unwrap();
+    let down = point(marker.left() + px(1.0), bounds.top() + px(12.0));
+    let moved = point(down.x + bounds.size.width / 8.0, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!((fraction(&mut visual) - 0.375).abs() < 0.002);
+    editor.update(&mut visual, |view, cx| {
+        let mut event = crate::editor::arrangement_main_track_ui_test::completed_event(
+            view.state.as_ref().unwrap(),
+        );
+        Arc::get_mut(&mut event.state).unwrap().source_overviews = Default::default();
+        view.state = Some(event.state);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.sampler_parameter_pending());
+        assert!(view.pending_requests.is_empty());
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Source(source))
+        );
+    });
+}
