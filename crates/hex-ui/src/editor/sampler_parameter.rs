@@ -21,7 +21,7 @@ const SAMPLER_INLINE_VALUE_WIDTH: f32 = 80.0;
 pub(super) struct Target {
     generation: u64,
     revision: u64,
-    track: TrackId,
+    owner: hex_session::service::SamplerParameterOwner,
     device: hex_project::DeviceId,
     parameter: SamplerParameter,
 }
@@ -96,23 +96,65 @@ impl Drop for State {
     }
 }
 impl Target {
+    pub(super) fn new(
+        generation: u64,
+        revision: u64,
+        owner: hex_session::service::SamplerParameterOwner,
+        device: hex_project::DeviceId,
+        parameter: SamplerParameter,
+    ) -> Self {
+        Self {
+            generation,
+            revision,
+            owner,
+            device,
+            parameter,
+        }
+    }
+
+    fn device(self, view: &EditorView) -> Option<&hex_project::Device> {
+        let project = &view.state.as_ref()?.project;
+        match self.owner {
+            hex_session::service::SamplerParameterOwner::Track(track) => {
+                project.track(track)?.instrument()
+            }
+            hex_session::service::SamplerParameterOwner::Source(source) => {
+                Some(project.native_source(source)?.instrument())
+            }
+        }
+        .filter(|device| device.id() == self.device)
+    }
+
     pub(super) fn current(self, view: &EditorView) -> bool {
-        view.project_generation == self.generation
-            && view.selected_track == Some(self.track)
-            && view.device_panel.owner == Some(device_panel::DevicePanelOwner::Track(self.track))
-            && view.state.as_ref().is_some_and(|s| {
-                s.revision == self.revision
-                    && s.project
-                        .track(self.track)
-                        .and_then(|t| t.instrument())
-                        .is_some_and(|d| {
-                            d.id() == self.device
-                                && (!self.parameter.is_source_frame()
-                                    || view.sampler_source_target_current(d))
-                        })
+        if view.project_generation != self.generation
+            || view
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != self.revision)
+        {
+            return false;
+        }
+        let owner_current = match self.owner {
+            hex_session::service::SamplerParameterOwner::Track(track) => {
+                view.selected_track == Some(track)
+                    && view.device_panel.owner == Some(device_panel::DevicePanelOwner::Track(track))
+            }
+            hex_session::service::SamplerParameterOwner::Source(source) => {
+                device_panel::source_owner_current(view, source)
+            }
+        };
+        owner_current
+            && self.device(view).is_some_and(|device| {
+                (matches!(
+                    self.owner,
+                    hex_session::service::SamplerParameterOwner::Track(_)
+                ) || device.state().type_id().as_str() == Ok("hex.instrument.sampler"))
+                    && (!self.parameter.is_source_frame()
+                        || view.sampler_source_target_current(device))
             })
     }
 }
+
 impl EditorView {
     /// Geometry owners capture this existing adapter's revision-bound target;
     /// they never publish an independent sampler edit or receipt.
@@ -131,13 +173,13 @@ impl EditorView {
                 Some("sampler boundary is unavailable while another edit is pending".into());
             return None;
         }
-        let target = Target {
-            generation: self.project_generation,
-            revision: self.state.as_ref()?.revision,
-            track,
+        let target = Target::new(
+            self.project_generation,
+            self.state.as_ref()?.revision,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             parameter,
-        };
+        );
         target.current(self).then_some(target)
     }
 
@@ -151,15 +193,9 @@ impl EditorView {
                 "sampler boundary target changed or frame exceeds supported limits",
             ));
         }
-        let device = self
-            .state
-            .as_ref()
-            .and_then(|s| s.project.track(target.track))
-            .and_then(|t| t.instrument())
-            .filter(|d| d.id() == target.device)
-            .ok_or(hex_engine::Invalid(
-                "sampler boundary target is unavailable",
-            ))?;
+        let device = target.device(self).ok_or(hex_engine::Invalid(
+            "sampler boundary target is unavailable",
+        ))?;
         let frames = device
             .state()
             .asset_references()
@@ -193,21 +229,16 @@ impl EditorView {
             self.error = Some(error.to_string().into());
             return;
         }
-        let current = self
-            .state
-            .as_ref()
-            .and_then(|s| s.project.track(target.track))
-            .and_then(|t| t.instrument())
-            .and_then(|d| {
-                hex_engine::sampler_parameter_value_on_control(target.parameter, d.state()).ok()
-            });
+        let current = target.device(self).and_then(|d| {
+            hex_engine::sampler_parameter_value_on_control(target.parameter, d.state()).ok()
+        });
         if current != Some(frame as f64) {
             self.submit_sampler_parameter(target, frame as f64);
         }
     }
 
-    /// A source boundary draft and its accepted keyed request share one display
-    /// value with numeric controls. Only the exact terminal retires the latter.
+    /// Keep the active boundary draft and admitted numeric value visible until
+    /// its exact terminal installs canonical state.
     pub(super) fn sampler_display_value(
         &self,
         track: TrackId,
@@ -215,30 +246,30 @@ impl EditorView {
         parameter: SamplerParameter,
         cx: &gpui::App,
     ) -> Result<f64, hex_engine::Invalid> {
-        if parameter.is_source_frame() {
-            if let Some(value) =
+        if parameter.is_source_frame()
+            && let Some(value) =
                 super::device_panel::sampler_boundary_preview(self, track, device.id(), parameter)
-            {
-                return Ok(value as f64);
-            }
-            if let Some(pending) = self.sampler_parameter.pending.as_ref()
-                && let PendingTarget::Parameter(target) = pending.target
-                && target.track == track
-                && target.device == device.id()
-                && target.parameter == parameter
-                && target.current(self)
-                && let Some(value) = pending.value
-            {
-                return Ok(value);
-            }
-            if let Some(control) = self.sampler_parameter.controls.get(&parameter)
-                && control.target.track == track
-                && control.target.device == device.id()
-                && control.target.current(self)
-                && control.entity.read(cx).is_interacting()
-            {
-                return Ok(control.entity.read(cx).value());
-            }
+        {
+            return Ok(value as f64);
+        }
+        if let Some(pending) = self.sampler_parameter.pending.as_ref()
+            && let PendingTarget::Parameter(target) = pending.target
+            && target.owner == hex_session::service::SamplerParameterOwner::Track(track)
+            && target.device == device.id()
+            && target.parameter == parameter
+            && target.current(self)
+            && let Some(value) = pending.value
+        {
+            return Ok(value);
+        }
+        if parameter.is_source_frame()
+            && let Some(control) = self.sampler_parameter.controls.get(&parameter)
+            && control.target.owner == hex_session::service::SamplerParameterOwner::Track(track)
+            && control.target.device == device.id()
+            && control.target.current(self)
+            && control.entity.read(cx).is_interacting()
+        {
+            return Ok(control.entity.read(cx).value());
         }
         hex_engine::sampler_parameter_value_on_control(parameter, device.state())
     }
@@ -342,7 +373,7 @@ impl EditorView {
             request_id: id,
             project_generation: target.generation,
             revision: target.revision,
-            owner: hex_session::service::SamplerParameterOwner::Track(target.track),
+            owner: target.owner,
             device: target.device,
             parameter: target.parameter,
             value,
@@ -510,20 +541,20 @@ impl EditorView {
                     .into_any_element();
             }
         }
-        let target = Target {
-            generation: self.project_generation,
-            revision: state.revision,
-            track,
-            device: device.id(),
+        let target = Target::new(
+            self.project_generation,
+            state.revision,
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device.id(),
             parameter,
-        };
+        );
         if self
             .sampler_parameter
             .controls
             .get(&parameter)
             .is_none_or(|c| {
                 c.target.generation != target.generation
-                    || c.target.track != target.track
+                    || c.target.owner != target.owner
                     || c.target.device != target.device
                     || c.bounds != (min, max)
             })

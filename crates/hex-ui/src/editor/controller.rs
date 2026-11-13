@@ -6207,6 +6207,7 @@ mod sampler_native_ui_protocol_tests {
             assert!(view.applied_project_revision.is_none());
             assert_eq!(view.audio_admission, before);
             let mut metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
                 clip_preview: None,
                 context,
                 device_preview: Some(identity),
@@ -6630,6 +6631,7 @@ mod sampler_native_ui_protocol_tests {
                 canonical_revision: canonical.revision,
             };
             let metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
                 clip_preview: None,
                 context,
                 device_preview: Some(identity),

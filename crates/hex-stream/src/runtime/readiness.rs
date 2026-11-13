@@ -869,6 +869,11 @@ impl ConstructorPageLoan {
     pub fn test_ready_page(&self, key: crate::ResourcePageKey) -> bool {
         self.pages.endpoint.test_ready_page(key)
     }
+    /// Test fixture only: queue the normal speculative path without pumping.
+    #[cfg(feature = "test-support")]
+    pub fn test_prefetch_audio_page(&mut self, key: StreamSourceKey, index: u64) {
+        self.pages.prefetch_page(key, index);
+    }
     fn acknowledge_view(
         &mut self,
         role: ProtectionRole,

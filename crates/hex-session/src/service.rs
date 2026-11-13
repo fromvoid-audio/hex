@@ -96,7 +96,7 @@ pub use audio_sink::{
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationFailure,
     ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -5478,6 +5478,8 @@ fn run_worker(
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
+                                        source_origin:
+                                            crate::service::ResidentSourceOrigin::Unknown,
                                         clip_preview: None,
                                         context,
                                         device_preview: None,
@@ -9107,6 +9109,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9174,6 +9177,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.expression = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9297,6 +9301,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.audition = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9438,6 +9443,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.keyboard = Some((track, Arc::clone(&input)));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9566,6 +9572,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context,
                                 device_preview: None,

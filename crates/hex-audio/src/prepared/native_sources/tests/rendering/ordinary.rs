@@ -13,6 +13,8 @@ mod manual_origin;
 mod manual_pause;
 mod manual_preroll;
 mod parameter_extension;
+mod parameter_pressure;
+mod parameter_publication;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;

@@ -61,6 +61,53 @@ fn prepare(session: &Session, sink: &mut OfflineSink) -> Snapshot {
         .unwrap()
 }
 
+#[test]
+fn rebased_resident_publication_does_not_claim_the_old_preparation_origin() {
+    let files = sampler_export::tests::Files::new(false);
+    let session = interactive_sampler_session(&files);
+    let observed = Arc::new(Observed::default());
+    let mut sink = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    let mut snapshot = session
+        .publish_resident_snapshot(
+            context(0),
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        observed
+            .publications
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .0
+            .source_origin,
+        ResidentSourceOrigin::CanonicalCandidate
+    );
+    let inputs = session
+        .resident_seek_inputs(sampler_export::Admission::default(), None, None)
+        .unwrap();
+    inputs
+        .publish(&mut snapshot, session.project(), &mut sink, context(1))
+        .unwrap();
+    assert_eq!(
+        observed
+            .publications
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .0
+            .source_origin,
+        ResidentSourceOrigin::Unknown
+    );
+}
+
 fn render(snapshot: &Snapshot) -> Vec<hex_engine::Frame> {
     let mut playback = super::super::playback_with_loop(snapshot, None).unwrap();
     playback

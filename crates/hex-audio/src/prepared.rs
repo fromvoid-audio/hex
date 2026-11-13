@@ -436,12 +436,31 @@ pub enum PublicationPolicy {
         source: AppliedAudioSource,
         fence: StoppedEditFence,
     },
+    /// Inherit only while the native parameter gesture's exact ordinary source
+    /// and transport are still current. This grants no native worker custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    InheritUnderNativeParameter {
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        playing: bool,
+    },
     /// Structural live edit under the same source/command gate; inherit the actual
     /// installation-boundary transport, routes and voice/release state.
     InheritUnderArrangement(StoppedEditFence),
 }
 
 impl PublicationPolicy {
+    fn inherits_runtime(self) -> bool {
+        match self {
+            Self::InheritRuntime
+            | Self::InheritUnderArrangement(_)
+            | Self::InheritUnderStoppedNative { .. } => true,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::InheritUnderNativeParameter { .. } => true,
+            _ => false,
+        }
+    }
+
     fn fresh_fence(self) -> Option<FreshRuntimeFence> {
         match self {
             Self::InstallFreshRuntimeIfUnchanged(fence)
@@ -1423,6 +1442,7 @@ pub struct Callback {
     stream_outcome_count: usize,
     transport_fade: Option<transport_fade::PendingFade>,
     yield_stream_successor_once: bool,
+    current_quantum_pins: Option<crate::candidate_custody::QuantumPins>,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -1593,6 +1613,7 @@ pub(crate) fn channel_with_interface(
             stream_outcome_count: 0,
             transport_fade: None,
             yield_stream_successor_once: false,
+            current_quantum_pins: None,
             stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -2973,7 +2994,27 @@ impl Callback {
     }
 
     fn return_graph(&mut self, publication: Publication) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.restore_parameter_predecessor_prewarm(&publication);
         self.return_publication(ReturnedPublication::Legacy(publication));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn restore_parameter_predecessor_prewarm(&mut self, publication: &Publication) {
+        let PublicationPolicy::InheritUnderNativeParameter { source, .. } = publication.policy
+        else {
+            return;
+        };
+        if self.status.closing.load(Acquire) {
+            return;
+        }
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
+            && active.revision == source.audio_revision
+            && active.source_context == Some(source.context)
+            && let Some(mut view) = active.stream_view()
+        {
+            view.publication_abandoned();
+        }
     }
     fn return_publication(&mut self, publication: ReturnedPublication) {
         if let ReturnedPublication::Domain(pages) = &publication {
@@ -3273,6 +3314,28 @@ impl Callback {
         );
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn native_parameter_fence_matches(
+        &self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        playing: bool,
+        successor: Option<hex_engine::AudioSourceContext>,
+    ) -> bool {
+        let predecessor = self.active.as_ref().and_then(ActivePublication::legacy);
+        self.status.native_parameter_source(playing) == Some((source, transport_epoch))
+            && source.output_identity == self.candidate_root.root_id()
+            && predecessor.is_some_and(|active| {
+                active.revision == source.audio_revision
+                    && active.source_context == Some(source.context)
+            })
+            && successor.is_some_and(|context| {
+                context.project_generation == source.context.project_generation
+                    && source.context.editor_revision.checked_add(1)
+                        == Some(context.editor_revision)
+            })
+    }
+
     fn advance_legacy_publication(&mut self, frames: Option<usize>) {
         if frames.is_none()
             && self
@@ -3280,6 +3343,24 @@ impl Callback {
                 .as_ref()
                 .is_some_and(|next| next.streams.is_some())
         {
+            // An already-prepared candidate must release its page role before
+            // an admitted command can schedule work on the predecessor.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if self.status.admitted_ticket.load(Acquire)
+                != self.status.consumed_command.load(Acquire)
+                && let Some(mut next) = self.deferred.take()
+            {
+                if matches!(
+                    next.policy,
+                    PublicationPolicy::InheritUnderNativeParameter { .. }
+                ) {
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.cancel_install(&mut self.domain_pages);
+                    }
+                    self.restore_parameter_predecessor_prewarm(&next);
+                }
+                self.deferred = Some(next);
+            }
             return;
         }
         if !self.quantized_seek_publication_due() {
@@ -3314,6 +3395,25 @@ impl Callback {
                 );
                 self.return_graph(next);
                 self.status.publication_pending.store(false, Release);
+                return;
+            }
+            // Do not overtake an accepted transport command or cancel a
+            // streamed action while deciding a gesture-bound successor.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if matches!(
+                next.policy,
+                PublicationPolicy::InheritUnderNativeParameter { .. }
+            ) && (self.status.admitted_ticket.load(Acquire)
+                != self.status.consumed_command.load(Acquire)
+                || self.stream_pending_play.is_some()
+                || self.stream_action_pending()
+                || self.transport_fade.is_some())
+            {
+                if let Some(streams) = next.streams.as_mut() {
+                    streams.cancel_install(&mut self.domain_pages);
+                }
+                self.restore_parameter_predecessor_prewarm(&next);
+                self.deferred = Some(next);
                 return;
             }
             #[cfg(test)]
@@ -3394,6 +3494,18 @@ impl Callback {
                         }))
                     .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                PublicationPolicy::InheritUnderNativeParameter {
+                    source,
+                    transport_epoch,
+                    playing,
+                } => (!self.native_parameter_fence_matches(
+                    source,
+                    transport_epoch,
+                    playing,
+                    next.source_context,
+                ))
+                .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged),
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             #[cfg(test)]
@@ -3410,26 +3522,75 @@ impl Callback {
             }
             let mut promotions = None;
             if !forced_refusal && stale_fence.is_none() && next.streams.is_some() {
-                if let Some(mut active) = self
+                let pending_window = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::stream_view)
-                    && active.has_pending_render_window()
-                {
-                    if matches!(
-                        next.policy,
-                        PublicationPolicy::InheritRuntime
-                            | PublicationPolicy::InheritUnderArrangement(_)
-                            | PublicationPolicy::InheritUnderStoppedNative { .. }
-                    ) {
+                    .is_some_and(|active| active.has_pending_render_window());
+                if pending_window {
+                    if next.policy.inherits_runtime() {
                         // Give an inheriting successor's predecessor a chance
-                        // to commit its exact pending window first.
+                        // to commit its exact pending window first, while
+                        // bounding a current demand that can never fit.
+                        if let Some(frames) = frames {
+                            let mut reservation = self.reserve_current_stream_window(frames);
+                            if matches!(
+                                reservation,
+                                Err(crate::candidate_custody::QuantumFailure::Capacity)
+                            ) {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                reservation = self.reserve_current_stream_window(frames);
+                            }
+                            match reservation {
+                                Ok(Some(pins)) => self.current_quantum_pins = Some(pins),
+                                Ok(None)
+                                | Err(crate::candidate_custody::QuantumFailure::PendingAction) => {}
+                                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                                    if !next
+                                        .streams
+                                        .as_mut()
+                                        .is_some_and(|streams| streams.retry_capacity_conflict())
+                                    {
+                                        if let Some(streams) = next.streams.as_mut() {
+                                            streams.cancel_install(&mut self.domain_pages);
+                                        }
+                                        self.reject_publication(
+                                            next.revision,
+                                            PlaybackHandoffRejection::StreamedPageCapacity,
+                                        );
+                                        self.return_graph(next);
+                                        self.status.publication_pending.store(false, Release);
+                                        return;
+                                    }
+                                }
+                                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                                    if let Some(streams) = next.streams.as_mut() {
+                                        streams.cancel_install(&mut self.domain_pages);
+                                    }
+                                    self.reject_publication(
+                                        next.revision,
+                                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    );
+                                    self.return_graph(next);
+                                    self.status.publication_pending.store(false, Release);
+                                    return;
+                                }
+                            }
+                        }
                         self.deferred = Some(next);
                         return;
                     }
                     // A fresh replacement is a recovery path when the current
                     // source cannot complete; it must not wait on that source.
-                    active.cancel_pending_render_window(&mut self.domain_pages);
+                    if let Some(mut active) = self
+                        .active
+                        .as_mut()
+                        .and_then(ActivePublication::stream_view)
+                    {
+                        active.cancel_pending_render_window(&mut self.domain_pages);
+                    }
                 }
                 self.cancel_active_stream_action();
                 if let Some(mut active) = self
@@ -3439,20 +3600,16 @@ impl Callback {
                 {
                     active.publication_replaces_prewarm(&mut self.domain_pages);
                 }
-                if matches!(
-                    next.policy,
-                    PublicationPolicy::InheritRuntime
-                        | PublicationPolicy::InheritUnderArrangement(_)
-                        | PublicationPolicy::InheritUnderStoppedNative { .. }
-                ) && self
-                    .active
-                    .as_ref()
-                    .and_then(ActivePublication::legacy)
-                    .is_some_and(|old| {
-                        old.source_context.is_none_or(|context| {
-                            context.project_generation != next.control_context_generation
+                if next.policy.inherits_runtime()
+                    && self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::legacy)
+                        .is_some_and(|old| {
+                            old.source_context.is_none_or(|context| {
+                                context.project_generation != next.control_context_generation
+                            })
                         })
-                    })
                 {
                     self.reject_publication(
                         next.revision,
@@ -3462,12 +3619,64 @@ impl Callback {
                     self.status.publication_pending.store(false, Release);
                     return;
                 }
-                let previous = if matches!(
-                    next.policy,
-                    PublicationPolicy::InheritRuntime
-                        | PublicationPolicy::InheritUnderArrangement(_)
-                        | PublicationPolicy::InheritUnderStoppedNative { .. }
-                ) {
+                if let Some(frames) = frames {
+                    let mut reservation = self.reserve_current_stream_window(frames);
+                    if matches!(
+                        reservation,
+                        Err(crate::candidate_custody::QuantumFailure::Capacity)
+                    ) {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        reservation = self.reserve_current_stream_window(frames);
+                    }
+                    let refusal = match reservation {
+                        Ok(Some(pins)) => {
+                            let complete = pins.complete();
+                            self.current_quantum_pins = Some(pins);
+                            if !complete && next.policy.inherits_runtime() {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            None
+                        }
+                        Ok(None) => None,
+                        Err(crate::candidate_custody::QuantumFailure::PendingAction) => {
+                            self.deferred = Some(next);
+                            return;
+                        }
+                        Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                            if next
+                                .streams
+                                .as_mut()
+                                .is_some_and(|streams| streams.retry_capacity_conflict())
+                            {
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            Some(PlaybackHandoffRejection::StreamedPageCapacity)
+                        }
+                        Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                            Some(PlaybackHandoffRejection::StreamedPagesNotReady)
+                        }
+                    };
+                    if let Some(reason) = refusal {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                            cancellation.finish();
+                        }
+                        self.reject_publication(next.revision, reason);
+                        self.return_graph(next);
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                }
+                let previous = if next.policy.inherits_runtime() {
                     self.active
                         .as_mut()
                         .and_then(ActivePublication::legacy_mut)
@@ -3510,6 +3719,39 @@ impl Callback {
                             self.status.publication_pending.store(false, Release);
                             return;
                         }
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        if let PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        } = next.policy
+                        {
+                            let changed = !self.native_parameter_fence_matches(
+                                source,
+                                transport_epoch,
+                                playing,
+                                next.source_context,
+                            );
+                            let commands_pending = self.status.admitted_ticket.load(Acquire)
+                                != self.status.consumed_command.load(Acquire);
+                            if changed || commands_pending {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                if changed {
+                                    self.reject_publication(
+                                        next.revision,
+                                        PlaybackHandoffRejection::RuntimeFenceChanged,
+                                    );
+                                    self.return_graph(next);
+                                    self.status.publication_pending.store(false, Release);
+                                } else {
+                                    self.restore_parameter_predecessor_prewarm(&next);
+                                    self.deferred = Some(next);
+                                }
+                                return;
+                            }
+                        }
                         self.trace_audio(
                             AudioDiagnosticKind::PublicationPrepared,
                             next.revision,
@@ -3542,6 +3784,22 @@ impl Callback {
                         return;
                     }
                     refused => {
+                        let capacity_conflict = next
+                            .streams
+                            .as_ref()
+                            .is_some_and(|streams| streams.capacity_conflict());
+                        if capacity_conflict
+                            && next
+                                .streams
+                                .as_mut()
+                                .is_some_and(|streams| streams.retry_capacity_conflict())
+                        {
+                            if let Some(streams) = next.streams.as_mut() {
+                                streams.cancel_install(&mut self.domain_pages);
+                            }
+                            self.deferred = Some(next);
+                            return;
+                        }
                         let source_changed = next
                             .streams
                             .as_mut()
@@ -3572,7 +3830,11 @@ impl Callback {
                                 PlaybackHandoffRejection::StreamSourceChanged
                             } else {
                                 handoff.map_or(
-                                    PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    if capacity_conflict {
+                                        PlaybackHandoffRejection::StreamedPageCapacity
+                                    } else {
+                                        PlaybackHandoffRejection::StreamedPagesNotReady
+                                    },
                                     PlaybackHandoffRejection::from_error,
                                 )
                             },
@@ -3805,6 +4067,7 @@ impl Callback {
                     }
                     let diagnostic_context = next.source_context;
                     let previous = self.active.replace(ActivePublication::Legacy(next));
+                    self.release_current_quantum_pins();
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
                     // native references. No lock/allocation/owner drop occurs.
@@ -4368,6 +4631,7 @@ impl Callback {
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
         let result = self.render_inner(output);
+        self.release_current_quantum_pins();
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if result.is_ok()
