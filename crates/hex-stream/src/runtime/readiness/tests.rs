@@ -372,7 +372,30 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
         start: 0,
         end: 8,
     };
-    let current = [extent(0), extent(1)];
+    assert!(matches!(
+        loan.reserve_resident_current_quantum(&[extent(0), extent(0)]),
+        Err(CurrentQuantumRefusal::InvalidExtents)
+    ));
+    assert!(matches!(
+        loan.reserve_resident_current_quantum(&[StreamResourceExtent {
+            end: hex_engine::STREAM_PAGE_FRAMES + 1,
+            ..extent(0)
+        }]),
+        Err(CurrentQuantumRefusal::InvalidExtents)
+    ));
+    assert!(matches!(
+        loan.reserve_resident_current_quantum(&[extent(0), extent(1), extent(2), extent(3)]),
+        Err(CurrentQuantumRefusal::InvalidExtents)
+    ));
+    let pending = stamp(&owner, 1);
+    loan.submit_resources(ProtectionRole::Transition, pending, &[extent(3)])
+        .unwrap();
+    assert!(matches!(
+        loan.reserve_resident_current_quantum(&[extent(0), extent(1), extent(2)]),
+        Err(CurrentQuantumRefusal::Capacity)
+    ));
+    assert!(loan.cancel(ProtectionRole::Transition, pending.request_epoch));
+    let current = [extent(0), extent(1), extent(4)];
     let original = [
         loan.pages.page(key, 0).unwrap().frames[0],
         loan.pages.page(key, 1).unwrap().frames[0],
@@ -381,7 +404,7 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
     let mut reserved = None;
     #[cfg(feature = "allocation-probe")]
     let allocations = allocation_counter::measure(|| {
-        reserved = Some(loan.reserve_current_quantum(&current));
+        reserved = Some(loan.reserve_resident_current_quantum(&current));
     });
     #[cfg(feature = "allocation-probe")]
     assert_eq!(
@@ -394,14 +417,21 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
         (0, 0, 0, 0)
     );
     #[cfg(feature = "allocation-probe")]
-    let token = reserved.unwrap().ok().unwrap();
+    let (token, complete) = reserved.unwrap().ok().unwrap();
     #[cfg(not(feature = "allocation-probe"))]
-    let token = loan.reserve_current_quantum(&current).ok().unwrap();
+    let (token, complete) = loan
+        .reserve_resident_current_quantum(&current)
+        .ok()
+        .unwrap();
+    assert!(
+        !complete,
+        "the absent page must remain visible to the caller"
+    );
     assert!(matches!(
         loan.reserve_current_quantum(&current),
         Err(CurrentQuantumRefusal::Busy)
     ));
-    let candidate = stamp(&owner, 1);
+    let candidate = stamp(&owner, 2);
     let demand = [extent(3)];
     loan.submit_resources(ProtectionRole::Candidate, candidate, &demand)
         .unwrap();
@@ -409,7 +439,7 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
         loan.service(ProtectionRole::Candidate, candidate, 4, 1),
         Ok(ReadinessProgress::Pending)
     );
-    let transition = stamp(&owner, 2);
+    let transition = stamp(&owner, 3);
     assert_eq!(
         loan.submit_resources(ProtectionRole::Transition, transition, &[extent(2)]),
         Err(ReadinessRefusal::Capacity)
@@ -454,7 +484,11 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
     );
     assert!(released);
     assert!(!loan.release_current_quantum(&token));
-    let second = loan.reserve_current_quantum(&[extent(0)]).ok().unwrap();
+    let (second, complete) = loan
+        .reserve_resident_current_quantum(&[extent(0)])
+        .ok()
+        .unwrap();
+    assert!(complete);
     assert!(
         !loan.release_current_quantum(&token),
         "stale token must not clear a new reservation"
