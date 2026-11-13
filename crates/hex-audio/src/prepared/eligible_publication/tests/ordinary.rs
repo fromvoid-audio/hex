@@ -1694,9 +1694,20 @@ fn pending_replacement_case(looping: bool, retained_restart: bool) {
             0.5
         };
         for (index, frame) in output.iter().enumerate() {
+            let position = (before + index as u64) % frames;
+            let remaining = frames - position;
+            let seam_gain = if looping && remaining <= 128 {
+                (remaining - 1) as f32 / 127.0
+            } else {
+                1.0
+            };
             assert_eq!(
                 *frame,
-                [if index < committed { expected } else { 0.0 }; 2],
+                [if index < committed {
+                    expected * seam_gain
+                } else {
+                    0.0
+                }; 2],
                 "before={before} after={after} committed={committed} index={index} revision={revision} buffering={} pending={}",
                 control.status.stream_buffering.load(Acquire),
                 control.status.publication_pending.load(Acquire),
