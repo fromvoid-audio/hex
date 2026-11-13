@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 pub struct TransportObservation {
     pub audio_revision: u64,
     pub control_generation: u64,
+    /// Last completed command-consumption prefix at publication. Consumption
+    /// does not imply application; the value can lag during a command batch.
+    pub consumed_command_ticket: u64,
     pub arrangement_frame: u64,
     pub performance_frame: u64,
     pub playing: bool,
@@ -26,6 +29,7 @@ pub(super) struct TransportObservationSlot {
     available: AtomicBool,
     revision: AtomicU64,
     generation: AtomicU64,
+    consumed_command_ticket: AtomicU64,
     arrangement: AtomicU64,
     performance: AtomicU64,
     playing: AtomicBool,
@@ -41,6 +45,8 @@ impl TransportObservationSlot {
         if let Some(value) = value {
             self.revision.store(value.audio_revision, SeqCst);
             self.generation.store(value.control_generation, SeqCst);
+            self.consumed_command_ticket
+                .store(value.consumed_command_ticket, SeqCst);
             self.arrangement.store(value.arrangement_frame, SeqCst);
             self.performance.store(value.performance_frame, SeqCst);
             self.playing.store(value.playing, SeqCst);
@@ -79,6 +85,7 @@ impl TransportObservationSlot {
             let value = TransportObservation {
                 audio_revision: self.revision.load(SeqCst),
                 control_generation: self.generation.load(SeqCst),
+                consumed_command_ticket: self.consumed_command_ticket.load(SeqCst),
                 arrangement_frame: self.arrangement.load(SeqCst),
                 performance_frame: self.performance.load(SeqCst),
                 playing: self.playing.load(SeqCst),
@@ -118,6 +125,7 @@ mod tests {
         let first = TransportObservation {
             audio_revision: 1,
             control_generation: 1,
+            consumed_command_ticket: 1,
             arrangement_frame: 1,
             performance_frame: 1,
             playing: false,
@@ -135,6 +143,7 @@ mod tests {
                     writer.publish(Some(TransportObservation {
                         audio_revision: value,
                         control_generation: value,
+                        consumed_command_ticket: value,
                         arrangement_frame: value,
                         performance_frame: value,
                         playing: value % 2 == 0,
@@ -149,6 +158,7 @@ mod tests {
             for _ in 0..20_000 {
                 if let Some(value) = slot.read() {
                     assert_eq!(value.audio_revision, value.control_generation);
+                    assert_eq!(value.audio_revision, value.consumed_command_ticket);
                     assert_eq!(value.audio_revision, value.arrangement_frame);
                     assert_eq!(value.audio_revision, value.performance_frame);
                     assert_eq!(value.playing, value.audio_revision % 2 == 0);
