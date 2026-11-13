@@ -5,6 +5,7 @@ mod import_reuse_tests;
 mod modulation_edit_tests;
 mod native_automation_recording;
 mod plugin_effect_tests;
+mod retained_open_tests;
 mod source_binding_tests;
 mod verified_replacement_tests;
 use super::*;
