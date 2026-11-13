@@ -451,3 +451,121 @@ fn history_case() {
         applied
     );
 }
+
+#[test]
+fn streamed_section_launch_tracks_audible_clock_with_main_latency() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let _native = native_fixture();
+            let files = Files::new();
+            let mut h = ResidentHarness::with_frame_limit(4);
+            assert!(h.next().error.is_none());
+            let mut applied = h.applied(0).0;
+            let imported = h.run(Request::ImportToNewTrack {
+                path: files.wav(48_000, 32_768),
+                before_track: None,
+                start: 0,
+            });
+            applied = h.applied(applied).0;
+            assert!(
+                imported
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .sources()
+                    .values()
+                    .any(|source| matches!(
+                        source,
+                        hex_session::AudioSourceBinding::VerifiedFile(_)
+                    ))
+            );
+            let configured = h.run(Request::Edit(Command::SetLoopRegion {
+                start: 16_000,
+                end: 16_384,
+                enabled: true,
+            }));
+            assert!(configured.error.is_none(), "{:?}", configured.error);
+            applied = h.applied(applied).0;
+            let limiter = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            let limiter = hex_engine::patch_native_device_parameter(
+                &limiter,
+                ParameterId::from_static(6),
+                ParameterValue::Choice(2),
+            )
+            .unwrap();
+            let edited = h.run(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state: limiter,
+            }));
+            assert!(edited.error.is_none(), "{:?}", edited.error);
+            applied = h.applied(applied).0;
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            for _ in 0..8 {
+                h.render();
+            }
+            let mut intent = h.seek_intent(1, edited.state.revision, None, None);
+            intent.destination_frame = 16_000;
+            intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+                region: hex_project::LoopRegion::new(16_000, 16_384, true).unwrap(),
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            });
+            h.service.submit_resident_arrangement_seek(intent).unwrap();
+            let submitted = h.next();
+            assert!(submitted.error.is_none(), "{:?}", submitted.error);
+            let hex_session::service::ResidentPublicationAcceptance::Submitted {
+                audio_revision,
+                ..
+            } = h.seek_result().result.unwrap()
+            else {
+                panic!("section publication must be submitted")
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let first = loop {
+                h.pump();
+                let pcm = h.render();
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                if status.applied_revision.load(Acquire) == audio_revision {
+                    break pcm;
+                }
+                assert_eq!(status.applied_revision.load(Acquire), applied);
+                assert!(
+                    Instant::now() < deadline,
+                    "streamed section did not install"
+                );
+                std::thread::yield_now();
+            };
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.position.load(Acquire), 16_064);
+            assert_eq!(status.audible_position.load(Acquire), 16_000);
+            assert!(first.iter().flatten().all(|sample| sample.is_finite()));
+            let mut heard = false;
+            for block in 2..=12 {
+                let pcm = h.render();
+                assert!(pcm.iter().flatten().all(|sample| sample.is_finite()));
+                if block >= 7 {
+                    heard |= pcm.iter().flatten().any(|sample| sample.abs() > 0.001);
+                }
+                let elapsed = block * 64;
+                assert_eq!(status.position.load(Acquire), 16_000 + elapsed % 384);
+                assert_eq!(
+                    status.audible_position.load(Acquire),
+                    16_000 + elapsed.saturating_sub(288) % 384
+                );
+            }
+            assert!(heard, "streamed audio must be heard after the delay fills");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
