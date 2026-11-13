@@ -524,7 +524,7 @@ fn saved_square_lfo_uses_its_shape_at_each_utility_sample() {
 }
 
 #[test]
-fn source_utility_static_gain_eligibility_tracks_owner_and_filters() {
+fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::ParameterValue;
     let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
@@ -565,7 +565,23 @@ fn source_utility_static_gain_eligibility_tracks_owner_and_filters() {
         .post_instrument_effects()[0]
         .id();
     let eligible = |editor: &Editor, id| {
-        crate::project_source_utility_gain_edit_supported(editor.project(), id)
+        assert!(!crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::WIDTH
+        ));
+        let gain = crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::GAIN,
+        );
+        let balance = crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::BALANCE,
+        );
+        assert_eq!(gain, balance);
+        gain
     };
     assert!(!eligible(&editor, local));
     assert!(!eligible(&editor, device));

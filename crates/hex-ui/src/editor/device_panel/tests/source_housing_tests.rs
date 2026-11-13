@@ -104,19 +104,22 @@ fn shared_source_housing_excludes_local_prefix_and_suffix(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn shared_source_utility_gain_edits_from_contributor(cx: &mut TestAppContext) {
+fn shared_source_utility_matrix_edits_from_contributor(cx: &mut TestAppContext) {
     for filter in [
         None,
         Some(hex_devices::utility::parameter::DC_REMOVE),
         Some(hex_devices::utility::parameter::BASS_MONO),
     ] {
-        shared_source_utility_gain_with_filter(cx, filter);
+        for balance in [false, true] {
+            shared_source_utility_matrix_with_filter(cx, filter, balance);
+        }
     }
 }
 
-fn shared_source_utility_gain_with_filter(
+fn shared_source_utility_matrix_with_filter(
     cx: &mut TestAppContext,
     filter: Option<hex_lattice_contract::ParameterId>,
+    balance: bool,
 ) {
     cx.update(crate::editor::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
@@ -202,11 +205,20 @@ fn shared_source_utility_gain_with_filter(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(700.0)));
     visual.run_until_parked();
-    let gain = hex_lattice_contract::ParameterId::from_static(1);
+    let gain = hex_lattice_contract::ParameterId::from_static(if balance { 2 } else { 1 });
+    let original = if balance { 0.0 } else { 1.0 };
+    let desired = if balance {
+        0.5
+    } else {
+        10.0_f32.powf(6.0 / 20.0)
+    };
+    let typed = if balance { "50 r" } else { "6 db" };
     let selector = Box::leak(
         format!("device-{}-parameter-{}-value", device.value(), gain.value()).into_boxed_str(),
     );
-    visual.debug_bounds(selector).expect("source Utility gain");
+    visual
+        .debug_bounds(selector)
+        .expect("source Utility control");
     let picker = visual.debug_bounds("device-source-picker").unwrap();
     visual.simulate_click(picker.center(), Modifiers::default());
     visual.run_until_parked();
@@ -230,7 +242,7 @@ fn shared_source_utility_gain_with_filter(
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    enter_typed_value(&mut visual, device, gain, "6 db");
+    enter_typed_value(&mut visual, device, gain, typed);
     editor.update(cx, |view, cx| {
         assert!(super::super::finalize_controls(view, cx))
     });
@@ -243,7 +255,6 @@ fn shared_source_utility_gain_with_filter(
         )
         .ok()
     };
-    let six_db = 10.0_f32.powf(6.0 / 20.0);
     // The Service is deliberately not polled while the terminal is pending.
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
@@ -261,9 +272,9 @@ fn shared_source_utility_gain_with_filter(
                     parameter: gain,
                 })
             else {
-                panic!("pending source gain control")
+                panic!("pending source matrix control")
             };
-            assert!((entity.read(cx).value() - f64::from(six_db)).abs() < 0.00001);
+            assert!((entity.read(cx).value() - f64::from(desired)).abs() < 0.00001);
             assert_eq!(
                 view.state
                     .as_ref()
@@ -280,7 +291,7 @@ fn shared_source_utility_gain_with_filter(
     pump_until(
         &editor,
         cx,
-        |view| matches!(value(view), Some(ParameterValue::Float(n)) if (n - six_db).abs() < 0.00001),
+        |view| matches!(value(view), Some(ParameterValue::Float(n)) if (n - desired).abs() < 0.00001),
     );
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -314,13 +325,13 @@ fn shared_source_utility_gain_with_filter(
     pump_until(
         &editor,
         cx,
-        |view| matches!(value(view), Some(ParameterValue::Float(n)) if (n - 1.0).abs() < 0.00001),
+        |view| matches!(value(view), Some(ParameterValue::Float(n)) if (n - original).abs() < 0.00001),
     );
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(
         &editor,
         cx,
-        |view| matches!(value(view), Some(ParameterValue::Float(n)) if (n - six_db).abs() < 0.00001),
+        |view| matches!(value(view), Some(ParameterValue::Float(n)) if (n - desired).abs() < 0.00001),
     );
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
@@ -331,10 +342,10 @@ fn shared_source_utility_gain_with_filter(
     visual.run_until_parked();
     visual
         .debug_bounds(selector)
-        .expect("same Utility gain on receiver");
+        .expect("same Utility control on receiver");
     editor.read_with(cx, |view, _| {
         assert!(
-            matches!(value(view), Some(ParameterValue::Float(n)) if (n - six_db).abs() < 0.00001)
+            matches!(value(view), Some(ParameterValue::Float(n)) if (n - desired).abs() < 0.00001)
         )
     });
 }
@@ -380,10 +391,17 @@ fn source_utility_gain_is_limited_to_unautomated_active_processing() {
         })
         .unwrap();
     let available = |editor: &Editor| {
-        super::super::modulators::source_utility_gain_available(
+        let gain = super::super::modulators::source_utility_gain_available(
             editor.project(),
             editor.project().device(device).unwrap(),
-        )
+        );
+        let balance = hex_engine::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            hex_devices::utility::parameter::BALANCE,
+        );
+        assert_eq!(gain, balance);
+        gain
     };
     assert!(available(&editor));
     editor
