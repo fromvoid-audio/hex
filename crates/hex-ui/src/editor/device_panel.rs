@@ -59,6 +59,7 @@ pub(super) use device_picker::{
 };
 pub(super) use source_manager::Action as SourceManagerAction;
 pub(super) use source_manager::bind_keys as bind_source_manager_keys;
+pub(super) use source_manager::focus_from_workspace as focus_source_manager_from_workspace;
 pub(super) use source_manager::{name_overlay as source_name_overlay, naming as source_naming};
 pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
@@ -1395,6 +1396,9 @@ fn render_track(
     } else if !track.is_group() && track.source_id().is_none() {
         let card = source_picker::button(view, window, cx, track_id, None);
         header = header.child(card);
+    }
+    if !view.track_selection.only_or_empty(track_id) {
+        header = header.children(std::iter::once(source_manager::button(view, window, cx)));
     }
     header = header.child(track_name_view);
     if let Some(label) = retained_source_path_label(track) {

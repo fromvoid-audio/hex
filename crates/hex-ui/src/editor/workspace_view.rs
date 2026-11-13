@@ -146,7 +146,8 @@ impl EditorView {
             return false;
         }
         if reverse {
-            return super::device_panel::focus_source_picker_from_workspace(self, window);
+            return super::device_panel::focus_source_picker_from_workspace(self, window)
+                || super::device_panel::focus_source_manager_from_workspace(self, window);
         }
         self.set_mode(match self.mode {
             EditorMode::Arrangement => EditorMode::Session,

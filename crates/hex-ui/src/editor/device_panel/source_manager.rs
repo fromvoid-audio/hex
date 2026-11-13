@@ -51,6 +51,28 @@ pub(in crate::editor) fn naming(view: &EditorView) -> bool {
     view.device_panel.source_manager.name.is_some()
 }
 
+pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Window) -> bool {
+    if !view.clip_view_open || !view.device_panel_active || view.state.is_none() {
+        return false;
+    }
+    let visible = match view.device_panel.owner {
+        None => true,
+        Some(DevicePanelOwner::Track(track)) => !view.track_selection.only_or_empty(track),
+        _ => false,
+    };
+    let Some(focus) = view
+        .device_panel
+        .source_manager
+        .focus
+        .as_ref()
+        .filter(|_| visible)
+    else {
+        return false;
+    };
+    focus.focus(window);
+    true
+}
+
 #[derive(Clone, Copy)]
 enum Operation {
     Open,
@@ -535,6 +557,13 @@ pub(super) fn button(
             style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
         })
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+        .tooltip(|_, cx| {
+            cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description: "browse sources · shift-tab from workspace".into(),
+            })
+            .into()
+        })
         .child(theme::text("sources ▾"))
         .child(
             canvas(move |rect, _, _| measured.set(Some(rect)), |_, _, _, _| {})

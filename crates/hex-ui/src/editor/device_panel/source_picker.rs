@@ -204,6 +204,11 @@ fn open(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
+    if !view.track_selection.only_or_empty(track) {
+        view.error = Some("select one track to choose a source".into());
+        cx.notify();
+        return;
+    }
     if view.edit_pending()
         || view.tuning.client.snapshot().is_some()
         || view.tuning.client.has_pending_requests()
@@ -374,10 +379,12 @@ pub(super) fn button(
     summary: Option<Stateful<Div>>,
 ) -> Stateful<Div> {
     let bound = summary.is_some();
-    let available = view
-        .state
-        .as_ref()
-        .is_some_and(|state| !state.project.native_sources().is_empty());
+    let single_track = view.track_selection.only_or_empty(track);
+    let available = single_track
+        && view
+            .state
+            .as_ref()
+            .is_some_and(|state| !state.project.native_sources().is_empty());
     let focus = view
         .device_panel
         .source_picker
@@ -408,17 +415,28 @@ pub(super) fn button(
         })
         .children(summary)
         .when(!bound, |style| {
-            style.child(theme::text(if available {
+            style.child(theme::text(if !single_track {
+                "source"
+            } else if available {
                 "source · choose"
             } else {
                 "source · none"
             }))
         })
-        .when(bound, |style| style.child(theme::text(" ▾")))
+        .when(bound && available, |style| style.child(theme::text(" ▾")))
+        .when(!single_track, |style| {
+            style.child(
+                div()
+                    .debug_selector(|| "source-picker-multiselect-hint".into())
+                    .child(theme::text(" · select one track")),
+            )
+        })
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
                 kind: crate::tooltips::Kind::Identification,
-                description: if available {
+                description: if !single_track {
+                    "select one track to choose a source".into()
+                } else if available {
                     "choose an existing source · shift-tab from workspace".into()
                 } else {
                     "no retained sources".into()
