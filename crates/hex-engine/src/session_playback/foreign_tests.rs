@@ -819,7 +819,7 @@ fn active_foreign_tail_keeps_unchanged_compensated_group_pcm() {
         }
         fn reject_callback(&mut self) {}
     }
-    for location in [4, 5, 6, 8] {
+    for location in [4, 5, 6, 8, 10, 11] {
         for partition in [1, 8, 64] {
             let mut old =
                 SessionPlayback::new(prepared_with_latency(location, false, 0, Some(1)).0).unwrap();
@@ -889,7 +889,8 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
         }
         fn reject_callback(&mut self) {}
     }
-    for (old_location, new_location) in [(8, 9), (10, 10), (11, 11)] {
+    {
+        let (old_location, new_location) = (8, 9);
         let mut old =
             SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
         let mut reference =
@@ -926,6 +927,42 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
         assert_eq!(actual, expected);
         assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
     }
+
+    // A later revision cannot adopt the proven send route while its old
+    // worker is still active; refusal must leave that worker audible.
+    let mut old = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+    let mut reference_old =
+        SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+    let mut current = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+    let mut reference =
+        SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+    let mut later = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(3)).0).unwrap();
+    for playback in [&mut old, &mut reference_old] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback
+            .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+    }
+    current.try_inherit_state_from(&mut old).unwrap();
+    reference
+        .try_inherit_state_from(&mut reference_old)
+        .unwrap();
+    assert!(matches!(
+        later.try_inherit_state_from(&mut current),
+        Err(SessionPlaybackError::Arrangement(
+            super::handoff::COMPENSATED_TAILS_CHANGED
+        ))
+    ));
+    let mut actual = [[0.0; 2]; 24];
+    let mut expected = [[0.0; 2]; 24];
+    current
+        .render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+        .unwrap();
+    reference
+        .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
 }
 
 #[test]
