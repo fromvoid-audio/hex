@@ -67,7 +67,10 @@ impl Callback {
     }
 
     fn reject_quantized_seek_publication(&mut self, reason: PlaybackHandoffRejection) -> bool {
-        if let Some(next) = self.deferred.take() {
+        if let Some(mut next) = self.deferred.take() {
+            if let Some(streams) = next.streams.as_mut() {
+                streams.cancel_install(&mut self.domain_pages);
+            }
             if let Some(cell) = next.fresh_runtime_cancellation.as_ref() {
                 cell.finish();
             }
