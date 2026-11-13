@@ -1722,6 +1722,33 @@ impl PublicationControl {
         capture_runtime_fence(&self.status)
     }
 
+    /// Pair a running Session observation with the matching command/source
+    /// fence for conditional control-side preparation. A command batch can
+    /// make the observation lag until a later callback publication. The pair
+    /// can become stale immediately and does not authorize installation; the
+    /// callback must recheck the fence, exact graph and predicted clock. A
+    /// zero control generation is conservatively refused, even if explicit.
+    pub fn capture_running_transport_fence(
+        &self,
+    ) -> Option<(TransportObservation, FreshRuntimeFence)> {
+        let fence = capture_runtime_fence(&self.status)?;
+        let observation = self.status.transport_observation()?;
+        (observation.playing
+            && observation.loop_state.is_some()
+            && observation.control_generation != 0
+            && observation.audio_revision != 0
+            && observation.audio_revision == fence.expected_active_revision
+            && observation.consumed_command_ticket == fence.admitted_command_ticket
+            && self.status.admitted_ticket.load(Acquire) == fence.admitted_command_ticket
+            && self.status.consumed_command.load(Acquire) == fence.admitted_command_ticket
+            && self.status.last_output_fault_epoch.load(Acquire) == fence.output_fault_epoch
+            && !self.status.render_fault.load(Acquire)
+            && !self.status.device_fault.load(Acquire)
+            && self.status.pending_stop_marker.load(Acquire) == 0
+            && !self.status.closing.load(Acquire))
+        .then_some((observation, fence))
+    }
+
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
     /// Configure this capability even for an initially resource-free project so a later sampler
     /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
@@ -5610,6 +5637,7 @@ impl Callback {
                         |(position, performance, playing, loop_state)| TransportObservation {
                             audio_revision: active.revision,
                             control_generation: active.control_context_generation,
+                            consumed_command_ticket: self.status.consumed_command.load(Acquire),
                             arrangement_frame: position,
                             performance_frame: performance,
                             playing,
@@ -8983,6 +9011,63 @@ mod tests {
             ))
         );
         assert!(!control.status.publication_pending.load(Acquire));
+    }
+
+    #[test]
+    fn running_transport_fence_rejects_stale_and_pending_command_observations() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        control
+            .publish_with_policy_and_context_generation(
+                session_playback(1),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        callback.begin_block();
+        assert!(control.capture_running_transport_fence().is_none());
+        let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let (observed, fence) = control.capture_running_transport_fence().unwrap();
+        assert_eq!(observed.consumed_command_ticket, play);
+        assert_eq!(fence.admitted_command_ticket(), play);
+
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(0))
+            .unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let current = control.status.transport_observation().unwrap();
+        assert_eq!(current.consumed_command_ticket, seek);
+        control.status.transport_observation.publish(Some(observed));
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.transport_observation.publish(Some(current));
+        assert!(control.capture_running_transport_fence().is_some());
+
+        control
+            .status
+            .transport_observation
+            .publish(Some(TransportObservation {
+                audio_revision: current.audio_revision + 1,
+                ..current
+            }));
+        assert!(control.capture_running_transport_fence().is_none());
+        control
+            .status
+            .transport_observation
+            .publish(Some(TransportObservation {
+                control_generation: 0,
+                ..current
+            }));
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.transport_observation.publish(Some(current));
+        control.status.device_fault.store(true, Release);
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.device_fault.store(false, Release);
+        assert!(control.capture_running_transport_fence().is_some());
     }
 
     #[test]
