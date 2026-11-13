@@ -434,6 +434,13 @@ fn mutable_prefix_restoration(
         .is_some_and(|(prefix_end, _)| onset < prefix_end && gate > prefix_end)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Restart {
+    None,
+    Ordinary,
+    Baked,
+}
+
 impl SessionPlayback {
     /// Borrow a control-prepared anchor for this exact running restart.
     /// The host must independently fence its output, commands, routes, faults
@@ -645,8 +652,10 @@ impl SessionPlayback {
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
     /// unavailable source history...) does not refuse: the planner rejects it
     /// in its pure preflight (nothing committed), then audio restarts at the
-    /// cursor through the reset handoff. Voices and tails reset and gate-active
-    /// notes are chased on the next played block; the transport is never
+    /// cursor through the reset handoff. An active detached Return tail refuses
+    /// an ordinary reset so the predecessor keeps its audible output. Voices
+    /// and other tails reset and gate-active notes are chased on the next
+    /// played block; the transport is never
     /// stopped and no note-off is lost. A changed tempo map or loop relocates
     /// to the musically equivalent frame while playing. Source-owned effects
     /// need an exact continuation and cannot fall back to a restart.
@@ -716,20 +725,38 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
         if live && self.live_restart && self.candidate_admission_open {
-            return self.inherit_state_planned_once(previous, None, demand, true, None, anchor);
+            return self.inherit_state_planned_once(
+                previous,
+                None,
+                demand,
+                if fenced_restart {
+                    Restart::Baked
+                } else {
+                    Restart::Ordinary
+                },
+                None,
+                anchor,
+            );
         }
         if anchor.is_some() {
             if source_transfer.is_some() {
                 return Err(SessionPlaybackError::InvalidCommand);
             }
-            return self.inherit_state_planned_once(previous, None, demand, true, None, anchor);
+            return self.inherit_state_planned_once(
+                previous,
+                None,
+                demand,
+                Restart::Ordinary,
+                None,
+                anchor,
+            );
         }
         let is_preview = demand.is_some();
         let result = match self.inherit_state_planned_once(
             previous,
             groups,
             demand.as_deref_mut(),
-            false,
+            Restart::None,
             source_transfer.as_ref(),
             None,
         ) {
@@ -753,7 +780,14 @@ impl SessionPlayback {
                     && self.candidate_admission_open
                     && restartable(error) =>
             {
-                self.inherit_state_planned_once(previous, None, demand, true, None, None)
+                self.inherit_state_planned_once(
+                    previous,
+                    None,
+                    demand,
+                    Restart::Ordinary,
+                    None,
+                    None,
+                )
             }
             result => result,
         };
@@ -846,10 +880,11 @@ impl SessionPlayback {
         previous: &mut Self,
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
-        force_restart: bool,
+        restart: Restart,
         source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        let force_restart = restart != Restart::None;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -891,7 +926,15 @@ impl SessionPlayback {
             // deferral could not drain. Its output is silent and a resume
             // ramps in from silence, so its inaudible outgoing branches are
             // settled instead. A rendering predecessor still defers.
-            if !previous.renders_no_device_chains() {
+            if !previous.renders_no_device_chains()
+                || (restart != Restart::Baked
+                    && previous
+                        .return_effect_tails
+                        .slots()
+                        .iter()
+                        .flatten()
+                        .any(|tail| tail.output_active && tail.return_id().is_some()))
+            {
                 return Err(SessionPlaybackError::DeviceTransitionBusy);
             }
             // Preview uses the planned idle cut without settling the live
@@ -1178,6 +1221,19 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        // An ordinary reset cannot transfer a detached Return tail. A fenced
+        // bounce has already baked that audio into the successor.
+        if relocate
+            && restart != Restart::Baked
+            && previous
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active && tail.return_id().is_some())
+        {
+            return Err(SessionPlaybackError::LatencyLayoutChanged);
+        }
         // A restart discards compensation history and cannot take custody of
         // a proven retained foreign tail. Keep the predecessor alive instead.
         if relocate
