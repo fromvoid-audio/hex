@@ -1,6 +1,6 @@
 //! Bounded immediate transport replay within a resident output buffer.
 use super::{Playback, PlaybackAction, PlaybackActionError, PlaybackCommand, ShiftedForeign};
-use crate::{Frame, Invalid};
+use crate::{Frame, Invalid, MediaPages};
 
 /// Maximum commands admitted in one timed render call.
 pub const MAX_TIMED_TRANSPORT_COMMANDS: usize = 64;
@@ -51,6 +51,23 @@ impl Playback {
     ) -> Result<(), TimedTransportError> {
         validate(output.len(), commands)?;
         self.render_timed_validated(output, commands, |playback, part, _| playback.render(part))
+    }
+
+    /// Render with borrowed stream pages and immediate timed transport actions.
+    /// The page provider is borrowed only for this call. Page misses use the
+    /// existing renderer's silence/request behavior; this does not perform
+    /// native stream admission, preflight, or page protection. Schedule and
+    /// partial-failure semantics match [`Playback::render_with_timed_transport`].
+    pub fn render_with_timed_transport_and_pages<P: MediaPages>(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        pages: &mut P,
+    ) -> Result<(), TimedTransportError> {
+        validate(output.len(), commands)?;
+        self.render_timed_validated(output, commands, |playback, part, _| {
+            playback.render_with_pages(part, pages)
+        })
     }
 
     /// Render one resident foreign-processor callback with timed transport.

@@ -417,3 +417,49 @@ fn prepared_action_cannot_follow_a_new_runtime_reusing_the_same_box_and_revision
     assert_eq!(std::ptr::from_ref(&*runtime).addr(), address);
     assert!(runtime.validate_stream_action(&prepared).is_err());
 }
+
+#[test]
+fn timed_transport_with_borrowed_pages_matches_prepared_session_spans() {
+    use crate::{TimedTransportCommand, playback::Playback};
+    let revision = action_revision(false);
+    let mut timed = Playback::from_prepared(Arc::clone(&revision));
+    let mut oracle = Playback::from_prepared(revision);
+    let commands = [
+        TimedTransportCommand {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(4090),
+        },
+        TimedTransportCommand {
+            offset: 7,
+            command: PlaybackCommand::Seek(2),
+        },
+        TimedTransportCommand {
+            offset: 19,
+            command: PlaybackCommand::Stop,
+        },
+        TimedTransportCommand {
+            offset: 23,
+            command: PlaybackCommand::PlayFrom(4094),
+        },
+    ];
+    let mut actual = [[0.0; 2]; 40];
+    let mut expected = [[0.0; 2]; 40];
+    timed
+        .render_with_timed_transport_and_pages(&mut actual, &commands, &mut pages())
+        .unwrap();
+    let mut provider = pages();
+    for (index, command) in commands.iter().enumerate() {
+        oracle
+            .try_apply_action(PlaybackAction::Transport(command.command))
+            .unwrap();
+        let end = commands
+            .get(index + 1)
+            .map_or(expected.len(), |next| next.offset);
+        oracle
+            .render_with_pages(&mut expected[command.offset..end], &mut provider)
+            .unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    assert_eq!(timed.position(), oracle.position());
+}
