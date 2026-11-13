@@ -3160,7 +3160,7 @@ fn source_picker_moves_shared_utility(cx: &mut TestAppContext, earlier: bool) {
     });
 }
 
-fn open_unassigned_source(
+pub(in crate::editor) fn open_unassigned_source(
     visual: &mut VisualTestContext,
     editor: &Entity<EditorView>,
     source_label: &str,
@@ -4199,7 +4199,7 @@ fn unassigned_sampler_numeric_panel_retains_draft_and_receipt_across_repaints(
 }
 
 #[gpui::test]
-fn unassigned_empty_sampler_explains_loading_unavailable(cx: &mut TestAppContext) {
+fn unassigned_empty_sampler_load_cancellation_keeps_source_custody(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, selected, _, _, _) = actor_utility_fixture();
     let sampler = hex_engine::default_native_device_state_for_class(
@@ -4238,6 +4238,34 @@ fn unassigned_empty_sampler_explains_loading_unavailable(cx: &mut TestAppContext
                 .track(selected)
                 .unwrap(),
             state.project.track(selected).unwrap()
+        );
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        let target = view.first_sampler_target("first.wav".into()).unwrap();
+        assert_eq!(
+            target.owner,
+            hex_project::InstrumentAssetOwner::Source(source)
+        );
+        view.project_generation += 1;
+        view.load_first_sampler(target.clone(), cx);
+        assert!(!view.sampler_parameter_pending());
+        view.project_generation -= 1;
+        view.load_first_sampler(target, cx);
+        let id = view
+            .sampler_replacement_pending_id()
+            .expect("source load receipt");
+        view.cancel_first_sampler_load(Some(id));
+        assert!(!view.tick_sampler_parameter());
+        assert!(view.sampler_parameter_pending());
+        assert!(!super::super::finalize_controls(view, cx));
+        view.finish_sampler_parameter(Some(id + 1));
+        assert!(view.sampler_parameter_pending());
+        view.finish_sampler_parameter(Some(id));
+        assert!(!view.sampler_parameter_pending());
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Source(source))
         );
     });
 }

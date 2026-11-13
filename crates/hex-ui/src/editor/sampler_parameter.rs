@@ -45,7 +45,7 @@ enum PendingTarget {
     Replacement {
         generation: u64,
         revision: u64,
-        track: TrackId,
+        owner: hex_project::InstrumentAssetOwner,
         device: hex_project::DeviceId,
     },
 }
@@ -56,17 +56,28 @@ impl PendingTarget {
             Self::Replacement {
                 generation,
                 revision,
-                track,
+                owner,
                 device,
             } => {
                 view.project_generation == *generation
                     && view.state.as_ref().is_some_and(|state| {
-                        state.revision == *revision
-                            && state
+                        if state.revision != *revision {
+                            return false;
+                        }
+                        match *owner {
+                            hex_project::InstrumentAssetOwner::Track(track) => state
                                 .project
-                                .track(*track)
+                                .track(track)
                                 .and_then(|track| track.instrument())
-                                .is_some_and(|entry| entry.id() == *device)
+                                .is_some_and(|entry| entry.id() == *device),
+                            hex_project::InstrumentAssetOwner::Source(source) => {
+                                device_panel::source_owner_current(view, source)
+                                    && state
+                                        .project
+                                        .native_source(source)
+                                        .is_some_and(|source| source.instrument().id() == *device)
+                            }
+                        }
                     })
             }
         }
@@ -336,12 +347,21 @@ impl EditorView {
         }
     }
     pub(super) fn tick_sampler_parameter(&mut self) -> bool {
-        if self
-            .sampler_parameter
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.cancel.load(Ordering::Acquire) || !p.target.current(self))
-        {
+        if self.sampler_parameter.pending.as_ref().is_some_and(|p| {
+            if matches!(
+                p.target,
+                PendingTarget::Replacement {
+                    owner: hex_project::InstrumentAssetOwner::Source(_),
+                    ..
+                }
+            ) {
+                // Cancellation requests the worker to stop; only its exact
+                // terminal retires source-view custody.
+                false
+            } else {
+                p.cancel.load(Ordering::Acquire) || !p.target.current(self)
+            }
+        }) {
             self.retire_sampler_parameter();
             return true;
         }
@@ -431,7 +451,7 @@ impl EditorView {
         let super::sampler_load::Target {
             generation,
             revision,
-            track,
+            owner,
             path,
             slot,
         } = target;
@@ -456,7 +476,7 @@ impl EditorView {
             request_id: id,
             project_generation: generation,
             revision,
-            owner: hex_project::InstrumentAssetOwner::Track(track),
+            owner,
             device,
             expected_state,
             path,
@@ -466,11 +486,13 @@ impl EditorView {
         if self.enqueue(Request::SamplerEdit(
             hex_session::service::SamplerEdit::Replacement(request),
         )) {
+            self.status = "loading sample into sampler".into();
+            self.error = None;
             self.sampler_parameter.pending = Some(Pending {
                 target: PendingTarget::Replacement {
                     generation,
                     revision,
-                    track,
+                    owner,
                     device,
                 },
                 id,
