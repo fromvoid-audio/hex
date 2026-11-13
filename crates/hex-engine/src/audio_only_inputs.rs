@@ -105,11 +105,15 @@ impl OwnedAudioSource {
     }
     /// Metadata was numerically validated by its value constructor; copying a
     /// value into a NEW owned allocation never adopts a caller-created Arc.
+    /// Asset-only inputs accept original sources and refuse derived pitch pages.
     /// Error boxing is control-only and follows existing fatal-OOM semantics.
     pub fn try_streamed(
         metadata: StreamedSourceMetadata,
     ) -> Result<Self, Box<StreamedSourceRefusal>> {
         let result = (|| {
+            if metadata.key().pitch().is_some() {
+                return Err(AudioStorageError::SourceMismatch);
+            }
             if !crate::pcm_arc::native_layout_known() {
                 return Err(AudioStorageError::UnsupportedConstructor);
             }
@@ -466,6 +470,28 @@ impl OwnedAudioInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raw_asset_ingress_refuses_derived_pitch_and_returns_metadata() {
+        let raw = StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(7, ids()[0]),
+            48_000,
+            48_000,
+            8,
+            8,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let pitched = raw
+            .with_plain_pitch(700, hex_project::WarpResampler::V2)
+            .unwrap();
+        let refusal = match OwnedAudioSource::try_streamed(pitched.clone()) {
+            Ok(_) => panic!("derived audio must not enter the raw asset bank"),
+            Err(refusal) => refusal,
+        };
+        assert_eq!(refusal.reason, AudioStorageError::SourceMismatch);
+        assert_eq!(refusal.metadata, pitched);
+    }
     fn ids() -> Vec<AssetId> {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
