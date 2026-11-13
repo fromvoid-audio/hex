@@ -237,8 +237,8 @@ impl EditorView {
         }
     }
 
-    /// A source boundary draft and its accepted keyed request share one display
-    /// value with numeric controls. Only the exact terminal retires the latter.
+    /// Keep the active boundary draft and admitted numeric value visible until
+    /// its exact terminal installs canonical state.
     pub(super) fn sampler_display_value(
         &self,
         track: TrackId,
@@ -246,30 +246,30 @@ impl EditorView {
         parameter: SamplerParameter,
         cx: &gpui::App,
     ) -> Result<f64, hex_engine::Invalid> {
-        if parameter.is_source_frame() {
-            if let Some(value) =
+        if parameter.is_source_frame()
+            && let Some(value) =
                 super::device_panel::sampler_boundary_preview(self, track, device.id(), parameter)
-            {
-                return Ok(value as f64);
-            }
-            if let Some(pending) = self.sampler_parameter.pending.as_ref()
-                && let PendingTarget::Parameter(target) = pending.target
-                && target.owner == hex_session::service::SamplerParameterOwner::Track(track)
-                && target.device == device.id()
-                && target.parameter == parameter
-                && target.current(self)
-                && let Some(value) = pending.value
-            {
-                return Ok(value);
-            }
-            if let Some(control) = self.sampler_parameter.controls.get(&parameter)
-                && control.target.owner == hex_session::service::SamplerParameterOwner::Track(track)
-                && control.target.device == device.id()
-                && control.target.current(self)
-                && control.entity.read(cx).is_interacting()
-            {
-                return Ok(control.entity.read(cx).value());
-            }
+        {
+            return Ok(value as f64);
+        }
+        if let Some(pending) = self.sampler_parameter.pending.as_ref()
+            && let PendingTarget::Parameter(target) = pending.target
+            && target.owner == hex_session::service::SamplerParameterOwner::Track(track)
+            && target.device == device.id()
+            && target.parameter == parameter
+            && target.current(self)
+            && let Some(value) = pending.value
+        {
+            return Ok(value);
+        }
+        if parameter.is_source_frame()
+            && let Some(control) = self.sampler_parameter.controls.get(&parameter)
+            && control.target.owner == hex_session::service::SamplerParameterOwner::Track(track)
+            && control.target.device == device.id()
+            && control.target.current(self)
+            && control.entity.read(cx).is_interacting()
+        {
+            return Ok(control.entity.read(cx).value());
         }
         hex_engine::sampler_parameter_value_on_control(parameter, device.state())
     }
