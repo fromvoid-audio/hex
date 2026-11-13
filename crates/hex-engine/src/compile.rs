@@ -24,6 +24,7 @@ fn validate_serial_effect_units(
 
 /// One prepared Arrangement audio dependency. Streamed entries must come from
 /// the caller's verified catalog for the requested project-open generation.
+/// Asset-keyed bindings describe the original source, not derived pitch pages.
 #[derive(Clone, Debug)]
 pub enum PreparedAudioSource {
     Resident(Audio),
@@ -1488,7 +1489,8 @@ pub(crate) fn resolve_prepared<'a>(
             Ok(PreparedAudioSourceRef::Resident(audio))
         }
         PreparedAudioSource::Streamed(source) => {
-            if source.key().generation() != generation
+            if source.key().pitch().is_some()
+                || source.key().generation() != generation
                 || source.key().asset() != asset.id()
                 || source.source_rate() != asset.source_sample_rate()
                 || source.source_frames() != asset.source_frames()
@@ -1536,4 +1538,44 @@ pub(crate) fn project_with_source_bank<'a>(
         native_input,
         external_inputs,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project as CanonicalProject, WarpResampler};
+
+    #[test]
+    fn raw_asset_compilation_refuses_derived_pitch_pages() {
+        let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "plain".into(),
+                path: "plain.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        let raw = StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(7, asset),
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw)))]);
+        assert!(project_with_prepared_audio_sources(editor.project(), &sources, 7).is_ok());
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(pitched)))]);
+        assert!(
+            project_with_prepared_audio_sources(editor.project(), &sources, 7).is_err(),
+            "a raw clip must never consume pitched pages"
+        );
+    }
 }
