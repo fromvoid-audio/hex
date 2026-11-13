@@ -62,6 +62,17 @@ fn pair_with_frames(
     StreamCallbackPages,
     StreamSourceKey,
 ) {
+    pair_with_frames_using(frames, |_| hooks)
+}
+fn pair_with_frames_using(
+    frames: u16,
+    hooks: impl FnOnce(StreamSourceKey) -> Option<crate::worker::TestWorkerHooks>,
+) -> (
+    crate::worker::tests::Fixture,
+    StreamControl,
+    StreamCallbackPages,
+    StreamSourceKey,
+) {
     let wav = crate::worker::tests::Fixture::pcm16_frames(frames);
     let limits = VerifiedWavReaderLimits::new(
         WavReaderLimits::new(2 * 1024 * 1024, u64::from(frames), 128, 32768),
@@ -95,7 +106,7 @@ fn pair_with_frames(
     let mut runtime = StreamRuntime::new_inner(
         StreamConfig::with_pool_pages(4),
         vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
-        hooks,
+        hooks(key),
         #[cfg(feature = "test-support")]
         None,
     )
@@ -204,6 +215,124 @@ fn cancellation_retains_prefetch_origin_after_real_service_coalesces() {
             })
     );
     release_tx.send(()).unwrap();
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
+}
+
+#[test]
+fn cancelled_coalesced_prefetch_reclaims_before_real_worker_returns() {
+    let Some(mut owner) = artifact() else { return };
+    let (entered, entered_rx) = mpsc::sync_channel(1);
+    let (start, start_rx) = mpsc::sync_channel(1);
+    let (read_entered, read_entered_rx) = mpsc::sync_channel(1);
+    let (resume, resume_rx) = mpsc::sync_channel(1);
+    let (publications, published) = mpsc::sync_channel(8);
+    let (_wav, control, pages, key) = pair_with_frames_using(24000, |key| {
+        Some(crate::worker::TestWorkerHooks {
+            entered,
+            release: start_rx,
+            publications,
+            scalar_steps: None,
+            read_gate: Some(crate::worker::TestReadGate::new(
+                crate::PageKey {
+                    source: key,
+                    page_index: 3,
+                },
+                1,
+                read_entered,
+                resume_rx,
+                None,
+            )),
+        })
+    });
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    start.send(()).unwrap();
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    for index in 0..3 {
+        loan.pages.request_page(key, index);
+        while loan.pages.page(key, index).is_none() {
+            loan.pages.pump_ready(4);
+            assert!(std::time::Instant::now() < deadline, "cache warmup stalled");
+            std::thread::yield_now();
+        }
+        published.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    let current = [StreamPageExtent {
+        source: key,
+        page_index: 0,
+        start: 0,
+        end: 8,
+    }];
+    let initial_active = stamp(&owner, 1);
+    loan.submit(ProtectionRole::Active, initial_active, &current)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Active, initial_active, 4, 1),
+        Ok(ReadinessProgress::InstalledProtected)
+    );
+    assert!(loan.acknowledge(ProtectionRole::Active, initial_active, &current));
+    loan.pages.prefetch_page(key, 3);
+    read_entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let candidate = stamp(&owner, 2);
+    let candidate_extent = [StreamPageExtent {
+        source: key,
+        page_index: 3,
+        start: 0,
+        end: 8,
+    }];
+    loan.submit(ProtectionRole::Candidate, candidate, &candidate_extent)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Candidate, candidate, 1, 1),
+        Ok(ReadinessProgress::Pending)
+    );
+    assert_eq!(loan.pages.endpoint.stats().coalesced_requests, 1);
+    let survivors: Vec<_> = (0..3)
+        .filter(|&index| loan.pages.page(key, index).is_some())
+        .collect();
+    assert_eq!(
+        survivors.len(),
+        2,
+        "real service must reclaim one slot before requesting the missing page"
+    );
+    assert!(loan.cancel(ProtectionRole::Candidate, candidate.request_epoch));
+    assert!(
+        survivors.contains(&0),
+        "active protection must remain resident"
+    );
+    let active = stamp(&owner, 3);
+    loan.submit(ProtectionRole::Active, active, &current)
+        .unwrap();
+    resume.send(()).unwrap();
+    published.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Active, active, 4, 1),
+        Ok(ReadinessProgress::InstalledProtected)
+    );
+    assert!(
+        survivors
+            .into_iter()
+            .all(|index| loan.pages.page(key, index).is_some())
+    );
+    assert!(loan.acknowledge(ProtectionRole::Active, active, &current));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
     let report = finish(&mut domain);
