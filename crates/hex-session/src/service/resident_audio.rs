@@ -16,6 +16,8 @@ pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
+    /// Preparation origin is descriptive, not a source or installation proof.
+    pub(super) source_origin: ResidentSourceOrigin,
     /// Exact context used to prepare this graph. A retained overlay based on an
     /// older editor revision may still need accounting while it is rebased.
     pub(super) prepared_context: hex_engine::AudioSourceContext,
@@ -29,6 +31,7 @@ fn canonical_metadata(
     context: hex_engine::AudioSourceContext,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
+        source_origin: ResidentSourceOrigin::Unknown,
         clip_preview: None,
         context,
         device_preview: None,
@@ -346,6 +349,7 @@ impl Inputs<'_> {
             None => prepared,
         };
         let snapshot = Snapshot {
+            source_origin: ResidentSourceOrigin::Unknown,
             prepared_context: context,
             file_sources,
             resources,
@@ -462,6 +466,7 @@ impl Inputs<'_> {
             playback,
             sink,
             ResidentPublicationMetadata {
+                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                 clip_preview: None,
                 context,
                 device_preview: None,
@@ -544,6 +549,7 @@ impl Inputs<'_> {
             project,
             sink,
             ResidentPublicationMetadata {
+                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                 clip_preview: None,
                 context,
                 device_preview: None,
@@ -651,6 +657,16 @@ impl Inputs<'_> {
             runtime,
             snapshot.resources.metadata_bytes()?,
         )?;
+        // Derive the report from the actual prepared snapshot, not from the
+        // caller's optional preview identifiers. A rebased context is unknown.
+        let metadata = ResidentPublicationMetadata {
+            source_origin: if snapshot.prepared_context == metadata.context {
+                snapshot.source_origin
+            } else {
+                ResidentSourceOrigin::Unknown
+            },
+            ..metadata
+        };
         let mut plugin_admitted = false;
         sink.publish_resident_with_files(
             playback,
@@ -1122,6 +1138,7 @@ pub(super) fn prepare_import_playback(
         input.waveforms,
         context,
     )?;
+    snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
     admit()?;
     if let Some(position) = position {
         inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
@@ -1762,6 +1779,7 @@ impl Session {
             context,
         )?;
         let metadata = ResidentPublicationMetadata {
+            source_origin: crate::service::ResidentSourceOrigin::Unknown,
             clip_preview: None,
             context,
             device_preview: None,
@@ -1854,6 +1872,7 @@ impl Session {
             &self.audio_clip_waveforms,
             context,
         )?;
+        snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
@@ -1902,6 +1921,7 @@ impl Session {
             context,
         )?;
         let metadata = ResidentPublicationMetadata {
+            source_origin: crate::service::ResidentSourceOrigin::Unknown,
             clip_preview: None,
             context,
             device_preview: None,
@@ -1954,11 +1974,13 @@ impl Session {
                 &self.audio_clip_waveforms,
                 context,
             )?;
+            snapshot.source_origin = identity.source_origin();
             let project = Arc::new(candidate.clone());
             if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
                 return Err(SessionError::Invalid("clip audition cancelled"));
             }
             let metadata = ResidentPublicationMetadata {
+                source_origin: ResidentSourceOrigin::Unknown,
                 clip_preview: match &identity {
                     resident_preview::Identity::Clip(target) => target.move_identity(),
                     _ => None,
@@ -2548,6 +2570,7 @@ impl Session {
                 waveforms,
                 context,
             )?;
+            snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
             let publish_started = Instant::now();
             prepare_time = publish_started - prepare_started;
             if let Some(position) = bounce_position {
@@ -2583,6 +2606,7 @@ impl Session {
                     project,
                     sink,
                     ResidentPublicationMetadata {
+                        source_origin: crate::service::ResidentSourceOrigin::Unknown,
                         clip_preview: None,
                         context,
                         device_preview: None,
