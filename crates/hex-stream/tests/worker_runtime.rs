@@ -1511,3 +1511,276 @@ fn real_worker_recovers_competing_demand_while_prefetch_is_in_flight() {
     let report = runtime.shutdown().unwrap();
     assert!(report.worker_joined && report.accounting_complete);
 }
+
+#[test]
+fn pitched_worker_pages_match_resident_for_raw_and_converted_sources() {
+    use hex_project::WarpResampler;
+    use hex_warp::{Input, MapSegment, Mode, Request, Resampler, TimeMap, render_with_resampler};
+    for source_rate in [48_000, 44_100] {
+        let project_rate = 48_000;
+        let (wav, pcm) = TestWav::stereo_pcm16(source_rate, 12_001);
+        let limits = reader_limits(pcm.len());
+        let verified = VerifiedWavReader::open(wav.path(), limits).unwrap();
+        let playback_frames =
+            hex_project::converted_frame_count(pcm.len() as u64, source_rate, project_rate)
+                .unwrap();
+        let conversion = if source_rate == project_rate {
+            hex_project::IDENTITY_CONVERSION
+        } else {
+            hex_project::SINC_CONVERSION_V2
+        };
+        let raw = StreamedSourceMetadata::new(
+            StreamSourceKey::new(401, asset_id(pcm.len(), project_rate)),
+            source_rate,
+            project_rate,
+            pcm.len() as u64,
+            playback_frames,
+            conversion,
+            *verified.fingerprint(),
+        )
+        .unwrap();
+        let up = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+        let down = raw.with_plain_pitch(-700, WarpResampler::V1).unwrap();
+        assert!(up.with_plain_pitch(1, WarpResampler::V1).is_err());
+        let definitions = [&raw, &up, &down]
+            .into_iter()
+            .map(|metadata| {
+                SourceDefinition::new(wav.path().to_path_buf(), metadata.clone(), limits)
+                    .with_verified_manifest(verified.manifest().clone())
+            })
+            .collect();
+        let mut runtime =
+            StreamRuntime::new(StreamConfig::with_pool_pages(12), definitions).unwrap();
+        runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+        let footprint = runtime.catalog_footprint().unwrap();
+        let stale =
+            StreamSourceKey::plain_pitch(999, raw.key().asset(), 700, WarpResampler::V2).unwrap();
+        let rejected_before = runtime.stats().rejected_requests;
+        runtime.request_page(stale, 0);
+        assert_eq!(runtime.stats().rejected_requests, rejected_before + 1);
+        assert!(runtime.page(stale, 0).is_none());
+        assert_eq!(
+            footprint.pitch_scratch_bytes,
+            66_048 * std::mem::size_of::<[f32; 2]>()
+        );
+        assert!(footprint.kernel_table_bytes > 128 * 1024);
+        assert!(footprint.kernel_table_bytes <= footprint.kernel_peak_bound_bytes);
+        let original = Audio::new(source_rate, pcm).unwrap();
+        let project = if source_rate == project_rate {
+            original
+        } else {
+            resample_with_version(
+                &original,
+                project_rate,
+                ResampleLimits {
+                    max_source_frames: 100_000,
+                    max_output_frames: 100_000,
+                },
+                ResampleVersion::V2,
+            )
+            .unwrap()
+        };
+        let frames = project.frames();
+        let map = TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: playback_frames,
+                source_start_q32: 0,
+                source_end_q32: i128::from(playback_frames) << 32,
+            }],
+            playback_frames as usize,
+        )
+        .unwrap();
+        for (metadata, cents, law) in [(&up, 700, Resampler::V2), (&down, -700, Resampler::V1)] {
+            let expected = render_with_resampler(
+                &Request {
+                    attacks: &[],
+                    input: Input {
+                        frames,
+                        sample_rate: project_rate,
+                        region_start: 0,
+                        region_length: playback_frames,
+                        phase: 0,
+                        looping: false,
+                        envelope: &[],
+                    },
+                    map: &map,
+                    output_frames: playback_frames as usize,
+                    pitch_cents: cents,
+                    mode: Mode::Resample,
+                },
+                law,
+                &mut || false,
+            )
+            .unwrap()
+            .frames;
+            for index in [0, 1, (playback_frames - 1) / 4096, 1] {
+                let key = PageKey {
+                    source: metadata.key(),
+                    page_index: index,
+                };
+                runtime.request_page(key.source, index);
+                assert!(wait_for_pages(&mut runtime, &[key], Duration::from_secs(3)));
+                let page = runtime.page(key.source, index).unwrap();
+                let start = index as usize * 4096;
+                assert_eq!(
+                    page.frames,
+                    &expected[start..start + page.frames.len()],
+                    "{source_rate} hz, {cents} cents, page {index}"
+                );
+            }
+        }
+        runtime.request_page(raw.key(), 0);
+        let found = wait_for_pages(
+            &mut runtime,
+            &[PageKey {
+                source: raw.key(),
+                page_index: 0,
+            }],
+            Duration::from_millis(400),
+        );
+        if !found {
+            let mut failures = [hex_stream::StreamFailure {
+                key: raw.key().into(),
+                page_index: 0,
+                kind: hex_stream::StreamFailureKind::Cancelled,
+            }; 8];
+            let count = runtime.take_failures(&mut failures);
+            panic!(
+                "raw source missing at {source_rate}: {:?}, failures {:?}",
+                runtime.stats(),
+                &failures[..count]
+            );
+        }
+        assert_eq!(runtime.page(raw.key(), 0).unwrap().frames, &frames[..4096]);
+        assert!(runtime.shutdown().unwrap().accounting_complete);
+    }
+}
+
+#[test]
+fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
+    const FRAMES: u64 = 20_000_000;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "hex-stream-long-pitch-{}-{stamp}-{}.wav",
+        std::process::id(),
+        next_fixture_id()
+    ));
+    let wav = TestWav(path);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(wav.path())
+        .unwrap();
+    let bytes = (FRAMES * 4) as u32;
+    file.write_all(b"RIFF").unwrap();
+    file.write_all(&(36 + bytes).to_le_bytes()).unwrap();
+    file.write_all(b"WAVEfmt ").unwrap();
+    file.write_all(&16_u32.to_le_bytes()).unwrap();
+    file.write_all(&1_u16.to_le_bytes()).unwrap();
+    file.write_all(&2_u16.to_le_bytes()).unwrap();
+    file.write_all(&48_000_u32.to_le_bytes()).unwrap();
+    file.write_all(&192_000_u32.to_le_bytes()).unwrap();
+    file.write_all(&4_u16.to_le_bytes()).unwrap();
+    file.write_all(&16_u16.to_le_bytes()).unwrap();
+    file.write_all(b"data").unwrap();
+    file.write_all(&bytes.to_le_bytes()).unwrap();
+    file.set_len(44 + u64::from(bytes)).unwrap();
+    let index = (FRAMES - 1) / 4096;
+    let step_q32 = (2.0_f64.powf(-700.0 / 1_200.0) * (1_u64 << 32) as f64).round() as u64;
+    let impulse_frame = ((u128::from(index * 4096) * u128::from(step_q32)) >> 32) as u64;
+    file.seek(SeekFrom::Start(44 + impulse_frame * 4)).unwrap();
+    file.write_all(&16_384_i16.to_le_bytes()).unwrap();
+    file.write_all(&(-8_192_i16).to_le_bytes()).unwrap();
+    drop(file);
+    let limits = VerifiedWavReaderLimits::new(
+        WavReaderLimits::new(100_000_000, FRAMES, 128, 32_768),
+        2_000_000,
+    );
+    let reader = VerifiedWavReader::open(wav.path(), limits).unwrap();
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(402, asset_id(FRAMES as usize, 48_000)),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    let metadata = raw
+        .with_plain_pitch(-700, hex_project::WarpResampler::V2)
+        .unwrap();
+    let key = metadata.key();
+    let def = SourceDefinition::new(wav.path().to_path_buf(), metadata, limits)
+        .with_verified_manifest(reader.manifest().clone());
+    let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![def]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let footprint = runtime.catalog_footprint().unwrap();
+    assert_eq!(
+        footprint.pitch_scratch_bytes,
+        66_048 * std::mem::size_of::<[f32; 2]>()
+    );
+    assert!(footprint.kernel_table_bytes <= footprint.kernel_peak_bound_bytes);
+    runtime.request_page(key, index);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[PageKey {
+            source: key,
+            page_index: index
+        }],
+        Duration::from_secs(3)
+    ));
+    let page = runtime.page(key, index).unwrap();
+    assert_eq!(page.frames.len() as u64, FRAMES - index * 4096);
+    let pitch =
+        hex_warp::PitchWindow::new(FRAMES, -700, hex_warp::Resampler::V2, &mut || false).unwrap();
+    let range = pitch
+        .required_source_range(index * 4096, page.frames.len())
+        .unwrap();
+    let mut source = vec![[0.0; 2]; (range.end - range.start) as usize];
+    source[(impulse_frame - range.start) as usize] = [0.5, -0.25];
+    let mut expected = vec![[0.0; 2]; page.frames.len()];
+    pitch
+        .render(
+            index * 4096,
+            range.start,
+            &source,
+            &mut expected,
+            &mut || false,
+        )
+        .unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(page.frames, expected);
+    assert!(runtime.shutdown().unwrap().accounting_complete);
+}
+
+#[test]
+fn pitched_worker_refuses_filter_budget_before_publication() {
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, 8192);
+    let limits = reader_limits(pcm.len());
+    let reader = VerifiedWavReader::open(wav.path(), limits).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        StreamSourceKey::new(403, asset_id(pcm.len(), 48_000)),
+        48_000,
+        48_000,
+        pcm.len() as u64,
+        pcm.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap()
+    .with_plain_pitch(700, hex_project::WarpResampler::V2)
+    .unwrap();
+    let definition = SourceDefinition::new(wav.path().to_path_buf(), metadata, limits);
+    let mut config = StreamConfig::with_pool_pages(3);
+    config.max_kernel_table_bytes =
+        hex_warp::PitchWindow::filter_reservation_bytes(hex_warp::Resampler::V2) - 1;
+    assert!(matches!(
+        StreamRuntime::new(config, vec![definition]),
+        Err(hex_stream::StreamRuntimeError::InvalidConfiguration)
+    ));
+}

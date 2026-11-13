@@ -3,8 +3,8 @@
 //! endpoints.
 //!
 //! # Dependencies
-//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-storage closed
-//! automation readers and rtrb ownership queues.
+//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-warp's
+//! bounded pitch kernel, hex-storage closed automation readers and rtrb ownership queues.
 //!
 //! # Does not own
 //! Does not edit projects, own CPAL or decode/hash on callback. Only the joining control owner
