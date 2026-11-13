@@ -2004,7 +2004,13 @@ fn native_source_effect_recording_target_follows_the_exact_receiver() {
 }
 
 #[test]
-fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
+fn live_source_utility_gain_and_mute_retarget_without_touching_local_audio() {
+    for (mute, settled) in [(false, false), (true, false), (true, true)] {
+        source_utility_matrix_retarget(mute, settled);
+    }
+}
+
+fn source_utility_matrix_retarget(mute: bool, settled: bool) {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -2012,6 +2018,7 @@ fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
     const PREFIX: usize = 64;
     const SEGMENT: usize = 128;
     const RAMP: f32 = 240.0; // Existing 5 ms matrix law at 48 kHz.
+    let target_gain = if mute { 0.0 } else { 2.0 };
     for partition in [1, 7, 64, 128, 257] {
         let (mut editor, asset) = authored_fixture(0, false);
         let instrument = editor.project().tracks()[0].instrument().unwrap().id();
@@ -2043,8 +2050,16 @@ fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
         let state = UTILITY_DEFINITION
             .patch_parameter(
                 editor.project().device(effect).unwrap().state(),
-                parameter::GAIN,
-                ParameterValue::Float(2.0),
+                if mute {
+                    parameter::MUTE
+                } else {
+                    parameter::GAIN
+                },
+                if mute {
+                    ParameterValue::Bool(true)
+                } else {
+                    ParameterValue::Float(2.0)
+                },
             )
             .unwrap();
         editor
@@ -2072,7 +2087,7 @@ fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
             "source oracle is silent"
         );
         for (index, (actual, old)) in forward.iter().zip(baseline).enumerate() {
-            let gain = 1.0 + (index + 1) as f32 / RAMP;
+            let gain = 1.0 + (target_gain - 1.0) * (index + 1) as f32 / RAMP;
             for channel in 0..2 {
                 let expected = CLIP[channel] + gain * (old[channel] - CLIP[channel]);
                 assert!(
@@ -2080,6 +2095,28 @@ fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
                     "forward partition {partition} frame {index}: {} vs {expected}",
                     actual[channel]
                 );
+            }
+        }
+        if settled {
+            let mut tail = [[0.0; 2]; 112];
+            let mut baseline = tail;
+            for chunk in tail.chunks_mut(partition) {
+                candidate.render(chunk).unwrap();
+            }
+            for chunk in baseline.chunks_mut(partition) {
+                reference.render(chunk).unwrap();
+            }
+            for (index, (actual, old)) in tail.iter().zip(baseline).enumerate() {
+                let gain = 1.0 - (SEGMENT + index + 1) as f32 / RAMP;
+                let local = if PREFIX + SEGMENT + index < WIDTH {
+                    CLIP
+                } else {
+                    [0.0; 2]
+                };
+                for channel in 0..2 {
+                    let expected = local[channel] + gain * (old[channel] - local[channel]);
+                    assert!((actual[channel] - expected).abs() < 1e-4);
+                }
             }
         }
         assert!(editor.undo());
@@ -2095,10 +2132,14 @@ fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
         for chunk in baseline.chunks_mut(partition) {
             reference.render(chunk).unwrap();
         }
-        let start_gain = 1.0 + SEGMENT as f32 / RAMP;
+        let start_gain = if settled {
+            0.0
+        } else {
+            1.0 + (target_gain - 1.0) * SEGMENT as f32 / RAMP
+        };
         for (index, (actual, old)) in reverse.iter().zip(baseline).enumerate() {
             let gain = start_gain + (1.0 - start_gain) * (index + 1) as f32 / RAMP;
-            let local = if PREFIX + SEGMENT + index < WIDTH {
+            let local = if PREFIX + SEGMENT + (if settled { 112 } else { 0 }) + index < WIDTH {
                 CLIP
             } else {
                 [0.0; 2]
