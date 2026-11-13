@@ -166,3 +166,5 @@ impl StreamedSourceMetadata {
 
 #[cfg(test)]
 mod prefetch_tests;
+#[cfg(test)]
+mod reverse_tests;

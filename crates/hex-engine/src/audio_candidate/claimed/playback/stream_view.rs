@@ -60,6 +60,7 @@ impl StreamPlayback<'_> {
                 position: r.position(),
                 performance_frame: r.performance_frame(),
                 playing: r.playing(),
+                arrangement_loop_state: r.arrangement_loop_state(),
                 metronome_enabled: r.metronome_enabled(),
                 session_capability: r.session_capability_status(),
                 sampler_console: false,

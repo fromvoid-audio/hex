@@ -121,6 +121,8 @@ use spectrum_stages::SpectrumStage;
 use spectrum_stages::SpectrumStages;
 mod streaming;
 mod transport_fade;
+mod transport_observation;
+pub use transport_observation::TransportObservation;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -348,6 +350,11 @@ pub(crate) struct Publication {
     // its native source references. This publication is destroyed on control.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_references: Option<crate::candidate_custody::OrdinaryNativeReferences>,
+}
+
+struct RenderOutcome {
+    audible_recorded: bool,
+    start: Option<(u64, u64, bool)>,
 }
 // Exactly one active musical runtime, including the constructor-owned path.
 enum ActivePublication {
@@ -676,6 +683,7 @@ pub struct Status {
     pub session_capability: AtomicU32,
     sampler_console: AtomicBool,
     pub shutdown_complete: AtomicBool,
+    transport_observation: transport_observation::TransportObservationSlot,
     route_sequence: AtomicU64,
     route_revision: AtomicU64,
     route_count: AtomicU32,
@@ -886,6 +894,7 @@ impl Status {
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             sampler_console: AtomicBool::new(false),
             shutdown_complete: AtomicBool::new(false),
+            transport_observation: Default::default(),
             route_sequence: AtomicU64::new(0),
             route_revision: AtomicU64::new(0),
             route_count: AtomicU32::new(0),
@@ -1045,6 +1054,18 @@ impl Status {
             }
         }
         None
+    }
+
+    /// Read one coherent callback-published transport observation, or `None`
+    /// when no supported active runtime is published, the output is closing,
+    /// or a bounded read conflicts with a concurrent callback. The result is
+    /// telemetry only and can become stale immediately.
+    pub fn transport_observation(&self) -> Option<TransportObservation> {
+        if self.closing.load(Acquire) {
+            return None;
+        }
+        let value = self.transport_observation.read()?;
+        (!self.closing.load(Acquire)).then_some(value)
     }
 
     fn begin_route_snapshot(&self) {
@@ -1708,6 +1729,86 @@ impl PublicationControl {
         capture_runtime_fence(&self.status)
     }
 
+    /// Pair a running Session observation with the matching command/source
+    /// fence for conditional control-side preparation. A command batch can
+    /// make the observation lag until a later callback publication. The pair
+    /// can become stale immediately and does not authorize installation; the
+    /// callback must recheck the fence, exact graph and predicted clock. A
+    /// zero control generation is conservatively refused, even if explicit.
+    pub fn capture_running_transport_fence(
+        &self,
+    ) -> Option<(TransportObservation, FreshRuntimeFence)> {
+        let fence = capture_runtime_fence(&self.status)?;
+        let observation = self.status.transport_observation()?;
+        (observation.playing
+            && observation.loop_state.is_some()
+            && observation.control_generation != 0
+            && observation.audio_revision != 0
+            && observation.audio_revision == fence.expected_active_revision
+            && observation.consumed_command_ticket == fence.admitted_command_ticket
+            && self.status.admitted_ticket.load(Acquire) == fence.admitted_command_ticket
+            && self.status.consumed_command.load(Acquire) == fence.admitted_command_ticket
+            && self.status.last_output_fault_epoch.load(Acquire) == fence.output_fault_epoch
+            && !self.status.render_fault.load(Acquire)
+            && !self.status.device_fault.load(Acquire)
+            && self.status.pending_stop_marker.load(Acquire) == 0
+            && !self.status.closing.load(Acquire))
+        .then_some((observation, fence))
+    }
+
+    /// Prepare a conditional future anchor from this output's observed running
+    /// Session transport. `None` means the observation is unavailable or does
+    /// not match the requested source revision and control generation. The
+    /// caller must retain the real revisions independently and account for and
+    /// reclaim the returned token on control. This is not installation authority:
+    /// the callback must recheck the exact runtime graphs, clocks and host fence.
+    pub fn prepare_fenced_tempo_anchor(
+        &self,
+        expected_audio_revision: u64,
+        expected_control_generation: u64,
+        previous: Arc<hex_engine::PreparedRevision>,
+        candidate: Arc<hex_engine::PreparedRevision>,
+        cut_performance_frame: u64,
+    ) -> Result<
+        Option<(
+            hex_engine::session_playback::PreparedTempoAnchor,
+            FreshRuntimeFence,
+        )>,
+        hex_engine::session_playback::SessionPlaybackError,
+    > {
+        let Some((observation, fence)) = self.capture_running_transport_fence() else {
+            return Ok(None);
+        };
+        if observation.audio_revision != expected_audio_revision
+            || observation.control_generation != expected_control_generation
+        {
+            return Ok(None);
+        }
+        let Some(loop_state) = observation.loop_state else {
+            return Ok(None);
+        };
+        let anchor =
+            hex_engine::session_playback::PreparedTempoAnchor::prepare_from_running_observation(
+                previous,
+                candidate,
+                observation.arrangement_frame,
+                observation.performance_frame,
+                loop_state,
+                cut_performance_frame,
+            )?;
+        if !self
+            .capture_running_transport_fence()
+            .is_some_and(|(latest, current)| {
+                current == fence
+                    && latest.control_generation == expected_control_generation
+                    && latest.performance_frame <= cut_performance_frame
+            })
+        {
+            return Ok(None);
+        }
+        Ok(Some((anchor, fence)))
+    }
+
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
     /// Configure this capability even for an initially resource-free project so a later sampler
     /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
@@ -1722,12 +1823,117 @@ impl PublicationControl {
         &mut self,
         reservation: hex_engine::AudioStorageLedgerReservation,
     ) -> Result<(), &'static str> {
+        self.configure_device_resource_publication(reservation, false)
+    }
+
+    /// Reserve both resource books on a fresh native output. The verified
+    /// constructor owns the shared source root and domain reservation; the
+    /// ordinary book is separate and does not include that root. `combined`
+    /// must cover both declared limits, with checked arithmetic. These are
+    /// caller limits, not an RSS or allocator bound. The combined ceiling
+    /// includes one ordinary demand workspace for every permitted graph.
+    /// This grants no ordinary publication or cross-kind switching authority;
+    /// the exposed client retains its verified publication policy.
+    /// If construction fails after configuring the
+    /// verified root, the output is closed and must be discarded rather than
+    /// exposed.
+    pub fn configure_combined_publication_on_control(
+        &mut self,
+        verified: crate::AudioCandidatePublicationReservation,
+        ordinary: hex_engine::AudioStorageLedgerReservation,
+        ordinary_extents: usize,
+        ordinary_metadata_bytes: usize,
+        combined: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<(), &'static str> {
+        let fits =
+            |a: usize, b: usize, limit: usize| a.checked_add(b).is_some_and(|sum| sum <= limit);
+        let graph_count = self
+            .publications
+            .buffer()
+            .capacity()
+            .checked_add(RETIRED)
+            .and_then(|count| count.checked_add(5))
+            .ok_or("combined audio reservation exceeded")?;
+        let workspace_bytes = ordinary_metadata_bytes
+            .checked_mul(graph_count)
+            .ok_or("combined audio reservation exceeded")?;
+        // One boxed ordinary stream owner plus four extent vectors per graph.
+        let workspace_rows = graph_count
+            .checked_mul(5)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_data_rows = ordinary
+            .data_rows
+            .checked_add(workspace_rows)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_retained = ordinary
+            .max_retained_bytes
+            .checked_add(workspace_bytes)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_peak = ordinary
+            .max_construction_peak_bytes
+            .checked_add(workspace_bytes)
+            .ok_or("combined audio reservation exceeded")?;
+        if combined.max_construction_peak_bytes < combined.max_retained_bytes
+            || !fits(verified.data_rows, ordinary_data_rows, combined.data_rows)
+            || !fits(
+                verified.handle_rows,
+                ordinary.handle_rows,
+                combined.handle_rows,
+            )
+            || !fits(1, ordinary.root_rows, combined.root_rows)
+            || !fits(
+                verified.max_retained_data_bytes,
+                ordinary_retained,
+                combined.max_retained_bytes,
+            )
+            || !fits(
+                verified.max_construction_peak_data_bytes,
+                ordinary_peak,
+                combined.max_construction_peak_bytes,
+            )
+        {
+            return Err("combined audio reservation exceeded");
+        }
+        if let Some(bridge) = self.resident_forwarding.as_ref() {
+            bridge.begin_combined_configuration(&self.status)?;
+        } else {
+            return Err("combined reservation requires paired native worker endpoints");
+        }
+        let result = match self.configure_audio_candidate_publication(verified) {
+            Err(error) => Err(error),
+            Ok(()) => match self
+                .configure_device_resource_publication(ordinary, true)
+                .and_then(|()| {
+                    self.candidate_root.configure_combined_ordinary_streams(
+                        ordinary_extents,
+                        ordinary_metadata_bytes,
+                    )
+                }) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.request_shutdown();
+                    Err(error)
+                }
+            },
+        };
+        if let Some(bridge) = self.resident_forwarding.as_ref() {
+            bridge.finish_combined_configuration();
+        }
+        result
+    }
+
+    fn configure_device_resource_publication(
+        &mut self,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+        shared_verified_root: bool,
+    ) -> Result<(), &'static str> {
         if self.device_resources.is_some()
             || self.revision != 0
             || self.status.client_exposed.load(Acquire)
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
-            || self.candidate_root.domains_configured()
+            || (self.candidate_root.domains_configured() && !shared_verified_root)
+            || (shared_verified_root && !self.status.constructor_mode.load(Acquire))
         {
             return Err("device resource publication requires a vacant unexposed ordinary output");
         }
@@ -1755,7 +1961,9 @@ impl PublicationControl {
             .as_ref()
             .map(Arc::clone)
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
-        bridge.claim_worker_publication_on_control(&self.status)?;
+        if !shared_verified_root {
+            bridge.claim_worker_publication_on_control(&self.status)?;
+        }
         self.resident_forwarding = Some(bridge);
         self.device_resources = Some(resources);
         Ok(())
@@ -2002,8 +2210,9 @@ impl PublicationControl {
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
-        } else if self.candidate_root.domains_configured()
-            && !self.candidate_root.ordinary_streams_configured()
+        } else if self.status.constructor_mode.load(Acquire)
+            || (self.candidate_root.domains_configured()
+                && !self.candidate_root.ordinary_streams_configured())
         {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.recording_active() {
@@ -4070,7 +4279,14 @@ impl Callback {
                         return;
                     }
                     let diagnostic_context = next.source_context;
+                    let reset_audible = matches!(
+                        next.policy,
+                        PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+                    );
                     let previous = self.active.replace(ActivePublication::Legacy(next));
+                    if reset_audible {
+                        self.audible_clock.clear();
+                    }
                     self.release_current_quantum_pins();
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
@@ -4634,7 +4850,7 @@ impl Callback {
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
-        let result = self.render_inner(output);
+        let result = self.render_inner(output, block);
         self.release_current_quantum_pins();
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -4649,24 +4865,31 @@ impl Callback {
             }
             self.settle_transport_fade();
         }
+        if let Ok(outcome) = &result
+            && !outcome.audible_recorded
+        {
+            self.record_audible_run(outcome.start, output.len());
+        }
+        self.publish_audible_position();
+        self.flush_stream_outcomes();
+        result.map(|_| ())
+    }
+
+    fn record_audible_run(&mut self, block: Option<(u64, u64, bool)>, frames: usize) {
         if let Some((position, performance, true)) = block
-            && result.is_ok()
-            && !output.is_empty()
+            && frames != 0
         {
             // A declicked Pause/Stop can end inside the block; only the frames
             // its performance clock advanced were played (#4151).
             let frames = match self.scheduled_transport() {
                 Some((_, after, false)) => usize::try_from(after.saturating_sub(performance))
-                    .map_or(output.len(), |played| played.min(output.len())),
-                _ => output.len(),
+                    .map_or(frames, |played| played.min(frames)),
+                _ => frames,
             };
             if frames > 0 {
                 self.audible_clock.push(position, performance, frames);
             }
         }
-        self.publish_audible_position();
-        self.flush_stream_outcomes();
-        result
     }
 
     /// Scheduled position, performance frame and playing state of the current graph.
@@ -4698,15 +4921,31 @@ impl Callback {
             );
         }
     }
-    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    /// Returns whether a split seek recorded its own suffix and the clock used
+    /// for ordinary bookkeeping, adjusted for a pre-render streamed section.
+    fn render_inner(
+        &mut self,
+        output: &mut [Frame],
+        initial: Option<(u64, u64, bool)>,
+    ) -> Result<RenderOutcome, Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
             }
             output.fill([0.0; 2]);
-            return Ok(());
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         let yield_successor = self.yield_stream_successor_once;
+        let quantized_revision = self.deferred.as_ref().and_then(|next| {
+            matches!(
+                next.policy,
+                PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+            )
+            .then_some(next.revision)
+        });
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
         }
@@ -4744,7 +4983,10 @@ impl Callback {
                 self.prepare_native_parameter_quantum();
             }
             output.fill([0.0; 2]);
-            return Ok(());
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         if self.output_transport.is_some() {
             self.sample_recording
@@ -4752,14 +4994,34 @@ impl Callback {
         } else {
             self.sample_recording.begin(output.len());
         }
-        if self.status.closing.load(Acquire) || !self.render_quantized_seek(output)? {
+        // A ready streamed section can install above, before any frames
+        // render. Only that transition replaces the original block start.
+        let render_start = if quantized_revision.is_some_and(|revision| {
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_some_and(|active| active.revision == revision)
+        }) {
+            self.scheduled_transport()
+        } else {
+            initial
+        };
+        let quantized = if self.status.closing.load(Acquire) {
+            section_launch::QuantizedSeekRender::NotHandled
+        } else {
+            self.render_quantized_seek(output)?
+        };
+        if matches!(quantized, section_launch::QuantizedSeekRender::NotHandled) {
             self.render_project(output, 0)?;
         }
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
-        Ok(())
+        Ok(RenderOutcome {
+            audible_recorded: matches!(quantized, section_launch::QuantizedSeekRender::Switched),
+            start: render_start,
+        })
     }
 
     fn render_project(
@@ -5589,6 +5851,24 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
+        let observation =
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .and_then(|active| {
+                    active.playback.transport().map(
+                        |(position, performance, playing, loop_state)| TransportObservation {
+                            audio_revision: active.revision,
+                            control_generation: active.control_context_generation,
+                            consumed_command_ticket: self.status.consumed_command.load(Acquire),
+                            arrangement_frame: position,
+                            performance_frame: performance,
+                            playing,
+                            loop_state,
+                        },
+                    )
+                });
+        self.status.transport_observation.publish(observation);
         self.status
             .recording_source
             .publish(self.recording_source());
@@ -8988,6 +9268,63 @@ mod tests {
             ))
         );
         assert!(!control.status.publication_pending.load(Acquire));
+    }
+
+    #[test]
+    fn running_transport_fence_rejects_stale_and_pending_command_observations() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        control
+            .publish_with_policy_and_context_generation(
+                session_playback(1),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        callback.begin_block();
+        assert!(control.capture_running_transport_fence().is_none());
+        let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let (observed, fence) = control.capture_running_transport_fence().unwrap();
+        assert_eq!(observed.consumed_command_ticket, play);
+        assert_eq!(fence.admitted_command_ticket(), play);
+
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(0))
+            .unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let current = control.status.transport_observation().unwrap();
+        assert_eq!(current.consumed_command_ticket, seek);
+        control.status.transport_observation.publish(Some(observed));
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.transport_observation.publish(Some(current));
+        assert!(control.capture_running_transport_fence().is_some());
+
+        control
+            .status
+            .transport_observation
+            .publish(Some(TransportObservation {
+                audio_revision: current.audio_revision + 1,
+                ..current
+            }));
+        assert!(control.capture_running_transport_fence().is_none());
+        control
+            .status
+            .transport_observation
+            .publish(Some(TransportObservation {
+                control_generation: 0,
+                ..current
+            }));
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.transport_observation.publish(Some(current));
+        control.status.device_fault.store(true, Release);
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.device_fault.store(false, Release);
+        assert!(control.capture_running_transport_fence().is_some());
     }
 
     #[test]

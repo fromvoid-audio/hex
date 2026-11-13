@@ -1637,6 +1637,13 @@ impl Playback {
             .map_or(self.position, |runtime| runtime.arrangement_frame())
     }
 
+    /// Session-owned Arrangement loop state, unavailable for legacy playback.
+    pub fn arrangement_loop_state(&self) -> Option<crate::session_playback::ArrangementLoopState> {
+        self.session_runtime
+            .as_ref()
+            .map(|runtime| runtime.arrangement_loop_state())
+    }
+
     /// Frames by which Main output trails the scheduled content frame: the
     /// graph's pre-Main compensation plus declared Main processor latency.
     pub fn main_output_latency_frames(&self) -> u32 {
@@ -2133,7 +2140,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false, None, false)
+        self.try_inherit_runtime_impl(previous, false, false, None, false, None)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -2152,6 +2159,7 @@ impl Playback {
             false,
             None,
             false,
+            None,
         )
     }
 
@@ -2169,7 +2177,7 @@ impl Playback {
         if generation.is_none() || generation != previous_generation {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, false, Some(continuation), false)
+        self.try_inherit_runtime_impl(previous, true, false, Some(continuation), false, None)
     }
 
     /// Use the graph-owned comparison data; the publication owner must validate
@@ -2184,7 +2192,28 @@ impl Playback {
         if generation.is_none() || generation != previous_generation {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, false, None, true)
+        self.try_inherit_runtime_impl(previous, true, false, None, true, None)
+    }
+
+    /// Borrow a control-prepared tempo anchor through the ordinary Playback
+    /// lifecycle. Both graphs must have the same known control generation.
+    /// The publication owner must validate the output, command,
+    /// route, fault and cancellation fence and reclaim the plan on control.
+    pub fn try_inherit_runtime_with_tempo_anchor(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none()
+            || generation != previous_generation
+            || self.session_runtime.is_none()
+            || previous.session_runtime.is_none()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, false, None, false, Some(anchor))
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -2203,7 +2232,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true, None, false)
+        self.try_inherit_runtime_impl(previous, true, true, None, false, None)
     }
 
     fn try_inherit_runtime_impl(
@@ -2213,12 +2242,14 @@ impl Playback {
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         use_stored_continuation: bool,
+        tempo_anchor: Option<&crate::session_playback::PreparedTempoAnchor>,
     ) -> Result<(), PlaybackHandoffError> {
         if use_stored_continuation && !self.has_foreign_continuation_states() {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
         if (continuation.is_some() || use_stored_continuation)
             && (fenced_restart
+                || tempo_anchor.is_some()
                 || self.session_runtime.is_none()
                 || previous.session_runtime.is_none())
         {
@@ -2315,6 +2346,8 @@ impl Playback {
                 result
             } else if let Some(continuation) = continuation {
                 next.try_inherit_state_live_with_foreign_continuation_from(old, continuation)
+            } else if let Some(anchor) = tempo_anchor {
+                next.try_inherit_state_with_tempo_anchor(old, anchor)
             } else {
                 next.try_inherit_state_live_from(old)
             })

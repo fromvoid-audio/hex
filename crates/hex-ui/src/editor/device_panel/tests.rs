@@ -54,7 +54,7 @@ mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
 mod source_housing_tests;
-mod source_picker_ui_tests;
+pub(in crate::editor) mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {

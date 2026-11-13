@@ -348,3 +348,166 @@ fn browser_sample_real_drop_targets_load_one_sampler_and_preserve_other_tracks(
         fixture.finish(cx);
     }
 }
+
+#[gpui::test]
+fn unassigned_sampler_real_browser_drop_loads_and_replaces_without_assignment(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::device_panel::DevicePanelOwner;
+    use gpui::size;
+    use hex_library::{DirectoryListing, EntryKind, LibraryEntry};
+    use std::time::{Duration, Instant};
+    cx.update(crate::editor::bind_editor_keys);
+    struct FixtureDir(std::path::PathBuf);
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory =
+        FixtureDir(std::env::temp_dir().join(format!("hex-source-drop-{}", std::process::id())));
+    std::fs::create_dir_all(&directory.0).unwrap();
+    let path = directory.0.join("first.wav");
+    let samples = [1024_i16, -4096, 8192, 0];
+    let mut wav = b"RIFF".to_vec();
+    wav.extend_from_slice(&(36_u32 + (samples.len() as u32 * 2)).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&48_000_u32.to_le_bytes());
+    wav.extend_from_slice(&96_000_u32.to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&((samples.len() as u32) * 2).to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(&path, wav).unwrap();
+    let empty = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+    )
+    .unwrap();
+    let mut fixture = crate::editor::worker_ui_fixture::open(
+        cx,
+        vec![
+            Command::AddMidiTrack {
+                name: "other".into(),
+            },
+            Command::CreateNativeSource {
+                name: "drop sampler".into(),
+                devices: vec![empty],
+                instrument_index: 0,
+            },
+        ],
+    );
+    let editor = fixture.editor.clone();
+    let before = editor.read_with(cx, |view, _| Arc::clone(view.state.as_ref().unwrap()));
+    let track = before.project.tracks()[0].id();
+    let source = before
+        .project
+        .native_sources()
+        .iter()
+        .find(|source| source.name() == "drop sampler")
+        .unwrap()
+        .id();
+    let device = before
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(850.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    crate::editor::device_panel::tests::source_picker_ui_tests::open_unassigned_source(
+        &mut visual,
+        &editor,
+        "drop sampler · 0 midi",
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.browser.open = true;
+        view.browser.auto_audition = false;
+        view.browser.scans.generation += 1;
+        view.browser.places = vec![directory.0.clone()];
+        view.browser.directory = directory.0.clone();
+        view.browser.section = crate::editor::browser::BrowserSection::Place(directory.0.clone());
+        view.browser.loading = false;
+        view.browser.error = None;
+        view.browser.listing = Some(DirectoryListing {
+            directory: directory.0.clone(),
+            entries: vec![LibraryEntry {
+                name: "first.wav".into(),
+                path: path.clone(),
+                kind: EntryKind::WaveAudio,
+            }],
+            enumerated_entries: 1,
+            truncated: false,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for n in 1..=2 {
+        let origin = visual.debug_bounds("browser-entry-0").unwrap().center();
+        visual.simulate_mouse_down(origin, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(origin.x + px(12.0), origin.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let destination = visual.debug_bounds("source-device-panel").unwrap().center();
+        visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let complete = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                assert!(view.error.is_none(), "drop {n}: {:?}", view.error);
+                view.state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == before.revision + n)
+                    && !view.sampler_parameter_pending()
+            });
+            if complete {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "source drop {n} did not complete"
+            );
+            std::thread::yield_now();
+        }
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(
+                view.device_panel.owner,
+                Some(DevicePanelOwner::Source(source))
+            );
+            assert_eq!(state.project.track(track), before.project.track(track));
+            assert_eq!(state.project.source_contributors(source).count(), 0);
+            assert_eq!(
+                state
+                    .project
+                    .native_source(source)
+                    .unwrap()
+                    .instrument()
+                    .id(),
+                device
+            );
+            assert_eq!(state.project.assets().count(), n as usize);
+        });
+    }
+    fixture.finish(cx);
+}
