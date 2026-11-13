@@ -240,6 +240,26 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
         editor_revision: 2,
     };
     for count in [64, 63, 17, 257, 512] {
+        let before_projection = (actual.position(), actual.performance_frame());
+        let mut projected_windows = Vec::new();
+        let mut ahead = 0;
+        while ahead < count {
+            let mut demand = Vec::new();
+            let width = actual
+                .stream_playback(context)
+                .visit_current_stream_quantum_at(ahead as u64, count - ahead, None, &mut |row| {
+                    demand.push(row);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(width, (count - ahead).min(256));
+            projected_windows.push(demand);
+            ahead += width;
+        }
+        assert_eq!(
+            (actual.position(), actual.performance_frame()),
+            before_projection
+        );
         let mut expected = vec![[0.0; 2]; count];
         oracle.render(&mut expected).unwrap();
         let mut observed = vec![[0.0; 2]; count];
@@ -247,6 +267,7 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
         let mut projected_end = 0;
         let mut predicted = Vec::new();
         let mut committed = Vec::new();
+        let mut projected_index = 0;
         while offset < count {
             if offset == projected_end {
                 predicted.clear();
@@ -305,6 +326,8 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
                     predicted, committed,
                     "callback projection differs from committed chunks"
                 );
+                assert_eq!(projected_windows[projected_index], committed);
+                projected_index += 1;
             }
         }
         assert_eq!(observed, expected);

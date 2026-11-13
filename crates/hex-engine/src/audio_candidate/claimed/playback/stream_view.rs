@@ -193,6 +193,28 @@ impl StreamPlayback<'_> {
             }
         }
     }
+    /// Visit at most 256 frames at an offset from the current clock. This does
+    /// not advance playback or establish readiness for the visited resources.
+    pub fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => {
+                r.visit_current_stream_quantum_at(start_offset, maximum_frames, playing, visit)
+            }
+            Runtime::Ordinary(r, _) => r.visit_current_stream_quantum_at(
+                start_offset,
+                maximum_frames,
+                playing,
+                true,
+                visit,
+            ),
+        }
+    }
     pub fn preview_stream_handoff(
         &mut self,
         previous: &mut StreamPlayback<'_>,
