@@ -462,6 +462,46 @@ fn signed_round(numerator: i128, denominator: u128) -> Result<i128, Invalid> {
 }
 
 impl AudioClipEdit {
+    /// Return the source offset and length of an unprocessed, full-frame
+    /// reversal. This is a shape query only: callers still validate the clip
+    /// and establish source availability and custody before reading it.
+    pub fn plain_reversed_source(&self, clip: &Clip) -> Option<(u64, u64)> {
+        let view = self.content_view?;
+        let AudioDomainClock::Frames(length) = self.domain.clock else {
+            return None;
+        };
+        (view.restore_plain
+            && view.window.reversed
+            && view.window.start == 0
+            && view.window.end == length
+            && view.base_view_start == 0
+            && view.base_view_end == length
+            && view.base_placement.is_none()
+            && view.base_start_delta == 0
+            && self.view_start == 0
+            && self.view_end == length
+            && self.placement.is_none()
+            && self.processing_projection.is_none()
+            && matches!(self.timing, AudioClipTiming::Frames)
+            && self.placement_start_offset == 0
+            && self.placement_end_offset == 0
+            && clip.duration() == length
+            && length <= self.domain.source_length
+            && !self.domain.looping
+            && self.domain.source_phase == 0
+            && self.domain.pitch_cents == 0
+            && !self.domain.warp_enabled
+            && self.domain.warp.is_none()
+            && self.domain.sample_bpm.is_none()
+            && self.domain.events.is_none()
+            && self.domain.musical_event_source.is_none()
+            && self.domain.source_gain.is_empty()
+            && self.domain.fade.is_neutral()
+            && self.domain.fade_start == 0
+            && self.domain.fade_projection.is_none())
+        .then_some((self.domain.source_offset, length))
+    }
+
     pub fn processing_tempo<'a>(&'a self, current: &'a TempoMap) -> &'a TempoMap {
         self.processing_projection.as_ref().map_or_else(
             || self.effective_tempo(current),
