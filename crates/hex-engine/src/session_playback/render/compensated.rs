@@ -600,9 +600,9 @@ impl SessionPlayback {
                 .owner_order[order];
             match owner {
                 crate::signal_graph::Owner::Track(index) => {
-                    let work_start = self.render_work.track(index);
                     let track = &self.revision.arrangement().tracks()[index];
                     let route = self.route_scratch[index];
+                    // The aligned owner was already timed with its batch.
                     if let Some(batch) = resident_source.filter(|batch| batch.aligned[index]) {
                         let main = self.resident_source_scratch[index][batch.index];
                         self.compensation
@@ -619,6 +619,7 @@ impl SessionPlayback {
                         }
                         continue;
                     }
+                    let work_start = self.render_work.track(index);
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
