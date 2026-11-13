@@ -1386,14 +1386,14 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("remove_only_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
         }
-        Request::AddFirstSourceUtility {
+        Request::AppendSourceUtility {
             project_generation,
             revision,
             track,
             source,
             instrument,
         } => {
-            describe!("add_first_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
+            describe!("append_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
         }
         Request::RebindNativeSource {
             project_generation,

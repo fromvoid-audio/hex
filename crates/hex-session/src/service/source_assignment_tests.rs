@@ -1173,7 +1173,7 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
             source: Some(source),
         }),
     );
-    let request = |revision, generation, track, instrument| Request::AddFirstSourceUtility {
+    let request = |revision, generation, track, instrument| Request::AppendSourceUtility {
         project_generation: generation,
         revision,
         track,
@@ -1209,7 +1209,7 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
     refused(
         &service,
         &bound,
-        Request::AddFirstSourceUtility {
+        Request::AppendSourceUtility {
             project_generation: 0,
             revision,
             track: receiver,
@@ -1268,9 +1268,59 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
     refused(
         &service,
         &created,
-        request(created.state.revision, 0, receiver, instrument),
-        "source chain changed",
+        request(created.state.revision - 1, 0, receiver, instrument),
+        "project changed",
     );
+    let second = run(
+        &service,
+        request(created.state.revision, 0, receiver, instrument),
+    );
+    let Created::Device(second_id) = second.created.unwrap() else {
+        panic!("second effect")
+    };
+    assert_eq!(
+        second
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()
+            .iter()
+            .map(|effect| effect.id())
+            .collect::<Vec<_>>(),
+        [effect, second_id]
+    );
+    assert_eq!(
+        second.state.project.device(second_id).unwrap().state(),
+        &hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap()
+    );
+    let before_redo = run(&service, Request::Undo);
+    assert_eq!(
+        before_redo
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()
+            .len(),
+        1
+    );
+    let after_redo = run(&service, Request::Redo);
+    assert_eq!(
+        after_redo
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()
+            .len(),
+        2
+    );
+    let _ = run(&service, Request::Undo);
     let undone = run(&service, Request::Undo);
     assert!(
         undone
@@ -1402,4 +1452,71 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
             .post_instrument_effects()
             .is_empty()
     );
+}
+
+#[test]
+fn append_source_utility_refuses_a_full_or_nonutility_chain() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let other = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
+    )
+    .unwrap();
+    for (name, effects) in [
+        ("full", vec![utility; hex_project::MAX_SOURCE_DEVICES - 1]),
+        ("other", vec![other]),
+    ] {
+        let mut devices = vec![hex_project::default_instrument_state().unwrap()];
+        devices.extend(effects);
+        let made = run(
+            &service,
+            Request::Edit(Command::CreateNativeSource {
+                name: name.into(),
+                devices,
+                instrument_index: 0,
+            }),
+        );
+        let Created::NativeSource(source) = made.created.unwrap() else {
+            panic!("source")
+        };
+        let instrument = made
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let added = run(
+            &service,
+            Request::Edit(Command::AddMidiTrack { name: name.into() }),
+        );
+        let Created::Track(track) = added.created.unwrap() else {
+            panic!("track")
+        };
+        let bound = run(
+            &service,
+            Request::Edit(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            }),
+        );
+        refused(
+            &service,
+            &bound,
+            Request::AppendSourceUtility {
+                project_generation: 0,
+                revision: bound.state.revision,
+                track,
+                source,
+                instrument,
+            },
+            "source chain changed or unsupported",
+        );
+    }
 }
