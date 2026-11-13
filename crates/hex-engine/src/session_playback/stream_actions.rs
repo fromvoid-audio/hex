@@ -381,9 +381,8 @@ impl SessionPlayback {
             self.project_due_stream_routes(performance, self.anchor)
                 .map_err(Error::Projection)?;
             let visitor_failed = std::cell::Cell::new(false);
-            let mut checked_visit = |extent| {
-                visit(extent).inspect_err(|_| visitor_failed.set(true))
-            };
+            let mut checked_visit =
+                |extent| visit(extent).inspect_err(|_| visitor_failed.set(true));
             let window = self
                 .visit_stream_chunk_in_scope(
                     ordinary,
