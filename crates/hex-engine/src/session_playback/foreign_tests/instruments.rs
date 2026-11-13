@@ -1669,3 +1669,211 @@ fn timed_transport_preserves_foreign_note_offsets_and_rejects_the_staged_callbac
     assert!(endpoint.rejected);
     assert_eq!(output, [[0.0; 2]; 16]);
 }
+
+#[test]
+fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
+    use crate::compile::PreparedAudioSource;
+    use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use crate::playback::{Playback, PlaybackCommand};
+    use crate::{
+        BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
+        TimedTransportCommand as Timed, TimedTransportError,
+    };
+    use std::sync::atomic::AtomicBool;
+
+    struct Pages {
+        key: StreamSourceKey,
+        data: Vec<Frame>,
+        missing: bool,
+        requests: Vec<(StreamSourceKey, u64)>,
+    }
+    impl MediaPages for Pages {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            if self.missing || key != self.key {
+                return None;
+            }
+            let start = usize::try_from(index)
+                .ok()?
+                .checked_mul(STREAM_PAGE_FRAMES)?;
+            let end = start.checked_add(STREAM_PAGE_FRAMES)?.min(self.data.len());
+            (start < end).then_some(BorrowedMediaPage {
+                page_index: index,
+                frames: &self.data[start..end],
+            })
+        }
+        fn request_page(&mut self, key: StreamSourceKey, index: u64) {
+            self.requests.push((key, index));
+        }
+    }
+    let (mut editor, identity) = fixture();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "stream".into(),
+            path: "stream.wav".into(),
+            sample_rate: 48_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("stream")
+    };
+    let key = StreamSourceKey::new(23, asset);
+    let source =
+        StreamedSourceMetadata::new(key, 48_000, 48_000, 8192, 8192, 0, [0x48; 32]).unwrap();
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(source)),
+    )]);
+    let cancelled = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1_000_000,
+        &cancelled,
+    )
+    .unwrap();
+    let definition = InstrumentDefinition {
+        identity,
+        second: None,
+        instrument_profile: true,
+        epoch: 1,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+            editor.project(),
+            &media,
+            23,
+            Arc::new(SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            100_000,
+            &cancelled,
+            &registry,
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(revision.arrangement().main_latency_frames(), 19);
+    let playback = || {
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&revision), &resources)
+            .unwrap()
+    };
+    let pcm: Vec<_> = (0..8192)
+        .map(|frame| {
+            let value = frame as f32 / 16384.0;
+            [value, -value]
+        })
+        .collect();
+    let mut pages = Pages {
+        key,
+        data: pcm.clone(),
+        missing: false,
+        requests: Vec::new(),
+    };
+    let commands = [
+        Timed {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        Timed {
+            offset: 32,
+            command: PlaybackCommand::PlayFrom(4093),
+        },
+        Timed {
+            offset: 64,
+            command: PlaybackCommand::Pause,
+        },
+    ];
+    let mut runtime = playback();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[0.0; 2]; 80];
+    runtime
+        .render_with_timed_transport_pages_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut pages,
+            &mut endpoint,
+        )
+        .unwrap();
+    let events = &endpoint.notes;
+    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!((events[0].0, events[0].1.on), (0, true));
+    assert_eq!((events[1].0, events[1].1.on), (32, false));
+    assert_eq!((events[2].0, events[2].1.on), (32, true));
+    assert_eq!((events[3].0, events[3].1.on), (64, false));
+    assert_eq!(events[0].1.note_id, events[1].1.note_id);
+    assert_eq!(events[2].1.note_id, events[3].1.note_id);
+    assert_ne!(events[0].1.note_id, events[2].1.note_id);
+    assert!(pages.requests.is_empty());
+    assert_eq!(&output[19..32], &pcm[..13]);
+    assert_eq!(&output[51..64], &pcm[4093..4106]);
+
+    let mut missing = Pages {
+        key,
+        data: pcm.clone(),
+        missing: true,
+        requests: Vec::new(),
+    };
+    let mut runtime = playback();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[9.0; 2]; 80];
+    runtime
+        .render_with_timed_transport_pages_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut missing,
+            &mut endpoint,
+        )
+        .unwrap();
+    assert_eq!(output, [[0.0; 2]; 80]);
+    assert_eq!(&endpoint.notes, events);
+    assert!(missing.requests.contains(&(key, 0)));
+    assert!(missing.requests.contains(&(key, 1)));
+    assert!(missing.requests.iter().all(|(source, _)| *source == key));
+
+    let mut invalid = playback();
+    let mut endpoint = NoteEndpoint::default();
+    let mut untouched = [[9.0; 2]; 80];
+    let mut untouched_pages = Pages {
+        key,
+        data: pcm.clone(),
+        missing: true,
+        requests: Vec::new(),
+    };
+    assert_eq!(
+        invalid.render_with_timed_transport_pages_and_foreign_processors(
+            &mut untouched,
+            &[Timed {
+                offset: 81,
+                command: PlaybackCommand::Play
+            }],
+            &mut untouched_pages,
+            &mut endpoint,
+        ),
+        Err(TimedTransportError::InvalidOffset { index: 0 })
+    );
+    assert_eq!(untouched, [[9.0; 2]; 80]);
+    assert!(untouched_pages.requests.is_empty() && endpoint.notes.is_empty() && !endpoint.rejected);
+    assert!(!invalid.playing());
+
+    let mut runtime = playback();
+    let mut endpoint = NoteEndpoint {
+        fail_at: Some(33),
+        ..Default::default()
+    };
+    let mut output = [[9.0; 2]; 80];
+    assert!(matches!(
+        runtime.render_with_timed_transport_pages_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut pages,
+            &mut endpoint
+        ),
+        Err(TimedTransportError::Render { offset: 32, .. })
+    ));
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 80]);
+}

@@ -119,8 +119,7 @@ impl ForeignProcessors for Endpoint {
     }
 }
 
-#[test]
-fn timed_foreign_replay_does_not_allocate_or_free() {
+fn instrument_fixture() -> (Editor, ProcessorInstanceIdentity) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddMidiTrack {
@@ -162,6 +161,12 @@ fn timed_foreign_replay_does_not_allocate_or_free() {
             velocity: 101,
         })
         .unwrap();
+    (editor, identity)
+}
+
+#[test]
+fn timed_foreign_replay_does_not_allocate_or_free() {
+    let (editor, identity) = instrument_fixture();
     let definition = Definition(identity);
     let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
@@ -212,4 +217,126 @@ fn timed_foreign_replay_does_not_allocate_or_free() {
     );
     assert!(!endpoint.rejected);
     assert_eq!(endpoint.events, 4);
+}
+
+#[test]
+fn timed_mixed_stream_and_foreign_replay_does_not_allocate_or_free() {
+    use hex_engine::{
+        BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
+        compile::PreparedAudioSource,
+        native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets},
+    };
+    use std::sync::atomic::AtomicBool;
+    struct Pages {
+        key: StreamSourceKey,
+        data: Vec<Frame>,
+        requests: usize,
+    }
+    impl MediaPages for Pages {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            if key != self.key {
+                return None;
+            }
+            let start = usize::try_from(index)
+                .ok()?
+                .checked_mul(STREAM_PAGE_FRAMES)?;
+            let end = start.checked_add(STREAM_PAGE_FRAMES)?.min(self.data.len());
+            (start < end).then_some(BorrowedMediaPage {
+                page_index: index,
+                frames: &self.data[start..end],
+            })
+        }
+        fn request_page(&mut self, _: StreamSourceKey, _: u64) {
+            self.requests += 1;
+        }
+    }
+    let (mut editor, identity) = instrument_fixture();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "stream".into(),
+            path: "stream.wav".into(),
+            sample_rate: 48_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("stream")
+    };
+    let key = StreamSourceKey::new(23, asset);
+    let source =
+        StreamedSourceMetadata::new(key, 48_000, 48_000, 8192, 8192, 0, [0x48; 32]).unwrap();
+    let media = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(source)))]);
+    let cancelled = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1_000_000,
+        &cancelled,
+    )
+    .unwrap();
+    let definition = Definition(identity);
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+            editor.project(),
+            &media,
+            23,
+            Arc::new(SineTable::new()),
+            None,
+            &hex_engine::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            100_000,
+            &cancelled,
+            &registry,
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback =
+        Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+    let mut pages = Pages {
+        key,
+        data: vec![[0.1; 2]; 8192],
+        requests: 0,
+    };
+    let commands = [
+        TimedTransportCommand {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        TimedTransportCommand {
+            offset: 32,
+            command: PlaybackCommand::PlayFrom(4093),
+        },
+        TimedTransportCommand {
+            offset: 64,
+            command: PlaybackCommand::Pause,
+        },
+    ];
+    let mut endpoint = Endpoint::default();
+    let mut output = [[0.0; 2]; 80];
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_timed_transport_pages_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut pages,
+            &mut endpoint,
+        );
+    });
+    assert!(result.is_ok());
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(endpoint.events, 4);
+    assert!(!endpoint.rejected);
+    assert_eq!(pages.requests, 0);
+    assert!(output.iter().flatten().any(|sample| *sample != 0.0));
 }
