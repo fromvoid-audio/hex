@@ -865,7 +865,31 @@ fn create_parameter_control(
                         return;
                     }
                     view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                    apply_discrete_parameter(view, target, ParameterValue::Choice(value));
+                    let source_channel = key.parameter == super::utility_panel::CHANNEL
+                        && view.state.as_ref().is_some_and(|state| state.project.device_location(key.device).is_some_and(|location|
+                            matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                                && location.device.state().type_id().as_str() == Ok("hex.utility")));
+                    if source_channel {
+                        let eligible = view.state.as_ref().is_some_and(|state|
+                            hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter));
+                        let value = ParameterValue::Choice(value);
+                        let target = GestureTarget::DeviceParameter { device: key.device, parameter: key.parameter };
+                        let result = if eligible {
+                            match view.begin_device_gesture(target, value) {
+                                Ok(()) => {
+                                    let result = view.change_device_gesture(value).and_then(|_| view.finish_device_gesture(value));
+                                    if result.is_err() { let _ = view.cancel_device_gesture(); }
+                                    result
+                                }
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            Err("source control is no longer available")
+                        };
+                        if let Err(error) = result { view.error = Some(error.into()); }
+                    } else {
+                        apply_discrete_parameter(view, target, ParameterValue::Choice(value));
+                    }
                     cx.notify();
                 });
             view.device_panel.controls.insert(
