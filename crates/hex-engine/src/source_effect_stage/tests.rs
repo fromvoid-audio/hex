@@ -2598,3 +2598,145 @@ fn live_source_utility_width_preserves_asymmetric_filter_history_and_local_audio
         }
     }
 }
+
+#[test]
+fn centered_source_utility_mid_side_mode_keeps_live_pcm_and_history() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    const PREFIX: usize = 64;
+    const SEGMENT: usize = 128;
+    for filter in [None, Some(parameter::DC_REMOVE), Some(parameter::BASS_MONO)] {
+        for partition in [1, 7, 64, 128, 257] {
+            let (mut editor, asset) = authored_fixture(0, false);
+            let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+            let mut state = UTILITY_DEFINITION.default_state().unwrap();
+            if let Some(filter) = filter {
+                state = UTILITY_DEFINITION
+                    .patch_parameter(&state, filter, ParameterValue::Bool(true))
+                    .unwrap();
+            }
+            let Created::Device(effect) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("source effect")
+            };
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+            let table = Arc::new(crate::SineTable::new());
+            let prepare = |editor: &Editor| {
+                Arc::new(
+                    PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                        .unwrap(),
+                )
+            };
+            let original = prepare(&editor);
+            let mut previous = SessionPlayback::new(Arc::clone(&original)).unwrap();
+            let mut oracle = SessionPlayback::new(original).unwrap();
+            previous.apply(SessionPlaybackCommand::Play).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut actual = [[0.0; 2]; PREFIX + 2 * SEGMENT];
+            previous.render(&mut actual[..PREFIX]).unwrap();
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    editor.project().device(effect).unwrap().state(),
+                    parameter::MID_SIDE_ENABLED,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device: effect,
+                    state,
+                })
+                .unwrap();
+            let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+            candidate
+                .try_inherit_state_live_from(&mut previous)
+                .unwrap();
+            for part in actual[PREFIX..PREFIX + SEGMENT].chunks_mut(partition) {
+                candidate.render(part).unwrap();
+            }
+            assert!(editor.undo());
+            let mut restored = SessionPlayback::new(prepare(&editor)).unwrap();
+            restored
+                .try_inherit_state_live_from(&mut candidate)
+                .unwrap();
+            for part in actual[PREFIX + SEGMENT..].chunks_mut(partition) {
+                restored.render(part).unwrap();
+            }
+            let mut expected = [[0.0; 2]; PREFIX + 2 * SEGMENT];
+            for part in expected.chunks_mut(partition) {
+                oracle.render(part).unwrap();
+            }
+            assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-5));
+            assert_eq!(actual, expected, "filter={filter:?} partition={partition}");
+        }
+    }
+}
+
+#[test]
+fn source_utility_equivalent_silent_matrix_refuses_filter_or_mute_changes() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    let (mut editor, asset) = authored_fixture(0, false);
+    let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(&state, parameter::GAIN, ParameterValue::Float(0.0))
+        .unwrap();
+    let Created::Device(effect) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("effect")
+    };
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let table = Arc::new(crate::SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        )
+    };
+    let mut previous = SessionPlayback::new(prepare(&editor)).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    previous.render(&mut [[0.0; 2]; 64]).unwrap();
+    for parameter in [parameter::BASS_MONO, parameter::MUTE] {
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                editor.project().device(effect).unwrap().state(),
+                parameter,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: effect,
+                state,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+        assert!(
+            candidate
+                .try_inherit_state_live_from(&mut previous)
+                .is_err(),
+            "parameter={parameter:?}"
+        );
+        assert_eq!(previous.performance_frame(), 64);
+        assert_eq!(candidate.performance_frame(), 0);
+        assert!(editor.undo());
+    }
+}
