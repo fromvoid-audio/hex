@@ -3,17 +3,11 @@ use super::*;
 
 const Q: u64 = 1_u64 << 32;
 
-#[test]
-fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
-    std::thread::Builder::new()
-        .stack_size(16 * 1024 * 1024)
-        .spawn(audio_loop_change_with_limiter_preserves_samples_and_clock_inner)
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
-fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
+fn limiter_loop_fixture() -> (
+    Project,
+    Project,
+    BTreeMap<hex_project::AssetId, crate::Audio>,
+) {
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     for asset in &mut snapshot.assets {
@@ -60,6 +54,21 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
     )
     .unwrap();
     let media = audio_media(&linear, &source, &source);
+    (linear, looped, media)
+}
+
+#[test]
+fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(audio_loop_change_with_limiter_preserves_samples_and_clock_inner)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
+    let (linear, looped, media) = limiter_loop_fixture();
     let prepare = |project: &Project| {
         Arc::new(
             PreparedRevision::prepare(
@@ -336,6 +345,146 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
     assert_eq!(candidate.performance_frame(), oracle.performance_frame());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
+fn prepared_tempo_anchor_follows_multiple_loop_passes() {
+    run_prepared_loop_anchor(false);
+}
+
+#[test]
+fn prepared_tempo_anchor_after_loop_is_linear() {
+    run_prepared_loop_anchor(true);
+}
+
+fn run_prepared_loop_anchor(post_loop: bool) {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let (_, looped, media) = limiter_loop_fixture();
+            let prepare = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare(
+                        project,
+                        &media,
+                        Arc::new(hex_devices::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let loop_revision = prepare(&looped);
+            let mut loop_tempo_snapshot = looped.snapshot();
+            loop_tempo_snapshot.tempo_points = vec![TempoPoint::new(
+                BeatTime::ZERO,
+                Tempo::new(90_000_000).unwrap(),
+            )];
+            let loop_tempo = legacy_project_from_snapshot(loop_tempo_snapshot).unwrap();
+            let loop_tempo_revision = prepare(&loop_tempo);
+            for block in [1, 257] {
+                let mut old = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+                let mut reference_old = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+                for runtime in [&mut old, &mut reference_old] {
+                    if post_loop {
+                        runtime.play_from(3000).unwrap();
+                    } else {
+                        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                        for chunk in [[0.0; 2]; 4600].chunks_mut(block) {
+                            runtime.render(chunk).unwrap();
+                        }
+                    }
+                }
+                let loop_state = old.arrangement_loop_state();
+                if post_loop {
+                    assert_eq!(
+                        (old.arrangement_frame(), loop_state.active_region),
+                        (3000, None)
+                    );
+                } else {
+                    assert_eq!(
+                        (
+                            old.arrangement_frame(),
+                            loop_state.pass,
+                            loop_state.active_region
+                        ),
+                        (600, 2, Some((400, 2400)))
+                    );
+                }
+                let anchor = PreparedTempoAnchor::prepare_with_loop_state(
+                    Arc::clone(&loop_revision),
+                    Arc::clone(&loop_tempo_revision),
+                    old.arrangement_frame(),
+                    old.performance_frame(),
+                    loop_state,
+                )
+                .unwrap();
+                assert!(
+                    PreparedTempoAnchor::prepare_with_loop_state(
+                        Arc::clone(&loop_revision),
+                        Arc::clone(&loop_tempo_revision),
+                        old.arrangement_frame(),
+                        old.performance_frame(),
+                        ArrangementLoopState {
+                            active_region: Some((1, 2)),
+                            ..loop_state
+                        },
+                    )
+                    .is_err()
+                );
+                let wrong = PreparedTempoAnchor::prepare_with_loop_state(
+                    Arc::clone(&loop_revision),
+                    Arc::clone(&loop_tempo_revision),
+                    old.arrangement_frame(),
+                    old.performance_frame(),
+                    ArrangementLoopState {
+                        pass: loop_state.pass + 1,
+                        ..loop_state
+                    },
+                )
+                .unwrap();
+                let mut next = SessionPlayback::new(Arc::clone(&loop_tempo_revision)).unwrap();
+                assert_eq!(
+                    next.try_inherit_state_with_tempo_anchor(&mut old, &wrong),
+                    Err(SessionPlaybackError::InvalidCommand)
+                );
+                old.transient_loop = Some(LoopRegion::new(400, 2400, true).unwrap());
+                assert_eq!(
+                    next.try_inherit_state_with_tempo_anchor(&mut old, &anchor),
+                    Err(SessionPlaybackError::InvalidCommand)
+                );
+                old.transient_loop = None;
+                next.transient_loop = Some(LoopRegion::new(400, 2400, true).unwrap());
+                assert_eq!(
+                    next.try_inherit_state_with_tempo_anchor(&mut old, &anchor),
+                    Err(SessionPlaybackError::InvalidCommand)
+                );
+                next.transient_loop = None;
+                next.try_inherit_state_with_tempo_anchor(&mut old, &anchor)
+                    .unwrap();
+                let mut unplanned = SessionPlayback::new(Arc::clone(&loop_tempo_revision)).unwrap();
+                unplanned
+                    .try_inherit_state_live_from(&mut reference_old)
+                    .unwrap();
+                assert_eq!(next.arrangement_frame(), unplanned.arrangement_frame());
+                let mut fresh = SessionPlayback::new(Arc::clone(&loop_tempo_revision)).unwrap();
+                fresh.play_from(next.arrangement_frame()).unwrap();
+                let mut actual = [[0.0; 2]; 1024];
+                let mut ordinary = actual;
+                let mut expected = actual;
+                for chunk in actual.chunks_mut(block) {
+                    next.render(chunk).unwrap();
+                }
+                for chunk in ordinary.chunks_mut(block) {
+                    unplanned.render(chunk).unwrap();
+                }
+                fresh.render(&mut expected).unwrap();
+                assert_eq!(actual, ordinary, "unplanned loop={post_loop} block={block}");
+                assert_eq!(actual, expected, "fresh loop={post_loop} block={block}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
