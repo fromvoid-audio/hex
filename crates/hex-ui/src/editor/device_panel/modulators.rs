@@ -557,6 +557,26 @@ pub(super) fn source_effect_card(
             .copied()
     })
     .flatten();
+    let polarity_rows =
+        [utility_panel::INVERT_LEFT, utility_panel::INVERT_RIGHT].map(|parameter| {
+            (metadata.type_id == hex_lattice_contract::DeviceTypeId::from_static("hex.utility"))
+                .then(|| {
+                    metadata
+                        .parameters
+                        .iter()
+                        .find(|row| row.descriptor.id == parameter)
+                        .copied()
+                })
+                .flatten()
+                .map(|mut row| {
+                    row.enabled &= hex_engine::project_source_utility_matrix_edit_supported(
+                        &state.project,
+                        id,
+                        parameter,
+                    );
+                    row
+                })
+        });
     let mute_row = (metadata.type_id
         == hex_lattice_contract::DeviceTypeId::from_static("hex.utility"))
     .then(|| {
@@ -703,10 +723,30 @@ pub(super) fn source_effect_card(
             },
         ));
     }
+    for (row, label) in polarity_rows.iter().zip(["ø l", "ø r"]) {
+        if let Some(row) = row {
+            control_row = control_row.child(parameter_control_with_presentation(
+                view,
+                cx,
+                id,
+                DeviceControlIdentity {
+                    class: NativeDeviceClass::Effect,
+                    type_id: metadata.type_id,
+                },
+                row,
+                ControlPresentation::CompactButton,
+                ControlText {
+                    label: Some(label),
+                    codec: None,
+                },
+            ));
+        }
+    }
     if controls.iter().any(Option::is_some)
         || mode_row.is_some()
         || mono_row.is_some()
         || mute_row.is_some()
+        || polarity_rows.iter().any(Option::is_some)
     {
         body = body.child(control_row);
     }
