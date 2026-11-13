@@ -428,6 +428,7 @@ impl SessionPlayback {
                 offset,
                 capture,
                 None,
+                None,
                 foreign,
             )?;
             self.advance_paused_analytic_releases(count)?;

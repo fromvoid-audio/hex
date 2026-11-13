@@ -563,6 +563,11 @@ impl SessionPlayback {
         } else {
             None
         };
+        let mut detached_sends = if grouped && self.has_tail_route_sends {
+            Some([[0.0; 2]; MAX_TRACKS])
+        } else {
+            None
+        };
         if let Some(detached) = detached.as_mut() {
             self.render_detached_tails(
                 performance_frame,
@@ -570,6 +575,7 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 Some(detached),
+                detached_sends.as_mut().map(|sends| sends.as_mut_slice()),
                 foreign,
             )?;
         }
@@ -980,10 +986,18 @@ impl SessionPlayback {
                     } else {
                         [0.0; 2]
                     };
-                    // Retired tails retain their old post-fader output; they do
-                    // not re-enter current authored sends or feeds.
+                    // Only tails with an identical-graph handoff proof may
+                    // re-enter current authored sends and feeds.
                     let routed = if let Some(detached) = detached.as_ref() {
                         [mixed[0] + detached[index][0], mixed[1] + detached[index][1]]
+                    } else {
+                        mixed
+                    };
+                    let send_mixed = if let Some(detached_sends) = detached_sends.as_ref() {
+                        [
+                            mixed[0] + detached_sends[index][0],
+                            mixed[1] + detached_sends[index][1],
+                        ]
                     } else {
                         mixed
                     };
@@ -1002,7 +1016,7 @@ impl SessionPlayback {
                         let feed = &compensation.graph.tracks[index].audio_feeds[feed_index];
                         let (target, gain, edge) = (feed.target, feed.gain, feed.edge);
                         let sent = compensation
-                            .edge(edge, [mixed[0] * gain, mixed[1] * gain])
+                            .edge(edge, [send_mixed[0] * gain, send_mixed[1] * gain])
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         compensation.inputs[target][0] += sent[0];
                         compensation.inputs[target][1] += sent[1];
@@ -1011,7 +1025,7 @@ impl SessionPlayback {
                         let send = &compensation.graph.tracks[index].sends[send_index];
                         let (target, gain, edge) = (send.target, send.gain, send.edge);
                         let sent = compensation
-                            .edge(edge, [mixed[0] * gain, mixed[1] * gain])
+                            .edge(edge, [send_mixed[0] * gain, send_mixed[1] * gain])
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         self.return_scratch[target][0][0] += sent[0];
                         self.return_scratch[target][0][1] += sent[1];
@@ -1105,6 +1119,7 @@ impl SessionPlayback {
                 output,
                 frame_offset,
                 capture,
+                None,
                 None,
                 foreign,
             )?;

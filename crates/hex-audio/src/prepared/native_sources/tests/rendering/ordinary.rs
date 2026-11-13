@@ -348,16 +348,22 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
-    retained_foreign_track_tail(false);
+    retained_foreign_track_tail(false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_routes_through_unchanged_compensated_group() {
-    retained_foreign_track_tail(true);
+    retained_foreign_track_tail(true, false);
 }
 
-fn retained_foreign_track_tail(grouped: bool) {
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retained_foreign_track_tail_preserves_direct_send_through_group() {
+    retained_foreign_track_tail(true, true);
+}
+
+fn retained_foreign_track_tail(grouped: bool, direct_send: bool) {
     let _serial = serial();
     let mut f = fixture_at("processing", 0);
     let old = f.binding;
@@ -383,6 +389,24 @@ fn retained_foreign_track_tail(grouped: bool) {
         f.editor
             .execute(Command::Gain {
                 track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    if direct_send {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
                 gain: 0.5,
             })
             .unwrap();
@@ -434,7 +458,7 @@ fn retained_foreign_track_tail(grouped: bool) {
     }
     assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
     assert_eq!(&output[..8], &[[0.0; 2]; 8]);
-    let gain = if grouped { 0.5 } else { 1.0 };
+    let gain = if grouped && !direct_send { 0.5 } else { 1.0 };
     assert_eq!(&output[8..16], &[[0.125 * gain, -0.25 * gain]; 8]);
     assert_eq!(&output[16..24], &[[0.09375 * gain, -0.1875 * gain]; 8]);
     assert_eq!(&output[24..], &[[0.1171875 * gain, -0.234375 * gain]; 8]);
