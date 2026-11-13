@@ -256,6 +256,60 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
             ordinary_output, relocated_expected,
             "unplanned block={block}"
         );
+        let mut playback_old =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&old_revision))
+                .unwrap();
+        playback_old.apply(crate::PlaybackCommand::Play);
+        playback_old.render(&mut [[0.0; 2]; 599]).unwrap();
+        let mut playback_next =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&new_revision))
+                .unwrap();
+        assert!(
+            playback_next
+                .try_inherit_runtime_with_tempo_anchor(&mut playback_old, Some(1), Some(1), &anchor)
+                .is_err()
+        );
+        assert_eq!(playback_old.position(), 599);
+        playback_old.render(&mut [[0.0; 2]; 1]).unwrap();
+        assert!(
+            playback_next
+                .try_inherit_runtime_with_tempo_anchor(&mut playback_old, None, None, &anchor)
+                .is_err()
+        );
+        assert!(
+            playback_next
+                .try_inherit_runtime_with_tempo_anchor(&mut playback_old, Some(2), Some(1), &anchor)
+                .is_err()
+        );
+        let mut wrong_playback =
+            crate::playback::Playback::try_from_prepared_with_session(prepare(&tempo_changed))
+                .unwrap();
+        assert!(
+            wrong_playback
+                .try_inherit_runtime_with_tempo_anchor(&mut playback_old, Some(1), Some(1), &anchor)
+                .is_err()
+        );
+        assert_eq!(playback_old.position(), 600);
+        let mut legacy =
+            crate::playback::Playback::from_shared(Arc::clone(old_revision.arrangement()));
+        assert!(
+            playback_next
+                .try_inherit_runtime_with_tempo_anchor(&mut legacy, Some(1), Some(1), &anchor)
+                .is_err()
+        );
+        assert_eq!(legacy.position(), 0);
+        playback_next
+            .try_inherit_runtime_with_tempo_anchor(&mut playback_old, Some(1), Some(1), &anchor)
+            .unwrap();
+        assert_eq!(playback_next.position(), 800);
+        let mut playback_output = vec![[0.0; 2]; 2048];
+        for chunk in playback_output.chunks_mut(block) {
+            playback_next.render(chunk).unwrap();
+        }
+        assert_eq!(
+            playback_output, relocated_expected,
+            "Playback block={block}"
+        );
     }
     let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
     let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
