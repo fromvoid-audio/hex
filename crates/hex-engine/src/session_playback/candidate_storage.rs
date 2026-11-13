@@ -58,6 +58,7 @@ impl SessionPlayback {
             tail_track_ids: _,
             tail_route_sends: _,
             has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
