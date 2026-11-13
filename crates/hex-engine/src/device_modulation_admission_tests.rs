@@ -663,7 +663,7 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
             .unwrap();
         assert!(eligible(&editor, device));
         assert!(width(&editor));
-        assert!(!crate::project_source_utility_mute_edit_supported(
+        assert!(crate::project_source_utility_mute_edit_supported(
             editor.project(),
             device
         ));
