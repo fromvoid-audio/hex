@@ -1136,6 +1136,23 @@ fn shared_source_channel_selector_keeps_linked_identity_and_history(cx: &mut Tes
     let bounds = visual.debug_bounds(selector).expect("channel selector");
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.simulate_keystrokes("down");
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let snapshot = view
+                .device_gesture
+                .snapshot()
+                .expect("pending channel gesture");
+            assert_eq!(snapshot.value, ParameterValue::Choice(1));
+            let Some(ParameterControl::Choice { entity, .. }) =
+                view.device_panel.controls.get(&key)
+            else {
+                panic!("channel selector")
+            };
+            assert_eq!(entity.read(cx).selected(), 1);
+        });
+    }
     let value = |view: &EditorView| {
         let device = view.state.as_ref()?.project.device(effect)?;
         hex_engine::native_device_parameter_for_class(
