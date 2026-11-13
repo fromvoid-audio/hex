@@ -473,12 +473,16 @@ impl HostGainStages {
 
 pub(super) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
-/// Only the static Utility gain has a verified source-edit handoff today.
+/// Static Utility gain and balance share the verified matrix handoff.
 pub(super) fn source_utility_gain_available(
     project: &hex_project::Project,
     device: &Device,
 ) -> bool {
-    hex_engine::project_source_utility_gain_edit_supported(project, device.id())
+    hex_engine::project_source_utility_matrix_edit_supported(
+        project,
+        device.id(),
+        utility_panel::GAIN,
+    )
 }
 
 /// The bound receiver owns these controls. The card reuses the ordinary
@@ -510,21 +514,31 @@ pub(super) fn source_effect_card(
     else {
         return outer.child(theme::text("source effect unavailable"));
     };
-    let show_gain = source_utility_gain_available(&state.project, device);
     let mut body = crate::device_composition::body()
         .flex()
         .flex_col()
         .gap(px(3.0));
     body = body.child(theme::text("source effect"));
-    let gain_row = show_gain
-        .then(|| {
-            metadata
-                .parameters
-                .iter()
-                .find(|row| row.enabled && row.descriptor.id == utility_panel::GAIN)
-                .copied()
-        })
-        .flatten();
+    let controls = [
+        (utility_panel::GAIN, "gain", None),
+        (
+            utility_panel::BALANCE,
+            "balance",
+            Some(numeric_display::NumericDisplayCodec::Balance),
+        ),
+    ]
+    .map(|(parameter, label, codec)| {
+        if !hex_engine::project_source_utility_matrix_edit_supported(&state.project, id, parameter)
+        {
+            return None;
+        }
+        metadata
+            .parameters
+            .iter()
+            .find(|row| row.enabled && row.descriptor.id == parameter)
+            .copied()
+            .map(|row| (row, label, codec))
+    });
     metadata.parameters.retain(|row| {
         row.enabled
             && row
@@ -536,7 +550,7 @@ pub(super) fn source_effect_card(
                 row.descriptor.id,
             )
     });
-    if let Some(row) = gain_row {
+    for (row, label, codec) in controls.iter().flatten() {
         let identity = DeviceControlIdentity {
             class: NativeDeviceClass::Effect,
             type_id: metadata.type_id,
@@ -546,16 +560,20 @@ pub(super) fn source_effect_card(
             cx,
             id,
             identity,
-            &row,
+            row,
             ControlPresentation::CompactDial,
             ControlText {
-                label: Some("gain"),
-                codec: None,
+                label: Some(label),
+                codec: *codec,
             },
         ));
     }
     for row in &metadata.parameters {
-        if !show_gain || row.descriptor.id != utility_panel::GAIN {
+        if !controls
+            .iter()
+            .flatten()
+            .any(|(control, _, _)| control.descriptor.id == row.descriptor.id)
+        {
             body = body.child(
                 div()
                     .relative()
