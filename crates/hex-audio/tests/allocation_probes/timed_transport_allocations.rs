@@ -127,3 +127,66 @@ fn timed_node_observation_does_not_allocate_or_free() {
     );
     assert_eq!(output, [[0.25; 2]; 64]);
 }
+
+#[test]
+fn timed_project_observation_does_not_allocate_or_free() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 1024,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let track = editor.project().tracks()[0].id().value();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25; 2]; 1024]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(revision);
+    let commands = [
+        TimedTransportCommand {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(32),
+        },
+        TimedTransportCommand {
+            offset: 16,
+            command: PlaybackCommand::Seek(64),
+        },
+    ];
+    let mut output = [[0.0; 2]; 64];
+    let mut calls = 0;
+    let mut timing_calls = 0;
+    let mut observe = |_, _, _: &[hex_engine::Frame]| calls += 1;
+    let mut timing = |_, _, _, _: &hex_engine::PreparedTempoMap| timing_calls += 1;
+    let tracks = [track];
+    let mut tap = hex_engine::ProjectOutputTap::new(&tracks, &mut observe)
+        .unwrap()
+        .with_timing(&mut timing);
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_timed_transport_and_signal_observers(
+            &mut output,
+            &commands,
+            None,
+            Some(&mut tap),
+        );
+    });
+    assert!(result.is_ok());
+    assert!(calls > 0 && timing_calls > 0);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(output, [[0.25; 2]; 64]);
+}
