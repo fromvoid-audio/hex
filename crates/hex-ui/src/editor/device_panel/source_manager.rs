@@ -67,7 +67,10 @@ pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Wi
                             .is_some_and(|track| track.is_group())
                     }))
         }
-        _ => false,
+        Some(owner @ (DevicePanelOwner::Main | DevicePanelOwner::Return(_))) => view
+            .state
+            .as_ref()
+            .is_some_and(|state| selected_owner(view, state) == Some(owner)),
     };
     let Some(focus) = view
         .device_panel

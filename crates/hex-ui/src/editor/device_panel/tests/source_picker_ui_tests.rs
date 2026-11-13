@@ -1890,3 +1890,102 @@ fn group_track_keeps_project_source_manager_reachable(cx: &mut TestAppContext) {
         });
     });
 }
+
+#[gpui::test]
+fn bus_panels_keep_project_source_manager_reachable(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, _, track, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::AddReturnTrack {
+            name: "return".into(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let return_id = event.state.project.return_tracks()[0].id();
+    let before = event.state.clone();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    for owner in [DevicePanelOwner::Main, DevicePanelOwner::Return(return_id)] {
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = None;
+            view.focused_return = match owner {
+                DevicePanelOwner::Return(id) => Some(id),
+                _ => None,
+            };
+            view.device_panel.main_selected =
+                (owner == DevicePanelOwner::Main).then_some(view.project_generation);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.device_panel.owner, Some(owner))
+        });
+        let selection = editor.read_with(&visual, |view, _| {
+            (
+                view.selected_track,
+                view.focused_return,
+                view.device_panel.main_selected,
+                view.track_selection.clone(),
+            )
+        });
+        let manager = visual
+            .debug_bounds("source-manager-button")
+            .expect("bus source manager");
+        visual.simulate_click(manager.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.context_menu.is_some()));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.device_panel
+                        .source_manager
+                        .focus
+                        .as_ref()
+                        .unwrap()
+                        .is_focused(window)
+                );
+            })
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.context_menu.is_some()));
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(view.device_panel.owner, Some(owner));
+            assert_eq!(
+                (
+                    view.selected_track,
+                    view.focused_return,
+                    view.device_panel.main_selected,
+                    view.track_selection.clone()
+                ),
+                selection
+            );
+            assert_eq!(state.project, before.project);
+            assert_eq!(
+                (state.revision, state.can_undo, state.can_redo),
+                (before.revision, before.can_undo, before.can_redo)
+            );
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, _| {
+                view.focused_return = None;
+                view.device_panel.main_selected = None;
+                view.selected_track = Some(track);
+                assert!(!super::super::source_manager::focus_from_workspace(
+                    view, window
+                ));
+            })
+        });
+    }
+}
