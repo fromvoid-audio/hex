@@ -75,6 +75,159 @@ fn choose_receiver(
     }
 }
 
+fn rename_source(
+    revision: u64,
+    generation: u64,
+    source: hex_project::SourceId,
+    name: &str,
+) -> Request {
+    Request::RenameRetainedSource {
+        project_generation: generation,
+        revision,
+        source,
+        name: name.into(),
+    }
+}
+
+fn delete_source(revision: u64, generation: u64, source: hex_project::SourceId) -> Request {
+    Request::DeleteRetainedSource {
+        project_generation: generation,
+        revision,
+        source,
+    }
+}
+
+#[test]
+fn captured_source_rename_and_delete_preserve_identity_and_history() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let bound = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(track) = bound.created.unwrap() else {
+        panic!("track")
+    };
+    let bound_source = bound
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let created = run(
+        &service,
+        Request::Edit(Command::CreateNativeSource {
+            name: "unused".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }),
+    );
+    let Created::NativeSource(source) = created.created.unwrap() else {
+        panic!("source")
+    };
+    let revision = created.state.revision;
+    assert!(!rename_source(revision, 0, source, "renamed").finalizes_parameter_gesture());
+    assert!(!delete_source(revision, 0, source).finalizes_parameter_gesture());
+    refused(
+        &service,
+        &created,
+        rename_source(revision, 1, source, "renamed"),
+        "project changed",
+    );
+    refused(
+        &service,
+        &created,
+        delete_source(revision - 1, 0, source),
+        "project changed",
+    );
+    refused(
+        &service,
+        &created,
+        rename_source(revision, 0, source, "  "),
+        "name must be nonempty",
+    );
+    refused(
+        &service,
+        &created,
+        delete_source(revision, 0, bound_source),
+        "still assigned",
+    );
+
+    let key = GestureKey {
+        generation: 0,
+        token: 7712,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track },
+        }),
+    );
+    let blocked = refused(
+        &service,
+        &begun,
+        rename_source(begun.state.revision, 0, source, "renamed"),
+        "active gesture",
+    );
+    assert!(blocked.active_device_gesture.is_some() && blocked.gesture_ack.is_none());
+    refused(
+        &service,
+        &begun,
+        delete_source(begun.state.revision, 0, source),
+        "active gesture",
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let before = cancelled.state.project.clone();
+    let renamed = run(
+        &service,
+        rename_source(cancelled.state.revision, 0, source, "renamed"),
+    );
+    assert_eq!(
+        renamed.state.project.native_source(source).unwrap().name(),
+        "renamed"
+    );
+    let after_rename = renamed.state.project.clone();
+    assert_eq!(run(&service, Request::Undo).state.project, before);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, after_rename);
+    let deleted = run(&service, delete_source(redone.state.revision, 0, source));
+    assert!(deleted.state.project.native_source(source).is_none());
+    assert_eq!(
+        deleted.state.project.track(track).unwrap().source_id(),
+        Some(bound_source)
+    );
+    refused(
+        &service,
+        &deleted,
+        rename_source(deleted.state.revision, 0, source, "missing"),
+        "source no longer exists",
+    );
+    refused(
+        &service,
+        &deleted,
+        delete_source(deleted.state.revision, 0, source),
+        "source no longer exists",
+    );
+    assert_eq!(run(&service, Request::Undo).state.project, after_rename);
+    assert!(
+        run(&service, Request::Redo)
+            .state
+            .project
+            .native_source(source)
+            .is_none()
+    );
+}
+
 #[test]
 fn captured_receiver_choice_refuses_stale_and_preserves_history() {
     let service = Service::new(48_000, 32, 0).unwrap();
