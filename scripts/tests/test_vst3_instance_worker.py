@@ -1435,13 +1435,19 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(self.observation()[10], 0)
 
     def test_partial_pcm_is_not_a_completed_block(self):
-        session = self.session()
-        self.ready(session)
-        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
-        session.socket.shutdown(socket.SHUT_WR)
-        self.error(session, 8)
-        self.terminal(session, 8)
-        self.assertEqual(self.observation()[10], 0)
+        # Exercise the actual reader and control-lane EOF observation together.
+        # On macOS, concurrent peeking could strand the partial read after EOF.
+        for attempt in range(32):
+            with self.subTest(attempt=attempt):
+                session = self.session()
+                self.ready(session)
+                session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+                if attempt % 2:
+                    time.sleep(.005)
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def test_eof_cancels_without_fabricating_graceful_retirement(self):
         session = self.session()
@@ -1450,6 +1456,46 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(session.socket.recv(1), b"")
         self.assertEqual(session.process.wait(timeout=10), 9)
         self.assertNotEqual(self.observation()[0], 6)
+
+    def test_fragmented_pcm_waits_for_the_remaining_samples(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+        time.sleep(.03)  # Cross multiple incomplete-frame rechecks.
+        session.socket.sendall(struct.pack("<3f", -.5, .75, -1.))
+        magic, body = session.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack_from("<4f", body, 64), (.125, -.25, .375, -.5))
+        session.sequence, session.frames = 1, 2
+        self.terminal(session, 0, message=session.stop())
+
+    def test_truncated_header_and_empty_pcm_payload_are_refused(self):
+        for case in ("header", "payload"):
+            with self.subTest(case=case):
+                session = self.session()
+                self.ready(session)
+                packet = session.packet(2)
+                session.socket.sendall(packet[:12] if case == "header" else packet)
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
+    def test_buffered_stop_precedes_write_shutdown(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVE", 1, 0, 0, *BINDING, 0, 0))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.terminal(session, 0)
+
+    def test_partial_pcm_hung_stop_is_still_bounded(self):
+        session = self.session(variant=61)
+        self.ready(session, controller=True)
+        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.error(session, 8)
+        self.assertEqual(session.socket.recv(1), b"")
+        self.assertEqual(session.process.wait(timeout=5), 9)
 
     def test_instance_profile_excludes_discovery_fixtures_and_generic_run_refuses(self):
         info = BOOT.verify(self.receipt)

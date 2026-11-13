@@ -14,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <poll.h>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -32,11 +33,22 @@ inline void number(Bytes& out,uint64_t value,size_t n) {
     for(size_t i=0;i<n;++i) out.push_back(static_cast<uint8_t>(value>>(i*8)));
 }
 // Clean EOF differs from a partial frame. Only the processing lane reads PCM.
-inline int read_exact(int fd,uint8_t* p,size_t n) {
+inline int read_exact(int fd,uint8_t* p,size_t n,bool frame_started=false) {
     size_t at=0;
     while(at<n) {
-        auto count=::read(fd,p+at,n-at);
+        // An incomplete frame must recheck EOF even if another observer has
+        // consumed a socket wakeup. Idle header reads remain blocking; this
+        // bounded poll only runs after a frame has begun and bytes are absent.
+        const bool incomplete=frame_started || at!=0;
+        auto count=incomplete ? ::recv(fd,p+at,n-at,MSG_DONTWAIT) : ::read(fd,p+at,n-at);
         if(count<0 && errno==EINTR) continue;
+        if(count<0 && incomplete && (errno==EAGAIN || errno==EWOULDBLOCK)) {
+            pollfd pending{fd,POLLIN,0};
+            const auto ready=::poll(&pending,1,10);
+            if(ready<0 && errno!=EINTR) return -1;
+            if(ready>0 && (pending.revents&(POLLERR|POLLNVAL))) return -1;
+            continue;
+        }
         if(count<0) return -1;
         if(!count) return at? -1:0;
         at+=static_cast<size_t>(count);
@@ -283,7 +295,7 @@ struct Packet {
             resumed_presentation={};
             resumed_presentation.allow_unknown=p[10]==2;
             if(p[10]==1) {
-                if(read_exact(fd,p+header_size,8)!=1) return -1;
+                if(read_exact(fd,p+header_size,8,true)!=1) return -1;
                 resumed_presentation.known=Presentation{static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4))};
             }
             return 4;
@@ -292,7 +304,7 @@ struct Packet {
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
         if(page_start || page_poll) {
-            if(frames || read_exact(fd,p+header_size,287)!=1) return -1;
+            if(frames || read_exact(fd,p+header_size,287,true)!=1) return -1;
             capture_operation=number(p+header_size,8);
             parameter_query.first=static_cast<uint16_t>(number(p+header_size+8,2));
             parameter_query.revision=number(p+header_size+10,8);
@@ -304,12 +316,12 @@ struct Packet {
             return page_start?10:11;
         }
         if(flush) {
-            if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16)!=1) return -1;
+            if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16,true)!=1) return -1;
             capture_operation=number(p+header_size,8);
             return capture_operation && parse_parameters(p+header_size+8,1)?8:-1;
         }
         if(capture || live_start || live_poll || edit_query || reactivate) {
-            if(frames || read_exact(fd,p+header_size,8)!=1) return -1;
+            if(frames || read_exact(fd,p+header_size,8,true)!=1) return -1;
             capture_operation=number(p+header_size,8);return capture_operation?(reactivate?12:(edit_query?9:(live_start?6:(live_poll?7:5)))):-1;
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
@@ -320,7 +332,7 @@ struct Packet {
         const auto payload_bytes=frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
             timing_change_count*timing_change_bytes+dense_bytes;
         const auto touch_bytes=group_touch?editor_group_bytes:(touch?editor_touch_bytes:0);
-        if(read_exact(fd,p+header_size,payload_bytes+touch_bytes)!=1) return -1;
+        if(read_exact(fd,p+header_size,payload_bytes+touch_bytes,true)!=1) return -1;
         if(touch_bytes) {
             const auto* raw=p+header_size+payload_bytes;
             hex_instance::EditorTouchPlanSet plan{};
