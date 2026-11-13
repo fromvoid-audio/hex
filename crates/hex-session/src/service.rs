@@ -152,7 +152,7 @@ pub use project_rate::ProjectSampleRate;
 pub use recovery::{HeldCheckpoint, hold_next_checkpoint};
 #[cfg(test)]
 mod verified_source_tests;
-pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
+pub use canonical_audio_source::{CanonicalAudioSourceSnapshot, RawArrangementContentWitness};
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
