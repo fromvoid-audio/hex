@@ -117,7 +117,7 @@ pub(in crate::editor::device_panel) fn cancel_interactions(
 }
 
 /// A retained source can leave the displayed track without being deleted.
-/// Its cache survives, while popup input must not reappear on a later binding.
+/// Its owner state survives, while hidden popup input and display are retired.
 pub(in crate::editor::device_panel) fn cancel_hidden(
     view: &mut EditorView,
     visible: &std::collections::HashSet<hex_project::DeviceId>,
@@ -125,6 +125,7 @@ pub(in crate::editor::device_panel) fn cancel_hidden(
     for (device, state) in &mut view.device_panel.operator_previews {
         if !visible.contains(device) {
             state.routing_popup = None;
+            state.filter_response = None;
         }
     }
 }
