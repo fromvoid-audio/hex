@@ -22,6 +22,30 @@ fn parameter_device<'a>(
     };
     (device.id() == edit.device && (allow_bypassed || !device.bypassed())).then_some(device)
 }
+
+fn replacement_device<'a>(
+    project: &'a hex_project::Project,
+    edit: &SamplerReplacementEdit,
+    allow_bypassed: bool,
+) -> Option<&'a hex_project::Device> {
+    let instrument = match edit.owner {
+        hex_project::InstrumentAssetOwner::Track(track) => project.track(track)?.instrument()?,
+        hex_project::InstrumentAssetOwner::Source(source) => {
+            if project
+                .tracks()
+                .iter()
+                .any(|track| track.source_id() == Some(source))
+            {
+                return None;
+            }
+            project.native_source(source)?.instrument()
+        }
+    };
+    (instrument.id() == edit.device
+        && instrument.state() == &edit.expected_state
+        && (allow_bypassed || !instrument.bypassed()))
+    .then_some(instrument)
+}
 pub(super) fn validate(
     session: &Session,
     generation: u64,
@@ -114,15 +138,7 @@ impl SamplerEdit {
                 {
                     return Err("sampler replacement target changed or was cancelled".into());
                 }
-                let target = session
-                    .project()
-                    .track(edit.track)
-                    .and_then(|track| track.instrument())
-                    .filter(|device| {
-                        device.id() == edit.device
-                            && !device.bypassed()
-                            && device.state() == &edit.expected_state
-                    })
+                let target = replacement_device(session.project(), edit, false)
                     .ok_or("sampler replacement target changed")?;
                 hex_engine::validate_sampler_replacement_on_control(target.state())
                     .map_err(|e| e.to_string())?;
@@ -185,13 +201,7 @@ impl SamplerEdit {
                 Ok(patched != *device.state())
             }
             Self::Replacement(edit) => {
-                let device = session
-                    .project()
-                    .track(edit.track)
-                    .and_then(|track| track.instrument())
-                    .filter(|device| {
-                        device.id() == edit.device && device.state() == &edit.expected_state
-                    })
+                let device = replacement_device(session.project(), edit, true)
                     .ok_or("sampler replacement target changed")?;
                 hex_engine::validate_sampler_replacement_on_control(device.state())
                     .map_err(|error| error.to_string())?;
@@ -348,20 +358,24 @@ fn validate_replacement_history_forward(
         .map_err(|_| "sampler original frame count exceeds range")?;
     let (template, slot) = hex_engine::sampler_replacement_template_on_control(old, frames)
         .map_err(|e| e.to_string())?;
-    let reference = old
-        .asset_references()
-        .first()
-        .filter(|r| old.asset_references().len() == 1 && r.slot == slot)
-        .ok_or("replacement history requires one original source binding")?;
-    let old_asset = old_project
-        .assets()
-        .find(|asset| asset.id().value() == reference.asset.value())
-        .ok_or("replacement history old source is unavailable")?;
-    if old_asset.id() == added.id()
-        || old_project.asset(added.id()).is_some()
-        || new_project.asset(old_asset.id()) != Some(old_asset)
-    {
-        return Err("next history step does not preserve the old sampler catalog source".into());
+    if old_project.asset(added.id()).is_some() {
+        return Err("next history step does not add a new sampler source".into());
+    }
+    if !hex_engine::is_empty_sampler_state_on_control(old) {
+        let reference = old
+            .asset_references()
+            .first()
+            .filter(|r| old.asset_references().len() == 1 && r.slot == slot)
+            .ok_or("replacement history requires one original source binding")?;
+        let old_asset = old_project
+            .assets()
+            .find(|asset| asset.id().value() == reference.asset.value())
+            .ok_or("replacement history old source is unavailable")?;
+        if old_asset.id() == added.id() || new_project.asset(old_asset.id()) != Some(old_asset) {
+            return Err(
+                "next history step does not preserve the old sampler catalog source".into(),
+            );
+        }
     }
     let expected = template
         .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {

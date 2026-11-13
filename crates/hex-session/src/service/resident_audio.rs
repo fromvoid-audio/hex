@@ -1590,7 +1590,7 @@ impl Session {
                     decoded,
                     &edit.cancel,
                     crate::native_assets::NativeAssetDestination::ExistingInstrument {
-                        track: edit.track,
+                        owner: edit.owner,
                         device: edit.device,
                         expected_state: edit.expected_state,
                         state,

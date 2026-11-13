@@ -160,7 +160,7 @@ impl EditorView {
     /// they never publish an independent sampler edit or receipt.
     pub(super) fn sampler_boundary_target(
         &mut self,
-        track: TrackId,
+        owner: hex_session::service::SamplerParameterOwner,
         device: hex_project::DeviceId,
         parameter: SamplerParameter,
     ) -> Option<Target> {
@@ -176,7 +176,7 @@ impl EditorView {
         let target = Target::new(
             self.project_generation,
             self.state.as_ref()?.revision,
-            hex_session::service::SamplerParameterOwner::Track(track),
+            owner,
             device,
             parameter,
         );
@@ -247,9 +247,8 @@ impl EditorView {
         cx: &gpui::App,
     ) -> Result<f64, hex_engine::Invalid> {
         if parameter.is_source_frame()
-            && let hex_session::service::SamplerParameterOwner::Track(track) = owner
             && let Some(value) =
-                super::device_panel::sampler_boundary_preview(self, track, device.id(), parameter)
+                super::device_panel::sampler_boundary_preview(self, owner, device.id(), parameter)
         {
             return Ok(value as f64);
         }
@@ -457,7 +456,7 @@ impl EditorView {
             request_id: id,
             project_generation: generation,
             revision,
-            track,
+            owner: hex_project::InstrumentAssetOwner::Track(track),
             device,
             expected_state,
             path,

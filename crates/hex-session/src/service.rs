@@ -281,7 +281,7 @@ pub struct SamplerReplacementEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
-    pub track: hex_project::TrackId,
+    pub owner: hex_project::InstrumentAssetOwner,
     pub device: hex_project::DeviceId,
     pub expected_state: hex_lattice_contract::NativeDeviceState,
     pub path: PathBuf,
@@ -6553,7 +6553,7 @@ fn run_worker(
                                         frames,
                                     )?;
                                 crate::native_assets::NativeAssetDestination::ExistingInstrument {
-                                    track,
+                                    owner: hex_project::InstrumentAssetOwner::Track(track),
                                     device,
                                     expected_state,
                                     state,

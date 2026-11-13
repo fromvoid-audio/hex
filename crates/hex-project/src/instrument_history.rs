@@ -198,11 +198,9 @@ impl Project {
         }
         let Some((track, current, next_instrument)) = changed else {
             // An unassigned source has no track binding to carry its change.
-            // Only an exact instrument-state change is admitted here; source
-            // metadata, effects, catalog and every track stay unchanged.
-            if !matches!(asset_change, InstrumentAssetHistoryDelta::Unchanged) {
-                return None;
-            }
+            // Only one exact instrument-state change and at most one catalog
+            // addition/removal are admitted; source metadata, effects and tracks
+            // stay unchanged.
             let mut unassigned = None;
             for (old, new) in native_sources.iter().zip(&target.native_sources) {
                 if old == new {
