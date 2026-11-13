@@ -154,7 +154,10 @@ impl WorkerPreparedOutput {
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
-        client.activate();
+        if !client.activate() {
+            self.client = Some(client);
+            return None;
+        }
         Some(client)
     }
 }

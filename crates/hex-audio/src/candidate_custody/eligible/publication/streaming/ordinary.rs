@@ -290,6 +290,21 @@ impl Custody {
         &self,
         reservation: OrdinaryReservation,
     ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, false)
+    }
+
+    pub(in crate::candidate_custody) fn configure_combined_ordinary_streams(
+        &self,
+        reservation: OrdinaryReservation,
+    ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, true)
+    }
+
+    fn configure_ordinary_streams_for_owner(
+        &self,
+        reservation: OrdinaryReservation,
+        combined: bool,
+    ) -> Result<(), &'static str> {
         let reservation = reservation.validate_requested()?;
         let workspace = Workspace::prepare(reservation.extents)?;
         if workspace
@@ -303,7 +318,7 @@ impl Custody {
         if !self.enabled()
             || bank.closing
             || bank.ordinary.is_some()
-            || bank.publication.reservation.is_some()
+            || (bank.publication.reservation.is_some() != combined)
             || bank.domains.iter().any(|d| d.phase != Phase::Vacant)
         {
             return Err("ordinary streams require a vacant source root");

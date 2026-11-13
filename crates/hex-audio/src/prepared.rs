@@ -1816,12 +1816,117 @@ impl PublicationControl {
         &mut self,
         reservation: hex_engine::AudioStorageLedgerReservation,
     ) -> Result<(), &'static str> {
+        self.configure_device_resource_publication(reservation, false)
+    }
+
+    /// Reserve both resource books on a fresh native output. The verified
+    /// constructor owns the shared source root and domain reservation; the
+    /// ordinary book is separate and does not include that root. `combined`
+    /// must cover both declared limits, with checked arithmetic. These are
+    /// caller limits, not an RSS or allocator bound. The combined ceiling
+    /// includes one ordinary demand workspace for every permitted graph.
+    /// This grants no ordinary publication or cross-kind switching authority;
+    /// the exposed client retains its verified publication policy.
+    /// If construction fails after configuring the
+    /// verified root, the output is closed and must be discarded rather than
+    /// exposed.
+    pub fn configure_combined_publication_on_control(
+        &mut self,
+        verified: crate::AudioCandidatePublicationReservation,
+        ordinary: hex_engine::AudioStorageLedgerReservation,
+        ordinary_extents: usize,
+        ordinary_metadata_bytes: usize,
+        combined: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<(), &'static str> {
+        let fits =
+            |a: usize, b: usize, limit: usize| a.checked_add(b).is_some_and(|sum| sum <= limit);
+        let graph_count = self
+            .publications
+            .buffer()
+            .capacity()
+            .checked_add(RETIRED)
+            .and_then(|count| count.checked_add(5))
+            .ok_or("combined audio reservation exceeded")?;
+        let workspace_bytes = ordinary_metadata_bytes
+            .checked_mul(graph_count)
+            .ok_or("combined audio reservation exceeded")?;
+        // One boxed ordinary stream owner plus four extent vectors per graph.
+        let workspace_rows = graph_count
+            .checked_mul(5)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_data_rows = ordinary
+            .data_rows
+            .checked_add(workspace_rows)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_retained = ordinary
+            .max_retained_bytes
+            .checked_add(workspace_bytes)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_peak = ordinary
+            .max_construction_peak_bytes
+            .checked_add(workspace_bytes)
+            .ok_or("combined audio reservation exceeded")?;
+        if combined.max_construction_peak_bytes < combined.max_retained_bytes
+            || !fits(verified.data_rows, ordinary_data_rows, combined.data_rows)
+            || !fits(
+                verified.handle_rows,
+                ordinary.handle_rows,
+                combined.handle_rows,
+            )
+            || !fits(1, ordinary.root_rows, combined.root_rows)
+            || !fits(
+                verified.max_retained_data_bytes,
+                ordinary_retained,
+                combined.max_retained_bytes,
+            )
+            || !fits(
+                verified.max_construction_peak_data_bytes,
+                ordinary_peak,
+                combined.max_construction_peak_bytes,
+            )
+        {
+            return Err("combined audio reservation exceeded");
+        }
+        if let Some(bridge) = self.resident_forwarding.as_ref() {
+            bridge.begin_combined_configuration(&self.status)?;
+        } else {
+            return Err("combined reservation requires paired native worker endpoints");
+        }
+        let result = match self.configure_audio_candidate_publication(verified) {
+            Err(error) => Err(error),
+            Ok(()) => match self
+                .configure_device_resource_publication(ordinary, true)
+                .and_then(|()| {
+                    self.candidate_root.configure_combined_ordinary_streams(
+                        ordinary_extents,
+                        ordinary_metadata_bytes,
+                    )
+                }) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.request_shutdown();
+                    Err(error)
+                }
+            },
+        };
+        if let Some(bridge) = self.resident_forwarding.as_ref() {
+            bridge.finish_combined_configuration();
+        }
+        result
+    }
+
+    fn configure_device_resource_publication(
+        &mut self,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+        shared_verified_root: bool,
+    ) -> Result<(), &'static str> {
         if self.device_resources.is_some()
             || self.revision != 0
             || self.status.client_exposed.load(Acquire)
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
-            || self.candidate_root.domains_configured()
+            || (self.candidate_root.domains_configured() && !shared_verified_root)
+            || (shared_verified_root && !self.status.constructor_mode.load(Acquire))
         {
             return Err("device resource publication requires a vacant unexposed ordinary output");
         }
@@ -1849,7 +1954,9 @@ impl PublicationControl {
             .as_ref()
             .map(Arc::clone)
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
-        bridge.claim_worker_publication_on_control(&self.status)?;
+        if !shared_verified_root {
+            bridge.claim_worker_publication_on_control(&self.status)?;
+        }
         self.resident_forwarding = Some(bridge);
         self.device_resources = Some(resources);
         Ok(())
@@ -2094,8 +2201,9 @@ impl PublicationControl {
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
-        } else if self.candidate_root.domains_configured()
-            && !self.candidate_root.ordinary_streams_configured()
+        } else if self.status.constructor_mode.load(Acquire)
+            || (self.candidate_root.domains_configured()
+                && !self.candidate_root.ordinary_streams_configured())
         {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.recording_active() {

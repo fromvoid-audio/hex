@@ -163,12 +163,18 @@ impl Client {
         }
     }
 
-    pub(crate) fn activate(&mut self) {
+    pub(crate) fn activate(&mut self) -> bool {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            self.worker_owned_publication = endpoints
+            let Some(worker_owned) = endpoints
                 .resident_forwarding
-                .expose_client_on_control(&endpoints.status);
+                .expose_client_on_control(&endpoints.status)
+            else {
+                return false;
+            };
+            self.worker_owned_publication = worker_owned;
+            return true;
         }
+        false
     }
     /// Immutable publication policy captured under the existing exposure lock. Every graph on
     /// this output belongs to its control worker; transport and shared input clients remain
