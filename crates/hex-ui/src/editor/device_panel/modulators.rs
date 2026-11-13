@@ -519,6 +519,44 @@ pub(super) fn source_effect_card(
         .flex_col()
         .gap(px(1.0));
     body = body.child(theme::text("source effect"));
+    let mode_parameter = utility_panel::MID_SIDE_ENABLED;
+    let mode_eligible = hex_engine::project_source_utility_matrix_edit_supported(
+        &state.project,
+        id,
+        mode_parameter,
+    );
+    let pending_mode = view.device_gesture.snapshot().and_then(|snapshot| {
+        match (snapshot.target, snapshot.value) {
+            (GestureTarget::DeviceParameter { device, parameter }, ParameterValue::Bool(value))
+                if device == id && parameter == mode_parameter =>
+            {
+                Some(value)
+            }
+            _ => None,
+        }
+    });
+    let mode_row = mode_eligible
+        .then(|| {
+            metadata
+                .parameters
+                .iter()
+                .find(|row| row.enabled && row.descriptor.id == mode_parameter)
+                .copied()
+        })
+        .flatten();
+    let mono_row = hex_engine::project_source_utility_matrix_edit_supported(
+        &state.project,
+        id,
+        utility_panel::MONO,
+    )
+    .then(|| {
+        metadata
+            .parameters
+            .iter()
+            .find(|row| row.enabled && row.descriptor.id == utility_panel::MONO)
+            .copied()
+    })
+    .flatten();
     let controls = [
         (utility_panel::GAIN, "gain", None),
         (
@@ -531,9 +569,29 @@ pub(super) fn source_effect_card(
             "width",
             Some(numeric_display::NumericDisplayCodec::Percent),
         ),
+        (
+            utility_panel::MID_SIDE_BALANCE,
+            "mid/side",
+            Some(numeric_display::NumericDisplayCodec::MidSide),
+        ),
     ]
     .map(|(parameter, label, codec)| {
-        if !hex_engine::project_source_utility_matrix_edit_supported(&state.project, id, parameter)
+        let is_mode_value = matches!(
+            parameter,
+            utility_panel::WIDTH | utility_panel::MID_SIDE_BALANCE
+        );
+        let selected_pending = pending_mode.is_some_and(|mid_side| {
+            is_mode_value && mid_side == (parameter == utility_panel::MID_SIDE_BALANCE)
+        });
+        if is_mode_value && pending_mode.is_some() && !selected_pending {
+            return None;
+        }
+        if !selected_pending
+            && !hex_engine::project_source_utility_matrix_edit_supported(
+                &state.project,
+                id,
+                parameter,
+            )
         {
             return None;
         }
@@ -542,7 +600,12 @@ pub(super) fn source_effect_card(
             .iter()
             .find(|row| row.enabled && row.descriptor.id == parameter)
             .copied()
-            .map(|row| (row, label, codec))
+            .map(|mut row| {
+                if selected_pending {
+                    row.enabled = false;
+                }
+                (row, label, codec)
+            })
     });
     metadata.parameters.retain(|row| {
         row.enabled
@@ -574,7 +637,42 @@ pub(super) fn source_effect_card(
             },
         ));
     }
-    if controls.iter().any(Option::is_some) {
+    if let Some(row) = mode_row {
+        let identity = DeviceControlIdentity {
+            class: NativeDeviceClass::Effect,
+            type_id: metadata.type_id,
+        };
+        control_row = control_row.child(parameter_control_with_presentation(
+            view,
+            cx,
+            id,
+            identity,
+            &row,
+            ControlPresentation::CompactButton,
+            ControlText {
+                label: Some("mid/side"),
+                codec: None,
+            },
+        ));
+    }
+    if let Some(row) = mono_row {
+        control_row = control_row.child(parameter_control_with_presentation(
+            view,
+            cx,
+            id,
+            DeviceControlIdentity {
+                class: NativeDeviceClass::Effect,
+                type_id: metadata.type_id,
+            },
+            &row,
+            ControlPresentation::CompactButton,
+            ControlText {
+                label: Some("mono"),
+                codec: None,
+            },
+        ));
+    }
+    if controls.iter().any(Option::is_some) || mode_row.is_some() || mono_row.is_some() {
         body = body.child(control_row);
     }
     for row in &metadata.parameters {
