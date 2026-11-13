@@ -666,9 +666,13 @@ impl SessionPlayback {
             if !previous.renders_no_device_chains() {
                 return Err(SessionPlaybackError::DeviceTransitionBusy);
             }
-            self.settle_idle_device_transitions(previous);
-            if self.device_transition_busy(previous) {
-                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            // Preview uses the planned idle cut without settling the live
+            // donor. Commit repeats this check and settles before transfer.
+            if demand.is_none() {
+                self.settle_idle_device_transitions(previous);
+                if self.device_transition_busy(previous) {
+                    return Err(SessionPlaybackError::DeviceTransitionBusy);
+                }
             }
         }
         if self
