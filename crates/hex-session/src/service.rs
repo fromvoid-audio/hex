@@ -606,6 +606,19 @@ pub enum Request {
         expected_receiver: Option<hex_project::TrackId>,
         track: hex_project::TrackId,
     },
+    /// Rename a captured retained source without finalizing a caller-owned gesture.
+    RenameRetainedSource {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::SourceId,
+        name: String,
+    },
+    /// Explicitly delete a captured, unreferenced retained source.
+    DeleteRetainedSource {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::SourceId,
+    },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
     /// Replace one device's bank against the displayed canonical revision.
@@ -3494,6 +3507,42 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::RenameRetainedSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                ..
+            }
+            | Request::DeleteRetainedSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source edit canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                if session.project().native_source(*source).is_none() {
+                    return Err("source edit canceled · source no longer exists".into());
+                }
+                match &request {
+                    Request::RenameRetainedSource { name, .. } => Ok(Command::RenameNativeSource {
+                        source: *source,
+                        name: name.clone(),
+                    }),
+                    Request::DeleteRetainedSource { .. } => {
+                        Ok(Command::RemoveNativeSource(*source))
+                    }
+                    _ => Err("source edit was not resolved".into()),
+                }
+            })()),
             Request::ChooseNativeSourceReceiver {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5526,7 +5575,9 @@ fn run_worker(
                 }
                 Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
-                | Request::ChooseNativeSourceReceiver { .. } => {
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::RenameRetainedSource { .. }
+                | Request::DeleteRetainedSource { .. } => {
                     error = Some("source assignment was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {

@@ -1344,6 +1344,21 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::RenameRetainedSource {
+            project_generation,
+            revision,
+            source,
+            name,
+        } => {
+            describe!("rename_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::DeleteRetainedSource {
+            project_generation,
+            revision,
+            source,
+        } => {
+            describe!("delete_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value()]; omitted="")
+        }
         Request::ChooseNativeSourceReceiver {
             project_generation,
             revision,
@@ -2092,6 +2107,31 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    #[test]
+    fn retained_source_rename_redacts_the_name() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let description = request(&Request::RenameRetainedSource {
+            project_generation: 0,
+            revision: 1,
+            source,
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "rename_retained_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+    }
 
     #[test]
     fn source_reorder_projection_keeps_source_device_and_anchor_identities() {
