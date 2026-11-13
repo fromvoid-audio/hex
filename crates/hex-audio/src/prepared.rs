@@ -1772,7 +1772,8 @@ impl PublicationControl {
     /// must cover both declared limits, with checked arithmetic. These are
     /// caller limits, not an RSS or allocator bound. The combined ceiling
     /// includes one ordinary demand workspace for every permitted graph.
-    /// This grants no ordinary publication or cross-kind switching authority.
+    /// This grants no ordinary publication or cross-kind switching authority;
+    /// the exposed client retains its verified publication policy.
     /// If construction fails after configuring the
     /// verified root, the output is closed and must be discarded rather than
     /// exposed.
@@ -1900,7 +1901,9 @@ impl PublicationControl {
             .as_ref()
             .map(Arc::clone)
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
-        bridge.claim_worker_publication_on_control(&self.status)?;
+        if !shared_verified_root {
+            bridge.claim_worker_publication_on_control(&self.status)?;
+        }
         self.resident_forwarding = Some(bridge);
         self.device_resources = Some(resources);
         Ok(())

@@ -170,6 +170,7 @@ fn combined_reservation_preserves_verified_graph_and_refuses_ordinary_publicatio
     );
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert!(client.activate());
+    assert!(!client.worker_owns_graph_publication());
     client.command(PlaybackCommand::Play).unwrap();
     let mut output = [[0.0; 2]; 4];
     let counts = allocation_counter::measure(|| {
