@@ -794,6 +794,93 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
 struct QuietTrackEffect;
 
 #[test]
+fn overlapping_foreign_tails_keep_grouped_send_and_feed_pcm() {
+    struct Probe {
+        rings: [[[f32; 2]; 128]; 3],
+        cursors: [usize; 3],
+        frames: [usize; 3],
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            self.frames[index] += frames.len();
+            for frame in frames {
+                std::mem::swap(frame, &mut self.rings[index][self.cursors[index]]);
+                self.cursors[index] = (self.cursors[index] + 1) % 128;
+            }
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in [10, 11] {
+        for partition in [1, 8, 64] {
+            let mut old =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(1)).0)
+                    .unwrap();
+            let mut current =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(2)).0)
+                    .unwrap();
+            let mut next =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(3)).0)
+                    .unwrap();
+            let mut reference =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(1)).0)
+                    .unwrap();
+            let mut probe = Probe {
+                rings: [[[0.0; 2]; 128]; 3],
+                cursors: [0; 3],
+                frames: [0; 3],
+            };
+            let mut reference_probe = Probe {
+                rings: [[[0.0; 2]; 128]; 3],
+                cursors: [0; 3],
+                frames: [0; 3],
+            };
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut expected = [[0.0; 2]; 320];
+            reference
+                .render_with_foreign_processors(
+                    &mut expected,
+                    None,
+                    None,
+                    None,
+                    &mut reference_probe,
+                )
+                .unwrap();
+            let mut actual = [[0.0; 2]; 320];
+            old.render_with_foreign_processors(&mut actual[..8], None, None, None, &mut probe)
+                .unwrap();
+            current.try_inherit_state_from(&mut old).unwrap();
+            current
+                .render_with_foreign_processors(&mut actual[8..68], None, None, None, &mut probe)
+                .unwrap();
+            next.try_inherit_state_from(&mut current).unwrap();
+            for chunk in actual[68..].chunks_mut(partition) {
+                next.render_with_foreign_processors(chunk, None, None, None, &mut probe)
+                    .unwrap();
+            }
+            assert_eq!(actual, expected);
+            assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+            assert!(probe.frames.iter().all(|&frames| frames > 0));
+            assert!(probe.frames[0] <= 320 && probe.frames[1] <= 312);
+            assert_eq!(probe.frames[2], 252);
+            assert_ne!(expected[128], [0.0; 2]);
+            assert_ne!(expected[191], [0.0; 2]);
+        }
+    }
+}
+
+#[test]
 fn active_foreign_tail_keeps_unchanged_compensated_group_pcm() {
     struct Probe {
         rings: [[[f32; 2]; 16]; 2],
@@ -928,41 +1015,52 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
         assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
     }
 
-    // A later revision cannot adopt the proven send route while its old
-    // worker is still active; refusal must leave that worker audible.
-    let mut old = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
-    let mut reference_old =
-        SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
-    let mut current = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
-    let mut reference =
-        SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
-    let mut later = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(3)).0).unwrap();
-    for playback in [&mut old, &mut reference_old] {
-        playback.apply(SessionPlaybackCommand::Play).unwrap();
-        playback
-            .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+    // A changed route or aliased endpoint must leave the old worker audible.
+    for (location, epoch, alias) in [(9, 3, false), (10, 1, true)] {
+        let mut old = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+        let mut reference_old =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+        let mut current =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+        let mut reference =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+        let mut later =
+            SessionPlayback::new(prepared_with_latency(location, false, 0, Some(epoch)).0).unwrap();
+        for playback in [&mut old, &mut reference_old] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback
+                .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+                .unwrap();
+        }
+        current.try_inherit_state_from(&mut old).unwrap();
+        reference
+            .try_inherit_state_from(&mut reference_old)
             .unwrap();
+        let refusal = later.try_inherit_state_from(&mut current);
+        if alias {
+            assert!(matches!(
+                refusal,
+                Err(SessionPlaybackError::ForeignTailSourceBusy)
+            ));
+        } else {
+            assert!(matches!(
+                refusal,
+                Err(SessionPlaybackError::Arrangement(
+                    super::handoff::COMPENSATED_TAILS_CHANGED
+                ))
+            ));
+        }
+        let mut actual = [[0.0; 2]; 24];
+        let mut expected = [[0.0; 2]; 24];
+        current
+            .render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
     }
-    current.try_inherit_state_from(&mut old).unwrap();
-    reference
-        .try_inherit_state_from(&mut reference_old)
-        .unwrap();
-    assert!(matches!(
-        later.try_inherit_state_from(&mut current),
-        Err(SessionPlaybackError::Arrangement(
-            super::handoff::COMPENSATED_TAILS_CHANGED
-        ))
-    ));
-    let mut actual = [[0.0; 2]; 24];
-    let mut expected = [[0.0; 2]; 24];
-    current
-        .render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
-        .unwrap();
-    reference
-        .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
-        .unwrap();
-    assert_eq!(actual, expected);
-    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
 }
 
 #[test]
