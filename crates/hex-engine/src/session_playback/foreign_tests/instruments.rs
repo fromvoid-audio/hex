@@ -910,8 +910,7 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     assert_eq!(queue.snapshot().unwrap().events(), &[on]);
 }
 
-#[test]
-fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
+fn session_held_note_fixture() -> (Arc<PreparedRevision>, hex_project::ClipId) {
     let (mut editor, identity) = fixture();
     let track = editor.project().tracks()[0].id();
     let Created::Scene(scene) = editor
@@ -944,6 +943,12 @@ fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
         })
         .unwrap();
     let revision = prepare(&editor, identity, true).unwrap();
+    (revision, clip)
+}
+
+#[test]
+fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
+    let (revision, clip) = session_held_note_fixture();
 
     for block in [1, 7, 64, 128, 256, 512] {
         let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
@@ -995,6 +1000,65 @@ fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
             !ended.on && ended.note_id == restarted.note_id,
             "block {block}"
         );
+    }
+}
+
+#[test]
+fn timed_play_from_releases_and_restarts_a_held_session_note() {
+    use crate::TimedTransportCommand;
+    use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
+
+    let (revision, clip) = session_held_note_fixture();
+
+    for block in [1, 7, 64, 128, 256, 512] {
+        let mut playback = Playback::from_prepared(Arc::clone(&revision));
+        playback
+            .try_apply_action(PlaybackAction::LaunchAndPlay(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        let mut output = [[0.0; 2]; 512];
+        let mut events = Vec::new();
+        for (index, part) in output.chunks_mut(block).enumerate() {
+            let start = index * block;
+            let end = start + part.len();
+            let commands = if start <= 16 && 16 < end {
+                vec![TimedTransportCommand {
+                    offset: 16 - start,
+                    command: PlaybackCommand::PlayFrom(12_000),
+                }]
+            } else {
+                Vec::new()
+            };
+            endpoint.next_offset = 0;
+            endpoint.notes.clear();
+            playback
+                .render_with_timed_transport_and_foreign_processors(part, &commands, &mut endpoint)
+                .unwrap();
+            assert!(!endpoint.rejected, "block {block}");
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (start + offset, *note)),
+            );
+        }
+        let [(0, original), (16, released), (16, restarted), (391, ended)] = events.as_slice()
+        else {
+            panic!("block {block}: unexpected events {events:?}")
+        };
+        assert!(original.on && original.pitch == 64 && original.channel == 3);
+        assert!(!released.on && released.note_id == original.note_id);
+        assert!(restarted.on && restarted.note_id != original.note_id);
+        assert_eq!(
+            (restarted.pitch, restarted.channel, restarted.velocity),
+            (64, 3, 98)
+        );
+        assert!(!ended.on && ended.note_id == restarted.note_id);
     }
 }
 
