@@ -225,6 +225,13 @@ pub(in crate::editor) mod native {
                     track,
                 }
             ));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::DeleteRetainedSource {
+                    project_generation: 0,
+                    revision: 1,
+                    source,
+                }
+            ));
             assert!(view.gain_lane.draft.is_some());
             assert!(
                 view.error
