@@ -42,6 +42,14 @@ pub(super) struct CapturedBinding {
 }
 
 impl CapturedBinding {
+    fn accepts_event(self, view: &EditorView, require_enabled: bool) -> bool {
+        self.current(view, require_enabled)
+            && (!matches!(self.owner, Some(DevicePanelOwner::Source(_)))
+                || view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| super::selected_owner(view, state) == self.owner))
+    }
     pub(super) fn current(self, view: &EditorView, require_enabled: bool) -> bool {
         if self.generation != view.project_generation || self.owner != view.device_panel.owner {
             return false;
@@ -533,7 +541,7 @@ pub(super) fn render_parameter(
     rendered.capture_any_mouse_down(cx.listener(
         move |view, event: &gpui::MouseDownEvent, window, cx| {
             if event.button == gpui::MouseButton::Right
-                && menu_binding.current(view, false)
+                && menu_binding.accepts_event(view, false)
                 && view
                     .state
                     .as_ref()
@@ -665,7 +673,11 @@ fn create_parameter_control(
                 move |view, emitter, event: &NumericControlEvent, cx| {
                     let is_current = |view: &EditorView| {
                         event_fence.get() == 0
-                            && binding.current(view, event.phase != NumericEventPhase::Cancel)
+                            && (if event.phase == NumericEventPhase::Cancel {
+                                binding.current(view, false)
+                            } else {
+                                binding.accepts_event(view, true)
+                            })
                             && matches!(view.device_panel.controls.get(&key),
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
@@ -733,7 +745,7 @@ fn create_parameter_control(
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
             let subscription = cx.subscribe(&entity, move |view, emitter, event: &ToggleChanged, cx| {
-                if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                if !binding.accepts_event(view, true) || !matches!(view.device_panel.controls.get(&key),
                     Some(ParameterControl::Bool { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                 // A discrete control may hide a numeric field (for example,
                 // switching Operator tuning to fixed frequency). Do not let
@@ -856,7 +868,7 @@ fn create_parameter_control(
             let event_values = values.clone();
             let subscription =
                 cx.subscribe(&entity, move |view, emitter, event: &SelectorChanged, cx| {
-                    if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                    if !binding.accepts_event(view, true) || !matches!(view.device_panel.controls.get(&key),
                         Some(ParameterControl::Choice { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                     let Some(&value) = event_values.get(event.index) else {
                         return;
