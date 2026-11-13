@@ -1376,6 +1376,18 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("choose_native_source_receiver"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "expected_receiver" => expected_receiver.map(|id| id.value()), "track" => track.value()]; omitted="")
         }
+        Request::MoveSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+            neighbor,
+            direction,
+        } => {
+            describe!("move_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value(), "neighbor" => neighbor.value(), "direction" => format!("{direction:?}")]; omitted="")
+        }
         Request::RemoveSourceUtility {
             project_generation,
             revision,

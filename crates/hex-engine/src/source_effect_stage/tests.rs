@@ -3348,7 +3348,12 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
-    for (remove_first, append_third) in [(true, false), (false, false), (false, true)] {
+    for (remove_first, append_third, reorder) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
         for partition in [1, 7, 64, 128, 257] {
             let (mut editor, asset) = authored_fixture(0, false);
             let receiver = editor.project().tracks()[0].id();
@@ -3383,10 +3388,16 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
             else {
                 panic!("first")
             };
+            let mut last_state = UTILITY_DEFINITION.default_state().unwrap();
+            if reorder {
+                last_state = UTILITY_DEFINITION
+                    .patch_parameter(&last_state, parameter::MONO, ParameterValue::Bool(true))
+                    .unwrap();
+            }
             let Created::Device(last) = editor
                 .execute(Command::InsertNestedDevice {
                     parent: instrument,
-                    state: UTILITY_DEFINITION.default_state().unwrap(),
+                    state: last_state,
                 })
                 .unwrap()
             else {
@@ -3410,18 +3421,21 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
             };
             let original = prepare(&editor);
             let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
-            let mut reference = SessionPlayback::new(original).unwrap();
+            let mut reference = SessionPlayback::new(Arc::clone(&original)).unwrap();
             for playback in [&mut donor, &mut reference] {
                 playback.apply(SessionPlaybackCommand::Play).unwrap();
                 playback.render(&mut [[0.0; 2]; 64]).unwrap();
             }
-            editor
-                .execute(Command::RemoveDevice(if remove_first {
-                    first
-                } else {
-                    last
-                }))
-                .unwrap();
+            let edit = if reorder {
+                Command::MoveNativeSourceDevice {
+                    source,
+                    device: last,
+                    before: Some(first),
+                }
+            } else {
+                Command::RemoveDevice(if remove_first { first } else { last })
+            };
+            editor.execute(edit).unwrap();
             let remaining = prepare(&editor);
             let mut candidate = SessionPlayback::new(Arc::clone(&remaining)).unwrap();
             let position = donor.performance_frame();
@@ -3460,6 +3474,22 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
                 actual, expected,
                 "stopped retry: first={remove_first} partition={partition}"
             );
+            if reorder {
+                let mut old_fresh = SessionPlayback::new(original).unwrap();
+                old_fresh.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut old_output = [[0.0; 2]; 128];
+                for chunk in old_output.chunks_mut(partition) {
+                    old_fresh.render(chunk).unwrap();
+                }
+                assert!(
+                    actual
+                        .iter()
+                        .zip(old_output)
+                        .any(|(new, old)| (new[0] - old[0]).abs() > 1e-5
+                            || (new[1] - old[1]).abs() > 1e-5),
+                    "noncommuting reorder must change PCM"
+                );
+            }
         }
     }
 }
