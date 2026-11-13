@@ -257,6 +257,8 @@ pub struct CatalogFootprint {
     pub kernel_peak_bound_bytes: usize,
     pub verified_reader_scratch_bytes: usize,
     pub source_scratch_bytes: usize,
+    /// Worker-only intermediate project-rate PCM for pitched pages.
+    pub pitch_scratch_bytes: usize,
 }
 
 /// Verified immutable catalog membership delivered only after worker-side

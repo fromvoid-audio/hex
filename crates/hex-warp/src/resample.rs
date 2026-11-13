@@ -38,6 +38,20 @@ pub struct PitchWindow {
 }
 
 impl PitchWindow {
+    /// Maximum coefficient payload requested during construction for this law.
+    /// The caller must compare actual retained capacity against its reservation.
+    pub const fn filter_reservation_bytes(resampler: Resampler) -> usize {
+        bank_bytes(resampler)
+    }
+
+    /// Actual retained coefficient capacity, excluding this inline value.
+    pub fn filter_backing_bytes(&self) -> Option<usize> {
+        self.bank
+            .coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
+
     /// Prepare the same filter and fixed-point pitch used by resident rendering.
     pub fn new(
         source_frames: u64,
