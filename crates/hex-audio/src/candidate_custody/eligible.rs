@@ -19,7 +19,7 @@ pub use native_sources::{
 };
 pub(crate) use pages::DomainEnvelope;
 pub(super) use publication::OrdinaryReservation;
-pub(crate) use publication::{ActiveView, OrdinaryStreams, QuantumPins};
+pub(crate) use publication::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,

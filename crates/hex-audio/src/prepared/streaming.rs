@@ -121,6 +121,58 @@ impl Callback {
         }
         yielded
     }
+    pub(super) fn retry_pending_stream_capacity(&mut self) -> bool {
+        if let Some(streams) = self
+            .deferred
+            .as_mut()
+            .and_then(|next| next.streams.as_mut())
+        {
+            return streams.retry_capacity_conflict();
+        }
+        self.deferred_eligible
+            .as_mut()
+            .is_some_and(|next| next.retry_stream_capacity_conflict())
+    }
+    pub(super) fn reject_pending_stream_successor(&mut self, reason: PlaybackHandoffRejection) {
+        if self
+            .deferred
+            .as_ref()
+            .is_some_and(|next| next.streams.is_some())
+            && let Some(mut next) = self.deferred.take()
+        {
+            if let Some(streams) = next.streams.as_mut() {
+                streams.cancel_install(&mut self.domain_pages);
+            }
+            if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                cancellation.finish();
+            }
+            self.reject_publication(next.revision, reason);
+            self.return_graph(next);
+            self.status.publication_pending.store(false, Release);
+        }
+        if self
+            .deferred_eligible
+            .as_ref()
+            .is_some_and(|next| next.streaming_enabled())
+            && let Some(mut next) = self.deferred_eligible.take()
+        {
+            next.cancel_stream_readiness(&mut self.domain_pages);
+            self.reject_publication(next.revision(), reason);
+            self.return_publication(ReturnedPublication::Eligible(next.reject_before_install()));
+            self.status.publication_pending.store(false, Release);
+            if let Some(ticket) = self.stream_pending_play.take() {
+                self.status
+                    .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+                self.stage_stream_outcome(
+                    ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared),
+                );
+                self.status
+                    .stream_applied_command_prefix
+                    .store(self.stream_prefix, Release);
+            }
+        }
+    }
     pub(super) fn stream_action_pending(&self) -> bool {
         self.active
             .as_ref()

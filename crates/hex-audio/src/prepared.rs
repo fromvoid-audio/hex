@@ -4403,6 +4403,18 @@ impl Callback {
                     .is_some_and(|next| next.streaming_enabled()));
         let mut pins = None;
         let mut allow_successor = true;
+        if !self.yield_stream_successor_once
+            && !self.status.closing.load(Acquire)
+            && !self.status.device_fault.load(Acquire)
+            && self
+                .deferred_eligible
+                .as_ref()
+                .is_some_and(|next| next.streaming_enabled())
+        {
+            // Eligible publication has always invalidated the predecessor's
+            // pending action before attempting streamed readiness.
+            self.cancel_active_stream_action();
+        }
         if successor
             && self
                 .active
@@ -4413,7 +4425,7 @@ impl Callback {
                 this.active
                     .as_mut()
                     .and_then(ActivePublication::stream_view)
-                    .ok_or(Invalid("active stream view unavailable"))?
+                    .ok_or(crate::candidate_custody::QuantumFailure::Invalid)?
                     .reserve_current_quantum(
                         &mut this.domain_pages,
                         output.len(),
@@ -4435,7 +4447,24 @@ impl Callback {
                             allow_successor = reservation.complete();
                             pins = Some(reservation);
                         }
-                        Err(_) => allow_successor = false,
+                        Err(reason) => {
+                            allow_successor = false;
+                            match reason {
+                                crate::candidate_custody::QuantumFailure::PendingAction => {}
+                                crate::candidate_custody::QuantumFailure::Capacity => {
+                                    if !self.retry_pending_stream_capacity() {
+                                        self.reject_pending_stream_successor(
+                                            PlaybackHandoffRejection::StreamedPageCapacity,
+                                        );
+                                    }
+                                }
+                                crate::candidate_custody::QuantumFailure::Invalid => {
+                                    self.reject_pending_stream_successor(
+                                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

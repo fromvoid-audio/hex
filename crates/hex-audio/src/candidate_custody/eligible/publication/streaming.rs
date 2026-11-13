@@ -11,7 +11,7 @@ pub(crate) use actions::StageAction;
 pub(in crate::candidate_custody) use ordinary::OrdinaryReservation;
 pub(crate) use ordinary::OrdinaryStreams;
 use view::StateView;
-pub(crate) use view::{ActiveView, QuantumPins};
+pub(crate) use view::{ActiveView, QuantumFailure, QuantumPins};
 #[derive(Clone, Copy)]
 struct ScheduledAction {
     ticket: u64,

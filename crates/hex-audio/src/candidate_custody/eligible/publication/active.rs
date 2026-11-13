@@ -288,6 +288,12 @@ impl Queued {
     pub(crate) fn streaming_enabled(&self) -> bool {
         self.state.streaming.is_some()
     }
+    pub(crate) fn retry_stream_capacity_conflict(&mut self) -> bool {
+        self.state
+            .streaming
+            .as_mut()
+            .is_some_and(|workspace| workspace.retry_capacity_conflict())
+    }
     pub(crate) fn has_stream_install_pending(&self) -> bool {
         self.state.streaming.as_ref().is_some_and(|workspace| {
             workspace.role == Some(hex_stream::ProtectionRole::Candidate)
