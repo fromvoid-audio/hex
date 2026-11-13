@@ -1699,3 +1699,433 @@ fn remove_source_utility_leaf(target: usize) {
         );
     }
 }
+
+#[test]
+fn captured_source_utility_reorder_revalidates_siblings_and_history() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(receiver) = added.created.unwrap() else {
+        panic!("receiver")
+    };
+    let source = added
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let instrument = added
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }),
+    );
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    run(
+        &service,
+        Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }),
+    );
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let mut current = run(
+        &service,
+        Request::Edit(Command::InsertDevice {
+            track: receiver,
+            before: None,
+            state: utility.clone(),
+        }),
+    );
+    let local = current
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .devices()
+        .to_vec();
+    for _ in 0..3 {
+        current = run(
+            &service,
+            Request::Edit(Command::InsertNestedDevice {
+                parent: instrument,
+                state: utility.clone(),
+            }),
+        );
+    }
+    let original = current
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()
+        .to_vec();
+    let first = original[0].id();
+    let middle = original[1].id();
+    let last = original[2].id();
+    let request = |revision, track, effect, neighbor, direction| Request::MoveSourceUtility {
+        project_generation: 0,
+        revision,
+        track,
+        source,
+        instrument,
+        effect,
+        neighbor,
+        direction,
+    };
+    refused(
+        &service,
+        &current,
+        request(
+            current.state.revision - 1,
+            contributor,
+            first,
+            middle,
+            SourceUtilityMove::Later,
+        ),
+        "project changed",
+    );
+    refused(
+        &service,
+        &current,
+        request(
+            current.state.revision,
+            contributor,
+            first,
+            last,
+            SourceUtilityMove::Later,
+        ),
+        "source chain changed",
+    );
+    let key = GestureKey {
+        generation: 0,
+        token: 7828,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track: contributor },
+        }),
+    );
+    assert!(begun.active_device_gesture.is_some());
+    refused(
+        &service,
+        &begun,
+        request(
+            begun.state.revision,
+            contributor,
+            first,
+            middle,
+            SourceUtilityMove::Later,
+        ),
+        "active gesture",
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let moved = run(
+        &service,
+        request(
+            cancelled.state.revision,
+            contributor,
+            first,
+            middle,
+            SourceUtilityMove::Later,
+        ),
+    );
+    let expected = vec![
+        original[1].clone(),
+        original[0].clone(),
+        original[2].clone(),
+    ];
+    assert_eq!(
+        moved
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        expected
+    );
+    assert_eq!(
+        moved.state.project.track(receiver).unwrap().devices(),
+        local
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        undone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        original
+    );
+    let redone = run(&service, Request::Redo);
+    assert_eq!(
+        redone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        expected
+    );
+    let back = run(
+        &service,
+        request(
+            redone.state.revision,
+            receiver,
+            first,
+            middle,
+            SourceUtilityMove::Earlier,
+        ),
+    );
+    assert_eq!(
+        back.state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        original
+    );
+    let nested = run(
+        &service,
+        Request::Edit(Command::InsertNestedDevice {
+            parent: first,
+            state: utility,
+        }),
+    );
+    let Created::Device(child) = nested.created.unwrap() else {
+        panic!("child")
+    };
+    refused(
+        &service,
+        &nested,
+        request(
+            nested.state.revision,
+            receiver,
+            first,
+            child,
+            SourceUtilityMove::Later,
+        ),
+        "children",
+    );
+}
+
+#[test]
+fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
+    use crate::device_gesture::GesturePhase;
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let service = Service::new(48_000, 32, 0).unwrap();
+    let initial = next_event(&service);
+    let track_event = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "track".into(),
+        }),
+    );
+    let Created::Track(track) = track_event.created.unwrap() else {
+        panic!("track")
+    };
+    let kind = DeviceTypeId::from_static("hex.instrument.fm4");
+    let created = run(
+        &service,
+        create_source(track_event.state.revision, 0, kind, "first"),
+    );
+    let Created::NativeSource(source) = created.created.unwrap() else {
+        panic!("source")
+    };
+    let other = run(
+        &service,
+        create_source(created.state.revision, 0, kind, "second"),
+    );
+    let Created::NativeSource(other_source) = other.created.unwrap() else {
+        panic!("other source")
+    };
+    let instrument = other
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let other_instrument = other
+        .state
+        .project
+        .native_source(other_source)
+        .unwrap()
+        .instrument()
+        .clone();
+    let parameter = ParameterId::from_static(1);
+    let value = |event: &Event| {
+        hex_engine::native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            event.state.project.device(instrument).unwrap().state(),
+            parameter,
+        )
+        .unwrap()
+    };
+    let original = value(&other);
+    let target = GestureTarget::DeviceParameter {
+        device: instrument,
+        parameter,
+    };
+    let stale = GestureKey {
+        generation: 1,
+        token: 1,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key: stale,
+            target,
+        }))
+        .unwrap();
+    let rejected = next_event(&service);
+    assert!(
+        rejected
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| !ack.accepted)
+    );
+    assert_eq!(rejected.state.project, other.state.project);
+    let key = GestureKey {
+        generation: 0,
+        token: 2,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin { key, target }),
+    );
+    assert!(
+        begun
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Begin)
+    );
+    let preview = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(2.0),
+        }),
+    );
+    assert_eq!(value(&preview), original);
+    assert_eq!(preview.state.revision, other.state.revision);
+    let overlay = preview.device_preview.as_ref().unwrap();
+    assert_eq!(overlay.identity.key, key);
+    assert_eq!(overlay.identity.sequence, 1);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            overlay.state.project.device(instrument).unwrap().state(),
+            parameter,
+        )
+        .unwrap(),
+        ParameterValue::Float(2.0)
+    );
+    let committed = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 2,
+            manual_edit: false,
+            value: ParameterValue::Float(3.0),
+        }),
+    );
+    assert!(
+        committed
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Commit)
+    );
+    assert_eq!(value(&committed), ParameterValue::Float(3.0));
+    assert_eq!(
+        committed
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .receiver(),
+        None
+    );
+    assert_eq!(
+        committed.state.project.source_contributors(source).count(),
+        0
+    );
+    assert_eq!(
+        committed.state.project.track(track).unwrap().source_id(),
+        None
+    );
+    assert_eq!(
+        committed
+            .state
+            .project
+            .native_source(other_source)
+            .unwrap()
+            .instrument(),
+        &other_instrument
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(value(&undone), original);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(value(&redone), ParameterValue::Float(3.0));
+    let cancel_key = GestureKey {
+        generation: 0,
+        token: 3,
+    };
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key: cancel_key,
+            target,
+        }),
+    );
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Change {
+            key: cancel_key,
+            sequence: 1,
+            value: ParameterValue::Float(4.0),
+        }),
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key: cancel_key }),
+    );
+    assert!(
+        cancelled
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Cancel)
+    );
+    assert_eq!(value(&cancelled), ParameterValue::Float(3.0));
+    assert_eq!(cancelled.state.revision, redone.state.revision);
+    assert_eq!(initial.state.project.native_sources().len(), 0);
+}
