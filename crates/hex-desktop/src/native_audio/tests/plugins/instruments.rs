@@ -769,6 +769,12 @@ fn session_play_from_releases_old_sdk_instrument_gate() {
     instrument_entrypoint(InstrumentWorkflow::SessionRestart);
 }
 
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_loop_repeats_sdk_instrument_gates() {
+    instrument_entrypoint(InstrumentWorkflow::SessionLoop);
+}
+
 /// An opt-in wall-clock driver for the actual native worker, not a physical
 /// audio deadline or a reproduction of any particular user project.
 #[test]
@@ -1004,6 +1010,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 enum InstrumentWorkflow {
     Playback,
     SessionRestart,
+    SessionLoop,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
@@ -1015,7 +1022,9 @@ enum InstrumentWorkflow {
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     let shared_authoring = !matches!(
         workflow,
-        InstrumentWorkflow::Playback | InstrumentWorkflow::SessionRestart
+        InstrumentWorkflow::Playback
+            | InstrumentWorkflow::SessionRestart
+            | InstrumentWorkflow::SessionLoop
     );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
@@ -1189,16 +1198,35 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             track,
             scene,
             name: "console notes".into(),
-            source_length: BeatTime::from_quarters(1).unwrap(),
+            source_length: if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+                BeatTime::from_ratio(1, 32).unwrap()
+            } else {
+                BeatTime::from_quarters(1).unwrap()
+            },
         }));
         let Some(Created::SessionClip(console)) = console.created else {
             panic!("console clip")
         };
         (applied, _) = harness.applied(applied);
+        if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+            harness.run(Request::Edit(Command::SetSessionMidiClipSource {
+                clip: console,
+                source_length: BeatTime::from_ratio(1, 32).unwrap(),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: BeatTime::from_ratio(1, 32).unwrap(),
+                looping: true,
+            }));
+            (applied, _) = harness.applied(applied);
+        }
         note = harness.run(Request::Edit(Command::AddMidiNote {
             clip: console,
             start: BeatTime::ZERO,
-            duration: BeatTime::from_quarters(1).unwrap(),
+            duration: if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+                BeatTime::from_ratio(1, 64).unwrap()
+            } else {
+                BeatTime::from_quarters(1).unwrap()
+            },
             pitch: installed_pitch.unwrap_or(if controlled_fixture { 60 } else { 64 }),
             channel,
             velocity: 88,
@@ -1346,6 +1374,79 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     let console = console.unwrap();
+    if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        let pcm: Vec<_> = (0..12)
+            .flat_map(|_| render_completed_block(&harness))
+            .collect();
+        let expected = 88.0 / 127.0;
+        assert!(
+            (pcm.last().unwrap()[0] - expected).abs() < 1e-5,
+            "the final SDK gate must be sounding before StopTrack"
+        );
+        let mut runs = Vec::new();
+        for frame in pcm {
+            assert!((frame[0] - frame[1]).abs() < 1e-6);
+            let on = if frame[0].abs() < 1e-6 {
+                false
+            } else {
+                assert!(
+                    (frame[0] - expected).abs() < 1e-5,
+                    "unexpected sample {frame:?}"
+                );
+                true
+            };
+            if let Some((last, count)) = runs.last_mut()
+                && *last == on
+            {
+                *count += 1;
+            } else {
+                runs.push((on, 1_usize));
+            }
+        }
+        assert!(runs.len() >= 8, "expected several loop cycles: {runs:?}");
+        for &(on, count) in &runs[1..runs.len() - 1] {
+            assert_eq!(count, 375, "unexpected {on} gate length: {runs:?}");
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        return;
+    }
     if matches!(workflow, InstrumentWorkflow::SessionRestart) {
         assert!(
             controlled_fixture,
