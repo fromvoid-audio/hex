@@ -1344,6 +1344,57 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::CreateRetainedNativeSource {
+            project_generation,
+            revision,
+            type_id,
+            name,
+        } => {
+            describe!("create_retained_native_source"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::RenameRetainedSource {
+            project_generation,
+            revision,
+            source,
+            name,
+        } => {
+            describe!("rename_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::DeleteRetainedSource {
+            project_generation,
+            revision,
+            source,
+        } => {
+            describe!("delete_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value()]; omitted="")
+        }
+        Request::ChooseNativeSourceReceiver {
+            project_generation,
+            revision,
+            source,
+            expected_receiver,
+            track,
+        } => {
+            describe!("choose_native_source_receiver"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "expected_receiver" => expected_receiver.map(|id| id.value()), "track" => track.value()]; omitted="")
+        }
+        Request::RemoveOnlySourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+        } => {
+            describe!("remove_only_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
+        }
+        Request::AddFirstSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+        } => {
+            describe!("add_first_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
+        }
         Request::RebindNativeSource {
             project_generation,
             revision,
@@ -2083,6 +2134,40 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    #[test]
+    fn retained_source_rename_redacts_the_name() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let description = request(&Request::RenameRetainedSource {
+            project_generation: 0,
+            revision: 1,
+            source,
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "rename_retained_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+        let description = request(&Request::CreateRetainedNativeSource {
+            project_generation: 0,
+            revision: 1,
+            type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "create_retained_native_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+    }
 
     #[test]
     fn source_reorder_projection_keeps_source_device_and_anchor_identities() {

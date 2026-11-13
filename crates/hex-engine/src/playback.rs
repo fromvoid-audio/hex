@@ -12,8 +12,12 @@ mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
 pub(crate) use transport_fade::fade_frames;
+mod timed_transport;
 mod tuning_audition;
 use metronome::Metronome;
+pub use timed_transport::{
+    MAX_TIMED_TRANSPORT_COMMANDS, TimedTransportCommand, TimedTransportError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
@@ -2551,47 +2555,30 @@ impl Playback {
             .ok_or(Invalid("ordinary session runtime unavailable"))?
             .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
     }
-    pub(crate) fn preview_stream_handoff(
+    pub(crate) fn preview_stream_handoff_with_report(
         &mut self,
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
-        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
-        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff(old, maximum_frames, playing, visit)
-            .map_err(PlaybackHandoffError::Session)
-    }
-    pub(crate) fn preview_ordinary_stream_handoff(
-        &mut self,
-        previous: &mut Self,
-        maximum_frames: usize,
-        playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
-        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
-        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff_with_scope(old, maximum_frames, playing, visit, true)
-            .map_err(PlaybackHandoffError::Session)
-    }
-    pub(crate) fn preview_ordinary_fenced_restart(
-        &mut self,
-        previous: &mut Self,
-        maximum_frames: usize,
-        playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        if !self.live_restart_requested() {
+        ordinary: bool,
+        fenced_restart: bool,
+    ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
+        if fenced_restart && !self.live_restart_requested() {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff_with_policy(old, maximum_frames, playing, visit, true, true)
-            .map_err(PlaybackHandoffError::Session)
+        next.preview_stream_handoff_with_policy_and_report(
+            old,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+        )
+        .map_err(PlaybackHandoffError::Session)
     }
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
@@ -2920,9 +2907,10 @@ fn with_part_offset<'a, 'observer, R>(
 ) -> R {
     match project {
         Some(tap) => {
-            tap.set_part_offset(offset);
+            let previous = tap.part_offset();
+            tap.replace_part_offset(previous.saturating_add(offset));
             let result = render(Some(&mut *tap));
-            tap.set_part_offset(0);
+            tap.replace_part_offset(previous);
             result
         }
         None => render(None),

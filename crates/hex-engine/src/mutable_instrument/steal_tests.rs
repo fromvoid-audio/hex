@@ -170,6 +170,7 @@ fn half(
     _: MutableOccurrenceSignature,
     at: u64,
     _: usize,
+    _: bool,
 ) -> Result<Option<volume::VolumeSlice>, MutableInstrumentRuntimeError> {
     Ok(Some(volume::VolumeSlice {
         at,

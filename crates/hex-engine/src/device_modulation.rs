@@ -116,6 +116,42 @@ pub fn fm4_note_pressure_parameter_supported(parameter: ParameterId) -> bool {
     (carrier(1)..=carrier(4)).contains(&parameter)
 }
 
+/// Whether a bound source Utility permits a verified static matrix control edit.
+/// Preparation still validates the candidate and runtime handoff before commit.
+pub fn project_source_utility_matrix_edit_supported(
+    project: &Project,
+    device: DeviceId,
+    parameter: ParameterId,
+) -> bool {
+    use hex_devices::utility::parameter::{
+        BALANCE, GAIN, MID_SIDE_BALANCE, MID_SIDE_ENABLED, MONO, WIDTH,
+    };
+    if !matches!(
+        parameter,
+        GAIN | BALANCE | WIDTH | MID_SIDE_BALANCE | MID_SIDE_ENABLED | MONO
+    ) {
+        return false;
+    }
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    let device = location.device;
+    matches!(location.owner, DeviceOwner::Source(_))
+        && effect_location_supported(project, location)
+        && device.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
+        && !device.bypassed()
+        && device.automation().is_empty()
+        && device.modulation().is_empty()
+        && (!matches!(parameter, WIDTH | MID_SIDE_BALANCE)
+            || matches!(
+                hex_devices::utility::UTILITY_DEFINITION.read_parameter(device.state(), MID_SIDE_ENABLED),
+                Ok(hex_lattice_contract::ParameterValue::Bool(enabled)) if enabled == (parameter == MID_SIDE_BALANCE)
+            ))
+        && hex_devices::utility::UTILITY_DEFINITION
+            .parameter_enabled(device.state(), parameter)
+            .unwrap_or(false)
+}
+
 /// State-aware eligibility for native device-panel mapping. Ownership is
 /// resolved from the current project. Preparation independently validates the
 /// actual factory, runtime binding and source program before publication.

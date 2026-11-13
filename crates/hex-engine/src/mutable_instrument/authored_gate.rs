@@ -257,6 +257,7 @@ pub(crate) fn stage_authored_gates(
             note_off_sent,
             gain_at_end_bits: 1.0_f64.to_bits(),
             gain_frozen: false,
+            contributor_fade: None,
         });
     }
 

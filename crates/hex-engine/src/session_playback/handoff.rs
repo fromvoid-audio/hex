@@ -498,6 +498,7 @@ impl SessionPlayback {
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true, None);
         }
+        let is_preview = demand.is_some();
         let result = match self.inherit_state_planned_once(
             previous,
             groups,
@@ -529,8 +530,11 @@ impl SessionPlayback {
             }
             result => result,
         };
+        // A demand preview returns a plan without retiring the predecessor.
+        // Owned processors may swap history, so transfer only on commit.
         if let Some(source_transfer) = source_transfer
             && result.is_ok()
+            && !is_preview
         {
             self.source_effects
                 .continue_from(&mut previous.source_effects, source_transfer);
@@ -662,9 +666,13 @@ impl SessionPlayback {
             if !previous.renders_no_device_chains() {
                 return Err(SessionPlaybackError::DeviceTransitionBusy);
             }
-            self.settle_idle_device_transitions(previous);
-            if self.device_transition_busy(previous) {
-                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            // Preview uses the planned idle cut without settling the live
+            // donor. Commit repeats this check and settles before transfer.
+            if demand.is_none() {
+                self.settle_idle_device_transitions(previous);
+                if self.device_transition_busy(previous) {
+                    return Err(SessionPlaybackError::DeviceTransitionBusy);
+                }
             }
         }
         if self
@@ -1138,6 +1146,7 @@ impl SessionPlayback {
                 return Ok(SessionHandoffReport {
                     cancelled_pending,
                     cancelled_pending_len,
+                    running_audio_restart: running_restart || running_relocate,
                 });
             }
             self.routes.copy_from_slice(&self.route_scratch);
@@ -1176,6 +1185,7 @@ impl SessionPlayback {
             return Ok(SessionHandoffReport {
                 cancelled_pending,
                 cancelled_pending_len,
+                running_audio_restart: running_restart || running_relocate,
             });
         }
         let mut clock_transfer =
@@ -2170,6 +2180,7 @@ impl SessionPlayback {
         let mut report = SessionHandoffReport {
             cancelled_pending: [None; MAX_TRACKS],
             cancelled_pending_len: 0,
+            running_audio_restart: false,
         };
         let mut source_changed = timing_changed;
         // Instrument-only edits are route-local. Source or timing edits keep
@@ -4816,6 +4827,7 @@ impl SessionPlayback {
         // All refusal checks precede these scalar ledger cuts. Keep each old
         // runtime/DSP owner, including tails from earlier publications; release
         // only proofs whose exact clip has become inactive in the candidate.
+        let mute_changes = shared_sources::contributor_mute_changes(previous, self);
         let revision = &self.revision;
         let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
         // Ordinary onset suppressions cannot shorten a held gate. Check for
@@ -4843,9 +4855,36 @@ impl SessionPlayback {
             if let Some(input) = release_live_input {
                 runtime.request_live_input_release(input);
             }
+            let mut retained = [None; MAX_TRACKS];
+            let mut retained_live = [None; MAX_TRACKS];
+            for (index, change) in mute_changes.iter().enumerate() {
+                if let Some((track, muted)) = change
+                    && runtime.retarget_authored_contributor(
+                        *track,
+                        *muted,
+                        revision.arrangement().sample_rate(),
+                    )
+                    && *muted
+                {
+                    retained[index] = Some(*track);
+                }
+                if let Some((track, muted)) = change
+                    && release_live_input.is_none()
+                    && runtime.retarget_live_contributor(
+                        *track,
+                        *muted,
+                        revision.arrangement().sample_rate(),
+                    )
+                    && *muted
+                {
+                    retained_live[index] = Some(*track);
+                }
+            }
             shared_sources::release_disconnected_contributors(
                 runtime,
                 &disconnected,
+                &retained,
+                &retained_live,
                 previous.performance_frame,
             );
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {

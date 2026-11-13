@@ -1595,6 +1595,7 @@ impl SessionPlayback {
                             })
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                         source_live::render_source_live_input(
+                            &self.revision,
                             self.computer_keyboard.as_mut().map(Box::as_mut),
                             self.mutable_instruments[index].as_mut(),
                             &mut self.mutable_onsets,
@@ -2906,7 +2907,8 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
     };
     let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
                       performance: u64,
-                      frames: usize| {
+                      frames: usize,
+                      _retaining_muted: bool| {
         use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
         use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
         let key = signature.key();

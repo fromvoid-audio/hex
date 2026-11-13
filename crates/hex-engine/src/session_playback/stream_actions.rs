@@ -314,10 +314,21 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
+            let previous = self.route_scratch[index].owner;
             self.route_scratch[index].owner = self
                 .owner_for_target(pending.target, beat, pending.frame)
                 .map_err(|e| Invalid(e.diagnostic_message()))?;
             self.route_scratch[index].pending = None;
+            let fade = self.audio_release_fade();
+            // Other tracks may have transitioned before the requested frontier;
+            // their releases start at their own due frames, not at this visit.
+            super::audio_release::begin(
+                &mut self.route_scratch[index],
+                previous,
+                pending.frame,
+                fade,
+            )
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
         }
         Ok(())
     }

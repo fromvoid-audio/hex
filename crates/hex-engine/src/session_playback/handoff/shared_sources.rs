@@ -335,7 +335,8 @@ impl SharedSourceHandoff {
                 ));
             }
             let live = old_runtime.transition_live_count(false);
-            if shared && live != 0 {
+            let authored_proofs = old_runtime.transition_proofs(false).len();
+            if shared && (live != 0 || authored_proofs != 0) {
                 let authored_envelope = new_routing.contributors(new_index).iter().try_fold(
                     0usize,
                     |sum, &index| {
@@ -353,11 +354,17 @@ impl SharedSourceHandoff {
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)
                     },
                 )?;
-                if live
-                    > new_runtime.live_voice_capacity_for_proofs(
-                        old_runtime.transition_proofs(false).len(),
-                        authored_envelope,
-                    )
+                let authored = authored_proofs.saturating_add(authored_envelope);
+                let authored_overflow = authored
+                    > new_runtime
+                        .max_active_occurrences()
+                        .min(new_runtime.transition_proof_capacity())
+                    || authored.saturating_mul(2).saturating_add(3)
+                        > new_runtime.max_events_per_block();
+                if authored_overflow
+                    || live
+                        > new_runtime
+                            .live_voice_capacity_for_proofs(authored_proofs, authored_envelope)
                 {
                     // An unchanged Arrangement has already admitted these
                     // voices. Prove that case with a bounded number of
@@ -383,7 +390,7 @@ impl SharedSourceHandoff {
                             let new_route = effective_midi_route(revision, routes, index);
                             old_routing.source(old_index) == Some(source)
                                 && old_routing.contributes(old_index)
-                                && track.source_input_enabled() == old_track.source_input_enabled()
+                                && (!track.source_input_enabled() || old_track.source_input_enabled())
                                 && matches!(old_route, Ok(route) if route.owner == RouteOwner::Arrangement && route.pending.is_none())
                                 && matches!(new_route, Ok(route) if route.owner == RouteOwner::Arrangement && route.pending.is_none())
                                 && previous.revision.bounded_mutable_arrangement_sources_match(revision, id, MAX_UNCHANGED_CLIPS)
@@ -593,16 +600,106 @@ pub(super) fn disconnected_contributors(
 pub(super) fn release_disconnected_contributors(
     runtime: &mut MutableInstrumentTrackRuntime,
     disconnected: &[Option<TrackId>; MAX_TRACKS],
+    retained: &[Option<TrackId>; MAX_TRACKS],
+    retained_live: &[Option<TrackId>; MAX_TRACKS],
     frame: u64,
 ) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
-        disconnected
-            .contains(&Some(signature.key().track))
-            .then_some(frame)
+        (disconnected.contains(&Some(signature.key().track))
+            && !retained.contains(&Some(signature.key().track)))
+        .then_some(frame)
     });
     for &track in disconnected.iter().flatten() {
-        runtime.release_live_contributor(track);
+        if !retained_live.contains(&Some(track)) {
+            runtime.release_live_contributor(track);
+        }
     }
+}
+
+/// Shared bindings whose contributor input was muted or restored in place.
+pub(super) fn contributor_mute_changes(
+    previous: &SessionPlayback,
+    candidate: &SessionPlayback,
+) -> [Option<(TrackId, bool)>; MAX_TRACKS] {
+    let old_revision = &previous.revision;
+    let new_revision = &candidate.revision;
+    if !old_revision.source_routing().has_shared_sources()
+        || !new_revision.source_routing().has_shared_sources()
+    {
+        return [None; MAX_TRACKS];
+    }
+    std::array::from_fn(|index| {
+        let old = old_revision.arrangement().tracks().get(index)?;
+        let track = old.canonical_track_id()?;
+        let source = old_revision.source_routing().source(index)?;
+        let tracks = new_revision.arrangement().tracks();
+        let next = if tracks
+            .get(index)
+            .is_some_and(|row| row.canonical_track_id() == Some(track))
+        {
+            index
+        } else {
+            tracks
+                .iter()
+                .position(|row| row.canonical_track_id() == Some(track))?
+        };
+        let old_receiver = old_revision.source_routing().receiver_index(index)?;
+        let new_receiver = new_revision.source_routing().receiver_index(next)?;
+        if !old_revision.source_routing().is_shared(index)
+            || !new_revision.source_routing().is_shared(next)
+            || new_revision.source_routing().source(next) != Some(source)
+            || old_receiver == index
+            || new_receiver == next
+        {
+            return None;
+        }
+        let enabled = new_revision.arrangement().tracks()[next].source_input_enabled();
+        if old.source_input_enabled() == enabled {
+            return None;
+        }
+        let old_receiver = old_revision
+            .arrangement()
+            .tracks()
+            .get(old_receiver)?
+            .canonical_track_id()?;
+        let new_receiver = new_revision
+            .arrangement()
+            .tracks()
+            .get(new_receiver)?
+            .canonical_track_id()?;
+        if old_receiver != new_receiver
+            || !old_revision.retained_source_identity_matches(new_revision, source)
+            || !old_revision.retained_source_configuration_matches_on_callback(new_revision, source)
+        {
+            return None;
+        }
+        let old_route = effective_midi_route(old_revision, &previous.routes, index).ok()?;
+        let new_route = effective_midi_route(new_revision, &candidate.routes, next).ok()?;
+        if old_route.owner != new_route.owner || old_route.pending != new_route.pending {
+            return None;
+        }
+        let same_content = match old_route.owner {
+            RouteOwner::Arrangement => {
+                old_revision.bounded_mutable_arrangement_sources_match(new_revision, track, 64)
+            }
+            RouteOwner::Session { clip, .. } => {
+                let old_midi = crate::session_inventory::EffectiveSessionMidi::new(
+                    old_revision.session(),
+                    previous.midi_admission.as_ref(),
+                );
+                let new_midi = crate::session_inventory::EffectiveSessionMidi::new(
+                    new_revision.session(),
+                    candidate.midi_admission.as_ref(),
+                );
+                old_midi
+                    .midi_clip_for_track(clip, track)
+                    .zip(new_midi.midi_clip_for_track(clip, track))
+                    .is_some_and(|(old, new)| old.source_content_matches(&new))
+            }
+            RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+        };
+        same_content.then_some((track, !enabled))
+    })
 }
 
 pub(super) fn track_has_analytic_source(revision: &PreparedRevision, index: usize) -> bool {
@@ -843,11 +940,14 @@ mod tests {
     }
     const PCM: [Frame; 4] = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.25, 0.125]];
     fn fixture() -> Fixture {
-        let mut editor = Editor::new(hex_project::Project::new(8000).unwrap(), 64).unwrap();
+        fixture_at(8000)
+    }
+    fn fixture_at(rate: u32) -> Fixture {
+        let mut editor = Editor::new(hex_project::Project::new(rate).unwrap(), 64).unwrap();
         let Created::Asset(asset) = editor
             .execute(Command::ImportDeviceAsset {
                 path: "held.wav".into(),
-                sample_rate: 8000,
+                sample_rate: rate,
                 frames: 4,
             })
             .unwrap()
@@ -946,7 +1046,7 @@ mod tests {
             .insert_on_control(
                 (
                     asset,
-                    crate::OwnedAudioSource::try_resident(8000, PCM.to_vec())
+                    crate::OwnedAudioSource::try_resident(rate, PCM.to_vec())
                         .ok()
                         .unwrap(),
                 ),
@@ -1751,6 +1851,111 @@ mod tests {
                 !old.bounded_mutable_arrangement_sources_match(&changed, contributor, 16),
                 "changed source must not acquire continuity proof"
             );
+            let notes: Vec<_> = editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .skip(1)
+                .map(|note| note.id())
+                .collect();
+            for note in notes {
+                editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            }
+            let remaining = editor.project().midi_source(clip).unwrap().notes()[0].id();
+            editor
+                .execute(Command::UpdateMidiNote {
+                    note: remaining,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 67,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            editor
+                .execute(Command::Mute {
+                    track: contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let device = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            editor
+                .execute(Command::SetNativeSourceReceiver {
+                    source,
+                    track: Some(contributor),
+                })
+                .unwrap();
+            let swapped = prepare(editor.project());
+            editor
+                .execute(Command::Mute {
+                    track: receiver,
+                    muted: true,
+                })
+                .unwrap();
+            let swapped_muted = prepare(editor.project());
+            assert!(swapped.retained_source_configuration_matches(&swapped_muted, source));
+            assert!(swapped.retained_source_identity_matches(&swapped_muted, source));
+            assert!(
+                swapped.retained_source_configuration_matches_on_callback(&swapped_muted, source)
+            );
+            let mut playing = SessionPlayback::new(Arc::clone(&swapped)).unwrap();
+            playing.apply(SessionPlaybackCommand::Play).unwrap();
+            playing.render(&mut [[0.0; 2]; 64]).unwrap();
+            let mut muted = SessionPlayback::new(Arc::clone(&swapped_muted)).unwrap();
+            muted
+                .try_inherit_state_from(&mut playing)
+                .expect("muting must preserve a non-first receiver's source");
+            let mut output = [[0.0; 2]; 64];
+            muted.render(&mut output).unwrap();
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 0.000_001)
+            );
+            let changed_state = registry
+                .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
+                .unwrap();
+            let changed_state = registry
+                .patch_parameter(
+                    &changed_state,
+                    hex_devices::operator_state::parameter::GLOBAL_MODE,
+                    ParameterValue::Choice(0),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: changed_state,
+                })
+                .unwrap();
+            let changed_configuration = prepare(editor.project());
+            assert!(!swapped.retained_source_configuration_matches(&changed_configuration, source));
+            assert!(
+                !swapped.retained_source_configuration_matches_on_callback(
+                    &changed_configuration,
+                    source
+                )
+            );
+            editor
+                .execute(Command::SetNativeSourceReceiver {
+                    source,
+                    track: None,
+                })
+                .unwrap();
+            let no_receiver = prepare(editor.project());
+            assert!(!swapped.retained_source_configuration_matches(&no_receiver, source));
+            assert!(
+                !swapped.retained_source_configuration_matches_on_callback(&no_receiver, source)
+            );
         });
     }
 
@@ -1915,6 +2120,225 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_mute_preserves_saturated_unchanged_arrangement() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let receiver_clip = f.editor.project().track(f.receiver).unwrap().midi_clips()[0].id();
+            let contributor_clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for (clip, pitches) in [
+                (receiver_clip, vec![67]),
+                (contributor_clip, (0..13).collect()),
+            ] {
+                for pitch in pitches {
+                    f.editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::ZERO,
+                            duration: BeatTime::ONE,
+                            pitch,
+                            channel: 0,
+                            velocity: 127,
+                        })
+                        .unwrap();
+                }
+            }
+            let mut old = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            assert!(
+                old.revision
+                    .retained_source_configuration_matches(&candidate.revision, f.source),
+                "source configuration changed"
+            );
+            for track in [f.receiver, f.contributor] {
+                assert!(
+                    old.revision.bounded_mutable_arrangement_sources_match(
+                        &candidate.revision,
+                        track,
+                        16
+                    ),
+                    "arrangement identity changed for {track:?}"
+                );
+            }
+            candidate
+                .try_inherit_state_from(&mut old)
+                .expect("muting cannot add future source demand");
+            candidate.render(&mut [[0.0; 2]; 64]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let mut reenabled = playback(&f);
+            assert!(matches!(
+                reenabled.try_inherit_state_from(&mut candidate),
+                Err(SessionPlaybackError::SharedSourceVoiceCapacity)
+            ));
+            candidate.render(&mut [[0.0; 2]; 64]).unwrap();
+        });
+    }
+
+    #[test]
+    fn shared_source_future_notes_do_not_overrun_retained_authored_releases() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..13 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let mut old = playback(&f);
+            let mut oracle = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            oracle.render(&mut [[0.0; 2]; 7]).unwrap();
+            let notes: Vec<_> = f
+                .editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .map(|note| note.id())
+                .collect();
+            assert_eq!(notes.len(), 14);
+            for note in notes {
+                f.editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            }
+            for pitch in 30..44 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_ratio(1, 16).unwrap(),
+                        duration: BeatTime::from_ratio(1, 2).unwrap(),
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let mut candidate = playback(&f);
+            let mut output = [[0.0; 2]; 64];
+            let mut expected = output;
+            assert!(matches!(
+                candidate.try_inherit_state_from(&mut old),
+                Err(SessionPlaybackError::SharedSourceVoiceCapacity)
+            ));
+            old.render(&mut output)
+                .expect("refused edit must leave the old source rendering");
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(output, expected, "refusal must preserve existing audio");
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            old.apply(SessionPlaybackCommand::Stop).unwrap();
+            oracle.apply(SessionPlaybackCommand::Stop).unwrap();
+            for _ in 0..130 {
+                old.render(&mut output).unwrap();
+                oracle.render(&mut expected).unwrap();
+                assert_eq!(output, expected);
+            }
+            let mut retry = playback(&f);
+            let new_notes: Vec<_> = f
+                .editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .iter()
+                .map(|note| note.id())
+                .collect();
+            for note in new_notes {
+                f.editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            }
+            let mut peer_only = playback(&f);
+            retry.try_inherit_state_from(&mut old).unwrap();
+            peer_only.try_inherit_state_from(&mut oracle).unwrap();
+            retry.apply(SessionPlaybackCommand::Play).unwrap();
+            peer_only.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut heard_new_notes = false;
+            for _ in 0..40 {
+                retry.render(&mut output).unwrap();
+                peer_only.render(&mut expected).unwrap();
+                heard_new_notes |= output != expected;
+            }
+            assert!(
+                heard_new_notes,
+                "retry must render the newly authored notes"
+            );
+        });
+    }
+
+    #[test]
     fn shared_source_peak_increase_with_held_live_keys_is_safe() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
@@ -2011,6 +2435,401 @@ mod tests {
                     .unwrap()
                     .owner(f.receiver),
                 Some(SessionPlaybackOwner::Session { clip })
+            );
+        });
+    }
+
+    #[test]
+    fn shared_source_session_launch_with_live_keys_respects_reserved_capacity() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::{PlaybackAction, PlaybackCommand};
+
+            let mut f = fixture();
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "capacity".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "next".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            for pitch in 40..48 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut candidate, _) = live_playback_on(&f, &input, f.receiver);
+            candidate
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            for key in 0..16 {
+                input
+                    .set_key(key, Some((60 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+            let mut output = [[0.0; 2]; 64];
+            candidate.render(&mut output).unwrap();
+            assert!(input.rejected(), "the fixture must saturate live admission");
+            assert!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "the fixture must also admit at least one live voice"
+            );
+            candidate
+                .try_apply_action(PlaybackAction::Session(
+                    SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: crate::LaunchQuantization::Immediate,
+                    },
+                ))
+                .unwrap();
+            candidate.render(&mut output).unwrap();
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            assert_eq!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+            assert!(
+                candidate
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "the launch must retain admitted live voices"
+            );
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut unmuted, _) = live_playback_on(&f, &input, f.receiver);
+            let (mut active, refused) = match unmuted.try_inherit_runtime_in_control_context(
+                &mut candidate,
+                Some(19),
+                Some(19),
+            ) {
+                Ok(()) => (unmuted, false),
+                Err(error) => {
+                    assert!(matches!(
+                        error,
+                        crate::playback::PlaybackHandoffError::Session(
+                            SessionPlaybackError::SharedSourceVoiceCapacity
+                        )
+                    ));
+                    (candidate, true)
+                }
+            };
+            active.render(&mut output).unwrap();
+            assert_eq!(
+                active
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip })
+            );
+            assert!(
+                active
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|source| source.has_committed_live_occurrences()),
+                "unmute or its refusal must retain live voices"
+            );
+            assert!(!input.is_cancelled());
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            active.apply(PlaybackCommand::Stop);
+            active.render(&mut output).unwrap();
+            assert!(input.is_cancelled());
+            if refused {
+                let retry_input = Arc::new(ComputerKeyboardInput::default());
+                let (mut retry, _) = live_playback_on(&f, &retry_input, f.receiver);
+                retry
+                    .try_inherit_runtime_in_control_context(&mut active, Some(19), Some(19))
+                    .expect("unmute must retry after Stop clears source pressure");
+                retry.apply(PlaybackCommand::Play);
+                retry.render(&mut output).unwrap();
+                assert!(output.iter().flatten().any(|sample| sample.abs() > 0.001));
+            }
+        });
+    }
+
+    #[test]
+    fn shared_source_refuses_session_launch_at_retained_voice_capacity_atomically() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..14 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "capacity".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let Created::SessionClip(session_clip) = f
+                .editor
+                .execute(Command::CreateSessionMidiClip {
+                    track: f.receiver,
+                    scene,
+                    name: "next".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("session clip")
+            };
+            f.editor
+                .execute(Command::AddMidiNote {
+                    clip: session_clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 64,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            let mut old = playback(&f);
+            let mut twin = playback(&f);
+            for runtime in [&mut old, &mut twin] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 7]).unwrap();
+            }
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            let mut oracle = playback(&f);
+            candidate.try_inherit_state_from(&mut old).unwrap();
+            oracle.try_inherit_state_from(&mut twin).unwrap();
+            let result = candidate.apply(SessionPlaybackCommand::LaunchClip {
+                clip: session_clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            });
+            assert!(
+                matches!(result, Err(SessionPlaybackError::SharedSourceVoiceCapacity)),
+                "{result:?}"
+            );
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = actual;
+            candidate.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(
+                actual, expected,
+                "refused launch must not alter the running source"
+            );
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            // The held notes end at one quarter note and their declared
+            // one-second tails then retire. A fresh explicit launch can retry.
+            for _ in 0..190 {
+                candidate.render(&mut actual).unwrap();
+            }
+            candidate
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: session_clip,
+                    quantization: crate::LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            candidate.render(&mut actual).unwrap();
+            assert_eq!(
+                candidate.owner(f.receiver),
+                Some(SessionPlaybackOwner::Session { clip: session_clip })
+            );
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+            for _ in 0..130 {
+                candidate.render(&mut actual).unwrap();
+            }
+            assert_eq!(actual, [[0.0; 2]; 64]);
+        });
+    }
+
+    #[test]
+    fn shared_source_rejects_live_key_at_capacity_without_fault_or_stuck_input() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            for pitch in 0..12 {
+                f.editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut muted, _) = live_playback_on(&f, &input, f.receiver);
+            muted
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            muted.render(&mut output).unwrap();
+            assert!(
+                input.rejected(),
+                "a full source must report the refused press"
+            );
+            assert!(
+                !input.is_cancelled(),
+                "capacity refusal must not cancel the input"
+            );
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "the existing peer must continue"
+            );
+            for _ in 0..190 {
+                muted.render(&mut output).unwrap();
+            }
+            assert_eq!(
+                output, [[0.0; 2]; 64],
+                "a rejected held key must not replay when capacity returns"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            input.set_key(0, Some((60, 100, 2))).unwrap();
+            muted.render(&mut output).unwrap();
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "a fresh press must work after the voices retire"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            muted.apply(PlaybackCommand::Stop);
+            for _ in 0..130 {
+                muted.render(&mut output).unwrap();
+            }
+            assert_eq!(
+                output, [[0.0; 2]; 64],
+                "stop and release must drain the source"
             );
         });
     }
@@ -3190,6 +4009,289 @@ mod tests {
         });
     }
     #[test]
+    fn shared_mute_matches_authored_oracle_at_8khz() {
+        on_control(|| check_shared_mute_partitions(8_000));
+    }
+    #[test]
+    fn shared_mute_matches_authored_oracle_at_441khz() {
+        on_control(|| check_shared_mute_partitions(44_100));
+    }
+    #[test]
+    fn shared_mute_matches_authored_oracle_at_96khz() {
+        on_control(|| check_shared_mute_partitions(96_000));
+    }
+    fn check_shared_mute_partitions(rate: u32) {
+        let duration = rate.div_ceil(200) as usize;
+        for partition in [1, 7, 64, 128, 256, 512] {
+            let mut f = fixture_at(rate);
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut muted = playback(&f);
+            muted.try_inherit_state_from(&mut old).unwrap();
+            let mut output = vec![[0.0; 2]; duration + 1];
+            for chunk in output.chunks_mut(partition) {
+                muted.render(chunk).unwrap();
+            }
+            for (index, frame) in output.iter().enumerate() {
+                let factor = 1.0 - index.min(duration) as f32 / duration as f32;
+                for channel in 0..2 {
+                    let expected = PCM[(7 + index) % 4][channel] * (0.25 + 0.25 * factor);
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "rate={rate} partition={partition} frame={index}: {frame:?} expected={expected}"
+                    );
+                }
+            }
+            assert!(f.editor.undo());
+            let mut restored = playback(&f);
+            restored.try_inherit_state_from(&mut muted).unwrap();
+            let mut output = vec![[0.0; 2]; duration + 1];
+            for chunk in output.chunks_mut(partition) {
+                restored.render(chunk).unwrap();
+            }
+            for (index, frame) in output.iter().enumerate() {
+                let factor = index.min(duration) as f32 / duration as f32;
+                for channel in 0..2 {
+                    let expected =
+                        PCM[(8 + duration + index) % 4][channel] * (0.25 + 0.25 * factor);
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "restore rate={rate} partition={partition} frame={index}: {frame:?} expected={expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_mute_multiplies_the_running_clip_volume_curve() {
+        on_control(|| {
+            use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+            let mut f = fixture();
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            let source_length = f
+                .editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .source_length();
+            let volume = MidiClipVolume::new(
+                vec![
+                    MidiClipVolumePoint::linear(BeatTime::ZERO, MidiClipGain::new(0.25).unwrap()),
+                    MidiClipVolumePoint::linear(BeatTime::ONE, MidiClipGain::new(0.75).unwrap()),
+                ],
+                source_length,
+            )
+            .unwrap();
+            f.editor
+                .execute(Command::ReplaceMidiClipVolume { clip, volume })
+                .unwrap();
+            let mut old = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut muted = playback(&f);
+            muted.try_inherit_state_from(&mut old).unwrap();
+            let mut output = [[0.0; 2]; 40];
+            for chunk in output.chunks_mut(7) {
+                muted.render(chunk).unwrap();
+            }
+            for (index, frame) in output.iter().enumerate() {
+                let clip_gain = 0.25 + 0.5 * (7 + index) as f64 / 4000.0;
+                let fade = 1.0 - index as f64 / 40.0;
+                for channel in 0..2 {
+                    let expected =
+                        f64::from(PCM[(7 + index) % 4][channel]) * (0.25 + 0.25 * clip_gain * fade);
+                    assert!(
+                        (f64::from(frame[channel]) - expected).abs() < 0.000_002,
+                        "frame={index} output={frame:?} expected={expected}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn muted_authored_voice_retires_at_natural_gate_and_seek_restarts_cleanly() {
+        on_control(|| {
+            let mut f = fixture();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut muted = playback(&f);
+            muted.try_inherit_state_from(&mut old).unwrap();
+            let mut elapsed = [[0.0; 2]; 4096];
+            for chunk in elapsed.chunks_mut(97) {
+                muted.render(chunk).unwrap();
+            }
+            assert!(elapsed[4020..].iter().all(|frame| *frame == [0.0; 2]));
+            assert!(f.editor.undo());
+            let mut restored = playback(&f);
+            restored.try_inherit_state_from(&mut muted).unwrap();
+            let mut after = [[1.0; 2]; 32];
+            restored.render(&mut after).unwrap();
+            assert_eq!(
+                after, [[0.0; 2]; 32],
+                "unmute must not revive an ended gate"
+            );
+            restored.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            check_pcm(&mut restored, 0, 8, 0.5);
+            restored.apply(SessionPlaybackCommand::Stop).unwrap();
+            restored.render(&mut [[0.0; 2]; 64]).unwrap();
+            restored.render(&mut after).unwrap();
+            assert_eq!(after, [[0.0; 2]; 32]);
+        });
+    }
+
+    #[test]
+    fn changed_midi_content_uses_existing_release_instead_of_retaining_stale_voice() {
+        on_control(|| {
+            let mut f = fixture();
+            let mut old = started(&f);
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            f.editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 62,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            candidate.try_inherit_state_from(&mut old).unwrap();
+            check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
+        });
+    }
+
+    #[test]
+    fn shared_contributor_mute_settles_independently_of_authored_release() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 1.0;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            candidate.try_inherit_state_from(&mut old).unwrap();
+            candidate.render(&mut [[0.0; 2]; 800]).unwrap();
+            check_pcm(&mut candidate, 807, 8, 0.25);
+        });
+    }
+
+    #[test]
+    fn shared_contributor_unmute_restores_held_voice_without_doubling() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 0.2;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut muted = playback(&f);
+            muted.try_inherit_state_from(&mut old).unwrap();
+            muted.render(&mut [[0.0; 2]; 20]).unwrap();
+            assert!(f.editor.undo());
+            let mut unmuted = playback(&f);
+            unmuted.try_inherit_state_from(&mut muted).unwrap();
+            let mut output = [[0.0; 2]; 16];
+            unmuted.render(&mut output).unwrap();
+            for (index, frame) in output.iter().enumerate() {
+                let gain = 0.25 + 0.25 * (0.5 + 0.5 * index as f32 / 40.0);
+                for channel in 0..2 {
+                    let expected = PCM[(27 + index) % 4][channel] * gain;
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "index={index}, frame={frame:?}, expected={expected}"
+                    );
+                }
+            }
+            unmuted.render(&mut [[0.0; 2]; 1800]).unwrap();
+            check_pcm(&mut unmuted, 1843, 8, 0.5);
+        });
+    }
+
+    #[test]
     fn shared_contributor_mute_and_solo_preserve_receiver_voice() {
         on_control(|| {
             for solo in [false, true] {
@@ -3210,9 +4312,22 @@ mod tests {
                     .unwrap();
                 let mut candidate = playback(&f);
                 candidate.try_inherit_state_from(&mut old).unwrap();
-                // One held voice continues unchanged while the other gets its
-                // existing sampler note-off envelope, before shared summing.
-                check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
+                // One held voice continues unchanged while the other follows
+                // the source-owned 5 ms contributor attenuation before summing.
+                let mut transition = [[0.0; 2]; 19];
+                for chunk in transition.chunks_mut(3) {
+                    candidate.render(chunk).unwrap();
+                }
+                for (index, frame) in transition.iter().enumerate() {
+                    let gain = 0.25 + 0.25 * (1.0 - index as f32 / 40.0);
+                    for channel in 0..2 {
+                        assert!(
+                            (frame[channel] - PCM[(7 + index) % 4][channel] * gain).abs()
+                                < 0.000_002,
+                            "solo={solo} frame={index} output={frame:?}"
+                        );
+                    }
+                }
                 candidate.render(&mut [[0.0; 2]; 128]).unwrap();
                 check_pcm(&mut candidate, 154, 8, 0.25);
                 assert!(f.editor.undo());
@@ -3221,20 +4336,237 @@ mod tests {
                 let mut output = [[0.0; 2]; 8];
                 undone.render(&mut output).unwrap();
                 for (index, frame) in output.iter().enumerate() {
-                    let reference = PCM[(162 + index) % 4][0];
-                    if reference != 0.0 {
-                        let gain = frame[0] / reference;
-                        assert!((0.25..=0.5).contains(&gain), "solo={solo}, gain={gain}");
+                    let gain = 0.25 + 0.25 * index as f32 / 40.0;
+                    for channel in 0..2 {
+                        let expected = PCM[(162 + index) % 4][channel] * gain;
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "solo={solo}, index={index}, frame={frame:?}, expected={expected}"
+                        );
                     }
                 }
             }
         });
     }
     #[test]
-    fn muting_shared_contributor_releases_its_live_key() {
+    fn muting_shared_contributor_fades_its_live_key_with_authored_voice() {
+        for solo in [false, true] {
+            for rate in [8_000_u32, 44_100, 96_000] {
+                for partition in [1, 7, 256] {
+                    on_control(move || {
+                        use crate::playback::PlaybackCommand;
+                        let mut f = fixture_at(rate);
+                        let input =
+                            Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+                        input.set_key(0, Some((60, 127, 1))).unwrap();
+                        let (mut old, _) = live_playback(&f, &input);
+                        old.apply(PlaybackCommand::Play);
+                        old.render(&mut [[0.0; 2]; 7]).unwrap();
+                        f.editor
+                            .execute(if solo {
+                                Command::ToggleSolo {
+                                    track: f.receiver,
+                                    exclusive: true,
+                                }
+                            } else {
+                                Command::Mute {
+                                    track: f.contributor,
+                                    muted: true,
+                                }
+                            })
+                            .unwrap();
+                        let (mut candidate, _) = live_playback(&f, &input);
+                        candidate
+                            .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                            .unwrap();
+                        let fade_frames = rate.div_ceil(200) as usize;
+                        let mut output = vec![[0.0; 2]; fade_frames + 16];
+                        for chunk in output.chunks_mut(partition) {
+                            candidate.render(chunk).unwrap();
+                        }
+                        for (index, frame) in output.iter().enumerate().take(fade_frames) {
+                            let gain = 0.25 + 0.5 * (1.0 - index as f32 / fade_frames as f32);
+                            for channel in 0..2 {
+                                let expected = PCM[(7 + index) % 4][channel] * gain;
+                                assert!(
+                                    (frame[channel] - expected).abs() < 0.000_002,
+                                    "solo={solo} rate={rate} partition={partition} index={index} frame={frame:?} expected={expected}"
+                                );
+                            }
+                        }
+                        for (index, frame) in output.iter().enumerate().skip(fade_frames) {
+                            for channel in 0..2 {
+                                assert!(
+                                    (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs()
+                                        < 0.000_002,
+                                    "index={index} frame={frame:?}"
+                                );
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    }
+    #[test]
+    fn live_contributor_rapid_unmute_preserves_key_up() {
+        for solo in [false, true] {
+            on_control(move || {
+                use crate::playback::PlaybackCommand;
+                let mut f = fixture();
+                let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+                input.set_key(0, Some((60, 127, 1))).unwrap();
+                let (mut old, _) = live_playback(&f, &input);
+                old.apply(PlaybackCommand::Play);
+                old.render(&mut [[0.0; 2]; 7]).unwrap();
+                f.editor
+                    .execute(if solo {
+                        Command::ToggleSolo {
+                            track: f.receiver,
+                            exclusive: true,
+                        }
+                    } else {
+                        Command::Mute {
+                            track: f.contributor,
+                            muted: true,
+                        }
+                    })
+                    .unwrap();
+                let (mut muted, _) = live_playback(&f, &input);
+                muted
+                    .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                    .unwrap();
+                muted.render(&mut [[0.0; 2]; 20]).unwrap();
+                assert!(f.editor.undo());
+                let (mut restored, _) = live_playback(&f, &input);
+                restored
+                    .try_inherit_runtime_in_control_context(&mut muted, Some(19), Some(19))
+                    .unwrap();
+                let mut output = [[0.0; 2]; 40];
+                restored.render(&mut output).unwrap();
+                for (index, frame) in output.iter().enumerate() {
+                    let gain = 0.25 + 0.5 * (0.5 + 0.5 * index as f32 / 40.0);
+                    for channel in 0..2 {
+                        let expected = PCM[(27 + index) % 4][channel] * gain;
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "index={index} frame={frame:?} expected={expected}"
+                        );
+                    }
+                }
+                input.set_key(0, None).unwrap();
+                restored.render(&mut [[0.0; 2]; 128]).unwrap();
+                let mut output = [[0.0; 2]; 8];
+                restored.render(&mut output).unwrap();
+                for (index, frame) in output.iter().enumerate() {
+                    for channel in 0..2 {
+                        let expected = PCM[(195 + index) % 4][channel] * 0.5;
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "key-up index={index} frame={frame:?} expected={expected}"
+                        );
+                    }
+                }
+                restored.apply(PlaybackCommand::Stop);
+                restored.render(&mut [[0.0; 2]; 64]).unwrap();
+                assert!(input.is_cancelled());
+            });
+        }
+    }
+    #[test]
+    fn live_contributor_fade_advances_during_stopped_monitoring() {
+        on_control(|| {
+            let mut f = fixture();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let (mut muted, _) = live_playback(&f, &input);
+            muted
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let mut output = [[0.0; 2]; 64];
+            muted.render(&mut output).unwrap();
+            for (index, frame) in output.iter().enumerate() {
+                let gain = 0.25 * (1.0 - index.min(40) as f32 / 40.0);
+                for channel in 0..2 {
+                    let expected = PCM[(7 + index) % 4][channel] * gain;
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "stopped index={index} frame={frame:?} expected={expected}"
+                    );
+                }
+            }
+            assert!(!input.is_cancelled());
+            input.set_key(1, Some((62, 127, 2))).unwrap();
+            muted.render(&mut output).unwrap();
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() < 0.000_002),
+                "a new key must not bypass the contributor mute"
+            );
+            input.set_key(0, None).unwrap();
+            muted.render(&mut output).unwrap();
+            assert!(f.editor.undo());
+            let (mut unmuted, _) = live_playback(&f, &input);
+            unmuted
+                .try_inherit_runtime_in_control_context(&mut muted, Some(19), Some(19))
+                .unwrap();
+            unmuted.render(&mut output).unwrap();
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() < 0.000_002),
+                "a key pressed while muted must not be chased on unmute"
+            );
+            input.set_key(1, None).unwrap();
+            unmuted.render(&mut output).unwrap();
+            input.set_key(1, Some((62, 127, 3))).unwrap();
+            unmuted.render(&mut output).unwrap();
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 0.000_002),
+                "a fresh press must sound after unmute"
+            );
+        });
+    }
+    #[test]
+    fn live_key_up_while_muted_does_not_revive_a_long_release() {
         on_control(|| {
             use crate::playback::PlaybackCommand;
             let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 0.2;
+            let replacement = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: replacement,
+                })
+                .unwrap();
             let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
             input.set_key(0, Some((60, 127, 1))).unwrap();
             let (mut old, _) = live_playback(&f, &input);
@@ -3246,19 +4578,27 @@ mod tests {
                     muted: true,
                 })
                 .unwrap();
-            let (mut candidate, _) = live_playback(&f, &input);
-            candidate
+            let (mut muted, _) = live_playback(&f, &input);
+            muted
                 .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
                 .unwrap();
-            let mut output = [[0.0; 2]; 160];
-            for chunk in output.chunks_mut(7) {
-                candidate.render(chunk).unwrap();
-            }
-            for (index, frame) in output.iter().enumerate().skip(128) {
+            muted.render(&mut [[0.0; 2]; 64]).unwrap();
+            input.set_key(0, None).unwrap();
+            muted.render(&mut [[0.0; 2]; 64]).unwrap();
+            assert!(f.editor.undo());
+            let (mut restored, _) = live_playback(&f, &input);
+            restored
+                .try_inherit_runtime_in_control_context(&mut muted, Some(19), Some(19))
+                .unwrap();
+            restored.render(&mut [[0.0; 2]; 64]).unwrap();
+            let mut output = [[0.0; 2]; 8];
+            restored.render(&mut output).unwrap();
+            for (index, frame) in output.iter().enumerate() {
                 for channel in 0..2 {
+                    let expected = PCM[(199 + index) % 4][channel] * 0.5;
                     assert!(
-                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs() < 0.000_002,
-                        "index={index} frame={frame:?}"
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "long release index={index} frame={frame:?} expected={expected}"
                     );
                 }
             }

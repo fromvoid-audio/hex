@@ -27,6 +27,20 @@ finally:
     "explicit macOS VST3 SDK required for the hidden AppKit fixture",
 )
 class EditorFrameTests(unittest.TestCase):
+    def test_controller_feedback_respects_newer_native_edits(self):
+        sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "host-feedback"
+            subprocess.run(
+                ["xcrun", "clang++", "-std=c++17", "-arch", "arm64", "-O2",
+                 "-Wno-deprecated-declarations", "-I" + str(sdk),
+                 str(NATIVE / "macos_host_feedback_fixture.mm"), "-framework", "AppKit",
+                 "-o", str(binary)],
+                check=True, timeout=120,
+            )
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_editor_frame_negotiates_plugin_and_window_resizes(self):
         sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
         with tempfile.TemporaryDirectory() as directory:

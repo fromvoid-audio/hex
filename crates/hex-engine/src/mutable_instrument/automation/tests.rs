@@ -109,6 +109,7 @@ fn volume(
     _: MutableOccurrenceSignature,
     at: u64,
     _: usize,
+    _: bool,
 ) -> Result<Option<VolumeSlice>, MutableInstrumentRuntimeError> {
     Ok(Some(VolumeSlice {
         at,

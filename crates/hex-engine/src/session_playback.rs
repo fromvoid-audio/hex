@@ -456,11 +456,18 @@ pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 600;
 pub struct SessionHandoffReport {
     cancelled_pending: [Option<TrackId>; MAX_TRACKS],
     cancelled_pending_len: usize,
+    running_audio_restart: bool,
 }
 
 impl SessionHandoffReport {
     pub fn cancelled_pending_tracks(&self) -> &[Option<TrackId>] {
         &self.cancelled_pending[..self.cancelled_pending_len]
+    }
+
+    /// Whether this plan resets or relocates audio while the predecessor plays.
+    /// A preview observes one predecessor and does not authorize a later commit.
+    pub fn running_audio_restart(&self) -> bool {
+        self.running_audio_restart
     }
 }
 
@@ -834,6 +841,23 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    /// Observation for headless profiling only. The first value is the existing
+    /// runtime ledger charge; the second is the charge for detached track-tail
+    /// chains already included in that total. Shared revision and source owners,
+    /// native resources, allocator overhead and process memory are not included.
+    #[cfg(feature = "instrument-test-support")]
+    pub fn profile_runtime_storage_bytes(&self) -> Option<(usize, usize)> {
+        let total = self.accounted_runtime_storage_bytes()?;
+        let tails = self
+            .tail_groups
+            .iter()
+            .flatten()
+            .try_fold(0_usize, |sum, chain| {
+                sum.checked_add(chain.accounted_storage_bytes()?)
+            })?;
+        Some((total, tails))
+    }
+
     #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_track_boxes(
         &self,
