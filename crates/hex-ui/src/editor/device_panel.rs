@@ -716,17 +716,12 @@ pub(super) fn view(
     if !inventory_is_current {
         let devices = state
             .project
-            .tracks()
+            .native_sources()
             .iter()
-            .flat_map(|track| track.ordered_device_chain())
-            .filter_map(|device| match device {
-                hex_project::TrackDeviceRef::Instrument(device)
-                    if device.state().type_id().as_str().ok()
-                        == Some("hex.instrument.operator") =>
-                {
-                    Some(device.id())
-                }
-                _ => None,
+            .filter_map(|source| {
+                let device = source.instrument();
+                (device.state().type_id().as_str().ok() == Some("hex.instrument.operator"))
+                    .then_some(device.id())
             })
             .collect();
         view.device_panel.operator_preview_inventory = Some(OperatorPreviewInventory {

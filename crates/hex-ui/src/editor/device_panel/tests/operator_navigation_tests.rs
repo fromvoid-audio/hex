@@ -609,3 +609,220 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         );
     });
 }
+
+#[gpui::test]
+fn retained_operator_preview_survives_unassigned_repaints_and_retires_on_replacement(
+    cx: &mut TestAppContext,
+) {
+    let (service, _, track, bound_device) = operator_fixture();
+    let operator = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unassigned operator".into(),
+            devices: vec![operator.clone()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let created = receive_service_event(&service);
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let mut retained = Vec::new();
+    for name in ["delete operator", "replacement project"] {
+        service
+            .submit(Request::Edit(Command::CreateNativeSource {
+                name: name.into(),
+                devices: vec![operator.clone()],
+                instrument_index: 0,
+            }))
+            .unwrap();
+        let event = receive_service_event(&service);
+        let Some(Created::NativeSource(id)) = event.created else {
+            panic!("source")
+        };
+        retained.push((
+            id,
+            event
+                .state
+                .project
+                .native_source(id)
+                .unwrap()
+                .instrument()
+                .id(),
+        ));
+    }
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let added = receive_service_event(&service);
+    let Some(Created::Track(contributor)) = added.created else {
+        panic!("contributor")
+    };
+    let (handle, editor) = actor_editor_window(cx, service, added.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(700.0)));
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+        view.device_panel
+            .operator_previews
+            .entry(device)
+            .or_default();
+        for &(_, retained_device) in &retained {
+            view.device_panel
+                .operator_previews
+                .entry(retained_device)
+                .or_default();
+        }
+        cx.notify();
+    });
+    for _ in 0..3 {
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.device_panel.operator_previews.contains_key(&device),
+                "unassigned preview was retired"
+            );
+            assert!(
+                view.device_panel
+                    .operator_previews
+                    .contains_key(&bound_device)
+            );
+            for &(_, retained_device) in &retained {
+                assert!(
+                    view.device_panel
+                        .operator_previews
+                        .contains_key(&retained_device)
+                );
+            }
+        });
+        editor.update(&mut visual, |_, cx| cx.notify());
+    }
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source)
+        })))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id()
+            == Some(source)
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_panel.operator_previews.contains_key(&device))
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ReplaceTrackInstrument {
+            track: contributor,
+            replacing: device,
+            state: operator
+        })))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id()
+            != device
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.device_panel.operator_previews.contains_key(&device));
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+        for &(_, retained_device) in &retained {
+            assert!(
+                view.device_panel
+                    .operator_previews
+                    .contains_key(&retained_device)
+            );
+        }
+    });
+    let (deleted_source, deleted_device) = retained[0];
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveNativeSource(deleted_source))))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(deleted_source)
+            .is_none()
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .device_panel
+                .operator_previews
+                .contains_key(&deleted_device)
+        );
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&retained[1].1)
+        );
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+    });
+    let generation = editor.read_with(&visual, |view, _| view.project_generation);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.project_generation != generation
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .device_panel
+                .operator_previews
+                .contains_key(&retained[1].1)
+        );
+        assert!(
+            !view
+                .device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+    });
+}
