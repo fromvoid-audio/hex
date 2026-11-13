@@ -586,10 +586,10 @@ pub enum Request {
         track: hex_project::TrackId,
         source: hex_project::SourceId,
     },
-    /// Add the first neutral Utility to the captured bound source. The worker
-    /// validates the project stamps, track binding, instrument and empty suffix;
+    /// Append a neutral Utility to the captured bound source. The worker
+    /// validates the project stamps, track binding, instrument and Utility suffix;
     /// callers must reject their own unsent gestures before submitting.
-    AddFirstSourceUtility {
+    AppendSourceUtility {
         project_generation: u64,
         revision: u64,
         track: hex_project::TrackId,
@@ -3641,7 +3641,7 @@ fn run_worker(
                     track: Some(*track),
                 })
             })()),
-            Request::AddFirstSourceUtility {
+            Request::AppendSourceUtility {
                 project_generation: captured_generation,
                 revision: captured_revision,
                 track,
@@ -3674,7 +3674,11 @@ fn run_worker(
                 if source.receiver().is_none()
                     || source.instrument().id() != *instrument
                     || source.instrument().state().type_id() != default_instrument.type_id()
-                    || !source.post_instrument_effects().is_empty()
+                    || source.devices().count() >= hex_project::MAX_SOURCE_DEVICES
+                    || source.post_instrument_effects().iter().any(|effect| {
+                        effect.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
                 {
                     return Err(
                         "source effect canceled · source chain changed or unsupported".into(),
@@ -5727,7 +5731,7 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::AddFirstSourceUtility { .. }
+                Request::AppendSourceUtility { .. }
                 | Request::RemoveOnlySourceUtility { .. }
                 | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }

@@ -117,7 +117,7 @@ impl Choice {
         }
         if let Some(action) = self.utility_action {
             let request = match action {
-                SourceUtilityAction::Add(instrument) => Request::AddFirstSourceUtility {
+                SourceUtilityAction::Add(instrument) => Request::AppendSourceUtility {
                     project_generation: self.generation,
                     revision: self.revision,
                     track: self.track,
@@ -375,7 +375,11 @@ fn open(
             let source = state.project.native_source(source_id)?;
             let default = hex_project::default_instrument_state().ok()?;
             (source.receiver().is_some()
-                && source.post_instrument_effects().is_empty()
+                && source.devices().count() < hex_project::MAX_SOURCE_DEVICES
+                && source.post_instrument_effects().iter().all(|effect| {
+                    effect.state().type_id()
+                        == hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                })
                 && source.instrument().state().type_id() == default.type_id())
             .then(|| MenuItem {
                 label: "add source utility",
