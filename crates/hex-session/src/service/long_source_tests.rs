@@ -309,15 +309,29 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
         service.submit(Request::Edit(command.clone())).unwrap();
         let refused = next(&service);
         let error = refused.error.as_deref().expect("transform refusal");
-        assert!(
-            error.contains(
-                "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; \
-                 trim or split the clip first"
-            ),
-            "{command:?}: {error}"
-        );
+        let expected = if matches!(command, hex_project::Command::SetAudioClipPitch { .. }) {
+            "streamed source changes were not committed"
+        } else {
+            "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
+        };
+        assert!(error.contains(expected), "{command:?}: {error}");
         assert_eq!(refused.state.project, imported.state.project);
     }
+    // Storage can represent this edit before the native streamed source bank
+    // can publish it. Opening must refuse without replacing the live project
+    // or touching the file until that separate integration exists.
+    let mut staged = hex_project::Editor::new((*imported.state.project).clone(), 4).unwrap();
+    staged
+        .execute(hex_project::Command::SetAudioClipPitch { clip, cents: 100 })
+        .unwrap();
+    let staged_bytes = hex_storage::encode(staged.project()).unwrap();
+    let staged_path = files.0.join("long-pitch-unavailable.hex");
+    fs::write(&staged_path, &staged_bytes).unwrap();
+    service.submit(Request::Open(staged_path.clone())).unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, imported.state.project);
+    assert_eq!(fs::read(staged_path).unwrap(), staged_bytes);
     service
         .submit(Request::Edit(hex_project::Command::ReverseClips(vec![
             clip,

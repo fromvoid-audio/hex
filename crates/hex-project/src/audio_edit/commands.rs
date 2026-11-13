@@ -353,6 +353,7 @@ pub(crate) fn apply(
         .clone()
         .unwrap_or_else(|| Arc::new(AudioClipEdit::capture(&clip)));
     let edit = Arc::make_mut(&mut owned_edit);
+    let reset_pitch = matches!(&command, Command::SetAudioClipPitch { cents: 0, .. });
     match command {
         Command::SetAudioClipPitch { cents, .. } => {
             if !(-4_800..=4_800).contains(&cents) {
@@ -418,7 +419,14 @@ pub(crate) fn apply(
         }
         _ => return Err(Invalid("unsupported audio editing command")),
     }
-    clip.edit = Some(owned_edit);
+    if reset_pitch
+        && clip.duration > MAX_AUDIO_DOMAIN_FRAMES
+        && *owned_edit == AudioClipEdit::capture(&clip)
+    {
+        clip.edit = None;
+    } else {
+        clip.edit = Some(owned_edit);
+    }
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
     crate::clip_group::replace_audio(project, clip)
