@@ -684,7 +684,8 @@ fn retained_operator_preview_survives_unassigned_repaints_and_retires_on_replace
         view.device_panel
             .operator_previews
             .entry(device)
-            .or_default();
+            .or_default()
+            .routing_focus = Some(cx.focus_handle());
         for &(_, retained_device) in &retained {
             view.device_panel
                 .operator_previews
@@ -699,6 +700,11 @@ fn retained_operator_preview_survives_unassigned_repaints_and_retires_on_replace
             assert!(
                 view.device_panel.operator_previews.contains_key(&device),
                 "unassigned preview was retired"
+            );
+            assert!(
+                view.device_panel.operator_previews[&device]
+                    .routing_focus
+                    .is_some()
             );
             assert!(
                 view.device_panel
