@@ -1439,6 +1439,76 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
 }
 
 #[test]
+fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
+    let frames = 8192;
+    let mut snapshot = super::readiness::project_with_frames(frames).snapshot();
+    snapshot.loop_region = Some(hex_project::LoopRegion::new(3840, 4224, true).unwrap());
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(frames as u32);
+    let definition = wav.definition(asset, 11);
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let mut ordinary = compile(
+        &project,
+        definition.metadata.clone(),
+        &ResidentDeviceAssets::default(),
+    );
+    ordinary.apply(PlaybackCommand::PlayFrom(4160));
+    let mut owner =
+        stream_fixture::owner_sources(&project, vec![definition.metadata], Some(context));
+    let _limits = reservation(&mut owner);
+    let (mut constructor, _anchors) = owner.split_constructor_on_control().ok().unwrap();
+    constructor
+        .apply_action(hex_engine::PlaybackAction::Transport(
+            PlaybackCommand::PlayFrom(4160),
+        ))
+        .unwrap();
+    let mut ordinary_extents = Vec::with_capacity(32);
+    let mut ordinary_result = None;
+    let ordinary_allocations = allocation_counter::measure(|| {
+        ordinary_result = Some(
+            ordinary
+                .stream_playback(context)
+                .visit_current_stream_quantum(256, None, &mut |extent| {
+                    ordinary_extents.push(extent);
+                    Ok(())
+                }),
+        );
+    });
+    let mut constructor_extents = Vec::with_capacity(32);
+    let mut constructor_result = None;
+    let constructor_allocations = allocation_counter::measure(|| {
+        constructor_result = Some(constructor.stream_playback().visit_current_stream_quantum(
+            256,
+            None,
+            &mut |extent| {
+                constructor_extents.push(extent);
+                Ok(())
+            },
+        ));
+    });
+    for allocations in [ordinary_allocations, constructor_allocations] {
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    assert_eq!(ordinary_result, Some(Ok(256)));
+    assert_eq!(constructor_result, Some(Ok(256)));
+    assert_eq!(ordinary_extents, constructor_extents);
+    assert!(ordinary_extents.iter().any(|extent| extent.page_index == 0));
+    assert!(ordinary_extents.iter().any(|extent| extent.page_index == 1));
+}
+
+#[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
     pending_replacement_case(true, false, None);
 }
