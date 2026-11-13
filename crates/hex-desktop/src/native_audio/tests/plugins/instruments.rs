@@ -775,6 +775,12 @@ fn session_loop_repeats_sdk_instrument_gates() {
     instrument_entrypoint(InstrumentWorkflow::SessionLoop);
 }
 
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_pause_releases_sdk_gate_without_rechasing_on_resume() {
+    instrument_entrypoint(InstrumentWorkflow::SessionPause);
+}
+
 /// An opt-in wall-clock driver for the actual native worker, not a physical
 /// audio deadline or a reproduction of any particular user project.
 #[test]
@@ -1011,6 +1017,7 @@ enum InstrumentWorkflow {
     Playback,
     SessionRestart,
     SessionLoop,
+    SessionPause,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
@@ -1025,6 +1032,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         InstrumentWorkflow::Playback
             | InstrumentWorkflow::SessionRestart
             | InstrumentWorkflow::SessionLoop
+            | InstrumentWorkflow::SessionPause
     );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
@@ -1374,6 +1382,67 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     let console = console.unwrap();
+    if matches!(workflow, InstrumentWorkflow::SessionPause) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let sounding = render_completed_block(&harness);
+        for frame in sounding {
+            assert!(
+                (frame[0] - 88.0 / 127.0).abs() < 1e-5,
+                "Session gate was not sounding: {frame:?}"
+            );
+            assert!((frame[0] - frame[1]).abs() < 1e-6);
+        }
+        send(&mut harness, SessionPlaybackCommand::Pause);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(!status.playing.load(Acquire));
+        let paused_at = status.position.load(Acquire);
+        assert!(
+            paused_at < 24_000,
+            "held note must not have reached its authored end"
+        );
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.position.load(Acquire) > paused_at);
+        assert!(status.position.load(Acquire) < 24_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
     if matches!(workflow, InstrumentWorkflow::SessionLoop) {
         assert!(
             controlled_fixture,
