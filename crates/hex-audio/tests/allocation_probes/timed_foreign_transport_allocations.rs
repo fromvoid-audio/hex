@@ -251,7 +251,7 @@ fn timed_mixed_stream_and_foreign_replay_does_not_allocate_or_free() {
         }
     }
     let (mut editor, identity) = instrument_fixture();
-    let Created::Imported { asset, .. } = editor
+    let Created::Imported { asset, track, .. } = editor
         .execute(Command::ImportAudioTrack {
             name: "stream".into(),
             path: "stream.wav".into(),
@@ -262,6 +262,16 @@ fn timed_mixed_stream_and_foreign_replay_does_not_allocate_or_free() {
     else {
         panic!("stream")
     };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
     let key = StreamSourceKey::new(23, asset);
     let source =
         StreamedSourceMetadata::new(key, 48_000, 48_000, 8192, 8192, 0, [0x48; 32]).unwrap();
@@ -275,7 +285,8 @@ fn timed_mixed_stream_and_foreign_replay_does_not_allocate_or_free() {
     )
     .unwrap();
     let definition = Definition(identity);
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::utility::UTILITY_DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let revision = Arc::new(
         PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
@@ -316,16 +327,29 @@ fn timed_mixed_stream_and_foreign_replay_does_not_allocate_or_free() {
     ];
     let mut endpoint = Endpoint::default();
     let mut output = [[0.0; 2]; 80];
+    let mut node_calls = 0;
+    let mut project_calls = 0;
+    let mut timing_calls = 0;
+    let mut node = |_, _, _, _: &[Frame]| node_calls += 1;
+    let mut project = |_, _, _: &[Frame]| project_calls += 1;
+    let mut timing = |_, _, _, _: &hex_engine::PreparedTempoMap| timing_calls += 1;
+    let tracks = [track.value()];
+    let mut tap = hex_engine::ProjectOutputTap::new(&tracks, &mut project)
+        .unwrap()
+        .with_timing(&mut timing);
     let mut result = Ok(());
     let counts = allocation_counter::measure(|| {
-        result = playback.render_with_timed_transport_pages_and_foreign_processors(
+        result = playback.render_with_timed_transport_foreign_and_signal_observers(
             &mut output,
             &commands,
-            &mut pages,
+            Some(&mut pages),
+            Some(&mut node),
+            Some(&mut tap),
             &mut endpoint,
         );
     });
     assert!(result.is_ok());
+    assert!(node_calls > 0 && project_calls > 0 && timing_calls > 0);
     assert_eq!(
         (
             counts.count_total,
