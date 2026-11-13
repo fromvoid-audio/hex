@@ -964,10 +964,9 @@ impl<'a> AudioViewProjection<'a> {
             .map_err(|_| Invalid("audio root frame span is invalid"))?;
         if root_frame_length == 0
             || (root_frame_length > MAX_AUDIO_DOMAIN_FRAMES
-                && !self
-                    .clip
-                    .audio_edit()
-                    .is_some_and(|edit| edit.accepts_projected_extent(root_frame_length)))
+                && !self.clip.audio_edit().is_some_and(|edit| {
+                    edit.accepts_projected_extent(root_frame_length, self.clip)
+                }))
         {
             return Err(Invalid(
                 "full audio root exceeds its frame limit or is empty",

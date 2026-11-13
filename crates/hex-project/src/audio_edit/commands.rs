@@ -32,7 +32,7 @@ pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Inva
         .ok_or(Invalid("audio placement end overflow"))?;
     clip.fade = ClipFade::neutral(clip.duration)?;
     let (_, full, start, end) = edit.projected_domain(tempo)?;
-    if !edit.accepts_projected_extent(full) {
+    if !edit.accepts_projected_extent(full, clip) {
         return Err(transform_domain_limit(tempo.sample_rate()));
     }
     if start >= end {
