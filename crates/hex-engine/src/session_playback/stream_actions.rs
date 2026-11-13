@@ -345,6 +345,7 @@ impl SessionPlayback {
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<usize, Invalid> {
         self.visit_current_stream_quantum_at(0, maximum_frames, playing, ordinary, visit)
+            .map_err(Into::into)
     }
 
     /// Project a bounded window at an offset from the unmodified current clock.
@@ -355,10 +356,11 @@ impl SessionPlayback {
         playing: Option<bool>,
         ordinary: bool,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<usize, Invalid> {
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        use crate::playback::StreamQuantumProjectionError as Error;
         let ordinary = ordinary || self.linear_arrangement_export;
         if !ordinary && !self.supports_closed_stream_demand() {
-            return Err(Invalid("stream demand requires a closed audio runtime"));
+            return Err(Error::Unsupported);
         }
         let frames = maximum_frames.min(256);
         if frames == 0 || !playing.unwrap_or(self.playing) {
@@ -368,26 +370,42 @@ impl SessionPlayback {
             .performance_frame
             .checked_add(start_offset)
             .filter(|start| start.checked_add(frames as u64).is_some())
-            .ok_or(Invalid("stream callback projection overflow"))?;
+            .ok_or(Error::ClockOverflow)?;
         let mut offset = 0usize;
         while offset < frames {
             let performance = start + offset as u64;
-            let (arrangement, pass) = self.project_stream_arrangement(performance)?;
+            let (arrangement, pass) = self
+                .project_stream_arrangement(performance)
+                .map_err(Error::Projection)?;
             self.route_scratch.copy_from_slice(&self.routes);
-            self.project_due_stream_routes(performance, self.anchor)?;
-            let window = self.visit_stream_chunk_in_scope(
-                ordinary,
-                &self.route_scratch,
-                performance,
-                arrangement,
-                self.route_state_generation,
-                pass,
-                true,
-                frames - offset,
-                visit,
-            )?;
+            self.project_due_stream_routes(performance, self.anchor)
+                .map_err(Error::Projection)?;
+            let visitor_failed = std::cell::Cell::new(false);
+            let mut checked_visit =
+                |extent| visit(extent).inspect_err(|_| visitor_failed.set(true));
+            let window = self
+                .visit_stream_chunk_in_scope(
+                    ordinary,
+                    &self.route_scratch,
+                    performance,
+                    arrangement,
+                    self.route_state_generation,
+                    pass,
+                    true,
+                    frames - offset,
+                    &mut checked_visit,
+                )
+                .map_err(|error| {
+                    if visitor_failed.get() {
+                        Error::Visitor(error)
+                    } else {
+                        Error::Projection(error)
+                    }
+                })?;
             if window.frames == 0 || window.frames > frames - offset {
-                return Err(Invalid("stream callback projection made no progress"));
+                return Err(Error::Projection(Invalid(
+                    "stream callback projection made no progress",
+                )));
             }
             offset += window.frames;
         }
