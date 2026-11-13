@@ -1052,3 +1052,184 @@ fn shared_source_mode_inner(
             && view.device_gesture.snapshot().is_none()
     });
 }
+
+#[gpui::test]
+fn shared_source_channel_selector_keeps_linked_identity_and_history(cx: &mut TestAppContext) {
+    use hex_lattice_contract::{DeviceAutomationTarget, ParameterId};
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+    cx.update(crate::editor::bind_editor_keys);
+    cx.update(hex_widgets::bind_selector_keys);
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&service);
+    let edit = |command| {
+        service.submit(Request::Edit(command)).unwrap();
+        let event = receive_service_event(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        event
+    };
+    let Some(Created::Track(receiver)) = edit(Command::InsertTrackWithDevice {
+        name: "receiver".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().unwrap(),
+    })
+    .created
+    else {
+        panic!("receiver")
+    };
+    let added = edit(Command::AddMidiTrack {
+        name: "contributor".into(),
+    });
+    let Some(Created::Track(contributor)) = added.created else {
+        panic!("contributor")
+    };
+    let source = added
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let instrument = added
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    edit(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    });
+    let utility = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let inserted = edit(Command::InsertNestedDevice {
+        parent: instrument,
+        state: utility.clone(),
+    });
+    let Some(Created::Device(effect)) = inserted.created else {
+        panic!("effect")
+    };
+    let local = edit(Command::InsertDevice {
+        track: contributor,
+        before: None,
+        state: utility,
+    });
+    let local_devices = local
+        .state
+        .project
+        .track(contributor)
+        .unwrap()
+        .devices()
+        .to_vec();
+    let (handle, editor) = actor_editor_window(cx, service, local.state, contributor);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let key = ParameterKey {
+        device: effect,
+        parameter: ParameterId::from_static(4),
+    };
+    let selector = Box::leak(format!("device-{}-parameter-4", effect.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).expect("channel selector");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.simulate_keystrokes("down");
+    let value = |view: &EditorView| {
+        let device = view.state.as_ref()?.project.device(effect)?;
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            device.state(),
+            key.parameter,
+        )
+        .ok()
+    };
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Choice(1)) && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(contributor).unwrap().devices(), local_devices);
+        assert_eq!(project.track(receiver).unwrap().source_id(), Some(source));
+        assert_eq!(
+            project.track(contributor).unwrap().source_id(),
+            Some(source)
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Choice(0))
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Choice(1))
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_track(receiver, window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("receiver channel selector");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.simulate_keystrokes("down");
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Choice(2)) && view.device_gesture.snapshot().is_none()
+    });
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds(selector).expect("channel selector");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.simulate_keystrokes("down");
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Choice(3)) && view.device_gesture.snapshot().is_none()
+    });
+    editor.update(cx, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device: effect,
+                target: DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN),
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.5).unwrap(),
+                    outgoing: AutomationInterpolation::Step
+                }],
+            }))
+        )
+    });
+    pump_until(&editor, cx, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(effect)
+                .unwrap()
+                .automation()
+                .len()
+                == 1
+    });
+    visual.run_until_parked();
+    let choice = editor.read_with(&visual, |view, _| {
+        match view.device_panel.controls.get(&key) {
+            Some(ParameterControl::Choice { entity, .. }) => entity.clone(),
+            _ => panic!("channel control"),
+        }
+    });
+    choice.update(&mut visual, |_, cx| {
+        cx.emit(SelectorChanged {
+            index: 0,
+            label: "stereo".into(),
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(value(view), Some(ParameterValue::Choice(3)));
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.error.is_some());
+    });
+}
