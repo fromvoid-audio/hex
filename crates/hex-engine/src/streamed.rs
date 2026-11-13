@@ -157,6 +157,18 @@ impl StreamedSourceMetadata {
     pub const fn fingerprint(&self) -> [u8; 32] {
         self.fingerprint
     }
+
+    /// Declare full-source plain pitch derived from these verified source facts.
+    /// A catalog lease still has to establish that its worker can produce it.
+    pub fn with_plain_pitch(&self, cents: i16, law: WarpResampler) -> Result<Self, Invalid> {
+        if self.key.pitch().is_some() {
+            return Err(Invalid("pitched stream source is already derived"));
+        }
+        let mut derived = self.clone();
+        derived.key =
+            StreamSourceKey::plain_pitch(self.key.generation(), self.key.asset(), cents, law)?;
+        Ok(derived)
+    }
 }
 
 /// A borrowed page. `page_index * STREAM_PAGE_FRAMES` is its global first frame.
