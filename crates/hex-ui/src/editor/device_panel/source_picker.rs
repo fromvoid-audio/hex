@@ -1,4 +1,4 @@
-//! Explicit source assignment for the currently unassigned track.
+//! Explicit source assignment for the selected track.
 use super::*;
 use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
@@ -28,6 +28,8 @@ pub(in crate::editor) struct Choice {
     revision: u64,
     track: TrackId,
     source: SourceId,
+    expected_source: Option<SourceId>,
+    unlink: bool,
     destination: Option<TrackId>,
     pub(in crate::editor) label: SharedString,
 }
@@ -61,10 +63,9 @@ impl Choice {
                             .track(target)
                             .is_some_and(|linked| linked.source_id() == Some(self.source))
                     })
-                    && state
-                        .project
-                        .track(self.track)
-                        .is_some_and(|track| !track.is_group() && track.source_id().is_none())
+                    && state.project.track(self.track).is_some_and(|track| {
+                        !track.is_group() && track.source_id() == self.expected_source
+                    })
             })
         {
             view.error = Some(if self.destination.is_some() {
@@ -123,12 +124,26 @@ impl Choice {
             cx.notify();
             return;
         }
-        let _ = view.enqueue(Request::BindUnassignedNativeSource {
-            project_generation: self.generation,
-            revision: self.revision,
-            track: self.track,
-            source: self.source,
-        });
+        if self.expected_source == Some(self.source) && !self.unlink {
+            return;
+        }
+        let request = if self.expected_source.is_some() {
+            Request::RebindNativeSource {
+                project_generation: self.generation,
+                revision: self.revision,
+                track: self.track,
+                expected_source: self.expected_source,
+                source: (!self.unlink).then_some(self.source),
+            }
+        } else {
+            Request::BindUnassignedNativeSource {
+                project_generation: self.generation,
+                revision: self.revision,
+                track: self.track,
+                source: self.source,
+            }
+        };
+        let _ = view.enqueue(request);
         cx.notify();
     }
 }
@@ -146,7 +161,7 @@ pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Wi
                 && state
                     .project
                     .track(track)
-                    .is_some_and(|track| !track.is_group() && track.source_id().is_none())
+                    .is_some_and(|track| !track.is_group())
         })
     {
         return false;
@@ -176,13 +191,14 @@ fn open(
     let Some(state) = view.state.as_ref() else {
         return;
     };
-    if !state
+    let Some(expected_source) = state
         .project
         .track(track)
-        .is_some_and(|track| !track.is_group() && track.source_id().is_none())
-    {
+        .filter(|track| !track.is_group())
+        .map(|track| track.source_id())
+    else {
         return;
-    }
+    };
     let generation = view.project_generation;
     let items = state
         .project
@@ -202,12 +218,14 @@ fn open(
             let assignment = MenuItem {
                 label: "source",
                 swatch: None,
-                checked: false,
+                checked: expected_source == Some(source.id()),
                 action: EditorContextAction::SourcePicker(Choice {
                     generation,
                     revision: state.revision,
                     track,
                     source: source.id(),
+                    expected_source,
+                    unlink: false,
                     destination: None,
                     label: label.into(),
                 }),
@@ -232,6 +250,8 @@ fn open(
                             revision: state.revision,
                             track,
                             source: source.id(),
+                            expected_source,
+                            unlink: false,
                             destination: Some(linked.id()),
                             label: format!(
                                 "  go to · {role} · {}",
@@ -243,6 +263,21 @@ fn open(
                 });
             std::iter::once(assignment).chain(tracks)
         })
+        .chain(expected_source.map(|source| MenuItem {
+            label: "unlink source",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::SourcePicker(Choice {
+                generation,
+                revision: state.revision,
+                track,
+                source,
+                expected_source,
+                unlink: true,
+                destination: None,
+                label: "unlink source".into(),
+            }),
+        }))
         .collect::<Vec<_>>();
     if items.is_empty() {
         return;
@@ -251,7 +286,7 @@ fn open(
         EditorContextAction::SourcePicker(choice) => !choice.current(view),
         _ => false,
     }) {
-        view.error = Some("select one unassigned track to choose a source".into());
+        view.error = Some("select one track to choose a source".into());
         cx.notify();
         return;
     }
@@ -279,7 +314,9 @@ pub(super) fn button(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     track: TrackId,
+    summary: Option<Stateful<Div>>,
 ) -> Stateful<Div> {
+    let bound = summary.is_some();
     let available = view
         .state
         .as_ref()
@@ -298,6 +335,9 @@ pub(super) fn button(
         .id("device-source-picker")
         .debug_selector(|| "device-source-picker".into())
         .relative()
+        .flex()
+        .items_center()
+        .min_w_0()
         .track_focus(&focus)
         .key_context("hex_source_picker")
         .px(px(4.0))
@@ -309,11 +349,15 @@ pub(super) fn button(
         .when(available, |style| {
             style.hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         })
-        .child(theme::text(if available {
-            "source · choose"
-        } else {
-            "source · none"
-        }))
+        .children(summary)
+        .when(!bound, |style| {
+            style.child(theme::text(if available {
+                "source · choose"
+            } else {
+                "source · none"
+            }))
+        })
+        .when(bound, |style| style.child(theme::text(" ▾")))
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
                 kind: crate::tooltips::Kind::Identification,
