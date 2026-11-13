@@ -437,7 +437,7 @@ class NativeInstanceTests(unittest.TestCase):
                                                *BINDING, session.sequence, session.frames,
                                                operation, 0, 0, action, 0, 0))
             reply_magic, reply = session.message()
-            self.assertEqual(reply_magic, b"HXVIMD01")
+            self.assertEqual(reply_magic, b"HXVIMD03")
             self.assertEqual(struct.unpack_from("<H7Q", reply),
                              (1, *BINDING, session.sequence, session.frames, operation))
             return reply[58:]
@@ -701,13 +701,29 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
         self.assertEqual(self.observation()[1], 0, "controller setters stay on main")
 
-    def test_stopped_flush_rejects_live_stale_malformed_and_unknown_before_sdk_entry(self):
-        for mode in ("live", "operation", "prefix", "binding", "offset", "unknown", "duplicate"):
+    def test_idle_flush_applies_parameter_without_advancing_pcm(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+        packet = struct.pack("<4sHHHH4x7QHHId", b"HXVF", 2, 0, 0, 1, *BINDING,
+                             0, 0, 1, 0, 0, 7, .5)
+        session.socket.sendall(packet)
+        magic, body = session.message()
+        self.assertEqual(magic, b"HXVIFL01")
+        self.assertEqual(struct.unpack("<H7QBHId", body), (1, *BINDING, 0, 0, 1, 1, 1, 7, .5))
+        _, inputs, (magic, output) = session.render(8)
+        self.assertEqual(magic, b"HXVB")
+        # The fixture maps 0.5 to gain 2, then applies its first-block scale 0.5.
+        self.assertEqual(struct.unpack_from("<16f", output, 64), inputs)
+        self.terminal(session, 0, message=session.stop())
+        self.assertEqual(self.observation()[10], 1)
+        self.assertEqual(self.observation()[11], 1)
+
+    def test_stopped_flush_rejects_stale_malformed_and_unknown_before_sdk_entry(self):
+        for mode in ("operation", "prefix", "binding", "offset", "unknown", "duplicate"):
             with self.subTest(mode=mode):
                 session=self.session(variant=37);self.ready(session, controller=True)
-                if mode!="live":
-                    session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
-                    self.assertEqual(session.message()[0],b"HXVIQF03")
+                session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
+                self.assertEqual(session.message()[0],b"HXVIQF03")
                 binding=(*BINDING[:3],99) if mode=="binding" else BINDING
                 operation=2 if mode=="operation" else 1
                 prefix=1 if mode=="prefix" else 0
@@ -1435,13 +1451,19 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(self.observation()[10], 0)
 
     def test_partial_pcm_is_not_a_completed_block(self):
-        session = self.session()
-        self.ready(session)
-        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
-        session.socket.shutdown(socket.SHUT_WR)
-        self.error(session, 8)
-        self.terminal(session, 8)
-        self.assertEqual(self.observation()[10], 0)
+        # Exercise the actual reader and control-lane EOF observation together.
+        # On macOS, concurrent peeking could strand the partial read after EOF.
+        for attempt in range(32):
+            with self.subTest(attempt=attempt):
+                session = self.session()
+                self.ready(session)
+                session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+                if attempt % 2:
+                    time.sleep(.005)
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def test_eof_cancels_without_fabricating_graceful_retirement(self):
         session = self.session()
@@ -1450,6 +1472,46 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(session.socket.recv(1), b"")
         self.assertEqual(session.process.wait(timeout=10), 9)
         self.assertNotEqual(self.observation()[0], 6)
+
+    def test_fragmented_pcm_waits_for_the_remaining_samples(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+        time.sleep(.03)  # Cross multiple incomplete-frame rechecks.
+        session.socket.sendall(struct.pack("<3f", -.5, .75, -1.))
+        magic, body = session.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack_from("<4f", body, 64), (.125, -.25, .375, -.5))
+        session.sequence, session.frames = 1, 2
+        self.terminal(session, 0, message=session.stop())
+
+    def test_truncated_header_and_empty_pcm_payload_are_refused(self):
+        for case in ("header", "payload"):
+            with self.subTest(case=case):
+                session = self.session()
+                self.ready(session)
+                packet = session.packet(2)
+                session.socket.sendall(packet[:12] if case == "header" else packet)
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
+    def test_buffered_stop_precedes_write_shutdown(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVE", 1, 0, 0, *BINDING, 0, 0))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.terminal(session, 0)
+
+    def test_partial_pcm_hung_stop_is_still_bounded(self):
+        session = self.session(variant=61)
+        self.ready(session, controller=True)
+        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.error(session, 8)
+        self.assertEqual(session.socket.recv(1), b"")
+        self.assertEqual(session.process.wait(timeout=5), 9)
 
     def test_instance_profile_excludes_discovery_fixtures_and_generic_run_refuses(self):
         info = BOOT.verify(self.receipt)

@@ -5,6 +5,18 @@ fn action_revision(looped: bool) -> Arc<PreparedRevision> {
 }
 
 fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>, rate: u32) -> Arc<PreparedRevision> {
+    action_revision_with_tracks_at(loop_bounds, rate, false)
+}
+
+fn action_revision_with_tracks(looped: bool, second_track: bool) -> Arc<PreparedRevision> {
+    action_revision_with_tracks_at(looped.then_some((0, 64)), 48_000, second_track)
+}
+
+fn action_revision_with_tracks_at(
+    loop_bounds: Option<(u64, u64)>,
+    rate: u32,
+    second_track: bool,
+) -> Arc<PreparedRevision> {
     let mut snapshot = audio_project(5, 18, 4).snapshot();
     snapshot.sample_rate = rate;
     let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
@@ -18,6 +30,25 @@ fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>, rate: u32) -> Arc<
         hex_project::converted_frame_count(4096, 24_000, rate).unwrap();
     snapshot.assets[0].conversion_version = hex_project::SINC_CONVERSION_V1;
     snapshot.assets[1].source_sample_rate = rate;
+    if second_track {
+        clip.loop_range = Some(hex_project::SessionAudioLoop::new(4094, 4108).unwrap());
+        let mut track = snapshot.tracks[0].clone();
+        track.id = snapshot.next_id;
+        snapshot.next_id += 1;
+        let mut cell = snapshot.session.cells[0].clone();
+        cell.track = track.id;
+        let SessionCellContentSnapshot::Audio(second) = &mut cell.content else {
+            panic!("audio fixture")
+        };
+        second.id = snapshot.next_id;
+        snapshot.next_id += 1;
+        second.asset = 5;
+        second.source_start = 0;
+        second.source_end = 14;
+        second.loop_range = Some(hex_project::SessionAudioLoop::new(0, 14).unwrap());
+        snapshot.tracks.push(track);
+        snapshot.session.cells.push(cell);
+    }
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
         active: true,
         name: "clip".into(),
@@ -42,7 +73,7 @@ fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>, rate: u32) -> Arc<
         with_utility_filter_state(&Project::from_snapshot(snapshot).unwrap(), true, false);
     let mut media = BTreeMap::new();
     for asset in project.assets() {
-        let source = if asset.id().value() == 4 {
+        let source = if asset.id().value() == 4 || (second_track && asset.id().value() == 5) {
             PreparedAudioSource::Streamed(Arc::new(
                 StreamedSourceMetadata::new(
                     StreamSourceKey::new(23, asset.id()),
@@ -581,6 +612,99 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
     actual.commit_stream_action(paused).unwrap();
     assert_eq!(actual.position(), 5000);
     assert!(!actual.playing());
+}
+
+#[test]
+fn later_due_projection_does_not_restart_an_earlier_route_release() {
+    let mut actual = Playback::from_prepared(action_revision_with_tracks(false, true));
+    actual
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(5992)))
+        .unwrap();
+    let clips: Vec<_> = actual
+        .prepared_revision()
+        .unwrap()
+        .session()
+        .audio_clips()
+        .iter()
+        .map(|clip| clip.id)
+        .collect();
+    assert_eq!(clips.len(), 2);
+    for clip in clips {
+        actual
+            .try_apply_action(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+    }
+    actual
+        .render_with_pages(&mut [[0.0; 2]; 1], &mut pages())
+        .unwrap();
+    let first = actual.session_route_status(0).unwrap().track;
+    let second = actual.session_route_status(1).unwrap().track;
+    actual
+        .try_apply_action(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
+            track: first,
+            quantization: LaunchQuantization::Sixteenth,
+        }))
+        .unwrap();
+    let later = actual
+        .prepare_stream_action(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
+            track: second,
+            quantization: LaunchQuantization::Eighth,
+        }))
+        .unwrap();
+    let earlier_due = actual
+        .session_route_status(0)
+        .unwrap()
+        .pending
+        .unwrap()
+        .performance_frame;
+    let later_due = later.scheduled_due_frame().unwrap();
+    assert!(later_due > earlier_due + 128);
+    let mut predicted = Vec::new();
+    actual
+        .visit_prepared_stream_action(&later, 8, &mut |extent| {
+            predicted.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    actual.commit_stream_action(later).unwrap();
+    let mut pending = Vec::new();
+    actual
+        .visit_pending_stream_chunk(later_due, 8, &mut |extent| {
+            pending.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    let advance = usize::try_from(later_due - actual.performance_frame()).unwrap();
+    actual
+        .render_with_pages(&mut vec![[0.0; 2]; advance], &mut pages())
+        .unwrap();
+    let mut observed = Vec::new();
+    actual
+        .visit_next_stream_chunk(8, None, &mut |extent| {
+            observed.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        !observed.is_empty(),
+        "later route release must demand pages"
+    );
+    assert!(observed.iter().all(|extent| {
+        matches!(extent.source, crate::StreamResourceKey::Audio(key) if key.asset().value() == 5)
+    }), "the earlier track's release must have ended");
+    assert_eq!(
+        predicted, observed,
+        "prepared demand must retain earlier release timing"
+    );
+    assert_eq!(
+        pending, observed,
+        "pending demand must retain earlier release timing"
+    );
 }
 
 #[test]
