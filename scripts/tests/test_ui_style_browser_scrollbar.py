@@ -41,6 +41,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/console_returns.rs": '.child(button(glyph, label, id)) .child(self.track_name_label(target, name, cx)) .child(gain) .child(mute) .child(controls) .child(header) .child(mixer) .child(self.sample_arm_button(arm, cx)) .child(super::track_meters::render_return(id, levels, height))',
                 "crates/hex-ui/src/editor/mixer.rs": '.child(self.main_volume(cx))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
+                "crates/hex-ui/src/editor/device_panel/modulators.rs": '.child(parameter_control_with_presentation(view, cx, id, identity, row))',
             }
             for name, text in files.items():
                 path = root / name
@@ -85,6 +86,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("editor/clip_boundary.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(toggle_button_with_style(label, tooltip, id, style))'),
                 ("other.rs", '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))'),
+                ("other.rs", '.child(parameter_control_with_presentation(view, cx, id, identity, row))'),
+                ("editor/device_panel/modulators.rs", '.child("Unnormalized")'),
+                ("editor/device_panel/modulators.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/tracks.rs", '.child("Unnormalized")'),
                 ("editor/tracks.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/return_tracks.rs", '.child("Unnormalized")'),
