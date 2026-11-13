@@ -1477,6 +1477,7 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
                 )
                 .unwrap();
             let captured = Snapshot {
+                source_origin: current.source_origin,
                 prepared_context: current.prepared_context,
                 file_sources: current.file_sources.clone(),
                 prepared: Arc::clone(&current.prepared),
@@ -1509,6 +1510,7 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
                     &mut sink,
                     sampler_export::Admission::default(),
                     ResidentPublicationMetadata {
+                        source_origin: crate::service::ResidentSourceOrigin::Unknown,
                         clip_preview: None,
                         context,
                         device_preview: None,
@@ -1632,6 +1634,7 @@ fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_re
     let mut selected = current.inputs.clone();
     selected.keyboard = Some((track, Arc::clone(&input)));
     let metadata = ResidentPublicationMetadata {
+        source_origin: crate::service::ResidentSourceOrigin::Unknown,
         clip_preview: None,
         context,
         device_preview: None,

@@ -256,6 +256,7 @@ impl NativeAudioSink {
                 output_identity: output,
                 audio_revision: 0,
                 source_context: None,
+                source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
                 section_loop: None,
             }));
         }
@@ -767,6 +768,7 @@ impl NativeAudioSink {
                         output_identity,
                         audio_revision,
                         source_context: Some(metadata.context),
+                        source_origin: metadata.source_origin,
                         section_loop,
                     });
                     self.resident.capture_target = observation.native_parameter_input_target();
@@ -978,6 +980,7 @@ mod publication_readiness_tests {
             output_identity: 7,
             audio_revision: 12,
             source_context: None,
+            source_origin: hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview,
             section_loop: None,
         };
         assert_eq!(
