@@ -98,6 +98,18 @@ impl RuntimeRef<'_> {
             }),
         }
     }
+    pub(super) fn transport(&self) -> Option<(u64, u64, bool)> {
+        match self {
+            Self::Legacy(playback) => Some((
+                playback.position(),
+                playback.performance_frame(),
+                playback.playing(),
+            )),
+            Self::Eligible(runtime) => runtime
+                .status()
+                .map(|status| (status.position, status.performance_frame, status.playing)),
+        }
+    }
     pub(super) fn sample_rate(&self) -> u32 {
         match self {
             Self::Legacy(p) => p.sample_rate(),

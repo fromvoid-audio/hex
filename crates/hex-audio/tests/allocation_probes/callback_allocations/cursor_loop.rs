@@ -38,6 +38,12 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         .map_err(|_| "post-loop start failed")?;
     let mut output = [[0.0; 2]; 6];
     measured_block(&mut callback, &mut output);
+    let observation = control
+        .status
+        .transport_observation()
+        .ok_or("missing transport observation")?;
+    assert_eq!(observation.arrangement_frame, 18);
+    assert!(observation.playing);
     assert_eq!(
         output,
         [
@@ -49,6 +55,15 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         .map_err(|_| "stop failed")?;
     measured_block(&mut callback, &mut output);
     assert_eq!(output, [[0.0; 2]; 6]);
+    let observation = control
+        .status
+        .transport_observation()
+        .ok_or("missing stopped observation")?;
+    // A declicked Stop may still be finishing its fade in this short block.
+    assert_eq!(
+        observation.arrangement_frame,
+        control.status.position.load(Ordering::Relaxed)
+    );
     control
         .command(PlaybackCommand::PlayFrom(2))
         .map_err(|_| "pre-loop start failed")?;
@@ -64,6 +79,7 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         [[5.0; 2], [6.0; 2], [7.0; 2], [0.0; 2], [5.0; 2], [6.0; 2]]
     );
     control.request_shutdown();
+    assert_eq!(control.status.transport_observation(), None);
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
     Ok(())

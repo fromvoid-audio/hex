@@ -538,6 +538,22 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
     render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert_eq!(control.status.position.load(Acquire), 8);
+    let observation = control
+        .status
+        .transport_observation()
+        .expect("eligible observation");
+    assert_eq!(
+        (observation.audio_revision, observation.control_generation),
+        (1, 8)
+    );
+    assert_eq!(
+        (
+            observation.arrangement_frame,
+            observation.performance_frame,
+            observation.playing
+        ),
+        (8, 8, true)
+    );
     let b_ticket = control
         .stage_eligible_audio_candidate(b, vec![], PublicationPolicy::InheritRuntime, 8)
         .ok()
@@ -554,6 +570,14 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
     render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert_eq!(control.status.position.load(Acquire), 16);
+    assert_eq!(
+        control
+            .status
+            .transport_observation()
+            .unwrap()
+            .arrangement_frame,
+        16
+    );
     assert!(control.status.publication_pending.load(Acquire));
     assert_eq!(
         control.cancel_audio_candidate(&b_ticket),
