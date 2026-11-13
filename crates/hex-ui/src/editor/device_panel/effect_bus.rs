@@ -105,7 +105,10 @@ pub(in crate::editor) fn selected_owner(
             .project
             .native_source(source)
             .is_some_and(|definition| {
-                definition.instrument().state().type_id().as_str() == Ok("hex.instrument.fm4")
+                matches!(
+                    definition.instrument().state().type_id().as_str(),
+                    Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                )
             })
         && !state
             .project

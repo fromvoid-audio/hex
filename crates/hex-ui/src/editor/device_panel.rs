@@ -716,17 +716,12 @@ pub(super) fn view(
     if !inventory_is_current {
         let devices = state
             .project
-            .tracks()
+            .native_sources()
             .iter()
-            .flat_map(|track| track.ordered_device_chain())
-            .filter_map(|device| match device {
-                hex_project::TrackDeviceRef::Instrument(device)
-                    if device.state().type_id().as_str().ok()
-                        == Some("hex.instrument.operator") =>
-                {
-                    Some(device.id())
-                }
-                _ => None,
+            .filter_map(|source| {
+                let device = source.instrument();
+                (device.state().type_id().as_str().ok() == Some("hex.instrument.operator"))
+                    .then_some(device.id())
             })
             .collect();
         view.device_panel.operator_preview_inventory = Some(OperatorPreviewInventory {
@@ -754,7 +749,10 @@ pub(super) fn view(
                 .project
                 .native_source(source)
                 .is_some_and(|definition| {
-                    definition.instrument().state().type_id().as_str() == Ok("hex.instrument.fm4")
+                    matches!(
+                        definition.instrument().state().type_id().as_str(),
+                        Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                    )
                 })
             || state
                 .project
@@ -925,7 +923,27 @@ fn render_source(
         device.id(),
         (identity.class, device.state().clone(), Ok(metadata.clone())),
     );
-    let body = parameter_rows::body(view, window, cx, device.id(), identity, &metadata);
+    let body = if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
+        let body = operator_panel::render_body(view, cx, device.id(), &metadata);
+        let width = operator_panel::frame_width(
+            view.device_panel
+                .operator_pages
+                .get(&device.id())
+                .copied()
+                .unwrap_or_default(),
+        );
+        let body = body.w(px(width)).flex_shrink_0();
+        div()
+            .id("source-operator-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_x_scroll()
+            .overflow_y_hidden()
+            .child(body)
+    } else {
+        parameter_rows::body(view, window, cx, device.id(), identity, &metadata)
+    };
     let manager = source_manager::button(view, window, cx);
     let close = source_manager::close_button(view, window, cx);
     div()
@@ -1188,6 +1206,7 @@ fn render_track(
             .then_some(*device)
         })
         .collect();
+    operator_panel::preview::cancel_hidden(view, &alive_operator);
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
     let alive_eq8: HashSet<_> = identities

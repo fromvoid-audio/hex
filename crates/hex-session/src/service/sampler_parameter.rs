@@ -1,6 +1,27 @@
 //! Captured sampler authoring intents for ordinary worker transactions and the explicit private
 //! CURRENT path. Only the latter uses a stopped callback fence; Session owns canonical/history commit.
 use super::*;
+
+fn parameter_device<'a>(
+    project: &'a hex_project::Project,
+    edit: &SamplerParameterEdit,
+    allow_bypassed: bool,
+) -> Option<&'a hex_project::Device> {
+    let device = match edit.owner {
+        SamplerParameterOwner::Track(track) => project.track(track)?.instrument()?,
+        SamplerParameterOwner::Source(source) => {
+            if project
+                .tracks()
+                .iter()
+                .any(|track| track.source_id() == Some(source))
+            {
+                return None;
+            }
+            project.native_source(source)?.instrument()
+        }
+    };
+    (device.id() == edit.device && (allow_bypassed || !device.bypassed())).then_some(device)
+}
 pub(super) fn validate(
     session: &Session,
     generation: u64,
@@ -14,11 +35,7 @@ pub(super) fn validate(
     {
         return Err("sampler edit target changed or edit was cancelled".into());
     }
-    let device = session
-        .project()
-        .track(edit.track)
-        .and_then(|t| t.instrument())
-        .filter(|d| d.id() == edit.device && !d.bypassed())
+    let device = parameter_device(session.project(), edit, false)
         .ok_or("sampler edit target is unavailable")?;
     hex_engine::patch_sampler_parameter_on_control(edit.parameter, device.state(), edit.value)
         .map(|_| ())
@@ -157,11 +174,7 @@ impl SamplerEdit {
         }
         match self {
             Self::Parameter(edit) => {
-                let device = session
-                    .project()
-                    .track(edit.track)
-                    .and_then(|track| track.instrument())
-                    .filter(|device| device.id() == edit.device)
+                let device = parameter_device(session.project(), edit, true)
                     .ok_or("sampler edit target is unavailable")?;
                 let patched = hex_engine::patch_sampler_parameter_on_control(
                     edit.parameter,
