@@ -209,7 +209,10 @@ impl Action {
             Operation::Details(source) => details(view, source, self.position, window, cx),
             Operation::Rename(source) => begin_name(view, source, window, cx),
             Operation::Edit(source) => {
-                if view.edit_pending() || view.device_gesture.snapshot().is_some() {
+                if view.edit_pending()
+                    || view.tuning.client.snapshot().is_some()
+                    || view.tuning.client.has_pending_requests()
+                {
                     view.error = Some("finish the current edit before viewing a source".into());
                 } else if let Some(state) = view.state.as_ref() {
                     let eligible = state

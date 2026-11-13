@@ -3220,6 +3220,22 @@ fn open_unassigned_fm(
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
+    editor.update(&mut *visual, |view, _| {
+        let tuning = view.state.as_ref().unwrap().project.tuning();
+        view.tuning
+            .client
+            .begin(view.project_generation, tuning)
+            .unwrap();
+    });
+    visual
+        .update(|window, cx| editor.update(cx, |view, cx| edit.clone().perform(view, window, cx)));
+    editor.update(&mut *visual, |view, _| {
+        assert!(view.device_panel.source_manager.source_view.is_none());
+        assert!(view.tuning.client.snapshot().is_some());
+        assert!(view.error.is_some());
+        view.tuning.client.reset();
+        view.error = None;
+    });
     visual
         .update(|window, cx| editor.update(cx, |view, cx| edit.clone().perform(view, window, cx)));
     visual.run_until_parked();
