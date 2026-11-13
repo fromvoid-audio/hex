@@ -1,6 +1,10 @@
 use super::*;
 
 fn action_revision(looped: bool) -> Arc<PreparedRevision> {
+    action_revision_with_loop(looped.then_some((0, 64)))
+}
+
+fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>) -> Arc<PreparedRevision> {
     let mut snapshot = audio_project(5, 18, 4).snapshot();
     let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
         panic!("audio fixture")
@@ -28,8 +32,8 @@ fn action_revision(looped: bool) -> Arc<PreparedRevision> {
         source_phase: 0,
     }]);
     snapshot.next_id += 1;
-    if looped {
-        snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
+    if let Some((start, length)) = loop_bounds {
+        snapshot.loop_region = Some(LoopRegion::new(start, start + length, true).unwrap());
     }
     let project =
         with_utility_filter_state(&Project::from_snapshot(snapshot).unwrap(), true, false);
@@ -63,6 +67,172 @@ fn action_revision(looped: bool) -> Arc<PreparedRevision> {
         )
         .unwrap(),
     )
+}
+
+#[test]
+fn projected_windows_match_rendered_reads_across_loop_and_due_release() {
+    struct ReadPages {
+        frames: Vec<Frame>,
+        reads: Vec<(StreamSourceKey, u64)>,
+    }
+    impl MediaPages for ReadPages {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            self.reads.push((key, index));
+            (index < 2).then_some(BorrowedMediaPage {
+                page_index: index,
+                frames: &self.frames,
+            })
+        }
+        fn request_page(&mut self, _key: StreamSourceKey, _index: u64) {}
+    }
+
+    for loop_length in [Some(1), Some(64), None] {
+        let mut actual = Playback::from_prepared(action_revision_with_loop(
+            loop_length.map(|length| (95_992, length)),
+        ));
+        actual
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(95_992)))
+            .unwrap();
+        let clip = actual.prepared_revision().unwrap().session().audio_clips()[0].id;
+        actual
+            .try_apply_action(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        actual
+            .render_with_pages(&mut [[0.0; 2]; 1], &mut pages())
+            .unwrap();
+        let action = PlaybackAction::Session(SessionPlaybackCommand::BackToArrangement {
+            quantization: LaunchQuantization::FourQuarter,
+        });
+        let prepared = actual.prepare_stream_action(action).unwrap();
+        let due = prepared.scheduled_due_frame().unwrap();
+        actual.commit_stream_action(prepared).unwrap();
+
+        // Test-only model: carry the copied route and its release through
+        // each future window; this is not an admitted realtime transaction.
+        let total = usize::try_from(due - actual.performance_frame()).unwrap() + 300;
+        let projected = {
+            let session = actual.session_runtime_mut_for_stream_action().unwrap();
+            let mut routes = session.routes.clone();
+            let mut performance = session.performance_frame;
+            let mut remaining = total;
+            let mut windows = Vec::new();
+            while remaining > 0 {
+                for route in &mut routes {
+                    if let Some(pending) = route.pending.filter(|p| p.frame <= performance) {
+                        let previous = route.owner;
+                        route.owner = session
+                            .owner_for_target(pending.target, pending.beat, pending.frame)
+                            .unwrap();
+                        route.pending = None;
+                        super::super::audio_release::begin(
+                            route,
+                            previous,
+                            performance,
+                            session.audio_release_fade(),
+                        )
+                        .unwrap();
+                    }
+                }
+                let (arrangement, pass) = session.project_stream_arrangement(performance).unwrap();
+                let mut extents = Vec::new();
+                let window = session
+                    .visit_stream_chunk_sources_at(
+                        &routes,
+                        performance,
+                        arrangement,
+                        session.route_state_generation,
+                        pass,
+                        true,
+                        remaining,
+                        &mut |extent| {
+                            extents.push(extent);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                assert!(window.frames > 0);
+                remaining -= window.frames;
+                performance += window.frames as u64;
+                windows.push((window, extents));
+            }
+            windows
+        };
+        assert!(
+            projected
+                .iter()
+                .any(|(window, _)| window.performance_frame == due)
+        );
+        if loop_length == Some(1) {
+            assert!(projected.len() >= 300);
+        }
+        if loop_length.is_none() {
+            assert!(projected.iter().any(|(window, _)| window.frames == 256));
+        }
+        let initial_generation = projected[0].0.route_generation;
+        let mut pages = ReadPages {
+            frames: vec![[0.25; 2]; 4096],
+            reads: Vec::new(),
+        };
+        let mut output = [[0.0; 2]; 256];
+        let mut reads = 0;
+        let mut outgoing_reads = 0;
+        let mut generation_changed = false;
+        for (predicted, extents) in projected {
+            let mut current = Vec::new();
+            let window = actual
+                .visit_next_stream_chunk(predicted.frames, None, &mut |extent| {
+                    current.push(extent);
+                    Ok(())
+                })
+                .unwrap();
+            generation_changed |= window.route_generation != initial_generation;
+            assert_eq!(
+                (
+                    window.performance_frame,
+                    window.arrangement_frame,
+                    window.frames
+                ),
+                (
+                    predicted.performance_frame,
+                    predicted.arrangement_frame,
+                    predicted.frames
+                )
+            );
+            assert_eq!(current, extents);
+            pages.reads.clear();
+            actual
+                .render_with_pages(&mut output[..window.frames], &mut pages)
+                .unwrap();
+            reads += pages.reads.len();
+            for (source, page) in &pages.reads {
+                if window.performance_frame >= due && *page == 1 {
+                    outgoing_reads += 1;
+                }
+                assert!(
+                    extents
+                        .iter()
+                        .any(|e| { e.source == (*source).into() && e.page_index == *page })
+                );
+            }
+        }
+        assert!(
+            reads > 0,
+            "the oracle must observe actual streamed page reads"
+        );
+        assert!(
+            outgoing_reads > 0,
+            "the outgoing release must read its streamed page"
+        );
+        assert!(
+            generation_changed,
+            "route generation advances after activation"
+        );
+    }
 }
 struct Pages(Vec<Frame>);
 impl MediaPages for Pages {
