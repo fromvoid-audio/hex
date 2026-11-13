@@ -8,6 +8,12 @@ use super::*;
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod midi_tests;
 
+pub(super) enum QuantizedSeekRender {
+    NotHandled,
+    Unchanged,
+    Switched,
+}
+
 impl Callback {
     pub(super) fn quantized_seek_publication_due(&mut self) -> bool {
         let Some(next) = self.deferred.as_mut() else {
@@ -72,7 +78,10 @@ impl Callback {
         false
     }
 
-    pub(super) fn render_quantized_seek(&mut self, output: &mut [Frame]) -> Result<bool, Invalid> {
+    pub(super) fn render_quantized_seek(
+        &mut self,
+        output: &mut [Frame],
+    ) -> Result<QuantizedSeekRender, Invalid> {
         let Some(due) = self
             .deferred
             .as_ref()
@@ -84,31 +93,50 @@ impl Callback {
             })
             .and_then(|next| next.quantized_seek_frame)
         else {
-            return Ok(false);
+            return Ok(QuantizedSeekRender::NotHandled);
         };
         let Some(old) = self.active.as_ref().and_then(ActivePublication::legacy) else {
-            return Ok(false);
+            return Ok(QuantizedSeekRender::NotHandled);
         };
         if !old.playback.playing() {
-            return Ok(false);
+            return Ok(QuantizedSeekRender::NotHandled);
         }
         let Some(distance) = due.checked_sub(old.playback.performance_frame()) else {
-            return Ok(false);
+            return Ok(QuantizedSeekRender::NotHandled);
         };
         let Ok(prefix) = usize::try_from(distance) else {
-            return Ok(false);
+            return Ok(QuantizedSeekRender::NotHandled);
         };
         if prefix > output.len() {
-            return Ok(false);
+            return Ok(QuantizedSeekRender::NotHandled);
         }
+        let old_revision = old.revision;
         let (before, after) = output.split_at_mut(prefix);
         self.render_project(before, 0)?;
         // Revalidate immediately before the swap, including a cancellation or
         // priority Stop racing the old prefix. Retired owners keep ordinary
         // fixed return-ring custody, including under backpressure.
         self.advance_legacy_publication(Some(after.len()));
+        let switched = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::legacy)
+            .is_some_and(|active| active.revision != old_revision);
+        let suffix_start = self.scheduled_transport();
         self.render_project(after, prefix)?;
-        Ok(true)
+        if switched {
+            let played = match (suffix_start, self.scheduled_transport()) {
+                (Some((_, start, true)), Some((_, end, _))) => {
+                    usize::try_from(end.saturating_sub(start))
+                        .map_or(after.len(), |frames| frames.min(after.len()))
+                }
+                _ => 0,
+            };
+            self.record_audible_run(suffix_start, played);
+            Ok(QuantizedSeekRender::Switched)
+        } else {
+            Ok(QuantizedSeekRender::Unchanged)
+        }
     }
 }
 
@@ -120,6 +148,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn source() -> Arc<PreparedRevision> {
+        source_with_latency(false)
+    }
+
+    fn source_with_latency(latency: bool) -> Arc<PreparedRevision> {
         let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
         let Created::Imported { asset, .. } = editor
             .execute(Command::ImportAudioTrack {
@@ -132,6 +164,23 @@ mod tests {
         else {
             panic!("import");
         };
+        if latency {
+            use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+            let definition = &hex_devices::limiter::DEFINITION;
+            let limiter = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::limiter::parameter::LOOKAHEAD,
+                    ParameterValue::Choice(2),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: limiter,
+                })
+                .unwrap();
+        }
         let audio = Audio::new(
             8_000,
             (0..32_000)
@@ -151,11 +200,15 @@ mod tests {
     }
 
     fn candidate(source: &Arc<PreparedRevision>) -> Playback {
+        candidate_in_region(source, LoopRegion::new(16_000, 24_000, true).unwrap())
+    }
+
+    fn candidate_in_region(source: &Arc<PreparedRevision>, region: LoopRegion) -> Playback {
         Playback::from_interactive_arrangement_preroll(
             SessionPlayback::prepare_section_arrangement_preroll(
                 Arc::clone(source),
                 None,
-                LoopRegion::new(16_000, 24_000, true).unwrap(),
+                region,
                 16_000,
                 &AtomicBool::new(false),
             )
@@ -341,6 +394,135 @@ mod tests {
                         .unwrap();
                     assert_eq!(active.playback.section_loop(), None);
                     assert_eq!(control.reclaim(), 1);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn section_cut_tracks_audible_position_with_latency() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source_with_latency(true);
+                let latency = source.arrangement().main_latency_frames() as usize;
+                assert!(latency > 14);
+                for block in [1, 17, 257] {
+                    let (mut control, mut callback) = active(&source, 3_997, true);
+                    let fence = control.capture_fresh_runtime_fence().unwrap();
+                    control
+                        .publish_with_policy(
+                            candidate_in_region(
+                                &source,
+                                LoopRegion::new(16_000, 16_064, true).unwrap(),
+                            ),
+                            PublicationPolicy::InstallQuantizedSeekWhenReady {
+                                fence,
+                                quantization: LaunchQuantization::Quarter,
+                            },
+                        )
+                        .unwrap();
+                    let mut before = [[0.0; 2]; 2];
+                    for chunk in before.chunks_mut(block) {
+                        render_checked(&mut callback, chunk);
+                    }
+                    assert_eq!(control.status.position.load(Relaxed), 3_999);
+                    assert_eq!(control.status.audible_position.load(Relaxed), 3_997);
+                    let mut first = [[0.0; 2]; 15];
+                    for chunk in first.chunks_mut(block) {
+                        render_checked(&mut callback, chunk);
+                    }
+                    assert_eq!(&first[1..], &[[0.0; 2]; 14], "block {block}");
+                    assert_eq!(control.status.position.load(Relaxed), 16_014);
+                    assert_eq!(
+                        control.status.audible_position.load(Relaxed),
+                        16_000,
+                        "block {block}"
+                    );
+                    let mut rest = vec![[0.0; 2]; latency + 80 - 14];
+                    for chunk in rest.chunks_mut(block) {
+                        render_checked(&mut callback, chunk);
+                    }
+                    assert_eq!(
+                        control.status.position.load(Relaxed),
+                        16_000 + ((latency + 80) % 64) as u64,
+                        "block {block}"
+                    );
+                    assert_eq!(
+                        control.status.audible_position.load(Relaxed),
+                        16_016,
+                        "block {block}"
+                    );
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn cancelled_section_cut_keeps_old_audible_history() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source_with_latency(true);
+                assert!(source.arrangement().main_latency_frames() > 17);
+                let (mut control, mut callback) = active(&source, 3_997, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        candidate(&source),
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(
+                    control.cancel_fresh_runtime_publication(revision),
+                    FreshRuntimeCancellationResult::Cancelled
+                );
+                render_checked(&mut callback, &mut [[0.0; 2]; 17]);
+                assert_eq!(control.status.position.load(Relaxed), 4_014);
+                assert_eq!(control.status.audible_position.load(Relaxed), 3_997);
+                assert_eq!(
+                    control.status.rejected_revision(),
+                    Some((revision, PlaybackHandoffRejection::FreshRuntimeCancelled))
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn section_cut_clears_history_when_performance_clock_matches() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source_with_latency(true);
+                assert!(source.arrangement().main_latency_frames() > 17);
+                for (prerender, expected) in [(97, 4_014), (100, 4_017)] {
+                    let (mut control, mut callback) = active(&source, 3_900, true);
+                    render_checked(&mut callback, &mut vec![[0.0; 2]; prerender]);
+                    let fence = control.capture_fresh_runtime_fence().unwrap();
+                    control
+                        .publish_with_policy(
+                            candidate_in_region(
+                                &source,
+                                LoopRegion::new(4_000, 4_064, true).unwrap(),
+                            ),
+                            PublicationPolicy::InstallQuantizedSeekWhenReady {
+                                fence,
+                                quantization: LaunchQuantization::Quarter,
+                            },
+                        )
+                        .unwrap();
+                    render_checked(&mut callback, &mut [[0.0; 2]; 17]);
+                    assert_eq!(control.status.position.load(Relaxed), expected);
+                    assert_eq!(control.status.audible_position.load(Relaxed), 4_000);
                 }
             })
             .unwrap()
