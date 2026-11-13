@@ -516,3 +516,27 @@ fn project_taps_observe_each_render_part_at_its_callback_offset() {
         .unwrap();
     assert_eq!(seen, [(0, F), (F, 512 - F)]);
 }
+
+#[test]
+fn project_tap_offsets_compose_and_restore_across_nested_declick_parts() {
+    let mut playback = session_playback();
+    declicked(&mut playback, PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 512]).unwrap();
+    declicked(&mut playback, PlaybackCommand::Pause);
+    let mut seen = Vec::new();
+    let mut observe = |signal: ProjectSignal, offset: usize, frames: &[Frame]| {
+        if signal == ProjectSignal::Master {
+            seen.push((offset, frames.len()));
+        }
+    };
+    let mut tap = ProjectOutputTap::new(&[], &mut observe).unwrap();
+    crate::playback::with_part_offset(Some(&mut tap), 31, |tap| {
+        playback
+            .render_with_signal_observers(&mut [[0.0; 2]; 512], None, tap)
+            .unwrap();
+    });
+    playback
+        .render_with_signal_observers(&mut [[0.0; 2]; 2], None, Some(&mut tap))
+        .unwrap();
+    assert_eq!(seen, [(31, F), (31 + F, 512 - F), (0, 2)]);
+}
