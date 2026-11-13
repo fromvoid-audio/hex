@@ -889,7 +889,8 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
         }
         fn reject_callback(&mut self) {}
     }
-    for (old_location, new_location) in [(8, 9)] {
+    {
+        let (old_location, new_location) = (8, 9);
         let mut old =
             SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
         let mut reference =

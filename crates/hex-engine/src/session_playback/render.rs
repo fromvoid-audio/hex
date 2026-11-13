@@ -2136,6 +2136,7 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)] // Both bounded routing buffers share the render context.
     fn render_detached_tails(
         &mut self,
         performance_frame: u64,
