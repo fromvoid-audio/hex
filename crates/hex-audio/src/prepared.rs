@@ -349,6 +349,11 @@ pub(crate) struct Publication {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_references: Option<crate::candidate_custody::OrdinaryNativeReferences>,
 }
+
+struct RenderOutcome {
+    audible_recorded: bool,
+    start: Option<(u64, u64, bool)>,
+}
 // Exactly one active musical runtime, including the constructor-owned path.
 enum ActivePublication {
     Eligible(crate::candidate_custody::ActiveEligibleCandidate),
@@ -4748,8 +4753,10 @@ impl Callback {
             }
             self.settle_transport_fade();
         }
-        if let Ok((false, start)) = &result {
-            self.record_audible_run(*start, output.len());
+        if let Ok(outcome) = &result
+            && !outcome.audible_recorded
+        {
+            self.record_audible_run(outcome.start, output.len());
         }
         self.publish_audible_position();
         self.flush_stream_outcomes();
@@ -4808,13 +4815,16 @@ impl Callback {
         &mut self,
         output: &mut [Frame],
         initial: Option<(u64, u64, bool)>,
-    ) -> Result<(bool, Option<(u64, u64, bool)>), Invalid> {
+    ) -> Result<RenderOutcome, Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
             }
             output.fill([0.0; 2]);
-            return Ok((false, initial));
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         let yield_successor = self.yield_stream_successor_once;
         let quantized_revision = self.deferred.as_ref().and_then(|next| {
@@ -4861,7 +4871,10 @@ impl Callback {
                 self.prepare_native_parameter_quantum();
             }
             output.fill([0.0; 2]);
-            return Ok((false, initial));
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         if self.output_transport.is_some() {
             self.sample_recording
@@ -4893,10 +4906,10 @@ impl Callback {
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
-        Ok((
-            matches!(quantized, section_launch::QuantizedSeekRender::Switched),
-            render_start,
-        ))
+        Ok(RenderOutcome {
+            audible_recorded: matches!(quantized, section_launch::QuantizedSeekRender::Switched),
+            start: render_start,
+        })
     }
 
     fn render_project(
