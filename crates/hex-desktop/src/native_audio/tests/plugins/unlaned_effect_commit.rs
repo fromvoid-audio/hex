@@ -205,8 +205,7 @@ fn unlaned_effect_commit_keeps_the_running_source() {
     let source = installed_edits::query(&mut h, device, None, &mut serial)
         .source
         .unwrap();
-    assert_eq!(source, original_source);
-    assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+    let commit_binding = h.plugin_progress.lock().unwrap().binding;
     assert!((slope(&h) - base * (2.0 / 3.0)).abs() < 1.0e-6);
     h.service.submit(Request::Undo).unwrap();
     let until = Instant::now() + Duration::from_secs(5);
@@ -233,4 +232,8 @@ fn unlaned_effect_commit_keeps_the_running_source() {
         row.normalized, 0.75,
         "undo must restore the editor value captured before the host gesture"
     );
+    // Check the proposed continuation only after PCM and Undo, so a source
+    // mismatch does not hide failures in the user-visible contracts above.
+    assert_eq!(source, original_source);
+    assert_eq!(commit_binding, Some(binding));
 }
