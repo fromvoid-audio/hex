@@ -138,3 +138,47 @@ fn same_mode_revision_and_reset_predecessor_are_never_busy() {
         .expect("reset predecessor hands off");
     assert_eq!(probe.dropped_transitions(), 0);
 }
+
+#[test]
+fn idle_busy_transition_with_return_tail_refuses_without_settling_donor() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let (project, device) = project_with_device_slot();
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    editor
+        .execute(hex_project::Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap();
+    let project = editor.project();
+    let probe = Arc::new(Probe::default());
+    let mut previous = playback(project, &table);
+    // A paused transport away from the origin freezes the retained tail.
+    previous.performance_frame = 1;
+    previous.arrangement_frame = 1;
+    let mut mode = 0;
+    let mut chain = fixture_chain(device, mode, &probe);
+    for _ in 0..CAPACITY {
+        mode = 1 - mode;
+        let mut next = fixture_chain(device, mode, &probe);
+        next.inherit_from(&chain);
+        chain = next;
+    }
+    previous.device_chains[0] = chain;
+    let bus = &previous.revision.arrangement().return_buses()[0];
+    let tail = super::super::return_effect_tails::ReturnEffectTail::new(
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![]).unwrap(),
+        bus,
+    );
+    previous.return_effect_tails.slots_mut()[0] = Some(tail);
+    let mut candidate = playback(project, &table);
+    candidate.device_chains[0] = fixture_chain(device, 1 - mode, &probe);
+    assert!(previous.renders_no_device_chains());
+    assert!(candidate.device_transition_busy(&previous));
+    assert_eq!(
+        candidate.try_inherit_state_live_from(&mut previous),
+        Err(SessionPlaybackError::DeviceTransitionBusy)
+    );
+    assert!(candidate.device_transition_busy(&previous));
+    assert!(previous.return_effect_tails.slots()[0].is_some());
+    assert_eq!(probe.dropped_transitions(), 0);
+}

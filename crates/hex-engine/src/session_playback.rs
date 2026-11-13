@@ -2549,8 +2549,9 @@ impl SessionPlayback {
 
     /// The live publication handoff: as `try_inherit_state_from`, except an
     /// unproven mutable chase restarts audio at the cursor instead of
-    /// refusing (Pulse #3770). Allocation-free; nothing is committed before
-    /// the strict planner's refusal.
+    /// refusing (Pulse #3770). An ordinary reset refuses while an active
+    /// detached Return tail cannot be preserved. Allocation-free; nothing is
+    /// committed before the strict planner's refusal.
     pub fn try_inherit_state_live_from(
         &mut self,
         previous: &mut Self,
