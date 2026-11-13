@@ -338,6 +338,14 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         false
     }
 
+    /// Prove that an internal source parameter change can copy the donor's
+    /// history and transition continuously. The host independently requires
+    /// the same input matrix, identity and an unautomated source. Both twins
+    /// must accept the committed donor. This query is bounded and read-only.
+    fn can_retarget_source_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+
     /// This native provider can replace an equivalent static matrix at a
     /// source modulation handoff without losing any filter or signal history.
     /// The host still requires the exact same authored configuration and rate.
@@ -1990,6 +1998,19 @@ impl NativeRuntimeChain {
                                 && left.modulation.is_none()
                                 && right.modulation.is_none()
                                 && left.runtime.can_retarget_source_host_matrix_from(&right.runtime)
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && !left.bypassed
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.output_tail == right.output_tail
+                                && left.matrix == right.matrix
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && left.runtime.can_retarget_source_parameters_from(&right.runtime)
                                 && self.can_retarget_parameters_from_range(previous, index..index + 1)
                             || allow_control_edit
                                 && left.output_tail == right.output_tail
@@ -5895,6 +5916,12 @@ mod tests {
         ) -> bool {
             self.0 && previous.as_any().is::<Self>()
         }
+        fn can_retarget_source_parameters_from(
+            &self,
+            previous: &dyn NativeProcessorRuntime,
+        ) -> bool {
+            self.0 && previous.as_any().is::<Self>()
+        }
         fn as_any(&self) -> &dyn StdAny {
             self
         }
@@ -5911,5 +5938,83 @@ mod tests {
         assert!(!legacy(false, true).can_retarget_source_host_matrix_from(&old));
         assert!(!legacy(true, false).can_retarget_source_host_matrix_from(&old));
         assert!(!RuntimeOwnership::Memoryless.can_retarget_source_host_matrix_from(&old));
+        assert!(legacy(true, true).can_retarget_source_parameters_from(&old));
+        assert!(!legacy(false, true).can_retarget_source_parameters_from(&old));
+        assert!(!legacy(true, false).can_retarget_source_parameters_from(&old));
+        assert!(!RuntimeOwnership::Memoryless.can_retarget_source_parameters_from(&old));
+    }
+
+    struct SourceParameterPrepared;
+    impl PreparedNativeProcessor for SourceParameterPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<SourceParameterRuntime>()
+        }
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(SourceParameterRuntime)
+        }
+    }
+    struct SourceParameterRuntime;
+    impl NativeProcessorRuntime for SourceParameterRuntime {
+        fn process_block(&mut self, _: &mut [StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_parameters_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_source_parameters_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _: &dyn NativeProcessorRuntime) {}
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn source_parameter_proof_requires_same_identity_matrix_and_no_automation() {
+        let device_type = DeviceTypeId::from_static("test.source-parameter");
+        let make = |source, id, rate, gain: f32, config: Option<u8>, bypassed| {
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Source(source),
+                device_id: id,
+                device_type,
+                matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+                bypassed,
+                sample_rate: rate,
+                configuration: config.map(|value| {
+                    std::sync::Arc::new(
+                        NativeDeviceState::new(device_type, 1, vec![value]).unwrap(),
+                    )
+                }),
+                definition: Some(std::sync::Arc::new(SourceParameterPrepared)),
+            }])
+            .unwrap()
+        };
+        let old = make(1, 4, 48_000, 1.0, Some(1), false);
+        let candidate = make(1, 4, 48_000, 1.0, Some(2), false);
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            make(2, 4, 48_000, 1.0, Some(2), false),
+            make(1, 5, 48_000, 1.0, Some(2), false),
+            make(1, 4, 44_100, 1.0, Some(2), false),
+            make(1, 4, 48_000, 2.0, Some(2), false),
+            make(1, 4, 48_000, 1.0, None, false),
+            make(1, 4, 48_000, 1.0, Some(2), true),
+        ] {
+            assert!(!bad.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let mut automated = make(1, 4, 48_000, 1.0, Some(2), false);
+        automated.entries[0]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
     }
 }

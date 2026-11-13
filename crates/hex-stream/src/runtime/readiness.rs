@@ -379,12 +379,13 @@ impl PreparedReadiness {
             if !pages.endpoint.has_extent(*extent) {
                 complete = false;
                 if requests < request_limit {
-                    match extent.source {
-                        StreamResourceKey::Audio(key) => pages.request_page(key, extent.page_index),
-                        StreamResourceKey::Scalar(key) => {
-                            pages.request_scalar_page(key, extent.page_index)
-                        }
-                    };
+                    pages.endpoint.queue_readiness_demand(
+                        crate::ResourcePageKey {
+                            source: extent.source,
+                            page_index: extent.page_index,
+                        },
+                        role.pending_mask(),
+                    );
                     requests += 1;
                 }
             }
@@ -453,6 +454,7 @@ impl PreparedReadiness {
         slot.protected.clear();
         pages.endpoint.replace_protection(role.mask(), &[]);
         pages.endpoint.replace_protection(role.pending_mask(), &[]);
+        pages.endpoint.cancel_readiness_demand(role.pending_mask());
         true
     }
 }

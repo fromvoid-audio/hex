@@ -270,6 +270,15 @@ impl RuntimeOwnership {
             _ => false,
         }
     }
+    pub(super) fn can_retarget_source_parameters_from(&self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
+                primary.can_retarget_source_parameters_from(old.as_ref())
+                    && scratch.can_retarget_source_parameters_from(old.as_ref())
+            }
+            _ => false,
+        }
+    }
     /// Whether this candidate must defer the handoff until `old`'s committed
     /// live transitions drain (Pulse #4178). Legacy candidates answer for
     /// both twins against the old committed (`primary`) runtime.
