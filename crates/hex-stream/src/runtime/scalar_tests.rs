@@ -397,6 +397,27 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
             .scalar_page(metadata.key(), 0)
             .is_some()
     );
+    let current = [audio_extents[0], extents[0]];
+    #[cfg(feature = "allocation-probe")]
+    let mut reserved = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        reserved = Some(loan.reserve_current_quantum(&current));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    #[cfg(feature = "allocation-probe")]
+    let reservation = reserved.unwrap().ok().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let reservation = loan.reserve_current_quantum(&current).ok().unwrap();
     assert_eq!(
         loan.submit_resources(
             ProtectionRole::Transition,
@@ -414,6 +435,7 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
         Err(ReadinessRefusal::Capacity)
     );
     assert!(loan.is_resource_protected(ProtectionRole::Active, active_stamp, &audio_extents));
+    assert!(loan.release_current_quantum(&reservation));
     assert!(loan.promote_resources_to_active(ProtectionRole::Candidate, stamp, &extents));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
