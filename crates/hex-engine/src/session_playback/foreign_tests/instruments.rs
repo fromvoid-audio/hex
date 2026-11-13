@@ -1568,3 +1568,104 @@ fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
         }
     }
 }
+
+#[test]
+fn timed_transport_preserves_foreign_note_offsets_and_rejects_the_staged_callback() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use crate::{TimedTransportCommand as Timed, TimedTransportError};
+    let (editor, identity) = fixture();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let commands = [
+        Timed {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        Timed {
+            offset: 5,
+            command: PlaybackCommand::Pause,
+        },
+        Timed {
+            offset: 5,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        Timed {
+            offset: 10,
+            command: PlaybackCommand::Pause,
+        },
+    ];
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    let mut endpoint = NoteEndpoint {
+        instrument_sample: 0.25,
+        ..Default::default()
+    };
+    let mut output = [[0.0; 2]; 16];
+    playback
+        .render_with_timed_transport_and_foreign_processors(&mut output, &commands, &mut endpoint)
+        .unwrap();
+    assert!(!endpoint.rejected);
+    let events = &endpoint.notes;
+    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!((events[0].0, events[0].1.on), (0, true));
+    assert_eq!((events[1].0, events[1].1.on), (5, false));
+    assert_eq!((events[2].0, events[2].1.on), (5, true));
+    assert_eq!((events[3].0, events[3].1.on), (10, false));
+    assert_eq!(events[0].1.note_id, events[1].1.note_id);
+    assert_eq!(events[2].1.note_id, events[3].1.note_id);
+    assert_ne!(events[0].1.note_id, events[2].1.note_id);
+
+    let mut invalid = Playback::from_prepared(Arc::clone(&revision));
+    let mut endpoint = NoteEndpoint::default();
+    let mut untouched = [[9.0; 2]; 16];
+    assert_eq!(
+        invalid.render_with_timed_transport_and_foreign_processors(
+            &mut untouched,
+            &[Timed {
+                offset: 17,
+                command: PlaybackCommand::Play
+            }],
+            &mut endpoint
+        ),
+        Err(TimedTransportError::InvalidOffset { index: 0 })
+    );
+    assert_eq!(untouched, [[9.0; 2]; 16]);
+    assert!(!endpoint.rejected && endpoint.notes.is_empty());
+    assert!(!invalid.playing());
+
+    let mut failing = Playback::from_prepared(Arc::clone(&revision));
+    let mut endpoint = NoteEndpoint {
+        fail_at: Some(6),
+        ..Default::default()
+    };
+    let mut output = [[9.0; 2]; 16];
+    assert!(matches!(
+        failing.render_with_timed_transport_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut endpoint
+        ),
+        Err(TimedTransportError::Render { offset: 5, .. })
+    ));
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 16]);
+
+    let mut failing = Playback::from_prepared(revision);
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[9.0; 2]; 16];
+    let commands = [
+        commands[0],
+        Timed {
+            offset: 5,
+            command: PlaybackCommand::PlayFrom(u64::MAX),
+        },
+    ];
+    assert!(matches!(
+        failing.render_with_timed_transport_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut endpoint
+        ),
+        Err(TimedTransportError::Action { index: 1, .. })
+    ));
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 16]);
+}
