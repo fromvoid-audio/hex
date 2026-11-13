@@ -1099,6 +1099,31 @@ mod tests {
     }
 
     #[test]
+    fn same_asset_pitch_identities_do_not_alias_in_page_cache() {
+        let mut test = endpoint(4, 4, 4);
+        let raw = source();
+        let up = StreamSourceKey::plain_pitch(73, raw.asset(), 700, hex_project::WarpResampler::V2)
+            .unwrap();
+        let down =
+            StreamSourceKey::plain_pitch(73, raw.asset(), -700, hex_project::WarpResampler::V2)
+                .unwrap();
+        for (key, value) in [(raw, 1.0), (up, 2.0), (down, 3.0)] {
+            let mut buffer = page(PageKey {
+                source: key,
+                page_index: 0,
+            });
+            buffer.frames[0] = [value, -value];
+            assert!(test.endpoint.insert_ready(buffer));
+        }
+        for (key, value) in [(raw, 1.0), (up, 2.0), (down, 3.0)] {
+            assert_eq!(
+                test.endpoint.page(key, 0).unwrap().frames,
+                &[[value, -value]]
+            );
+        }
+    }
+
+    #[test]
     fn cache_open_addressing_preserves_colliding_pages() {
         let mut test = endpoint(4, 4, 4);
         let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
