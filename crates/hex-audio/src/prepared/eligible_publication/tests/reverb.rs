@@ -240,8 +240,11 @@ fn native_reverb_case(grouped: bool) {
     control.command(PlaybackCommand::Stop).unwrap();
     zero_counts(allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|callback, _| {
-            callback.begin_block();
-            callback.render(&mut block).unwrap();
+            // The queued Stop fades over 128 frames before it resets (#4151).
+            for _ in 0..2 {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            }
         })
     }));
     assert_eq!(block, [[0.0; 2]; 127]);

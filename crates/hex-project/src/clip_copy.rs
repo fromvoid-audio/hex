@@ -181,6 +181,7 @@ mod tests {
         let before = editor.project().tracks().len();
         let result = editor
             .execute(Command::CopyClipToNewTrack {
+                initial_gain: None,
                 clip,
                 name: "track 3".into(),
                 before_track: None,
@@ -201,6 +202,59 @@ mod tests {
         );
         assert!(editor.undo());
         assert_eq!(editor.project().tracks().len(), before);
+    }
+
+    #[test]
+    fn audio_clip_new_track_gain_is_atomic_for_move_and_copy() {
+        for copy in [false, true] {
+            let (mut editor, source, anchor, clip) = audio_fixture();
+            let before = editor.project().clone();
+            let command = |gain| {
+                if copy {
+                    Command::CopyClipToNewTrack {
+                        clip,
+                        name: "new".into(),
+                        before_track: Some(anchor),
+                        start: 144_000,
+                        initial_gain: Some(gain),
+                    }
+                } else {
+                    Command::MoveClipToNewTrack {
+                        clip,
+                        name: "new".into(),
+                        before_track: Some(anchor),
+                        start: 144_000,
+                        initial_gain: Some(gain),
+                    }
+                }
+            };
+            for invalid in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+                assert!(editor.execute(command(invalid)).is_err());
+                assert_eq!(editor.project(), &before);
+            }
+            let refusal =
+                editor.execute_prepared(command(0.25), |_| Err::<(), _>(Invalid("refused")));
+            assert!(refusal.is_err());
+            assert_eq!(editor.project(), &before);
+            let Created::Track(created) = editor.execute(command(0.25)).unwrap() else {
+                panic!("track")
+            };
+            let target = editor.project().track(created).unwrap();
+            assert_eq!(target.gain(), 0.25);
+            assert_eq!(target.clips().len(), 1);
+            assert_eq!(target.clips()[0].id() == clip, !copy);
+            assert_eq!(
+                editor.project().track(source).unwrap().clips().len(),
+                usize::from(copy)
+            );
+            let after = editor.project().clone();
+            assert!(editor.undo());
+            let mut restored = editor.project().snapshot();
+            restored.next_id = before.snapshot().next_id;
+            assert_eq!(restored, before.snapshot());
+            assert!(editor.redo());
+            assert_eq!(editor.project(), &after);
+        }
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //! empty graphs; private loaded-sampler sources also stay in their worker-owned path rather than
 //! escaping through an Event owner.
 use super::*;
+mod source_content;
+pub use source_content::RawArrangementContentWitness;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
     context: hex_engine::AudioSourceContext,
@@ -180,7 +182,7 @@ mod tests {
     fn next(service: &Service) -> Event {
         service
             .events
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap()
     }
     fn bank() -> hex_engine::OwnedAudioInputs {

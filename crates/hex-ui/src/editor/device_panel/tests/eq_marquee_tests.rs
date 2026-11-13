@@ -1,4 +1,4 @@
-//! Marquee selection and group move/delete through the real eq graph and worker.
+//! Blank-space gestures and group move/delete through the real EQ graph and worker.
 use super::*;
 
 const SHIFT: Modifiers = Modifiers {
@@ -8,9 +8,13 @@ const SHIFT: Modifiers = Modifiers {
     platform: false,
     function: false,
 };
+const SHIFT_CMD: Modifiers = Modifiers {
+    platform: true,
+    ..SHIFT
+};
 const NODE_X: [f32; 3] = [0.3, 0.45, 0.8];
 
-/// Three bell nodes created by blank clicks at known graph positions.
+/// Three bell nodes created by double-clicks at known graph positions.
 fn three_nodes(
     cx: &mut TestAppContext,
 ) -> (
@@ -28,7 +32,7 @@ fn three_nodes(
     visual.run_until_parked();
     for (count, x) in NODE_X.into_iter().enumerate() {
         let at = plot(&mut visual, device, x, 0.5);
-        visual.simulate_click(at, Modifiers::default());
+        eq_double_click(&mut visual, at);
         pump_until(&editor, cx, |view| {
             settled(view) && read(view, device).nodes.len() == count + 1
         });
@@ -65,42 +69,37 @@ fn group(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, device: Dev
 }
 
 #[gpui::test]
-fn eq_marquee_selects_nodes_shift_adds_and_group_delete_undoes_in_one_step(
+fn eq_blank_drag_selects_nodes_shift_cmd_toggles_and_group_delete_undoes_in_one_step(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, _root, device, before) = three_nodes(cx);
     let ids: Vec<u32> = before.nodes.iter().map(|node| node.id.value()).collect();
     let mut visual = VisualTestContext::from_window(handle, cx);
-    marquee(
-        &mut visual,
-        device,
-        [0.5, 0.7],
-        [0.25, 0.3],
-        Modifiers::default(),
-    );
+    let plain = Modifiers::default();
+    marquee(&mut visual, device, [0.5, 0.7], [0.25, 0.3], plain);
     assert_eq!(group(&editor, cx, device), ids[..2]);
     editor.read_with(cx, |view, _| {
         assert_eq!(read(view, device), before, "selection authors nothing");
         assert!(settled(view));
     });
-    marquee(&mut visual, device, [0.75, 0.7], [0.85, 0.3], SHIFT);
+    marquee(&mut visual, device, [0.75, 0.7], [0.85, 0.3], SHIFT_CMD);
     assert_eq!(group(&editor, cx, device), ids);
-    // A plain marquee over the third node replaces the group with one node.
-    marquee(
-        &mut visual,
-        device,
-        [0.75, 0.7],
-        [0.85, 0.3],
-        Modifiers::default(),
-    );
-    assert!(group(&editor, cx, device).is_empty());
-    marquee(
-        &mut visual,
-        device,
-        [0.25, 0.7],
-        [0.5, 0.3],
-        Modifiers::default(),
-    );
+    let blank = plot(&mut visual, device, 0.6, 0.7);
+    visual.simulate_click(blank, plain);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(eq_panel::selection_for_test(view, device), (None, vec![]));
+        assert_eq!(read(view, device), before, "a blank click authors nothing");
+        assert!(settled(view));
+    });
+    marquee(&mut visual, device, [0.75, 0.7], [0.85, 0.3], plain);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            eq_panel::selection_for_test(view, device),
+            (Some(before.nodes[2].id), vec![])
+        );
+    });
+    marquee(&mut visual, device, [0.25, 0.7], [0.5, 0.3], plain);
     visual.simulate_keystrokes("backspace");
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
@@ -153,6 +152,42 @@ fn eq_group_drag_moves_every_selected_node_and_undoes_in_one_step(cx: &mut TestA
         2,
         "a drag keeps the group"
     );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+}
+
+#[gpui::test]
+fn eq_double_click_drag_creates_one_node_at_release_and_undoes_in_one_step(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device, before) = three_nodes(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let start = plot(&mut visual, device, 0.6, 0.8);
+    let end = plot(&mut visual, device, 0.7, 0.625);
+    eq_double_click_down(&mut visual, start);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(read(view, device), before, "creation is still held");
+        assert!(view.device_gesture.snapshot().is_some());
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == before.nodes.len() + 1
+    });
+    editor.read_with(cx, |view, _| {
+        let after = read(view, device);
+        assert_eq!(&after.nodes[..before.nodes.len()], &before.nodes);
+        let created = after.nodes.last().unwrap();
+        assert!((created.frequency_hz - 20.0 * 1000.0_f32.powf(0.7)).abs() < 0.1);
+        assert!((created.gain_db - 6.0).abs() < 0.01);
+        assert_eq!(
+            eq_panel::selection_for_test(view, device),
+            (Some(created.id), vec![])
+        );
+    });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device) == before

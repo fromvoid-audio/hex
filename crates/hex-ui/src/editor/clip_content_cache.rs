@@ -29,6 +29,8 @@ struct ContentKey {
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
+    fade_handle_hover: Option<(ClipId, super::fade_handles::Handle)>,
+    option_held: bool,
     time_selection_key_held: bool,
     automation_view: bool,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
@@ -199,6 +201,10 @@ impl EditorView {
             selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
+            fade_handle_hover: self
+                .hovered_fade_handle
+                .and_then(|hover| hover.in_track(self.project_generation, track.id())),
+            option_held: self.option_held,
             time_selection_key_held: self.time_selection_key_held,
             automation_view: self.automation_view.enabled,
             focus_ranges: self.arrangement_focus_ranges(),
@@ -250,3 +256,53 @@ mod tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "clip_content_profile.rs"]
 mod profile;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    #[test]
+    fn element_identity_keys_use_the_complete_path_independent_of_storage() {
+        use gpui::{ElementId, GlobalElementId};
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
+        let hash = |key: &GlobalElementId| {
+            let mut hasher = DefaultHasher::new();
+            key.hash(&mut hasher);
+            hasher.finish()
+        };
+        for depth in [0, 1, 8, 9, 32, 33, 80] {
+            let path = (0..depth)
+                .map(|index| ElementId::Integer(index as u64))
+                .collect::<Vec<_>>();
+            let mut ordinary = GlobalElementId::default();
+            let mut reserved = GlobalElementId::default();
+            // Force dynamic storage even for an empty/shallow identity. Hashing and
+            // equality must depend on the path, never its current allocation mode.
+            reserved.reserve(128);
+            for id in &path {
+                ordinary.push(id.clone());
+                reserved.push(id.clone());
+            }
+            assert_eq!(ordinary.as_slice(), path.as_slice());
+            assert_eq!(ordinary, reserved);
+            assert_eq!(hash(&ordinary), hash(&reserved));
+            assert_eq!(
+                ordinary.to_string(),
+                path.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(".")
+            );
+            reserved.push(ElementId::Integer(999));
+            assert_ne!(
+                ordinary, reserved,
+                "a suffix beyond inline storage belongs to the identity"
+            );
+            let mut map = std::collections::HashMap::new();
+            map.insert(ordinary, "first");
+            map.insert(reserved, "second");
+            assert_eq!(map.len(), 2);
+        }
+    }
+}

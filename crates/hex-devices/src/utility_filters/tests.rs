@@ -213,10 +213,13 @@ fn compatible_history_transfer_preserves_candidate_configuration() {
     let changed = PreparedUtilityFilters::new(48_000, true, true, 350.0, true).unwrap();
     let muted = UtilityFilterProcessor::new(old.prepared.with_output_mute(true));
     assert!(muted.can_retarget_parameters_from(&old));
+    assert!(old.can_retarget_source_host_matrix_from(&old));
+    assert!(!muted.can_retarget_source_host_matrix_from(&old));
     let mut continued = old;
     continued.reconfigure(changed);
     let mut candidate = UtilityFilterProcessor::new(changed);
     assert!(!candidate.can_retarget_parameters_from(&old));
+    assert!(!candidate.can_retarget_source_host_matrix_from(&old));
     assert!(candidate.inherit_history_from(&old));
     for _ in 0..128 {
         assert_eq!(
@@ -269,5 +272,42 @@ fn bypass_history_advances_and_large_finite_inputs_remain_finite() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn bypass_advances_the_same_filter_history_as_active_processing() {
+    use hex_lattice::NativeProcessorRuntime;
+    for (dc, bass, mute) in [
+        (true, false, false),
+        (false, true, false),
+        (true, true, true),
+    ] {
+        let config = prepared(dc, bass, false);
+        let mut active = UtilityFilterProcessor::new(config);
+        let mut bypassed = UtilityFilterProcessor::new(config);
+        let input: Vec<_> = (0..257)
+            .map(|i| [((i as f32) * 0.17).sin() * 0.6, 0.2])
+            .collect();
+        // Prime a residual that must keep decaying during mute and bypass.
+        for processor in [&mut active, &mut bypassed] {
+            let mut warmup = input.clone();
+            processor.process_block(&mut warmup);
+            assert!(!processor.is_quiescent());
+            processor.reconfigure(config.with_output_mute(mute));
+        }
+        let mut wet = input.clone();
+        let mut dry = input.clone();
+        active.process_block(&mut wet);
+        bypassed.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(dry, input);
+        // Unmute before comparing PCM so mute cannot conceal stale history.
+        active.reconfigure(config);
+        bypassed.reconfigure(config);
+        let mut after_active = [[0.2, -0.3]; 64];
+        let mut after_bypass = after_active;
+        active.process_block(&mut after_active);
+        bypassed.process_block(&mut after_bypass);
+        assert_eq!(after_bypass, after_active);
     }
 }

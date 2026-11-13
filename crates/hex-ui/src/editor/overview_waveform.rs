@@ -52,7 +52,7 @@ impl Source {
             }
             Self::Browser(waveform) => Some((
                 Identity::Browser(Arc::clone(waveform)),
-                u64::try_from(waveform.source_frames).ok()?,
+                u64::try_from(waveform.source_frames()).ok()?,
             )),
         }
     }
@@ -81,11 +81,11 @@ impl Key {
 }
 struct Geometry {
     display: hex_widgets::WaveformGeometry,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     zero_range_spans: [Vec<(gpui::Point<Pixels>, gpui::Point<Pixels>)>; 2],
     #[cfg(test)]
     columns: usize,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     outlines: [Vec<gpui::Point<Pixels>>; 2],
 }
 impl AsRef<hex_widgets::WaveformGeometry> for Geometry {
@@ -184,9 +184,9 @@ fn prepare(
         sampled.push(peaks(start, end)?);
     }
     let mut channels = Vec::with_capacity(2);
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     let mut zero_range_spans = Vec::with_capacity(2);
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     let mut outlines = Vec::with_capacity(2);
     for channel in 0..2 {
         let half = height * 0.25;
@@ -241,7 +241,7 @@ fn prepare(
             );
             Some([left, right])
         });
-        #[cfg(test)]
+        #[cfg(all(test, feature = "ui-unit-tier"))]
         zero_range_spans.push(spans.clone().map(|[left, right]| (left, right)).collect());
         channels.push(WaveformChannel::new(
             WaveformEnvelope {
@@ -257,16 +257,16 @@ fn prepare(
             },
             spans,
         )?);
-        #[cfg(test)]
+        #[cfg(all(test, feature = "ui-unit-tier"))]
         outlines.push(upper.into_iter().chain(lower).collect());
     }
     Some(Geometry {
         display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
-        #[cfg(test)]
+        #[cfg(all(test, feature = "ui-unit-tier"))]
         zero_range_spans: zero_range_spans.try_into().ok()?,
         #[cfg(test)]
         columns,
-        #[cfg(test)]
+        #[cfg(all(test, feature = "ui-unit-tier"))]
         outlines: outlines.try_into().ok()?,
     })
 }
@@ -328,6 +328,7 @@ mod tests {
             .collect();
         Source::Browser(Arc::new(CachedWaveform::from_peaks(4096, bins).unwrap()))
     }
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn device_pixel_outline_is_bounded_connected_and_preserves_stereo_extrema_on_resize() {
         let source = source();
@@ -369,6 +370,7 @@ mod tests {
             );
         }
     }
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn silence_dc_short_sources_and_invalid_bounds_have_defined_geometry() {
         for sample in [0.0, 0.7, -0.7] {
@@ -403,6 +405,7 @@ mod tests {
         }
         assert!(prepare(0, bounds(20.0), 2.0, |_, _| None).is_none());
     }
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn mixed_transients_dc_and_silence_keep_true_extrema_and_zero_range_hairlines() {
         for scale in [1.0, 2.0] {
@@ -461,6 +464,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn post_clamp_collapsed_overrange_peaks_remain_visible_inside_their_channel() {
         for scale in [1.0, 2.0] {
@@ -493,6 +497,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn cached_paths_reuse_only_exact_source_geometry_and_device_scale() {
         let mut cache = Cache::default();

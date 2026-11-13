@@ -33,6 +33,7 @@ fn add_instrument(h: &mut ResidentHarness, applied: &mut u64, prior: &Event) -> 
         h,
         applied,
         Request::InsertBrowserInstrumentTrack {
+            new_track_gain: None,
             project_generation: 0,
             revision: prior.state.revision,
             class: NativeDeviceClass::Instrument,
@@ -52,7 +53,7 @@ fn resident_pcm(event: &Event) -> hex_engine::Audio {
 
 #[test]
 fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     native_reorder_case(false);
     native_reorder_case(true);
 }
@@ -255,7 +256,7 @@ fn native_reorder_case(group: bool) {
 #[test]
 #[ignore = "opt-in optimized 100-track worker/publication latency probe"]
 fn reorder_track_latency_100_tracks() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 8192);
     let mut h = ResidentHarness::with_frame_limit(262_144);

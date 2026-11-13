@@ -667,7 +667,7 @@ fn toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_dro
 #[gpui::test]
 fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppContext) {
     cx.update(super::super::super::bind_editor_keys);
-    for width in [240.0, 480.0] {
+    for width in [220.0, 480.0] {
         let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
         let visual = &mut VisualTestContext::from_window(handle, cx);
         editor.update(visual, |view, cx| {
@@ -692,6 +692,27 @@ fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppCont
             )
         });
         let field = visual.debug_bounds("browser-search").unwrap();
+        let toolbar = visual.debug_bounds("browser-toolbar").unwrap();
+        assert_eq!(toolbar.size.height, px(24.0));
+        assert_eq!(field.size.height, px(20.0));
+        assert!(field.size.width >= px(50.0));
+        assert!(visual.rendered_border("browser-search").is_none());
+        let actions = [
+            visual.debug_bounds("browser-history-back").unwrap(),
+            visual.debug_bounds("browser-history-forward").unwrap(),
+            field,
+            visual.debug_bounds("browser-control-↻").unwrap(),
+            visual.debug_bounds("browser-reveal-sample").unwrap(),
+        ];
+        for pair in actions.windows(2) {
+            assert!(
+                pair[0].right() <= pair[1].left(),
+                "search actions retain their order"
+            );
+        }
+        for action in actions {
+            assert!(action.left() >= toolbar.left() && action.right() <= toolbar.right());
+        }
         let slot = visual
             .debug_bounds("browser-search-clear-slot")
             .expect("reserved clear slot");
@@ -702,6 +723,16 @@ fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppCont
         assert_eq!(visual.debug_bounds("browser-search"), Some(field));
         assert_eq!(visual.debug_bounds("browser-search-clear-slot"), Some(slot));
         let clear = visual.debug_bounds("browser-search-clear").unwrap();
+        assert_eq!(clear.size, gpui::size(px(14.0), px(14.0)));
+        let scale = visual.update(|window, _| window.scale_factor());
+        assert_eq!(
+            visual
+                .rendered_surface_geometry("browser-search-clear")
+                .unwrap()
+                .0
+                .top_left,
+            px(7.0).scale(scale)
+        );
         let text = visual.debug_bounds("browser-search-text").unwrap();
         assert!(text.right() <= clear.left() && clear.right() <= field.right());
         editor.read_with(visual, |view, cx| {

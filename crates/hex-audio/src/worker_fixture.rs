@@ -142,6 +142,35 @@ impl HeadlessBackend {
         owner.run(|callback, _| result = callback.native_workers_idle_on_control());
         result
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn native_worker_phase_for_test(&mut self) -> Option<usize> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut phase = None;
+        owner.run(|callback, _| phase = callback.native_worker_phase_for_test());
+        phase
+    }
+    /// Observe the exact endpoint's contained fault on test control. This
+    /// copies diagnostics only; no source, endpoint or readiness is admitted.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn native_source_fault_on_control(
+        &mut self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> Option<hex_plugin_host::transport::Fault> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut fault = None;
+        owner.run(|callback, _| fault = callback.native_source_fault_for_test(binding));
+        fault
+    }
+    /// Revoke the real callback-owned native sources at a controlled fixture
+    /// boundary. This produces no synthetic Session event or publication ACK.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn revoke_native_sources_for_test(&mut self) -> bool {
+        let Some(owner) = self.data.as_mut().and_then(Guard::owner_mut) else {
+            return false;
+        };
+        owner.run(|callback, _| callback.revoke_native_effects());
+        true
+    }
     /// Hold original native Work on a separate test control thread. The
     /// callback entry ends before taking that exclusion; native state and its
     /// actual owners remain in Root. Never call from a measured render scope.

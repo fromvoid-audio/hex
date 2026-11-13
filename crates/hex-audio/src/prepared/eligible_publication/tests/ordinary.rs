@@ -83,6 +83,275 @@ fn measured_render(
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn streamed_retained_restart_under_live_fence_keeps_audio_and_cursor() {
+    use hex_project::{Command, Created, Editor, Project, TrackDeviceSlot};
+
+    let _serial = serial();
+    let frames = 12_288;
+    let mut editor = Editor::new(super::readiness::project_with_frames(frames), 16).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver track")
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(peer) = editor
+        .execute(Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer track")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let mut snapshot = original.snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    let asset = original.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(frames as u32);
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let store = ResidentDeviceAssets::default();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            2,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair_with_pool(vec![definition], 3),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .unwrap_or_else(|_| panic!("source registration"));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&original, metadata.clone(), &store),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 32];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while control.status.position.load(Acquire) < 64 {
+        measured_render(&mut data, &mut output);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "initial stream readiness"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    let mut unfenced = compile(&retained, metadata.clone(), &store);
+    assert!(unfenced.request_live_restart());
+    let refused = control
+        .publish_with_admission_and_source_on_control(
+            unfenced,
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    while control
+        .status
+        .rejected_revision()
+        .is_none_or(|(id, _)| id != refused)
+    {
+        measured_render(&mut data, &mut output);
+        assert!(std::time::Instant::now() < deadline, "unfenced refusal");
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    control.reclaim();
+
+    let stale = control
+        .request_live_arrangement_edit_fence(7, revision)
+        .unwrap();
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.arrangement_edit_playing(stale), Some(true));
+    let mut cancelled = compile(&retained, metadata.clone(), &store);
+    assert!(cancelled.request_live_restart());
+    let cancelled_revision = control
+        .publish_with_admission_and_source_on_control(
+            cancelled,
+            PublicationPolicy::InheritUnderArrangement(stale),
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.release_stopped_edit_fence(stale);
+    measured_render(&mut data, &mut output);
+    assert!(
+        control
+            .status
+            .rejected_revision()
+            .is_some_and(|(id, _)| id == cancelled_revision)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    control.reclaim();
+
+    let fence = control
+        .request_live_arrangement_edit_fence(7, revision)
+        .unwrap();
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.arrangement_edit_playing(fence), Some(true));
+    let mut candidate = compile(&retained, metadata.clone(), &store);
+    assert!(candidate.request_live_restart());
+    let next = control
+        .publish_with_admission_and_source_on_control(
+            candidate,
+            PublicationPolicy::InheritUnderArrangement(fence),
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let install_position = loop {
+        let before = control.status.position.load(Acquire);
+        measured_render(&mut data, &mut output);
+        assert!(
+            control
+                .status
+                .rejected_revision()
+                .is_none_or(|(id, _)| id != next),
+            "fenced streamed restart refused: {:?}",
+            control.status.rejected_revision()
+        );
+        if control.status.applied_revision.load(Acquire) == next {
+            break before;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fenced restart readiness"
+        );
+        std::thread::yield_now();
+    };
+    let audio = hex_engine::Audio::new(48_000, vec![[0.25; 2]; frames as usize]).unwrap();
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &store,
+        &retained,
+        1_000_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let resident = hex_engine::PreparedRevision::prepare_with_device_resources(
+        &retained,
+        &BTreeMap::from([(asset, audio)]),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+        &resources,
+        100_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut oracle =
+        Playback::try_from_prepared_with_device_resources(Arc::new(resident), &resources).unwrap();
+    oracle.apply(PlaybackCommand::PlayFrom(install_position));
+    let mut expected = [[0.0; 2]; 32];
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(output, expected);
+    assert_eq!(control.status.position.load(Acquire), install_position + 32);
+    assert!(control.status.playing.load(Acquire));
+    control.release_stopped_edit_fence(fence);
+    control.reclaim();
+
+    let stop_fence = control
+        .request_live_arrangement_edit_fence(7, next)
+        .unwrap();
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.arrangement_edit_playing(stop_fence), Some(true));
+    let mut stop_candidate = compile(&original, metadata, &store);
+    assert!(stop_candidate.request_live_restart());
+    let stop_revision = control
+        .publish_with_admission_and_source_on_control(
+            stop_candidate,
+            PublicationPolicy::InheritUnderArrangement(stop_fence),
+            hex_engine::AudioSourceContext {
+                editor_revision: 5,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.stop();
+    while control.status.applied_revision.load(Acquire) != stop_revision
+        || control.status.playing.load(Acquire)
+    {
+        measured_render(&mut data, &mut output);
+        assert!(
+            control
+                .status
+                .rejected_revision()
+                .is_none_or(|(id, _)| id != stop_revision)
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "priority stop and restart"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.position.load(Acquire), 0);
+    control.release_stopped_edit_fence(stop_fence);
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    while control.recover_audio_candidate_domain(domain).is_none() {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        assert!(std::time::Instant::now() < deadline, "source retirement");
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
 #[test]
 fn ordinary_streamed_actions_deliver_split_client_outcomes() {
     let _serial = serial();
@@ -157,6 +426,34 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
     data.owner_mut()
         .unwrap()
         .run(|callback, _| assert!(callback.streamed_transport_mode()));
+    let track = project.tracks()[0].id();
+    let mut take = client
+        .start_sample_recording(7, &[hex_engine::OutputCaptureId::Track(track)], true)
+        .unwrap();
+    assert!(take.ready());
+    let output = measured_block(&mut data);
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.finish_sample_recording(true));
+    client.stop_sample_recording();
+    measured_block(&mut data);
+    let mut seen = false;
+    assert_eq!(
+        take.drain(|frames, _, pcm| {
+            assert!(!seen);
+            assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+            for layer in 0..2 {
+                assert_eq!(
+                    crate::sample_recording::Reader::source_frames(pcm, frames, layer),
+                    Some(&output[..])
+                );
+            }
+            seen = true;
+        }),
+        Some(crate::sample_recording::End::Stopped)
+    );
+    assert!(seen);
+    client.reclaim_sample_recording();
     assert!(
         !client
             .status()
@@ -320,6 +617,7 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
         editor_revision: 3,
     };
     control.status.stream_source_changed.store(true, Release);
+    control.status.stream_read_failed.store(true, Release);
     let donor_revision = control
         .publish_with_admission_and_source_on_control(
             donor,
@@ -335,6 +633,7 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
         donor_revision
     );
     assert!(!control.status.stream_source_changed.load(Acquire));
+    assert!(!control.status.take_stream_read_failure());
     let domain = control
         .register_audio_candidate_domain_with_readiness(
             stream_fixture::pair(definition),
@@ -1141,15 +1440,20 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
 
 #[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
-    pending_replacement_case(true);
+    pending_replacement_case(true, false);
 }
 
 #[test]
 fn ordinary_short_one_shot_replacement_at_device_cadence() {
-    pending_replacement_case(false);
+    pending_replacement_case(false, false);
 }
 
-fn pending_replacement_case(looping: bool) {
+#[test]
+fn fenced_retained_restart_waits_for_missing_pages_without_displacing_current_audio() {
+    pending_replacement_case(false, true);
+}
+
+fn pending_replacement_case(looping: bool, retained_restart: bool) {
     use hex_project::{Command, Created, Editor};
 
     let _serial = serial();
@@ -1162,6 +1466,42 @@ fn pending_replacement_case(looping: bool) {
     let a_track = original.tracks()[0].id();
     let a_asset = original.assets().next().unwrap().id();
     let mut editor = Editor::new(original, 16).unwrap();
+    let receiver = if retained_restart {
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let Created::Track(peer) = editor
+            .execute(Command::AddMidiTrack {
+                name: "peer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        Some(receiver)
+    } else {
+        None
+    };
     let Created::Track(b_track) = editor
         .execute(Command::AddTrack {
             name: "replacement".into(),
@@ -1210,7 +1550,13 @@ fn pending_replacement_case(looping: bool) {
             muted: false,
         })
         .unwrap();
-    let b_project = editor.project().clone();
+    let b_project = if let Some(receiver) = receiver {
+        let mut snapshot = editor.project().snapshot();
+        snapshot.retained_source_paths.push(receiver.value());
+        hex_project::Project::from_snapshot(snapshot).unwrap()
+    } else {
+        editor.project().clone()
+    };
     let a_wav = stream_fixture::Wav::with_frames(frames.try_into().unwrap());
     let b_wav = stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |_| 16_384);
     let a_definition = a_wav.definition(a_asset, 11);
@@ -1289,10 +1635,27 @@ fn pending_replacement_case(looping: bool) {
     // needs A1. A0 + the speculative B1 intent + A1 cannot fit cache capacity 2.
     // Yielding the candidate's exact intent lets the old graph advance instead
     // of turning ordinary disk latency into a readiness refusal.
+    let fence = if retained_restart {
+        let fence = control
+            .request_live_arrangement_edit_fence(7, a_revision)
+            .unwrap();
+        measured_render(&mut data, &mut output);
+        assert_eq!(control.arrangement_edit_playing(fence), Some(true));
+        Some(fence)
+    } else {
+        None
+    };
+    let mut b_playback = compile_sources(&b_project, metadata, &store);
+    if retained_restart {
+        assert!(b_playback.request_live_restart());
+    }
     let b_revision = control
         .publish_with_admission_and_source_on_control(
-            compile_sources(&b_project, metadata, &store),
-            PublicationPolicy::InheritRuntime,
+            b_playback,
+            fence.map_or(
+                PublicationPolicy::InheritRuntime,
+                PublicationPolicy::InheritUnderArrangement,
+            ),
             hex_engine::AudioSourceContext {
                 editor_revision: 4,
                 ..context
@@ -1368,6 +1731,9 @@ fn pending_replacement_case(looping: bool) {
         assert_eq!(output, [[0.5; 2]; 256]);
     }
 
+    if let Some(fence) = fence {
+        control.release_stopped_edit_fence(fence);
+    }
     assert!(control.retire_audio_candidate_domain(domain));
     control.request_shutdown();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1781,11 +2147,23 @@ fn prepared_audio_domain_gate(retire_while_held: bool) {
     measured_render(&mut data, &mut output);
     assert!(control.status.stream_buffering.load(Acquire));
     assert_eq!(output, [[0.0; 2]; 256]);
+    // The held page starved audible playback: the published count rises (#4074).
+    let starved = control.status.stream_starved_callbacks.load(Relaxed);
+    assert!(starved > 0, "mid-play page hold was not counted");
+    measured_render(&mut data, &mut output);
+    assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
     if retire_while_held {
         control.stop();
         measured_render(&mut data, &mut output);
         assert!(!control.status.playing.load(Acquire));
         assert_eq!(output, [[0.0; 2]; 256]);
+        // Stopped holds are not audible starvation.
+        let stopped = control.status.stream_starved_callbacks.load(Relaxed);
+        measured_render(&mut data, &mut output);
+        assert_eq!(
+            control.status.stream_starved_callbacks.load(Relaxed),
+            stopped
+        );
     } else {
         release.send(()).unwrap();
         loop {
@@ -1838,6 +2216,8 @@ fn compensated_demand_retries_a_smaller_window_at_page_capacity() {
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,

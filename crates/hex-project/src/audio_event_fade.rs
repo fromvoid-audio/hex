@@ -29,6 +29,15 @@ impl AudioEventFade {
     pub fn shape(self) -> ClipFade {
         self.shape
     }
+
+    /// Straighten one ramp without changing the source window.
+    #[must_use]
+    pub fn straighten_ramp(self, out: bool) -> Self {
+        Self {
+            shape: self.shape.straighten_ramp(out),
+            ..self
+        }
+    }
     pub fn validate(self, root_length: u64, source_start: u64, length: u64) -> Result<(), Invalid> {
         let end = self.source_start.checked_add(self.shape.span());
         let source_end = source_start.checked_add(length);
@@ -82,7 +91,8 @@ impl AudioEventFade {
                 self.shape.in_curve(),
                 self.shape.out_curve(),
             )?
-            .with_curve_positions(self.shape.in_position(), self.shape.out_position())?,
+            .with_curve_positions(self.shape.in_position(), self.shape.out_position())?
+            .with_curve_laws(self.shape.curve_laws()),
         )
     }
 }

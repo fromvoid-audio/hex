@@ -1,5 +1,7 @@
 //! Strict version-1 twelve-parameter opaque payload; no saved-project model change.
 //! Inactive values (including independent l/r and m/s links) remain authored state.
+//! Nine scalar/switch controls expose shared envelope delivery without changing
+//! latency or reconstructing fixed detector coefficients on the callback.
 use super::LimiterDefinition;
 use hex_lattice_contract::*;
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.limiter");
@@ -252,6 +254,44 @@ impl NativeDeviceMetadata for LimiterDefinition {
         descriptor(id)?.validate(value)?;
         settings.0[id.value() as usize - 1] = scalar(value);
         encode(settings)
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        let d = descriptor(id)?;
+        if let Some(s) = super::automation::semantics(id) {
+            return Ok(Some(s));
+        }
+        let (normalization, stepping) = match d.kind {
+            ParameterKind::Bool => (ParameterNormalization::Discrete, ParameterStepping::Boolean),
+            ParameterKind::Choice { .. } => {
+                (ParameterNormalization::Discrete, ParameterStepping::Choice)
+            }
+            _ => (
+                if d.presentation == ParameterPresentation::Logarithmic {
+                    ParameterNormalization::PositiveLogarithmic
+                } else {
+                    ParameterNormalization::Linear
+                },
+                ParameterStepping::Continuous,
+            ),
+        };
+        Ok(Some(ParameterSemantics {
+            access: ParameterAccess::ReadWrite,
+            normalization,
+            stepping,
+            automation: ParameterAutomation::Unsupported,
+            modulation: ParameterModulation::Unsupported,
+            smoothing: ParameterSmoothing::DeviceManaged,
+            change_impact: if matches!(id, LOOKAHEAD | ROUTING | MODE) {
+                ParameterChangeImpact::Structural
+            } else {
+                ParameterChangeImpact::ValueOnly
+            },
+        }))
     }
     fn parameter_enabled(
         &self,

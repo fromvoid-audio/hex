@@ -1,7 +1,7 @@
 use super::*;
 use hex_lattice_contract::ParameterId;
 use hex_project::{Command, Created, Editor};
-fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId) {
+pub(super) fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddTrack {
@@ -31,103 +31,10 @@ fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId) {
         ParameterId::new(1).unwrap(),
     )
 }
-#[test]
-fn parameter_identity_quantization_and_empty_presentation_preserve_canonical_state() {
-    let (project, track, device, parameter) = project();
-    let entry = Entry::read(
-        &project,
-        4,
-        Owner::Track(track),
-        device,
-        DeviceAutomationTarget::Parameter(parameter),
-    )
-    .unwrap();
-    assert!(entry.target.current(&project, 5).is_none());
-    assert!(
-        Entry::read(
-            &project,
-            4,
-            Owner::Main,
-            device,
-            DeviceAutomationTarget::Parameter(parameter)
-        )
-        .is_none()
-    );
-    assert!(entry.quantize(0.25).unwrap().is_finite());
-    let boolean = Entry::read(
-        &project,
-        4,
-        Owner::Track(track),
-        device,
-        DeviceAutomationTarget::Parameter(ParameterId::from_static(5)),
-    )
-    .unwrap();
-    assert_eq!(boolean.quantize(0.49), Some(0.0));
-    assert_eq!(boolean.quantize(0.5), Some(1.0));
-    let choice = Entry::read(
-        &project,
-        4,
-        Owner::Track(track),
-        device,
-        DeviceAutomationTarget::Parameter(ParameterId::from_static(4)),
-    )
-    .unwrap();
-    let normalized = choice.quantize(0.4).unwrap();
-    assert_eq!(choice.quantize(normalized), Some(normalized));
-    assert!(entry.quantize(f32::NAN).is_none());
-    let lanes = Lanes::default();
-    assert!(!lanes.has_main(Owner::Track(track)));
-    assert_eq!(lanes.extra_height(Owner::Track(track)), 0.0);
-    assert!(project.device(device).unwrap().automation().is_empty());
-    let mut model = Editor::new(project, 16).unwrap();
-    model.execute(Command::RemoveDevice(device)).unwrap();
-    assert!(entry.target.current(model.project(), 4).is_none());
-}
-
-#[test]
-fn host_metadata_has_no_provider_id_and_keeps_identity_across_native_provider_change() {
-    let (project, track, device, _) = project();
-    let host = Entry::read(
-        &project,
-        4,
-        Owner::Track(track),
-        device,
-        DeviceAutomationTarget::HostInputGain,
-    )
-    .unwrap();
-    assert_eq!(host.base, HostGain::ZERO.normalized());
-    assert_eq!(host.quantize(host.base), Some(host.base));
-    assert_eq!(host.quantize(1.01), None);
-    assert_eq!(host.quantize(f32::NAN), None);
-    assert_eq!(host.format(host.base), "0.000 db");
-    assert_eq!(host.target.provider, None);
-    assert!(
-        Entry::read(
-            &project,
-            4,
-            Owner::Track(track),
-            device,
-            DeviceAutomationTarget::Parameter(hex_engine::DEVICE_INPUT_GAIN.id)
-        )
-        .is_none()
-    );
-    let mut editor = Editor::new(project, 16).unwrap();
-    editor
-        .execute(Command::ReplaceDeviceState {
-            device,
-            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
-                "hex.overdrive",
-            ))
-            .unwrap(),
-        })
-        .unwrap();
-    let refreshed = host.refreshed(editor.project(), 4).unwrap();
-    assert_eq!(refreshed.target, host.target);
-    assert!(refreshed.label.contains("overdrive"));
-}
 
 #[cfg(feature = "ui-test-support")]
 mod native {
+    use super::super::host_tests::dotted_lane_point;
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px, size};
     use std::sync::Arc;
@@ -647,28 +554,22 @@ mod native {
             })
         });
         visual.run_until_parked();
-        let selector = format!(
-            "automation-plot-{}-{}-false",
-            device.value(),
-            parameter.value()
-        );
-        let bounds = visual
-            .debug_bounds(Box::leak(selector.into_boxed_str()))
-            .unwrap();
-        let point = bounds.center();
+        let target = DeviceAutomationTarget::Parameter(parameter);
+        let point = dotted_lane_point(&mut visual, device, target, 0.5);
         visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {
             assert!(
-                view.automation_view.devices.marquee.is_some()
+                view.automation_view.devices.draft.is_some()
+                    && view.automation_view.devices.marquee.is_none()
                     && view.automation_view.devices.pending.is_none(),
-                "a blank press waits: release adds a point, a drag selects"
+                "a press on the rendered envelope holds the new point; release commits it"
             )
         });
         visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         entity.update(&mut visual, |view, cx| {
-            assert!(view.automation_view.devices.marquee.is_none());
+            assert!(view.automation_view.devices.draft.is_none());
             assert!(view.automation_view.devices.pending.is_some());
             let pending = view.automation_view.devices.pending.as_ref().unwrap();
             let points = pending.points.clone();

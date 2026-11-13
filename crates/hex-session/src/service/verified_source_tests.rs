@@ -1,11 +1,11 @@
 //! Actual verified readers + canonical worker; no native ownership is inferred.
 use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Files(PathBuf);
+pub(super) struct Files(PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-verified-service-{}-{}",
             std::process::id(),
@@ -14,7 +14,7 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
+    pub(super) fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
         let path = self.0.join(name);
         let mut bytes = Vec::from(*b"RIFF");
         bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
@@ -40,7 +40,7 @@ impl Drop for Files {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn reservation(count: usize) -> SourcePlanReservation {
+pub(super) fn reservation(count: usize) -> SourcePlanReservation {
     SourcePlanReservation {
         reader: hex_media::VerifiedWavReaderLimits {
             reader: hex_media::WavReaderLimits {
@@ -56,10 +56,13 @@ fn reservation(count: usize) -> SourcePlanReservation {
         max_manifest_bytes: 4 * 1024 * 1024,
     }
 }
-fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+pub(super) fn next(service: &Service) -> Event {
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
-fn run(service: &Service, request: Request) -> Event {
+pub(super) fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
     let event = next(service);
     assert!(event.error.is_none(), "{:?}", event.error);
@@ -450,7 +453,7 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(next(&service).playback.is_none());
     let completion = service
         .export_events
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap();
     assert!(
         completion
@@ -460,6 +463,60 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     );
     assert!(!files.0.join("must-not-render.wav").exists());
 }
+
+#[test]
+fn project_sample_request_refuses_verified_streaming_without_history_change() {
+    let files = Files::new();
+    let path = files.wav("verified-project-sample.wav", 48_000, 64, 1000);
+    let service = Service::new(48_000, 16, 0).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(path));
+    let snapshot = imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .expect("verified source snapshot");
+    assert_eq!(snapshot.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    assert!(imported.playback.is_none());
+    let track = imported.state.project.tracks()[0].id();
+    let asset = imported.state.project.assets().next().unwrap().id();
+    assert!(matches!(
+        snapshot.sources().get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    let request = Request::InsertProjectSample {
+        project_generation: snapshot.context().project_generation,
+        revision: imported.state.revision,
+        asset,
+        destination: crate::import_batch::AudioBatchDestination::Track { track, start: 64 },
+        new_track_gain: None,
+        warp: hex_project::AudioImportWarp::Off,
+        audition_timing: None,
+    };
+    service.submit(request).unwrap();
+    let refused = next(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("project sample placement requires resident audio")
+    );
+    assert_eq!(refused.state.revision, imported.state.revision);
+    assert_eq!(refused.state.project, imported.state.project);
+
+    // The refused request must not add an undo entry ahead of the import.
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.tracks().is_empty());
+    assert!(undone.state.project.assets().next().is_none());
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, imported.state.project);
+}
+
 #[test]
 fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_adoption() {
     let files = Files::new();
@@ -507,7 +564,12 @@ fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_
     .unwrap();
     assert!(refused.verify_import(good).is_err());
     assert_eq!(refused.project().assets().count(), 0);
-    limits.reader.reader.max_source_frames = 8_000_001;
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES;
+    assert!(limits.validate().is_ok());
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES + 1;
+    assert!(limits.validate().is_err());
+    limits.reader.reader.max_source_frames = 8_000_000;
+    limits.reader.reader.max_file_bytes = crate::MAX_STREAMED_FILE_BYTES + 1;
     assert!(limits.validate().is_err());
 }
 
@@ -922,6 +984,31 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
 }
 
 #[test]
+fn identical_file_extrema_do_not_hide_independent_channels() {
+    let files = Files::new();
+    let path = files.0.join("independent.wav");
+    let mut index = 0;
+    hex_export::write_float_wav_new(&path, 48_000, 4096, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = if index % 2 == 0 {
+                [0.8, -0.8]
+            } else {
+                [-0.8, 0.8]
+            };
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false).unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    let waveform = source.cached_waveform().unwrap();
+    assert!(waveform.bins().iter().all(|pair| pair[0] == pair[1]));
+    assert!(!waveform.has_identical_channels());
+}
+
+#[test]
 fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm() {
     let files = Files::new();
     for (source_rate, project_rate) in [(48_000, 48_000), (44_100, 48_000), (96_000, 44_100)] {
@@ -951,7 +1038,7 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
                 crate::VerifiedAudioFile::inspect(path.clone(), project_rate, small, || false)
                     .unwrap();
             bounded.prepare_waveform_on_control(|| false).unwrap();
-            assert_eq!(bounded.cached_waveform().unwrap().source_frames, 5003);
+            assert_eq!(bounded.cached_waveform().unwrap().source_frames(), 5003);
         }
         assert!(source.cached_waveform().is_none());
         let decoded = hex_media::decode_wav_file(
@@ -971,8 +1058,9 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
         let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
         source.prepare_waveform_on_control(|| false).unwrap();
         let actual = source.cached_waveform().unwrap();
-        assert_eq!(actual.source_frames, expected.source_frames);
-        assert_eq!(actual.bins, expected.bins);
+        assert!(actual.has_identical_channels());
+        assert_eq!(actual.source_frames(), expected.source_frames());
+        assert_eq!(actual.bins(), expected.bins());
         assert_eq!(actual.cached_bin_count(), expected.cached_bin_count());
         assert!(actual.cached_bin_count() <= 2047);
         assert!(!actual.shares_audio_with(&resident.audio));

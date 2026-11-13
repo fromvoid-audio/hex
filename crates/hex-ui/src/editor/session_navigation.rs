@@ -65,7 +65,7 @@ pub(super) fn session_editor_has_focus(mode: EditorMode, piano_focused: bool) ->
     arrow_target(mode, piano_focused) == ArrowTarget::Session
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 pub(super) fn resolve_navigation(
     project: &Project,
     selected_cell: Option<(TrackId, SceneId)>,
@@ -189,7 +189,7 @@ pub(super) fn resolve_enter_target(
         .map(EnterTarget::LaunchScene)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         ArrowTarget, Direction, EnterTarget, SceneMoveTarget, Selection, arrow_target,

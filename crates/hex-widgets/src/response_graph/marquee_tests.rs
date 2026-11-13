@@ -1,4 +1,4 @@
-//! Opt-in marquee selection through actual graph presses.
+//! Blank-space policies through actual graph presses.
 use super::*;
 use gpui::{AppContext, Render, TestAppContext, VisualTestContext, size};
 use std::{cell::RefCell, rc::Rc};
@@ -110,11 +110,19 @@ fn marquee_commits(seen: &[Seen]) -> Vec<Vec<u32>> {
         .collect()
 }
 
+const SHIFT: Modifiers = Modifiers {
+    shift: true,
+    control: false,
+    alt: false,
+    platform: false,
+    function: false,
+};
+
 #[gpui::test]
-fn blank_drag_selects_nodes_inside_the_band_in_any_direction(cx: &mut TestAppContext) {
+fn shift_blank_drag_selects_nodes_inside_the_band_in_any_direction(cx: &mut TestAppContext) {
     let mut fixture = fixture(cx, false, &[3]);
     // Drag up-left so the band origin is its bottom-right corner.
-    drag(&mut fixture, [0.4, 0.6], [0.1, 0.9], Modifiers::default());
+    drag(&mut fixture, [0.4, 0.6], [0.1, 0.9], SHIFT);
     let seen = fixture.seen.take();
     assert_eq!(
         seen.first(),
@@ -131,28 +139,66 @@ fn blank_drag_selects_nodes_inside_the_band_in_any_direction(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn shift_adds_and_cmd_toggles_against_the_press_time_selection(cx: &mut TestAppContext) {
-    let shift = Modifiers {
-        shift: true,
-        ..Modifiers::default()
-    };
-    let cmd = Modifiers {
+fn shift_replaces_and_shift_cmd_toggles_against_the_press_time_selection(cx: &mut TestAppContext) {
+    let shift_cmd = Modifiers {
         platform: true,
-        ..Modifiers::default()
+        ..SHIFT
     };
     let mut fixture = fixture(cx, false, &[3]);
-    drag(&mut fixture, [0.1, 0.9], [0.4, 0.6], shift);
-    assert_eq!(marquee_commits(&fixture.seen.take()), vec![vec![1, 2, 3]]);
-    // Cmd over nodes 2 and 3 toggles them against the base {3}.
-    drag(&mut fixture, [0.25, 0.75], [0.9, 0.1], cmd);
+    drag(&mut fixture, [0.1, 0.9], [0.4, 0.6], SHIFT);
+    assert_eq!(marquee_commits(&fixture.seen.take()), vec![vec![1, 2]]);
+    // Shift+Cmd over nodes 2 and 3 toggles them against the base {3}.
+    let mut fixture = self::fixture(cx, false, &[3]);
+    drag(&mut fixture, [0.25, 0.75], [0.9, 0.1], shift_cmd);
     assert_eq!(marquee_commits(&fixture.seen.take()), vec![vec![2]]);
 }
 
 #[gpui::test]
-fn blank_click_clears_or_creates_on_release_and_escape_restores(cx: &mut TestAppContext) {
+fn plain_blank_press_adds_a_node_and_drags_it_without_a_marquee(cx: &mut TestAppContext) {
+    let mut fixture = fixture(cx, true, &[3]);
+    let (from, to) = (at(&mut fixture, [0.6, 0.6]), at(&mut fixture, [0.1, 0.9]));
+    let v = &mut fixture.visual;
+    v.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        fixture.seen.borrow().first(),
+        Some(&Seen::Node(ResponseGraphPhase::Create, 0)),
+        "a plain blank press creates at the press, as before marquee"
+    );
+    // Holding Shift only after the press must not turn the gesture into a band.
+    let v = &mut fixture.visual;
+    v.simulate_mouse_move(to, Some(MouseButton::Left), SHIFT);
+    v.simulate_mouse_up(to, MouseButton::Left, SHIFT);
+    v.run_until_parked();
+    let seen = fixture.seen.take();
+    assert!(seen.contains(&Seen::Node(ResponseGraphPhase::Begin, 0)));
+    assert!(seen.contains(&Seen::Node(ResponseGraphPhase::Change, 0)));
+    assert_eq!(
+        seen.last(),
+        Some(&Seen::Node(ResponseGraphPhase::Release, 0))
+    );
+    assert!(
+        !seen.iter().any(|seen| matches!(seen, Seen::Marquee(..))),
+        "the press-time modifiers fix the gesture"
+    );
+
+    // A Shift press keeps its marquee after Shift is released mid-drag.
+    let mut fixture = self::fixture(cx, true, &[]);
+    let (from, to) = (at(&mut fixture, [0.1, 0.9]), at(&mut fixture, [0.4, 0.6]));
+    let v = &mut fixture.visual;
+    v.simulate_mouse_down(from, MouseButton::Left, SHIFT);
+    v.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    v.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    v.run_until_parked();
+    let seen = fixture.seen.take();
+    assert_eq!(marquee_commits(&seen), vec![vec![1, 2]]);
+    assert!(!seen.iter().any(|seen| matches!(seen, Seen::Node(..))));
+}
+
+#[gpui::test]
+fn shift_blank_click_clears_or_creates_on_release_and_escape_restores(cx: &mut TestAppContext) {
     let mut fixture = fixture(cx, false, &[2]);
     let blank = at(&mut fixture, [0.6, 0.6]);
-    fixture.visual.simulate_click(blank, Modifiers::default());
+    fixture.visual.simulate_click(blank, SHIFT);
     assert_eq!(
         marquee_commits(&fixture.seen.take()),
         vec![Vec::<u32>::new()]
@@ -162,14 +208,14 @@ fn blank_click_clears_or_creates_on_release_and_escape_restores(cx: &mut TestApp
     let blank = at(&mut fixture, [0.6, 0.6]);
     fixture
         .visual
-        .simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
+        .simulate_mouse_down(blank, MouseButton::Left, SHIFT);
     assert!(
         fixture.seen.borrow().is_empty(),
-        "creation waits for release so a drag can become a marquee"
+        "shift creation waits for release so a drag can become a marquee"
     );
     fixture
         .visual
-        .simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+        .simulate_mouse_up(blank, MouseButton::Left, SHIFT);
     assert_eq!(
         fixture.seen.take(),
         vec![
@@ -182,10 +228,10 @@ fn blank_click_clears_or_creates_on_release_and_escape_restores(cx: &mut TestApp
     let mut fixture = self::fixture(cx, true, &[3]);
     let (from, to) = (at(&mut fixture, [0.1, 0.9]), at(&mut fixture, [0.4, 0.6]));
     let v = &mut fixture.visual;
-    v.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-    v.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    v.simulate_mouse_down(from, MouseButton::Left, SHIFT);
+    v.simulate_mouse_move(to, Some(MouseButton::Left), SHIFT);
     v.simulate_keystrokes("escape");
-    v.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    v.simulate_mouse_up(to, MouseButton::Left, SHIFT);
     v.run_until_parked();
     assert_eq!(
         fixture.seen.take(),
@@ -223,10 +269,7 @@ fn node_presses_keep_their_select_and_drag_stream(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn option_blank_press_keeps_the_creation_drag_stream(cx: &mut TestAppContext) {
-    let option = Modifiers {
-        alt: true,
-        ..Modifiers::default()
-    };
+    let option = Modifiers { alt: true, ..SHIFT };
     let mut fixture = fixture(cx, true, &[]);
     drag(&mut fixture, [0.6, 0.6], [0.7, 0.4], option);
     let seen = fixture.seen.take();
@@ -242,5 +285,55 @@ fn option_blank_press_keeps_the_creation_drag_stream(cx: &mut TestAppContext) {
     assert!(
         !seen.iter().any(|seen| matches!(seen, Seen::Marquee(..))),
         "option keeps the owner's create-and-shape gesture"
+    );
+}
+
+#[gpui::test]
+fn plain_marquee_mode_reserves_creation_for_the_second_blank_press(cx: &mut TestAppContext) {
+    let mut fixture = fixture(cx, true, &[3]);
+    fixture.graph.update(&mut fixture.visual, |graph, cx| {
+        graph.set_blank_marquee_enabled(true, cx);
+    });
+    let plain = Modifiers::default();
+    let blank = at(&mut fixture, [0.6, 0.6]);
+    fixture.visual.simulate_click(blank, plain);
+    assert_eq!(
+        fixture.seen.take(),
+        vec![Seen::Marquee(ResponseGraphMarqueePhase::Commit, vec![])]
+    );
+
+    drag(&mut fixture, [0.1, 0.9], [0.4, 0.6], plain);
+    let seen = fixture.seen.take();
+    assert_eq!(marquee_commits(&seen), vec![vec![1, 2]]);
+    assert!(seen.iter().all(|event| matches!(event, Seen::Marquee(..))));
+
+    fixture.visual.simulate_click(blank, plain);
+    fixture.seen.take();
+    fixture.visual.simulate_event(MouseDownEvent {
+        position: blank,
+        modifiers: plain,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    assert_eq!(
+        fixture.seen.take(),
+        vec![Seen::Node(ResponseGraphPhase::Create, 0)]
+    );
+    let end = at(&mut fixture, [0.7, 0.4]);
+    fixture
+        .visual
+        .simulate_mouse_move(end, Some(MouseButton::Left), plain);
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, plain);
+    assert_eq!(
+        fixture.seen.take(),
+        vec![
+            Seen::Node(ResponseGraphPhase::Begin, 0),
+            Seen::Node(ResponseGraphPhase::Change, 0),
+            Seen::Node(ResponseGraphPhase::Commit, 0),
+            Seen::Node(ResponseGraphPhase::Release, 0),
+        ]
     );
 }

@@ -55,9 +55,9 @@ fn fixture(
     let old = editor.project().clone();
     let mut snapshot = old.snapshot();
     for track in &mut snapshot.tracks {
-        for device in &mut track.devices {
-            device.bypassed = true;
-        }
+        // Removing the old chain detaches its audible history. Bypass keeps
+        // the same owner and ramps to dry instead.
+        track.devices.clear();
     }
     let candidate = Project::from_snapshot(snapshot)?;
     let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.3, -0.1]; 32])?)]);
@@ -122,9 +122,16 @@ fn run(tracks: usize, effects: usize, block: usize, repetitions: usize) -> Resul
     let mut handoffs = Vec::with_capacity(repetitions);
     let mut renders = Vec::with_capacity(repetitions);
     let mut combined = Vec::with_capacity(repetitions);
+    let mut custody = None;
     for _ in 0..repetitions {
         let mut previous = started(Arc::clone(&old_revision))?;
         let mut next = SessionPlayback::new(Arc::clone(&next_revision))?;
+        let old_before = previous
+            .profile_runtime_storage_bytes()
+            .ok_or("old storage overflow")?;
+        let candidate_before = next
+            .profile_runtime_storage_bytes()
+            .ok_or("candidate storage overflow")?;
         let start = Instant::now();
         next.try_inherit_state_from(black_box(&mut previous))?;
         let handoff = start.elapsed().as_nanos();
@@ -132,6 +139,33 @@ fn run(tracks: usize, effects: usize, block: usize, repetitions: usize) -> Resul
         let start = Instant::now();
         next.render(black_box(&mut output))?;
         let render = start.elapsed().as_nanos();
+        let retired = previous
+            .profile_runtime_storage_bytes()
+            .ok_or("retired storage overflow")?;
+        let candidate_after = next
+            .profile_runtime_storage_bytes()
+            .ok_or("handoff storage overflow")?;
+        if old_before.0 == 0
+            || candidate_before.0 == 0
+            || retired.0 == 0
+            || old_before.1 != 0
+            || candidate_before.1 != 0
+            || candidate_after.1 == 0
+            || candidate_after.1 > candidate_after.0
+        {
+            return Err("unexpected detached-tail storage custody".into());
+        }
+        let observed = (
+            old_before.0,
+            candidate_before.0,
+            retired.0,
+            candidate_after.0,
+            candidate_after.1,
+        );
+        if custody.is_some_and(|first| first != observed) {
+            return Err("runtime storage custody changed between repetitions".into());
+        }
+        custody = Some(observed);
         if output != expected[..block] {
             return Err("detached tail differs from continuous old-chain output".into());
         }
@@ -151,6 +185,10 @@ fn run(tracks: usize, effects: usize, block: usize, repetitions: usize) -> Resul
         .iter()
         .filter(|&&ns| ns * u128::from(RATE) > block as u128 * 1_000_000_000)
         .count();
+    let (old, candidate, retired, after, tails) = custody.ok_or("no custody samples")?;
+    println!(
+        "runtime_ledger_bytes old_before={old} candidate_before={candidate} retired_after_first_render={retired} candidate_after_first_render={after} detached_track_tails_in_candidate={tails}; ledger charges, not RSS or a unique-union measurement; shared revisions/assets, native resources and allocator overhead excluded"
+    );
     handoffs.sort_unstable();
     renders.sort_unstable();
     combined.sort_unstable();
@@ -180,7 +218,7 @@ fn main() -> Result<()> {
         return Err("profile arguments out of bounds".into());
     }
     println!(
-        "headless 32-frame resident source; bypass detaches active DC filters; one-second continuous old-chain PCM reference; preparation and owner drops excluded; no native deadline"
+        "headless 32-frame resident source; removing the device chain detaches active DC filters; one-second continuous old-chain PCM reference; preparation and owner drops excluded; no native deadline"
     );
     run(100, effects, block, 100)
 }

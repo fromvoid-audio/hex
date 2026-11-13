@@ -70,6 +70,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
                     base_placement: edit.placement,
                     base_start_delta: 0,
                     window: ContentWindow::new(0, length, true)?,
+                    read_resampler: crate::WarpResampler::default(),
                 });
                 clip.edit = Some(Arc::new(edit));
             }
@@ -148,7 +149,54 @@ pub(crate) fn split_midi(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Command, Editor};
+    use crate::{AudioDomainClock, Command, Editor, WarpResampler};
+    #[test]
+    fn musical_unwarped_reverse_projects_the_retained_source_cycle_edges() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "loop".into(),
+                path: "loop.wav".into(),
+                sample_rate: 48_000,
+                frames: 8_000,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        for command in [
+            Command::SetClipLooping {
+                clip,
+                looping: true,
+            },
+            Command::SetClipSourcePhase { clip, phase: 2_000 },
+            Command::TrimClipEdge {
+                clip,
+                edge: crate::TrimEdge::Right,
+                frame: 18_000,
+            },
+            Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            },
+            Command::ReverseClips(vec![clip]),
+        ] {
+            editor.execute(command).unwrap();
+        }
+        let project = editor.project();
+        let clip = project.clip(clip).unwrap();
+        assert_eq!((clip.start(), clip.duration()), (0, 18_000));
+        let projection = clip.repeat_cycles(project.tempo_map()).unwrap().unwrap();
+        let plan = projection.cycles();
+        let frame = |elapsed| projection.frame_at_elapsed(elapsed).unwrap();
+        let seams = plan.seams().unwrap();
+        assert_eq!(plan.count(), 3);
+        assert_eq!(frame(i128::from(seams.boundary(0).unwrap())), 4_000);
+        assert_eq!(frame(i128::from(seams.boundary(1).unwrap())), 12_000);
+        let (first, last) = plan.full_bounds(0).unwrap();
+        assert_eq!((frame(first), frame(last)), (-4_000, 4_000));
+    }
+
     #[test]
     fn reverse_twice_preserves_exact_plain_and_edited_audio_snapshots_and_undo() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
@@ -187,6 +235,67 @@ mod tests {
                 .is_err()
         );
         assert_eq!(editor.project().snapshot(), before);
+    }
+    #[test]
+    fn new_views_read_with_v2_and_edits_keep_a_migrated_v1_law() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "musical".into(),
+                path: "musical.wav".into(),
+                sample_rate: 48_000,
+                frames: 48_000,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        let view = edit.content_view.unwrap();
+        assert!(matches!(edit.domain.clock, AudioDomainClock::Beats(_)));
+        assert_eq!(view.read_resampler, WarpResampler::V2);
+        assert!(view.has_explicit_read_resampler(edit.domain.clock));
+        assert!(!view.has_explicit_read_resampler(AudioDomainClock::Frames(1)));
+        // A saved musical view migrates to v1; later direction and trim edits
+        // keep that law rather than silently changing its rendered PCM.
+        let mut snapshot = editor.project().snapshot();
+        let crate::TrackContentSnapshot::Hybrid { audio_clips, .. } =
+            &mut snapshot.tracks[0].content
+        else {
+            panic!("hybrid track")
+        };
+        let migrated = audio_clips[0].edit.as_mut().unwrap();
+        let clock = migrated.domain.clock;
+        let view = migrated.content_view.as_mut().unwrap();
+        view.read_resampler = AudioContentView::implied_read_resampler(clock);
+        view.window = ContentWindow::new(view.window.start, view.window.end, false).unwrap();
+        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let start = editor.project().clip(clip).unwrap().start();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: crate::TrimEdge::Right,
+                frame: start + 12_000,
+            })
+            .unwrap();
+        let view = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .content_view
+            .unwrap();
+        assert!(view.window.reversed);
+        assert_eq!(view.read_resampler, WarpResampler::V1);
     }
     #[test]
     fn reverse_midi_trim_split_and_transfer_refusal_preserve_editable_source() {
@@ -271,6 +380,7 @@ mod tests {
         ] {
             assert!(
                 e.execute(Command::CopyArrangementMidiToNewSessionTrack {
+                    initial_gain: None,
                     source: clip,
                     before_track: None,
                     scene: target,

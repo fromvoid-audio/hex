@@ -147,3 +147,105 @@ fn late_automation_refusal_preserves_render_cursor_and_committed_history_on_retr
     pristine.render(&mut expected).unwrap();
     assert_eq!(output, expected);
 }
+
+#[test]
+fn recorded_touch_replays_half_open_and_preserves_original_pcm_across_partitions() {
+    use hex_lattice_contract::HostGain;
+    use hex_project::{
+        DeviceAutomationTarget, DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
+    };
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "touch playback".into(),
+            path: "touch-playback.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 256,
+            playback_frames: 256,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("audio import");
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main device");
+    };
+    let beat = |frame| editor.project().tempo_map().frame_to_beat(frame).unwrap();
+    let [start, middle, end, ramp_end] = [16, 23, 31, 64].map(beat);
+    let target = DeviceAutomationTarget::HostOutputGain;
+    let normalized = |value| AutomationValue::new(value).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: vec![
+                AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: normalized(0.5),
+                    outgoing: AutomationInterpolation::Linear,
+                },
+                AutomationPoint {
+                    beat: ramp_end,
+                    value: normalized(0.75),
+                    outgoing: AutomationInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        Audio::new(48_000, vec![[0.125, -0.25]; 256]).unwrap(),
+    )]);
+    let render = |project: &Project, partition| {
+        let graph = compile::project(project, &media).unwrap();
+        let mut renderer = Renderer::new(&graph);
+        renderer.play();
+        let mut pcm = [[0.0; 2]; 64];
+        for segment in pcm.chunks_mut(partition) {
+            renderer.render(segment).unwrap();
+        }
+        pcm
+    };
+    let base = render(editor.project(), 64);
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            vst3_class: None,
+            device,
+            target,
+            spans: vec![DeviceAutomationTouchSpan {
+                start,
+                end,
+                steps: vec![
+                    DeviceAutomationTouchStep {
+                        beat: start,
+                        value: normalized(0.25),
+                    },
+                    DeviceAutomationTouchStep {
+                        beat: middle,
+                        value: normalized(0.875),
+                    },
+                ],
+            }],
+        })
+        .unwrap();
+    let actual = render(editor.project(), 7);
+    assert_eq!(actual, render(editor.project(), 64));
+    assert_eq!(actual[..16], base[..16]);
+    assert_eq!(actual[31..], base[31..]);
+    for (range, normalized) in [(16..23, 0.25), (23..31, 0.875)] {
+        let gain = HostGain::from_normalized(normalized).unwrap().linear();
+        for frame in &actual[range] {
+            assert_eq!(*frame, [0.125 * gain, -0.25 * gain]);
+        }
+    }
+}

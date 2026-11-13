@@ -66,7 +66,12 @@ impl Gesture {
 #[derive(Clone, Copy, PartialEq)]
 enum Destination {
     Gap(Option<TrackId>),
-    Group(TrackId),
+    Group {
+        group: TrackId,
+        /// The last visible child carries the trailing line. A direct group
+        /// header drop instead outlines the group header.
+        last_child: Option<TrackId>,
+    },
 }
 #[derive(Clone, PartialEq)]
 struct PaintedGap {
@@ -238,7 +243,7 @@ impl EditorView {
                         return;
                     } else if let Some(position) = position {
                         if released.is_some() {
-                            view.finish_track_reorder(position);
+                            view.finish_track_reorder(position, cx);
                         } else {
                             view.update_track_reorder(position);
                         }
@@ -378,31 +383,56 @@ impl EditorView {
         {
             return None;
         }
-        let tracks = self.state.as_ref()?.project.tracks();
+        let project = &self.state.as_ref()?.project;
+        let tracks = project.tracks();
         let header_left = bounds.left + (bounds.width - self.track_header_width()).max(0.0);
         let top = self.track_scroll.list.logical_scroll_top();
         let mut row_y = bounds.top - f32::from(top.offset_in_item);
         let mut index = top.item_ix;
-        for (canonical_index, track) in self
-            .arrangement_tracks(&self.state.as_ref()?.project)
-            .skip(index)
-        {
+        for (_, track) in self.arrangement_tracks(project).skip(index) {
             let height = self.track_height(track.id());
+            let row_end = row_y + height;
             if track.is_group()
                 && x >= header_left
                 && row_y >= bounds.top
-                && row_y + height <= bounds.top + bounds.height
+                && row_end <= bounds.top + bounds.height
                 && y >= row_y + 4.0
                 && y < row_y + height * 0.75
             {
                 return source
-                    .permits_group(canonical_index, track.id())
-                    .then_some(Destination::Group(track.id()));
+                    .permits_group(track.id())
+                    .then_some(Destination::Group {
+                        group: track.id(),
+                        last_child: None,
+                    });
+            }
+            // Keep the painted edge in the normal gap despite pixel rounding.
+            // Just above it, prefer the innermost group closing at this edge.
+            if row_end <= bounds.top + bounds.height
+                && y >= row_end - (height * 0.25).min(10.0)
+                && y < row_end - 1.0
+            {
+                let next = self
+                    .arrangement_track_index(index + 1)
+                    .unwrap_or(tracks.len());
+                if let Some(group) = self
+                    .track_hierarchy_indent
+                    .ancestors(track.id())
+                    .iter()
+                    .rev()
+                    .map(|&(group, _)| group)
+                    .find(|&group| source.group_ends_by(group, next))
+                {
+                    return source.permits_group(group).then_some(Destination::Group {
+                        group,
+                        last_child: Some(track.id()),
+                    });
+                }
             }
             if y < row_y + height / 2.0 {
                 break;
             }
-            row_y += height;
+            row_y = row_end;
             index += 1;
         }
         let index = self.arrangement_track_index(index).unwrap_or(tracks.len());
@@ -442,8 +472,11 @@ impl EditorView {
             let within = local - index as f32 * layout.column_width;
             if track.is_group() && within >= 12.0 && within < layout.column_width - 12.0 {
                 return source
-                    .permits_group(column.index, column.id)
-                    .then_some(Destination::Group(column.id));
+                    .permits_group(column.id)
+                    .then_some(Destination::Group {
+                        group: column.id,
+                        last_child: None,
+                    });
             }
         }
         let boundary = if let Some(column) = layout.page.columns.get(index) {
@@ -498,7 +531,7 @@ impl EditorView {
         let drawn = destination.and_then(|destination| {
             let id = match destination {
                 Destination::Gap(id) => id,
-                Destination::Group(id) => Some(id),
+                Destination::Group { group, .. } => Some(group),
             };
             let index = match id {
                 Some(id) => page
@@ -522,7 +555,7 @@ impl EditorView {
                     .debug_selector(|| "console-track-insertion-line".into())
                     .w(px(2.0))
                     .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-                Destination::Group(_) => base
+                Destination::Group { .. } => base
                     .debug_selector(|| "console-track-group-target".into())
                     .w(px(column_width))
                     .border_2()
@@ -691,13 +724,32 @@ impl EditorView {
             .as_ref()
             .and_then(|g| self.track_gap_witness(g));
     }
-    fn finish_track_reorder(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
+    pub(super) fn sidechain_drag(&self) -> Option<(TrackId, gpui::Point<gpui::Pixels>)> {
+        let drag = self
+            .track_reorder
+            .gesture
+            .as_ref()
+            .filter(|drag| drag.moved)?;
+        Some((
+            drag.track,
+            gpui::point(px(drag.pointer.0), px(drag.pointer.1)),
+        ))
+    }
+
+    fn finish_track_reorder(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let was_captured = self.track_reorder.gesture.as_ref().is_some_and(|g| g.moved);
         self.update_track_reorder(position);
         let captured = was_captured || self.track_reorder.gesture.as_ref().is_some_and(|g| g.moved);
         let Some(g) = self.track_reorder.gesture.take() else {
             return captured;
         };
+        if g.moved && super::device_panel::drop_track_key(self, g.track, position, cx) {
+            return true;
+        }
         // A wheel/scrollbar or final pointer event can arrive before a repaint.
         // Never commit a different gap than the user actually saw highlighted.
         if g.pending_page.is_some() || self.track_gap_witness(&g) != self.track_reorder.painted_gap
@@ -721,7 +773,7 @@ impl EditorView {
                     tracks: g.tracks,
                     before,
                 },
-                Destination::Group(group) => Request::ReparentTracks {
+                Destination::Group { group, .. } => Request::ReparentTracks {
                     project_generation: g.generation,
                     revision: g.revision,
                     tracks: g.tracks,
@@ -854,14 +906,19 @@ impl EditorView {
         let bounds = self.arrangement_bounds?;
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
-        let target = match destination {
-            Destination::Gap(before) => before,
-            Destination::Group(group) => Some(group),
+        let (target, after) = match destination {
+            Destination::Gap(before) => (before, false),
+            Destination::Group { group, last_child } => {
+                (last_child.or(Some(group)), last_child.is_some())
+            }
         };
         let index = match target {
-            Some(id) => tracks
-                .iter()
-                .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?,
+            Some(id) => {
+                tracks
+                    .iter()
+                    .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?
+                    + usize::from(after)
+            }
             None => tracks.len(),
         };
         let top = self.track_scroll.list.logical_scroll_top();
@@ -878,7 +935,22 @@ impl EditorView {
         if y < 0.0 || y > bounds.height {
             return None;
         }
-        if let Destination::Group(group) = destination {
+        let color = rgb(theme::color(theme::PaletteRole::Secondary));
+        if let Destination::Group { group, last_child } = destination {
+            if last_child.is_some() {
+                let inset = self.track_hierarchy_indent.pixels(group)
+                    + super::track_hierarchy_indent::RAIL_WIDTH;
+                return Some(
+                    div()
+                        .debug_selector(|| "track-group-end-insertion-line".into())
+                        .absolute()
+                        .right_0()
+                        .w(px((self.track_header_width() - inset).max(0.0)))
+                        .top(px((y - 2.0).max(0.0)))
+                        .h(px(2.0))
+                        .bg(color),
+                );
+            }
             return Some(
                 div()
                     .debug_selector(|| "track-group-drop-target".into())
@@ -888,7 +960,7 @@ impl EditorView {
                     .top(px(y))
                     .h(px(self.track_height(group)))
                     .border_2()
-                    .border_color(rgb(theme::color(theme::PaletteRole::Secondary))),
+                    .border_color(color),
             );
         }
         Some(
@@ -899,7 +971,7 @@ impl EditorView {
                 .right_0()
                 .top(px(y.max(1.0) - 1.0))
                 .h(px(2.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                .bg(color),
         )
     }
     pub(super) fn track_reorder_events(&self, cx: &mut Context<Self>) -> gpui::Canvas<()> {
@@ -965,7 +1037,7 @@ impl EditorView {
                     up.update(cx, |v, cx| {
                         let candidate = v.track_reorder.gesture.is_some();
                         let captured = if v.console_gesture_current(window) {
-                            v.finish_track_reorder(event.position)
+                            v.finish_track_reorder(event.position, cx)
                         } else {
                             v.cancel_track_reorder()
                         };
@@ -1013,7 +1085,7 @@ impl EditorView {
                     tracks,
                     destination,
                 },
-                Destination::Group(group),
+                Destination::Group { group, .. },
             ) => {
                 *project_generation == p.generation
                     && *revision == p.revision

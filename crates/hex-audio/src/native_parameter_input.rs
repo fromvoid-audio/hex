@@ -7,13 +7,20 @@
 //! Sixty-four normal commands may be outstanding; Release and Cancel each keep
 //! a reserved terminal slot. There is no recording-duration/event lifetime cap.
 use crate::{
-    live_delivery::{CAPACITY, Credits, Pending},
+    live_delivery::{CAPACITY, Credits, IN_FLIGHT, Pending},
     prepared::{AppliedAudioSource, Status},
 };
 use hex_engine::{NativeParameterApplication, NativeParameterInputTarget};
 use hex_lattice::{NativeTransientOperation, NativeTransientValue};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::Arc;
+
+/// Maximum outstanding receipts for ordinary parameter values (including
+/// superseded values) before control must consume delivery credits.
+pub const MAX_PENDING_VALUE_RECEIPTS: usize = IN_FLIGHT;
+
+/// Maximum outstanding receipts including reserved terminal capacity.
+pub const MAX_PENDING_RECEIPTS: usize = CAPACITY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -371,34 +378,36 @@ impl Callback {
         self.value
     }
     /// Engine observations are speculative until this final checked sink write.
+    /// True means Clear reached the sink. Its remaining host ramp is owned by
+    /// the renderer and can finish without a live endpoint request.
     pub(crate) fn finish_quantum(
         &mut self,
         application: Option<NativeParameterApplication>,
         end: u64,
         valid: bool,
         cancelled: bool,
-    ) {
+    ) -> bool {
         if cancelled {
             self.abort(AbortReason::Cancelled);
-            return;
+            return false;
         }
         if !valid {
             self.abort(AbortReason::OutputFailed);
-            return;
+            return false;
         }
         if let (Some(command), Some(application)) = (self.staged, application) {
             if application.identity != command.target.input.identity()
                 || Some(application.operation) != self.value
             {
                 self.abort(AbortReason::SourceChanged);
-                return;
+                return false;
             }
             let Some(due) = application
                 .performance_frame
                 .checked_add(u64::from(application.remaining_latency_frames))
             else {
                 self.abort(AbortReason::ClockExhausted);
-                return;
+                return false;
             };
             let receipt = if command.sequence == 0 {
                 Receipt::Finished {
@@ -415,10 +424,11 @@ impl Callback {
             if self.pending.push(due, receipt).is_err() {
                 self.receipt_fault = true;
                 self.abort(AbortReason::OutputFailed);
-                return;
+                return false;
             }
             self.staged = None;
         }
+        let mut finished = false;
         while let Some(receipt) = self.pending.pop_due(end) {
             self.emit(receipt);
             if let Receipt::Finished { target, .. } = receipt {
@@ -426,8 +436,10 @@ impl Callback {
                     self.last_terminated_gesture.max(target.gesture_serial);
                 self.owner = None;
                 self.value = None;
+                finished = true;
             }
         }
+        finished
     }
     pub(crate) fn abort(&mut self, reason: AbortReason) {
         let mut owner = self.owner.take();

@@ -3,7 +3,7 @@ use crate::SineTable;
 use parameter::EnvelopeField;
 
 #[test]
-fn custom_tuning_note_admission_matches_operator_runtime_nyquist_law() {
+fn custom_tuning_notes_above_nyquist_are_admitted_with_silenced_operators() {
     for lfo in [false, true] {
         let mut settings = legacy_settings();
         for operator in 0..4 {
@@ -14,7 +14,7 @@ fn custom_tuning_note_admission_matches_operator_runtime_nyquist_law() {
             settings.lfo.0[5] = 0.2f32.to_bits();
         }
         let state = settings.to_state().unwrap();
-        for (pitch, hz, supported) in [(69, 30_000.0, false), (127, 220.0, true)] {
+        for (pitch, hz) in [(69, 30_000.0), (127, 220.0)] {
             let tuning = hex_lattice::TuningTable::new([hz; 128]).unwrap();
             let instrument = OPERATOR_METADATA
                 .prepare_instrument(
@@ -26,12 +26,78 @@ fn custom_tuning_note_admission_matches_operator_runtime_nyquist_law() {
                     },
                 )
                 .unwrap();
-            assert_eq!(
+            assert!(
                 instrument.validate_event_note(pitch, 100).is_ok(),
-                supported,
                 "lfo={lfo}, pitch={pitch}, custom Hz={hz}"
             );
         }
+    }
+}
+
+/// Regression for Pulse #3957: one operator above nyquist used to refuse the
+/// whole event batch, silencing every note in the block.
+#[test]
+fn nyquist_operator_does_not_refuse_the_note_batch() {
+    use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentEvent};
+    for lfo in [false, true] {
+        let mut settings = legacy_settings();
+        settings.fields[9] = 16.0; // Operator 4 ratio: pitch 120 reaches ~134 kHz.
+        if lfo {
+            settings.lfo.0[0] = 1;
+            settings.lfo.0[5] = 0.2f32.to_bits();
+        }
+        // The filter selects the mutable runtime whose batch preflight refused.
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &settings.to_state().unwrap(),
+                ParameterId::from_static(20_001),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let factory = OPERATOR_METADATA
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 44_100,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap()
+            .prepare_mutable_runtime()
+            .unwrap()
+            .unwrap();
+        let note = |occurrence_id, pitch| NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id,
+            pitch,
+            velocity: 100,
+        };
+        let render = |events: &[NativeInstrumentEvent]| {
+            let mut runtime = factory.create_runtime();
+            let mut frames = [[0.0_f32; 2]; 256];
+            runtime
+                .preflight_events(events, frames.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .expect("batch admitted");
+            runtime.process_block(events, &mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            frames
+        };
+        let batch = render(&[note(1, 120), note(2, 60)]);
+        let low_only = render(&[note(2, 60)]);
+        let high_only = render(&[note(1, 120)]);
+        assert!(
+            batch.iter().flatten().all(|sample| sample.is_finite()),
+            "lfo={lfo}"
+        );
+        assert!(
+            low_only.iter().flatten().any(|sample| *sample != 0.0),
+            "lfo={lfo}: the other note in the batch renders"
+        );
+        assert!(
+            high_only.iter().flatten().any(|sample| *sample != 0.0),
+            "lfo={lfo}: the high note's remaining operators render"
+        );
+        assert_ne!(batch, low_only, "lfo={lfo}");
     }
 }
 

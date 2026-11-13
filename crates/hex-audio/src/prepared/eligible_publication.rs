@@ -542,6 +542,7 @@ impl Callback {
                 pending_play: self.stream_pending_play.is_some(),
                 command_prefix: self.stream_prefix,
                 frames,
+                fenced_restart: false,
             });
             next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {
@@ -645,6 +646,7 @@ impl Callback {
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.stream_source_changed.store(false, Release);
+                    self.status.stream_read_failed.store(false, Release);
                     self.status
                         .applied_source
                         .publish(match self.active.as_ref() {

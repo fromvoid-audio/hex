@@ -1,6 +1,8 @@
 //! One first-load UI intent; the Session worker owns source/assignment state.
 use super::*;
-use gpui::{Pixels, Point};
+use gpui::{App, Pixels, Point};
+use hex_project::InstrumentLoadPlacement;
+use hex_session::service::SamplerLoadSlot;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
@@ -12,10 +14,7 @@ pub(super) struct Target {
     pub(super) revision: u64,
     pub(super) track: TrackId,
     pub(super) path: PathBuf,
-    pub(super) replacement: Option<(
-        hex_project::DeviceId,
-        hex_lattice_contract::NativeDeviceState,
-    )>,
+    pub(super) slot: SamplerLoadSlot,
 }
 struct Pending {
     id: u64,
@@ -45,6 +44,7 @@ impl EditorView {
             && audible.state.revision == state.revision
             && audible.device_preview_identity.is_none()
             && audible.tuning_preview_identity.is_none()
+            && audible.clip_preview_identity.is_none()
             && audio.control.status().is_some_and(|status| {
                 status.applied_revision.load(Ordering::Acquire) == audible.audio_revision
             })
@@ -71,19 +71,22 @@ impl EditorView {
             .project
             .track(track)
             .ok_or("select a midi track before loading a sampler")?;
-        let replacement = if let Some(device) = track.instrument() {
+        let slot = if let Some(device) = track.instrument() {
             hex_engine::validate_sampler_replacement_on_control(device.state())
                 .map_err(|_| "sample replacement currently requires classic mode")?;
-            Some((device.id(), device.state().clone()))
+            SamplerLoadSlot::Existing {
+                device: device.id(),
+                expected_state: device.state().clone(),
+            }
         } else {
-            None
+            SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First)
         };
         Ok(Target {
             generation: self.project_generation,
             revision: state.revision,
             track: track.id(),
             path,
-            replacement,
+            slot,
         })
     }
     pub(super) fn first_sampler_target_current(&self, target: &Target) -> bool {
@@ -92,10 +95,18 @@ impl EditorView {
                 s.revision == target.revision
                     && s.project
                         .track(target.track)
-                        .is_some_and(|t| match &target.replacement {
-                            None => t.instrument().is_none(),
-                            Some((id, state)) => t.instrument().is_some_and(|device| {
-                                device.id() == *id && device.state() == state && !device.bypassed()
+                        .is_some_and(|track| match &target.slot {
+                            SamplerLoadSlot::New(placement) => {
+                                track.instrument().map(hex_project::Device::id)
+                                    == placement.replacement()
+                            }
+                            SamplerLoadSlot::Existing {
+                                device,
+                                expected_state,
+                            } => track.instrument().is_some_and(|current| {
+                                current.id() == *device
+                                    && current.state() == expected_state
+                                    && !current.bypassed()
                             }),
                         })
             })
@@ -109,42 +120,41 @@ impl EditorView {
     ) {
         use super::context_menu::EditorContextAction;
         use crate::context_menu::{MenuItem, PopupMenu};
-        let (label, action) =
-            if let Some(pending) = self.sampler_load.pending.as_ref() {
-                (
-                    "cancel sampler load",
-                    EditorContextAction::CancelSamplerLoad {
-                        request_id: pending.id,
-                    },
-                )
-            } else if let Some(id) = self.sampler_replacement_pending_id() {
-                (
-                    "cancel sample replacement",
-                    EditorContextAction::CancelSamplerLoad { request_id: id },
-                )
-            } else {
-                if !device_panel::finalize_controls(self, cx) {
+        let (label, action) = if let Some(pending) = self.sampler_load.pending.as_ref() {
+            (
+                "cancel sampler load",
+                EditorContextAction::CancelSamplerLoad {
+                    request_id: pending.id,
+                },
+            )
+        } else if let Some(id) = self.sampler_replacement_pending_id() {
+            (
+                "cancel sample replacement",
+                EditorContextAction::CancelSamplerLoad { request_id: id },
+            )
+        } else {
+            if !device_panel::finalize_controls(self, cx) {
+                return;
+            }
+            let target = match self.first_sampler_target(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.error = Some(e.into());
+                    cx.notify();
                     return;
                 }
-                let target = match self.first_sampler_target(path) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.error = Some(e.into());
-                        cx.notify();
-                        return;
-                    }
-                };
-                (
-                    if target.replacement.as_ref().is_some_and(|(_, state)| {
-                        !hex_engine::is_empty_sampler_state_on_control(state)
-                    }) {
-                        "replace sampler sample"
-                    } else {
-                        "load into sampler"
-                    },
-                    EditorContextAction::LoadFirstSampler(target),
-                )
             };
+            (
+                if matches!(&target.slot, SamplerLoadSlot::Existing { expected_state, .. }
+                        if !hex_engine::is_empty_sampler_state_on_control(expected_state))
+                {
+                    "replace sampler sample"
+                } else {
+                    "load into sampler"
+                },
+                EditorContextAction::LoadFirstSampler(target),
+            )
+        };
         let previous_focus = self
             .context_menu
             .take()
@@ -168,8 +178,73 @@ impl EditorView {
         });
         cx.notify();
     }
-    /// Releases a browser sample over one sampler card. The drop names its
-    /// own track and instrument, so it never depends on the selected track.
+    fn browser_sampler_drag_current(&self, drag: &drag::BrowserAudioDrag) -> bool {
+        self.active_browser_audio_drag
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
+            && !self.opening_project
+            && !self.close_prompt_open
+            && Some(self.browser.scan_generation()) == drag.browser_generation
+            && drag.project_generation == self.project_generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == drag.revision)
+    }
+
+    pub(super) fn browser_sampler_drop_track(
+        &self,
+        drag: &drag::BrowserAudioDrag,
+        track: Option<TrackId>,
+        cx: &App,
+    ) -> Result<&hex_project::Track, &'static str> {
+        if drag.project_asset.is_some() {
+            return Err("project sample cannot be loaded into sampler yet");
+        }
+        if !self.browser_sampler_drag_current(drag) {
+            return Err("sample drop canceled · project or browser changed");
+        }
+        if self.sampler_load.pending.is_some() || self.sampler_replacement_pending_id().is_some() {
+            return Err("sampler load is already pending");
+        }
+        let track = track.ok_or("drop the sample on an ordinary track")?;
+        let target = self.check_device_append_target(track, cx)?;
+        if self.edit_pending() {
+            return Err("wait for the pending edit before loading a sampler");
+        }
+        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+            return Err("sampler loading requires a resident project");
+        }
+        if target.is_group() || (target.instrument().is_some() && !target.receives_source_audio()) {
+            return Err("drop the sample on an ordinary receiving track");
+        }
+        Ok(target)
+    }
+
+    /// Panel drops append a new instrument. Header drops use the front slot.
+    /// Either surface replaces an occupied slot in place, preserving effects.
+    pub(super) fn drop_browser_sample_on_track(
+        &mut self,
+        drag: &drag::BrowserAudioDrag,
+        track: Option<TrackId>,
+        placement: InstrumentLoadPlacement,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self
+            .browser_sampler_drop_track(drag, track, cx)
+            .map(|track| Target {
+                generation: drag.project_generation,
+                revision: drag.revision,
+                track: track.id(),
+                path: drag.path.clone(),
+                slot: SamplerLoadSlot::New(track.instrument().map_or(placement, |device| {
+                    InstrumentLoadPlacement::Replace(device.id())
+                })),
+            });
+        self.finish_browser_sampler_drop(drag, target, cx);
+    }
+
+    /// A sampler card edits the exact device and preserves its existing settings.
     pub(super) fn drop_browser_sample_on_sampler(
         &mut self,
         drag: &drag::BrowserAudioDrag,
@@ -177,40 +252,28 @@ impl EditorView {
         device: hex_project::DeviceId,
         cx: &mut Context<Self>,
     ) {
-        let current = self
-            .active_browser_audio_drag
-            .as_ref()
-            .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
-            && !self.opening_project
-            && !self.close_prompt_open
-            && self.browser.scan_generation() == drag.browser_generation
-            && drag.project_generation == self.project_generation
-            && self
-                .state
-                .as_ref()
-                .is_some_and(|state| state.revision == drag.revision);
-        // Retire the exact UI payload first; the load request owns the rest.
+        let target = self.browser_sampler_drop_track(drag, Some(track), cx).and_then(|_| {
+            let target = self.sampler_target_on_track(track, drag.path.clone())?;
+            if matches!(&target.slot, SamplerLoadSlot::Existing { device: id, .. } if *id == device) {
+                Ok(target)
+            } else {
+                Err("sample drop canceled · sampler changed")
+            }
+        });
+        self.finish_browser_sampler_drop(drag, target, cx);
+    }
+
+    fn finish_browser_sampler_drop(
+        &mut self,
+        drag: &drag::BrowserAudioDrag,
+        target: Result<Target, &'static str>,
+        cx: &mut Context<Self>,
+    ) {
+        // The worker owns an admitted load. The retired drag must never reach
+        // an underlying Arrangement/Console clip-drop receiver.
         self.clear_browser_audio_drag(drag);
-        if !current {
-            self.error = Some("sample drop canceled · project changed".into());
-            cx.notify();
-            return;
-        }
-        if self.sampler_load.pending.is_some() || self.sampler_replacement_pending_id().is_some() {
-            self.error = Some("sampler load is already pending".into());
-            cx.notify();
-            return;
-        }
-        if !device_panel::finalize_controls(self, cx) {
-            return;
-        }
-        match self.sampler_target_on_track(track, drag.path.clone()) {
-            Ok(target)
-                if target
-                    .replacement
-                    .as_ref()
-                    .is_some_and(|(id, _)| *id == device) =>
-            {
+        match target {
+            Ok(target) => {
                 self.load_first_sampler(target, cx);
                 if self.sampler_load.pending.is_some()
                     || self.sampler_replacement_pending_id().is_some()
@@ -218,16 +281,13 @@ impl EditorView {
                     self.stop_browser_preview_for_drop();
                 }
             }
-            Ok(_) => {
-                self.error = Some("sample drop canceled · sampler changed".into());
-                cx.notify();
-            }
             Err(reason) => {
                 self.error = Some(reason.into());
                 cx.notify();
             }
         }
     }
+
     pub(super) fn load_first_sampler(&mut self, target: Target, cx: &mut Context<Self>) {
         if self.sampler_load.pending.is_some() {
             self.error = Some("sampler load is already pending".into());
@@ -237,10 +297,8 @@ impl EditorView {
             self.error = Some("sampler load target changed".into());
             return;
         }
-        if target
-            .replacement
-            .as_ref()
-            .is_some_and(|(_, state)| !hex_engine::is_empty_sampler_state_on_control(state))
+        if matches!(&target.slot, SamplerLoadSlot::Existing { expected_state, .. }
+            if !hex_engine::is_empty_sampler_state_on_control(expected_state))
         {
             self.submit_sampler_replacement(target);
             cx.notify();
@@ -256,7 +314,7 @@ impl EditorView {
             project_generation: target.generation,
             revision: target.revision,
             track: target.track,
-            empty_sampler: target.replacement.clone(),
+            slot: target.slot.clone(),
             path: target.path.clone(),
             cancel: Arc::clone(&cancel),
         };
@@ -345,6 +403,16 @@ impl EditorView {
             .unwrap_or_else(|| "sample".into());
         self.status = format!("loaded {name} into sampler");
     }
+}
+
+pub(super) fn track_drop_listener(
+    cx: &Context<EditorView>,
+    track: Option<TrackId>,
+    placement: InstrumentLoadPlacement,
+) -> impl Fn(&drag::BrowserAudioDrag, &mut Window, &mut App) + 'static {
+    cx.listener(move |view, drag: &drag::BrowserAudioDrag, _, cx| {
+        view.drop_browser_sample_on_track(drag, track, placement, cx);
+    })
 }
 
 #[cfg(feature = "ui-test-support")]

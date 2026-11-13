@@ -109,6 +109,7 @@ struct Borrowed {
     ring: [Frame; 19],
     cursor: usize,
     next_offset: usize,
+    initial_unstamped_frames: usize,
     processed: usize,
     fail_at: Option<usize>,
     revoked: bool,
@@ -122,6 +123,7 @@ impl Borrowed {
             ring: [[0.0; 2]; 19],
             cursor: 0,
             next_offset: 0,
+            initial_unstamped_frames: 0,
             processed: 0,
             fail_at: None,
             revoked: false,
@@ -153,10 +155,11 @@ impl ForeignProcessors for Borrowed {
             1,
             "the existing content-origin path remains authoritative"
         );
-        assert!(
+        assert_eq!(
             clock
                 .and_then(|clock| clock.performance_frame_at_offset(0))
-                .is_some()
+                .is_some(),
+            self.processed >= self.initial_unstamped_frames
         );
         self.next_offset += frames.len();
         self.processed += frames.len();
@@ -262,6 +265,114 @@ fn prepared_with_latency(
         Borrowed::new(owner, device.value()),
         f.samples,
     )
+}
+
+#[test]
+fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+        BeatTime, DeviceAutomation, DeviceAutomationTarget,
+    };
+
+    struct AutomatedEffect(Borrowed);
+    impl ForeignProcessors for AutomatedEffect {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let program = node
+                .automation
+                .expect("prepared automation reaches the offline effect");
+            assert_eq!(Some(program.binding), node.prepared.binding());
+            let mut origins = [None; 8];
+            origins[0] = clock.and_then(|clock| clock.authored_arrangement_frame_at_offset(0));
+            let mut points = [hex_lattice_contract::ForeignParameterPoint::default(); 8];
+            let count = program.program.render_quantum(&origins, &[], &mut points)?;
+            if count != 0 {
+                assert_eq!(points[0].id, 7);
+                frames[0] = frames[0].map(|sample| sample * points[0].normalized as f32);
+            }
+            self.0.process_segment(node, offset, frames, clock)
+        }
+
+        fn reject_callback(&mut self) {
+            self.0.reject_callback();
+        }
+    }
+
+    let (mut revision, effect, samples) = prepared_with_latency(0, false, 3, Some(1));
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: effect.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let class = [1; 16];
+    let project = hex_project::Project::new(48_000).unwrap();
+    let program = crate::foreign_automation::BoundProgram::prepare(
+        &[DeviceAutomation {
+            read_selection: AutomationReadSelection::Authored,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            vst3_class: Some(class),
+            points: [
+                (BeatTime::ZERO, 0.25),
+                (BeatTime::from_ratio(1, 1000).unwrap(), 0.75),
+            ]
+            .map(|(beat, value)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            })
+            .to_vec(),
+            touch: Vec::new(),
+        }],
+        hex_lattice::ForeignAutomationSource {
+            binding,
+            revision: std::num::NonZeroU64::MIN,
+            class,
+            sample_rate: 48_000,
+            quantum_frames: 8,
+            dense_parameter: None,
+            parameters: &[hex_lattice::ForeignParameterCapability {
+                id: 7,
+                steps: 0,
+                normalized_base_bits: 0.5f64.to_bits(),
+            }],
+        },
+        project.tempo_map(),
+        8,
+    )
+    .unwrap()
+    .unwrap();
+    Arc::get_mut(&mut revision)
+        .unwrap()
+        .install_foreign_automation_on_control(vec![program], 8192)
+        .unwrap();
+    let mut output = [[0.0; 2]; 88];
+    let frames = output.len() as u64;
+    assert!(SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).is_err());
+    assert!(
+        SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, frames)
+            .is_err()
+    );
+    let mut bounce =
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames)
+            .unwrap();
+    bounce.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut effect = AutomatedEffect(effect);
+    for block in output.chunks_mut(5) {
+        effect.0.next_offset = 0;
+        bounce
+            .render_with_foreign_processors(block, None, None, None, &mut effect)
+            .unwrap();
+    }
+    let mut expected = [[0.0; 2]; 88];
+    expected[19] = samples[0].map(|sample| sample * (0.25 * 0.25));
+    expected[19 + 63] = samples[63].map(|sample| sample * (0.75 * 0.25));
+    assert_eq!(output, expected);
 }
 
 #[test]
@@ -557,3 +668,5 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
 }
 
 mod shared_source_release;
+
+mod instruments;

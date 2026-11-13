@@ -2,7 +2,12 @@
 use super::{EditorView, OpenRecentProject, menus};
 use gpui::Context;
 use hex_preferences::RecentProjects;
-use std::path::{Path, PathBuf};
+#[cfg(all(test, feature = "ui-test-support"))]
+use std::path::Path;
+use std::path::PathBuf;
+
+mod labels;
+pub(super) use labels::recent_project_label;
 
 pub(super) struct RecentProjectsState {
     path: PathBuf,
@@ -75,7 +80,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not load recent projects · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -86,7 +91,12 @@ impl EditorView {
                     for path in self.recent_projects.projects.paths().iter().rev() {
                         if let Err(error) = merged.record_opened(path.clone()) {
                             self.recent_projects.writable = false;
-                            self.error = Some(error.to_string().to_lowercase().into());
+                            self.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            );
                             break;
                         }
                     }
@@ -110,7 +120,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not add recent project · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -174,7 +184,7 @@ impl EditorView {
             self.error = Some(
                 format!(
                     "could not save recent projects · {}",
-                    error.to_string().to_lowercase()
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 )
                 .into(),
             );
@@ -193,35 +203,6 @@ impl EditorView {
             action.path.clone(),
             hex_session::DocumentAudioMode::Resident,
         );
-    }
-}
-
-pub(super) fn recent_project_label(path: &Path, all_paths: &[PathBuf]) -> String {
-    let file_name = path
-        .file_name()
-        .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .to_lowercase();
-    let duplicate_name = all_paths
-        .iter()
-        .filter(|other| {
-            other
-                .file_name()
-                .unwrap_or(other.as_os_str())
-                .to_string_lossy()
-                .eq_ignore_ascii_case(&file_name)
-        })
-        .count()
-        > 1;
-    if duplicate_name {
-        let parent = path
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_string_lossy()
-            .to_lowercase();
-        format!("{file_name} · {parent}")
-    } else {
-        file_name
     }
 }
 
@@ -253,18 +234,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
-    }
-
-    #[test]
-    fn duplicate_filename_labels_include_lowercase_parent_path() {
-        let paths = [
-            PathBuf::from("/Work/Live/Session.HEX"),
-            PathBuf::from("/Archive/Session.HEX"),
-        ];
-        assert_eq!(
-            recent_project_label(&paths[0], &paths),
-            "session.hex · /work/live"
-        );
     }
 
     fn editor_fixture(

@@ -146,7 +146,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                     generation: v.project_generation,
                     revision: state.revision,
                     clip,
-                    beat_start: v.piano_beat_start.raw(),
+                    beat_start: v.piano_beat_start,
                     beat_span: v.piano_beat_span.raw(),
                     pitch_low: v.piano_pitch_low,
                     pitch_rows: v.piano_pitch_rows,
