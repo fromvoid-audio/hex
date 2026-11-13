@@ -1,20 +1,23 @@
 use super::*;
 
 fn action_revision(looped: bool) -> Arc<PreparedRevision> {
-    action_revision_with_loop(looped.then_some((0, 64)))
+    action_revision_with_loop(looped.then_some((0, 64)), 48_000)
 }
 
-fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>) -> Arc<PreparedRevision> {
+fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>, rate: u32) -> Arc<PreparedRevision> {
     let mut snapshot = audio_project(5, 18, 4).snapshot();
+    snapshot.sample_rate = rate;
     let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
         panic!("audio fixture")
     };
     clip.source_start = 4094;
-    clip.source_end = 4108;
+    clip.source_end = if rate == 48_000 { 4108 } else { 4700 };
     snapshot.assets[0].source_sample_rate = 24_000;
     snapshot.assets[0].source_frames = 4096;
-    snapshot.assets[0].playback_frames = 8192;
+    snapshot.assets[0].playback_frames =
+        hex_project::converted_frame_count(4096, 24_000, rate).unwrap();
     snapshot.assets[0].conversion_version = hex_project::SINC_CONVERSION_V1;
+    snapshot.assets[1].source_sample_rate = rate;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
         active: true,
         name: "clip".into(),
@@ -53,7 +56,7 @@ fn action_revision_with_loop(loop_bounds: Option<(u64, u64)>) -> Arc<PreparedRev
                 .unwrap(),
             ))
         } else {
-            PreparedAudioSource::Resident(crate::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap())
+            PreparedAudioSource::Resident(crate::Audio::new(rate, vec![[0.0; 2]; 32]).unwrap())
         };
         media.insert(asset.id(), source);
     }
@@ -86,12 +89,21 @@ fn projected_windows_match_rendered_reads_across_loop_and_due_release() {
         fn request_page(&mut self, _key: StreamSourceKey, _index: u64) {}
     }
 
-    for loop_length in [Some(1), Some(64), None] {
+    for (rate, loop_length) in [
+        (48_000, Some(1)),
+        (48_000, Some(64)),
+        (48_000, None),
+        (192_000, Some(1)),
+        (192_000, Some(64)),
+        (192_000, None),
+    ] {
+        let start = u64::from(rate) * 2 - 8;
         let mut actual = Playback::from_prepared(action_revision_with_loop(
-            loop_length.map(|length| (95_992, length)),
+            loop_length.map(|length| (start, length)),
+            rate,
         ));
         actual
-            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(95_992)))
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(start)))
             .unwrap();
         let clip = actual.prepared_revision().unwrap().session().audio_clips()[0].id;
         actual
@@ -114,7 +126,8 @@ fn projected_windows_match_rendered_reads_across_loop_and_due_release() {
 
         // Test-only model: carry the copied route and its release through
         // each future window; this is not an admitted realtime transaction.
-        let total = usize::try_from(due - actual.performance_frame()).unwrap() + 300;
+        let fade = (rate as usize * 128 + 24_000) / 48_000;
+        let total = usize::try_from(due - actual.performance_frame()).unwrap() + 300.max(fade + 8);
         let projected = {
             let session = actual.session_runtime_mut_for_stream_action().unwrap();
             let mut routes = session.routes.clone();
@@ -168,7 +181,7 @@ fn projected_windows_match_rendered_reads_across_loop_and_due_release() {
                 .any(|(window, _)| window.performance_frame == due)
         );
         if loop_length == Some(1) {
-            assert!(projected.len() >= 300);
+            assert!(projected.len() >= 300.max(fade));
         }
         if loop_length.is_none() {
             assert!(projected.iter().any(|(window, _)| window.frames == 256));
