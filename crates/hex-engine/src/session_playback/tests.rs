@@ -4352,9 +4352,32 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
             "strict planner; paused={paused}"
         );
         let mut candidate = SessionPlayback::new(Arc::clone(&edited)).unwrap();
-        candidate
+        let (_, preview) = candidate
+            .preview_stream_handoff_with_report(&mut playback, 64, None, &mut |_| Ok(()))
+            .unwrap();
+        let (_, ordinary) = candidate
+            .preview_stream_handoff_with_policy_and_report(
+                &mut playback,
+                64,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(playback.performance_frame(), frame);
+        let committed = candidate
             .try_inherit_state_live_from(&mut playback)
             .unwrap();
+        assert_eq!(preview.running_audio_restart(), !paused);
+        assert_eq!(
+            ordinary.running_audio_restart(),
+            preview.running_audio_restart()
+        );
+        assert_eq!(
+            preview.running_audio_restart(),
+            committed.running_audio_restart()
+        );
         assert_eq!(candidate.playing(), !paused);
         assert_eq!(candidate.performance_frame(), frame);
 
@@ -4419,9 +4442,32 @@ fn requested_live_restart_drops_a_removed_note_release_tail() {
             candidate.request_live_restart();
         }
         assert_eq!(candidate.live_restart_requested(), restart);
-        candidate
+        let (_, preview) = candidate
+            .preview_stream_handoff_with_report(&mut playback, 64, None, &mut |_| Ok(()))
+            .unwrap();
+        let (_, ordinary) = candidate
+            .preview_stream_handoff_with_policy_and_report(
+                &mut playback,
+                64,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(playback.performance_frame(), frame);
+        let committed = candidate
             .try_inherit_state_live_from(&mut playback)
             .unwrap();
+        assert_eq!(preview.running_audio_restart(), restart);
+        assert_eq!(
+            ordinary.running_audio_restart(),
+            preview.running_audio_restart()
+        );
+        assert_eq!(
+            preview.running_audio_restart(),
+            committed.running_audio_restart()
+        );
         assert!(candidate.playing());
         assert_eq!(candidate.performance_frame(), frame);
         let mut pcm = [[0.0; 2]; 64];

@@ -747,8 +747,8 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
         candidate.candidate_admission_open,
     );
     let mut pages = Vec::new();
-    let window = candidate
-        .preview_stream_handoff_with_scope(
+    let (window, report) = candidate
+        .preview_stream_handoff_with_policy_and_report(
             &mut old,
             64,
             None,
@@ -757,8 +757,10 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
                 Ok(())
             },
             true,
+            false,
         )
         .unwrap();
+    assert!(!report.running_audio_restart());
     assert_eq!(window.frames, 0);
     assert!(pages.is_empty());
     assert_eq!(
@@ -785,7 +787,11 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
         ),
         before
     );
-    candidate.try_inherit_state_from(&mut old).unwrap();
+    let committed = candidate.try_inherit_state_from(&mut old).unwrap();
+    assert_eq!(
+        report.running_audio_restart(),
+        committed.running_audio_restart()
+    );
     let mut oracle = SessionPlayback::new(revision).unwrap();
     for runtime in [&mut candidate, &mut oracle] {
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
