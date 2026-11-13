@@ -54,6 +54,7 @@ mod static_release_receiver;
 mod stream_miss_fade;
 mod streamed_loop_seam;
 mod streamed_publication_boundary;
+mod timed_transport_allocations;
 mod touch_playback_allocations;
 mod track_gain_allocations;
 mod track_tag_allocations;
