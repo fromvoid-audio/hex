@@ -3557,6 +3557,7 @@ impl EditorView {
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
                 | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
                 | Request::ChangeProjectSampleRate { .. }
                 | Request::Import(_)
                 | Request::ImportAudioBatch { .. }
@@ -3920,6 +3921,7 @@ impl EditorView {
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
                 | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
                 | Request::DropNativeDevice { .. }
                 | Request::MoveTrackDevices { .. }
                 | Request::ReorderDevices { .. }

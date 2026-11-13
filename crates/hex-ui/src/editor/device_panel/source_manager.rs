@@ -1,4 +1,4 @@
-//! Project-wide retained-source inventory and explicit deletion.
+//! Project-wide retained-source inventory with explicit creation and deletion.
 use super::*;
 use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
@@ -26,6 +26,8 @@ enum Operation {
     Open,
     Details(SourceId),
     Delete(SourceId),
+    ChooseInstrument,
+    Create(hex_engine::DeviceTypeId),
 }
 
 #[derive(Clone)]
@@ -53,7 +55,9 @@ impl Action {
             && view.state.as_ref().is_some_and(|state| {
                 state.revision == self.revision
                     && match self.operation {
-                        Operation::Open => true,
+                        Operation::Open | Operation::ChooseInstrument | Operation::Create(_) => {
+                            true
+                        }
                         Operation::Details(source) | Operation::Delete(source) => {
                             state.project.native_source(source).is_some()
                         }
@@ -75,6 +79,24 @@ impl Action {
         match self.operation {
             Operation::Open => open(view, self.position, window, cx),
             Operation::Details(source) => details(view, source, self.position, window, cx),
+            Operation::ChooseInstrument => instruments(view, self.position, window, cx),
+            Operation::Create(type_id) => {
+                if view.edit_pending()
+                    || view.tuning.client.snapshot().is_some()
+                    || view.tuning.client.has_pending_requests()
+                {
+                    view.error = Some("finish the current edit before creating a source".into());
+                    cx.notify();
+                    return;
+                }
+                let _ = view.enqueue(Request::CreateRetainedNativeSource {
+                    project_generation: self.generation,
+                    revision: self.revision,
+                    type_id: Box::new(type_id),
+                    name: self.label.to_string(),
+                });
+                cx.notify();
+            }
             Operation::Delete(source) => {
                 if view.edit_pending()
                     || view.tuning.client.snapshot().is_some()
@@ -132,7 +154,7 @@ fn open(
     };
     let generation = view.project_generation;
     let revision = state.revision;
-    let items = state
+    let mut items = state
         .project
         .native_sources()
         .iter()
@@ -161,8 +183,63 @@ fn open(
             }
         })
         .collect::<Vec<_>>();
+    items.push(MenuItem {
+        label: "create source",
+        swatch: None,
+        checked: false,
+        action: EditorContextAction::SourceManager(Action {
+            generation,
+            revision,
+            position,
+            operation: Operation::ChooseInstrument,
+            label: "create source".into(),
+        }),
+    });
+    show(view, position, items, window, cx);
+}
+
+fn instruments(
+    view: &mut EditorView,
+    position: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    let Some(state) = view.state.as_ref() else {
+        return;
+    };
+    let catalog = view
+        .device_panel
+        .instrument_catalog
+        .clone()
+        .unwrap_or_else(|| {
+            hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
+                .map_err(|error| error.to_string())
+        });
+    let catalog = match catalog {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            view.error = Some(format!("device catalog error · {error}").into());
+            cx.notify();
+            return;
+        }
+    };
+    let items = catalog
+        .into_iter()
+        .map(|entry| MenuItem {
+            label: "instrument",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::SourceManager(Action {
+                generation: view.project_generation,
+                revision: state.revision,
+                position,
+                operation: Operation::Create(entry.type_id),
+                label: entry.name.into(),
+            }),
+        })
+        .collect::<Vec<_>>();
     if items.is_empty() {
-        view.status = "no retained sources".into();
+        view.error = Some("no native instruments available".into());
         cx.notify();
         return;
     }

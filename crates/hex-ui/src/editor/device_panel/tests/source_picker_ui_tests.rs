@@ -774,10 +774,16 @@ fn source_deletion_cancels_a_published_seek_before_callback(cx: &mut TestAppCont
     source_edit_cancels_a_published_seek(cx, SourceEdit::Delete);
 }
 
+#[gpui::test]
+fn source_creation_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
+    source_edit_cancels_a_published_seek(cx, SourceEdit::Create);
+}
+
 enum SourceEdit {
     Rebind,
     Receiver,
     Delete,
+    Create,
 }
 
 fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdit) {
@@ -905,6 +911,12 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdi
                 project_generation: 0,
                 revision,
                 source: unused,
+            },
+            SourceEdit::Create => Request::CreateRetainedNativeSource {
+                project_generation: 0,
+                revision,
+                type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+                name: "new source".into(),
             },
             SourceEdit::Rebind => Request::RebindNativeSource {
                 project_generation: 0,
@@ -1125,6 +1137,138 @@ fn source_manager_lists_and_deletes_without_assigning(cx: &mut TestAppContext) {
             (before.revision, before.can_undo, before.can_redo)
         );
         assert!(state.project.native_source(bound).is_some());
+    });
+}
+
+#[gpui::test]
+fn source_manager_creates_an_unassigned_instrument_from_empty_project(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let catalog =
+        hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
+            .unwrap();
+    let chosen = catalog.last().unwrap();
+    let chosen_index = catalog.len() - 1;
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "target".into(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::Track(track) = event.created.unwrap() else {
+        panic!("track")
+    };
+    let original = event.state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = None;
+        view.track_selection.replace(&[]);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds("source-manager-button").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.context_menu.as_ref().unwrap().items.len(), 1);
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let action = editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert!(!menu.items.is_empty());
+        let EditorContextAction::SourceManager(action) = &menu.items[chosen_index].action else {
+            panic!("instrument")
+        };
+        action.clone()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.context_menu.is_none());
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            action.clone().perform(view, window, cx);
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert!(view.device_gesture.snapshot().is_some());
+        })
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    for _ in 0..chosen_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.project.native_sources().is_empty())
+    });
+    let created = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let source = &project.native_sources()[0];
+        assert_eq!(source.receiver(), None);
+        assert_eq!(project.track(track).unwrap().source_id(), None);
+        assert_eq!(source.name(), chosen.name);
+        assert_eq!(source.instrument().state().type_id(), chosen.type_id);
+        source.id()
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.native_source(created).is_none())
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            action.perform(view, window, cx);
+            assert!(!view.edit_pending());
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("project changed"))
+            );
+        })
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.native_source(created).is_some())
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .source_id(),
+            None
+        )
     });
 }
 
