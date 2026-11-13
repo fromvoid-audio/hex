@@ -1749,6 +1749,59 @@ impl PublicationControl {
         .then_some((observation, fence))
     }
 
+    /// Prepare a conditional future anchor from this output's observed running
+    /// Session transport. `None` means the observation is unavailable or does
+    /// not match the requested source revision and control generation. The
+    /// caller must retain the real revisions independently and account for and
+    /// reclaim the returned token on control. This is not installation authority:
+    /// the callback must recheck the exact runtime graphs, clocks and host fence.
+    pub fn prepare_fenced_tempo_anchor(
+        &self,
+        expected_audio_revision: u64,
+        expected_control_generation: u64,
+        previous: Arc<hex_engine::PreparedRevision>,
+        candidate: Arc<hex_engine::PreparedRevision>,
+        cut_performance_frame: u64,
+    ) -> Result<
+        Option<(
+            hex_engine::session_playback::PreparedTempoAnchor,
+            FreshRuntimeFence,
+        )>,
+        hex_engine::session_playback::SessionPlaybackError,
+    > {
+        let Some((observation, fence)) = self.capture_running_transport_fence() else {
+            return Ok(None);
+        };
+        if observation.audio_revision != expected_audio_revision
+            || observation.control_generation != expected_control_generation
+        {
+            return Ok(None);
+        }
+        let Some(loop_state) = observation.loop_state else {
+            return Ok(None);
+        };
+        let anchor =
+            hex_engine::session_playback::PreparedTempoAnchor::prepare_from_running_observation(
+                previous,
+                candidate,
+                observation.arrangement_frame,
+                observation.performance_frame,
+                loop_state,
+                cut_performance_frame,
+            )?;
+        if !self
+            .capture_running_transport_fence()
+            .is_some_and(|(latest, current)| {
+                current == fence
+                    && latest.control_generation == expected_control_generation
+                    && latest.performance_frame <= cut_performance_frame
+            })
+        {
+            return Ok(None);
+        }
+        Ok(Some((anchor, fence)))
+    }
+
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
     /// Configure this capability even for an initially resource-free project so a later sampler
     /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
