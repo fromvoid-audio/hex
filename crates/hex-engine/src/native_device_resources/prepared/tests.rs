@@ -444,9 +444,9 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
         assert!(!expected.playing());
         // Demand preflight borrows the real ordinary predecessor and full native
         // successor. It does not inherit routes, move graph custody or play.
-        let window = actual
+        let (window, report) = actual
             .stream_playback(context)
-            .preview_stream_handoff(
+            .preview_stream_handoff_with_report(
                 &mut expected.stream_playback(context),
                 8,
                 Some(true),
@@ -456,6 +456,7 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
                 },
             )
             .unwrap();
+        assert!(!report.running_audio_restart());
         assert_eq!(window.frames, 8);
         assert!(!actual.playing());
         assert!(!expected.playing());
