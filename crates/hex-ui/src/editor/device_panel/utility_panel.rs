@@ -11,7 +11,7 @@ use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView}
 use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
-const GAIN: ParameterId = ParameterId::from_static(1);
+pub(super) const GAIN: ParameterId = ParameterId::from_static(1);
 const BALANCE: ParameterId = ParameterId::from_static(2);
 const WIDTH: ParameterId = ParameterId::from_static(3);
 const CHANNEL: ParameterId = ParameterId::from_static(4);

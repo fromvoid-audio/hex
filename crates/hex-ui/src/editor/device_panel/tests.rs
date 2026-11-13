@@ -53,6 +53,7 @@ mod rattle_ui_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
+mod source_housing_tests;
 mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
@@ -9170,7 +9171,9 @@ fn assert_modulation_mapping(
 }
 
 #[gpui::test]
-fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppContext) {
+fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
+    cx: &mut TestAppContext,
+) {
     use hex_project::{DeviceAutomationTarget, DeviceOwner, ModulationDestination};
 
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -9238,6 +9241,12 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
         hex_lattice_contract::ParameterId::from_static(11),
     ));
 
+    let bound = edit(Command::InsertDevice {
+        track: contributor,
+        before: None,
+        state: base.clone(),
+    });
+
     let (handle, editor) = actor_editor_window(cx, service, bound.state, receiver);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -9275,6 +9284,17 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
     pump_until(&editor, cx, |view| source_slot(view).is_some());
     let slot = editor.read_with(cx, |view, _| source_slot(view).unwrap());
     visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let device = project.device(device).unwrap();
+        assert!(!super::modulators::source_utility_gain_available(
+            project, device
+        ));
+    });
+    let gain_control = Box::leak(
+        format!("device-{}-parameter-{}-value", device.value(), gain.value()).into_boxed_str(),
+    );
+    assert!(visual.debug_bounds(gain_control).is_none());
     click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
     click_modulator_control(
         &mut visual,
@@ -9346,5 +9366,58 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
         cx.notify();
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds(selector).is_none());
+    visual
+        .debug_bounds(selector)
+        .expect("shared source effect on contributor");
+    let (receiver_local, contributor_local) = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.track(receiver).unwrap().devices().to_vec(),
+            project.track(contributor).unwrap().devices().to_vec(),
+        )
+    });
+    assert!(!contributor_local.is_empty());
+    add_modulator_from_menu(&mut visual, device, "lfo");
+    let sources = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .sources()
+            .len()
+    };
+    pump_until(&editor, cx, |view| sources(view) == 2);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project.device_location(device).unwrap().owner,
+            DeviceOwner::Source(source)
+        );
+        assert_eq!(project.track(receiver).unwrap().source_id(), Some(source));
+        assert_eq!(
+            project.track(contributor).unwrap().source_id(),
+            Some(source)
+        );
+        assert_eq!(project.track(receiver).unwrap().devices(), receiver_local);
+        assert_eq!(
+            project.track(contributor).unwrap().devices(),
+            contributor_local
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| sources(view) == 1);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| sources(view) == 2);
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(receiver);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual
+        .debug_bounds(selector)
+        .expect("same source effect on receiver");
+    editor.read_with(cx, |view, _| assert_eq!(sources(view), 2));
 }

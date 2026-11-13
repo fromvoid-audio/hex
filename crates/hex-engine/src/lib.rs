@@ -4212,9 +4212,9 @@ pub use midi_template::{
     SessionMidiOrigin,
 };
 pub use playback::{
-    PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
-    PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
-    TransportFadeCompletion,
+    MAX_TIMED_TRANSPORT_COMMANDS, PlaybackAction, PlaybackActionError, PlaybackActionRejection,
+    PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability,
+    SessionCapabilityStatus, TimedTransportCommand, TimedTransportError, TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};

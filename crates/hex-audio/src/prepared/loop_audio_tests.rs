@@ -218,3 +218,230 @@ fn edited_loop_with_a_source_effect_follows_the_running_cursor_without_allocatio
         control.reclaim();
     }
 }
+
+#[test]
+fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
+    use hex_project::BeatTime;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let instrument = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let Created::Device(effect) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("source effect")
+    };
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let table = Arc::new(SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    let original = prepare(&editor);
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    let (mut reference_control, mut reference) = channel(48_000).unwrap();
+    for ctl in [&mut control, &mut reference_control] {
+        ctl.publish(Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap())
+            .unwrap();
+    }
+    let mut prefix = [[0.0; 2]; 64];
+    callback.begin_block();
+    callback.render(&mut prefix).unwrap();
+    reference.begin_block();
+    reference.render(&mut prefix).unwrap();
+    let gain = hex_lattice_contract::ParameterId::from_static(1);
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        editor.project().device(effect).unwrap().state(),
+        gain,
+        hex_lattice_contract::ParameterValue::Float(2.0),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: effect,
+            state: state.clone(),
+        })
+        .unwrap();
+    let stopped_revision = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut prefix).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        stopped_revision
+    );
+    assert!(prefix.iter().all(|frame| *frame == [0.0; 2]));
+    control.reclaim();
+    assert!(editor.undo());
+    let restored = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut prefix).unwrap();
+    assert_eq!(control.status.applied_revision.load(Acquire), restored);
+    control.reclaim();
+    for ctl in [&mut control, &mut reference_control] {
+        ctl.command(PlaybackCommand::Play).unwrap();
+    }
+    callback.begin_block();
+    callback.render(&mut prefix).unwrap();
+    reference.begin_block();
+    reference.render(&mut prefix).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: effect,
+            state,
+        })
+        .unwrap();
+    let revision = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    let mut actual = [[0.0; 2]; 128];
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    let mut baseline = [[0.0; 2]; 128];
+    reference.begin_block();
+    reference.render(&mut baseline).unwrap();
+    assert!(
+        baseline.iter().flatten().any(|sample| sample.abs() > 1e-5),
+        "source is silent"
+    );
+    for (i, (actual, old)) in actual.iter().zip(baseline).enumerate() {
+        let factor = 1.0 + (i + 1) as f32 / 240.0;
+        for channel in 0..2 {
+            assert!(
+                (actual[channel] - factor * old[channel]).abs() < 1e-4,
+                "frame {i}"
+            );
+        }
+    }
+    control.reclaim();
+    assert!(editor.undo());
+    let revision = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    reference.begin_block();
+    reference.render(&mut baseline).unwrap();
+    let start = 1.0 + 128.0 / 240.0;
+    for (i, (actual, old)) in actual.iter().zip(baseline).enumerate() {
+        let factor = start + (1.0 - start) * (i + 1) as f32 / 240.0;
+        for channel in 0..2 {
+            assert!(
+                (actual[channel] - factor * old[channel]).abs() < 1e-4,
+                "undo frame {i}"
+            );
+        }
+    }
+    for (ctl, cb) in [
+        (&mut control, &mut callback),
+        (&mut reference_control, &mut reference),
+    ] {
+        ctl.request_shutdown();
+        cb.begin_block();
+        ctl.reclaim();
+    }
+}
