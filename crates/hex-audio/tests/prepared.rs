@@ -1145,6 +1145,10 @@ fn transport_observation_tracks_one_published_owner_and_becomes_unavailable_on_s
     callback.render(&mut [[0.0; 2]; 16]).unwrap();
     let first = control.status.transport_observation().unwrap();
     assert_eq!(
+        first.loop_state, None,
+        "legacy playback cannot report a session pass"
+    );
+    assert_eq!(
         (first.audio_revision, first.control_generation),
         (revision, 17)
     );

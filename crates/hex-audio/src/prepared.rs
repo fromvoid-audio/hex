@@ -5601,22 +5601,22 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
-        let observation = self
-            .active
-            .as_ref()
-            .and_then(ActivePublication::current)
-            .and_then(|active| {
-                active
-                    .playback
-                    .transport()
-                    .map(|(position, performance, playing)| TransportObservation {
-                        audio_revision: active.revision,
-                        control_generation: active.control_context_generation,
-                        arrangement_frame: position,
-                        performance_frame: performance,
-                        playing,
-                    })
-            });
+        let observation =
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .and_then(|active| {
+                    active.playback.transport().map(
+                        |(position, performance, playing, loop_state)| TransportObservation {
+                            audio_revision: active.revision,
+                            control_generation: active.control_context_generation,
+                            arrangement_frame: position,
+                            performance_frame: performance,
+                            playing,
+                            loop_state,
+                        },
+                    )
+                });
         self.status.transport_observation.publish(observation);
         self.status
             .recording_source

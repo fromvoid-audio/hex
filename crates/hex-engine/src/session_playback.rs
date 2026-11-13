@@ -94,6 +94,14 @@ pub enum SessionRouteTarget {
     Silence,
 }
 
+/// The Session Arrangement loop law and its current iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArrangementLoopState {
+    pub pass: u64,
+    /// Active half-open Arrangement frame interval, when looping applies.
+    pub active_region: Option<(u64, u64)>,
+}
+
 /// One stable-track route as displayed at a Session route snapshot cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionRouteStatus {
@@ -2296,6 +2304,15 @@ impl SessionPlayback {
 
     pub fn arrangement_frame(&self) -> u64 {
         self.arrangement_frame
+    }
+
+    /// Current pass and active loop law at the Arrangement cursor. The pass
+    /// distinguishes repeated visits to the same frame; this is not a fence.
+    pub fn arrangement_loop_state(&self) -> ArrangementLoopState {
+        ArrangementLoopState {
+            pass: self.arrangement_loop_pass,
+            active_region: self.active_loop_region().map(|r| (r.start(), r.end())),
+        }
     }
 
     pub fn playing(&self) -> bool {

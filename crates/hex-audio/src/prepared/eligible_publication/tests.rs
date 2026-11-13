@@ -543,6 +543,12 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
         .transport_observation()
         .expect("eligible observation");
     assert_eq!(
+        observation
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, None))
+    );
+    assert_eq!(
         (observation.audio_revision, observation.control_generation),
         (1, 8)
     );

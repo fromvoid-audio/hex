@@ -1542,6 +1542,13 @@ impl Playback {
             .map_or(self.position, |runtime| runtime.arrangement_frame())
     }
 
+    /// Session-owned Arrangement loop state, unavailable for legacy playback.
+    pub fn arrangement_loop_state(&self) -> Option<crate::session_playback::ArrangementLoopState> {
+        self.session_runtime
+            .as_ref()
+            .map(|runtime| runtime.arrangement_loop_state())
+    }
+
     /// Frames by which Main output trails the scheduled content frame: the
     /// graph's pre-Main compensation plus declared Main processor latency.
     pub fn main_output_latency_frames(&self) -> u32 {
