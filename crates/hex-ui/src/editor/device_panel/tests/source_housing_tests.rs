@@ -519,7 +519,13 @@ macro_rules! source_mode_case {
     ($name:ident, $filter:expr, $initial:expr) => {
         #[gpui::test]
         fn $name(cx: &mut TestAppContext) {
-            shared_source_mode_with_filter(cx, $filter, $initial, false);
+            shared_source_mode_with_filter(
+                cx,
+                $filter,
+                $initial,
+                false,
+                hex_devices::utility::parameter::MID_SIDE_ENABLED,
+            );
         }
     };
 }
@@ -548,14 +554,63 @@ source_mode_case!(
 
 #[gpui::test]
 fn shared_source_mode_restores_after_worker_refusal(cx: &mut TestAppContext) {
-    shared_source_mode_with_filter(cx, None, false, true);
+    shared_source_mode_with_filter(
+        cx,
+        None,
+        false,
+        true,
+        hex_devices::utility::parameter::MID_SIDE_ENABLED,
+    );
 }
+
+macro_rules! source_mono_case {
+    ($name:ident, $filter:expr, $initial:expr, $reject:expr) => {
+        #[gpui::test]
+        fn $name(cx: &mut TestAppContext) {
+            shared_source_mode_with_filter(
+                cx,
+                $filter,
+                $initial,
+                $reject,
+                hex_devices::utility::parameter::MONO,
+            );
+        }
+    };
+}
+source_mono_case!(shared_source_mono_on_plain, None, false, false);
+source_mono_case!(shared_source_mono_off_plain, None, true, false);
+source_mono_case!(
+    shared_source_mono_on_dc,
+    Some(hex_devices::utility::parameter::DC_REMOVE),
+    false,
+    false
+);
+source_mono_case!(
+    shared_source_mono_off_dc,
+    Some(hex_devices::utility::parameter::DC_REMOVE),
+    true,
+    false
+);
+source_mono_case!(
+    shared_source_mono_on_bass,
+    Some(hex_devices::utility::parameter::BASS_MONO),
+    false,
+    false
+);
+source_mono_case!(
+    shared_source_mono_off_bass,
+    Some(hex_devices::utility::parameter::BASS_MONO),
+    true,
+    false
+);
+source_mono_case!(shared_source_mono_refusal, None, false, true);
 
 fn shared_source_mode_with_filter(
     cx: &mut TestAppContext,
     filter: Option<hex_lattice_contract::ParameterId>,
     initial: bool,
     reject: bool,
+    parameter: hex_lattice_contract::ParameterId,
 ) {
     use hex_lattice_contract::NativeDeviceMetadata;
     cx.update(crate::editor::bind_editor_keys);
@@ -591,11 +646,7 @@ fn shared_source_mode_with_filter(
             .unwrap();
     }
     utility = hex_devices::utility::UTILITY_DEFINITION
-        .patch_parameter(
-            &utility,
-            hex_devices::utility::parameter::MID_SIDE_ENABLED,
-            ParameterValue::Bool(initial),
-        )
+        .patch_parameter(&utility, parameter, ParameterValue::Bool(initial))
         .unwrap();
     let created = edit(Command::CreateNativeSource {
         name: "shared".into(),
@@ -670,8 +721,19 @@ fn shared_source_mode_with_filter(
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    let mode = hex_lattice_contract::ParameterId::from_static(9);
-    let button = Box::leak(format!("device-{}-parameter-9", device.value()).into_boxed_str());
+    let mode = parameter;
+    let button = Box::leak(
+        format!(
+            "device-{}-parameter-{}",
+            device.value(),
+            if mode == hex_devices::utility::parameter::MONO {
+                7
+            } else {
+                9
+            }
+        )
+        .into_boxed_str(),
+    );
     let target = visual.debug_bounds(button).expect("mode button");
     visual.simulate_click(target.center(), Modifiers::default());
     visual.run_until_parked();
@@ -708,35 +770,37 @@ fn shared_source_mode_with_filter(
             );
             assert_ne!(source, other);
         });
-        let selected = if initial { 3 } else { 10 };
-        let selected = Box::leak(
-            format!("device-{}-parameter-{selected}-value", device.value()).into_boxed_str(),
-        );
-        let selected_bounds = visual
-            .debug_bounds(selected)
-            .expect("pending selected control");
-        visual.simulate_click(selected_bounds.center(), Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(&visual, |view, cx| {
-            let selected_parameter =
-                hex_lattice_contract::ParameterId::from_static(if initial { 3 } else { 10 });
-            let Some(ParameterControl::Float { entity, .. }) =
-                view.device_panel.controls.get(&ParameterKey {
-                    device,
-                    parameter: selected_parameter,
-                })
-            else {
-                panic!("pending numeric control")
-            };
-            assert!(!entity.read(cx).is_editing());
-            assert_eq!(
-                view.device_gesture.snapshot().unwrap().target,
-                hex_session::device_gesture::GestureTarget::DeviceParameter {
-                    device,
-                    parameter: mode
-                }
+        if mode == hex_devices::utility::parameter::MID_SIDE_ENABLED {
+            let selected = if initial { 3 } else { 10 };
+            let selected = Box::leak(
+                format!("device-{}-parameter-{selected}-value", device.value()).into_boxed_str(),
             );
-        });
+            let selected_bounds = visual
+                .debug_bounds(selected)
+                .expect("pending selected control");
+            visual.simulate_click(selected_bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, cx| {
+                let selected_parameter =
+                    hex_lattice_contract::ParameterId::from_static(if initial { 3 } else { 10 });
+                let Some(ParameterControl::Float { entity, .. }) =
+                    view.device_panel.controls.get(&ParameterKey {
+                        device,
+                        parameter: selected_parameter,
+                    })
+                else {
+                    panic!("pending numeric control")
+                };
+                assert!(!entity.read(cx).is_editing());
+                assert_eq!(
+                    view.device_gesture.snapshot().unwrap().target,
+                    hex_session::device_gesture::GestureTarget::DeviceParameter {
+                        device,
+                        parameter: mode
+                    }
+                );
+            });
+        }
     }
     let value = |view: &EditorView| {
         let device = view.state.as_ref()?.project.device(device)?;
@@ -765,13 +829,15 @@ fn shared_source_mode_with_filter(
             };
             assert_eq!(entity.read(cx).checked(), initial);
         });
-        let original = if initial { 10 } else { 3 };
-        let selector = Box::leak(
-            format!("device-{}-parameter-{original}-value", device.value()).into_boxed_str(),
-        );
-        visual
-            .debug_bounds(selector)
-            .expect("canonical control restored");
+        if mode == hex_devices::utility::parameter::MID_SIDE_ENABLED {
+            let original = if initial { 10 } else { 3 };
+            let selector = Box::leak(
+                format!("device-{}-parameter-{original}-value", device.value()).into_boxed_str(),
+            );
+            visual
+                .debug_bounds(selector)
+                .expect("canonical control restored");
+        }
         return;
     }
     pump_until(&editor, cx, |view| {

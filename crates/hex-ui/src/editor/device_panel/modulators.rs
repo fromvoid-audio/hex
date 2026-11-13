@@ -544,6 +544,19 @@ pub(super) fn source_effect_card(
                 .copied()
         })
         .flatten();
+    let mono_row = hex_engine::project_source_utility_matrix_edit_supported(
+        &state.project,
+        id,
+        utility_panel::MONO,
+    )
+    .then(|| {
+        metadata
+            .parameters
+            .iter()
+            .find(|row| row.enabled && row.descriptor.id == utility_panel::MONO)
+            .copied()
+    })
+    .flatten();
     let controls = [
         (utility_panel::GAIN, "gain", None),
         (
@@ -642,7 +655,24 @@ pub(super) fn source_effect_card(
             },
         ));
     }
-    if controls.iter().any(Option::is_some) || mode_row.is_some() {
+    if let Some(row) = mono_row {
+        control_row = control_row.child(parameter_control_with_presentation(
+            view,
+            cx,
+            id,
+            DeviceControlIdentity {
+                class: NativeDeviceClass::Effect,
+                type_id: metadata.type_id,
+            },
+            &row,
+            ControlPresentation::CompactButton,
+            ControlText {
+                label: Some("mono"),
+                codec: None,
+            },
+        ));
+    }
+    if controls.iter().any(Option::is_some) || mode_row.is_some() || mono_row.is_some() {
         body = body.child(control_row);
     }
     for row in &metadata.parameters {
