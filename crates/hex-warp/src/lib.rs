@@ -11,7 +11,7 @@ mod beats;
 pub mod fft;
 mod granular;
 mod resample;
-pub use resample::{Resampler, V2_MAX_TAPS};
+pub use resample::{PitchWindow, Resampler, V2_MAX_TAPS};
 mod spectral;
 use std::fmt;
 

@@ -27,6 +27,101 @@ pub enum Resampler {
     V2,
 }
 
+/// Prepared unwarped, non-looping pitch reconstruction for bounded worker
+/// windows. Positions are relative to the complete source, not each window.
+/// Source PCM must already be at the project rate. This owns a filter bank and
+/// is intended for control/worker use, never construction in an audio callback.
+pub struct PitchWindow {
+    source_frames: u64,
+    pitch_q32: i128,
+    bank: Bandlimited,
+}
+
+impl PitchWindow {
+    /// Prepare the same filter and fixed-point pitch used by resident rendering.
+    pub fn new(
+        source_frames: u64,
+        pitch_cents: i16,
+        resampler: Resampler,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, Error> {
+        if source_frames == 0 || source_frames > (1_u64 << 36) {
+            return Err(Error::Invalid("invalid pitch window extent"));
+        }
+        validate_stretch_ratio(1.0, Mode::Resample, pitch_cents)?;
+        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler,
+        };
+        work.check(0)?;
+        let bank = Bandlimited::new(pitch, &mut work)?;
+        Ok(Self {
+            source_frames,
+            pitch_q32: (pitch * Q32 as f64).round() as i128,
+            bank,
+        })
+    }
+
+    /// Return the complete, clipped source halo needed for an output window.
+    /// Output windows are limited to 4096 frames and must lie in the clip.
+    pub fn required_source_range(
+        &self,
+        output_start: u64,
+        count: usize,
+    ) -> Result<std::ops::Range<u64>, Error> {
+        if count == 0 || count > 4096 {
+            return Err(Error::Invalid("invalid pitch window length"));
+        }
+        let end = output_start
+            .checked_add(count as u64)
+            .filter(|end| *end <= self.source_frames)
+            .ok_or(Error::Invalid("pitch window exceeds output extent"))?;
+        let first = i128::from(output_start) * self.pitch_q32 / Q32;
+        let last = i128::from(end - 1) * self.pitch_q32 / Q32;
+        let half = (self.bank.taps / 2) as i128;
+        let limit = i128::from(self.source_frames);
+        let start = (first - (half - 1)).clamp(0, limit) as u64;
+        let end = (last + half + 1).clamp(0, limit) as u64;
+        Ok(start..end)
+    }
+
+    /// Render from exactly the requested halo. Samples outside the full source
+    /// are zero, as in the resident renderer; missing in-range PCM is an error.
+    /// An error or cancellation can leave the output partially written.
+    pub fn render(
+        &self,
+        output_start: u64,
+        source_start: u64,
+        source: &[Frame],
+        output: &mut [Frame],
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let range = self.required_source_range(output_start, output.len())?;
+        if source_start != range.start || source.len() as u64 != range.end - range.start {
+            return Err(Error::Invalid("incomplete pitch source window"));
+        }
+        for (index, target) in output.iter_mut().enumerate() {
+            if index % 1024 == 0 && cancel() {
+                return Err(Error::Cancelled);
+            }
+            let position = i128::from(output_start + index as u64) * self.pitch_q32;
+            *target = finite(self.bank.sample_with(position, |at| {
+                if at < i128::from(range.start) || at >= i128::from(range.end) {
+                    return [0.0; 2];
+                }
+                let frame = source[(at - i128::from(range.start)) as usize];
+                [f64::from(frame[0]), f64::from(frame[1])]
+            }))?;
+        }
+        Ok(())
+    }
+}
+
 /// Coefficient bank size a render with `resampler` accounts as scratch.
 pub(super) const fn bank_bytes(resampler: Resampler) -> usize {
     match resampler {
