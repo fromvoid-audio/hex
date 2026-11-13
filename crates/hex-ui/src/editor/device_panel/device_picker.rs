@@ -92,6 +92,9 @@ fn close(view: &mut EditorView, window: &mut Window, cx: &mut Context<EditorView
     cx.notify();
 }
 fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entry>, Vec<String>) {
+    if matches!(owner, DevicePanelOwner::Source(_)) {
+        return (Vec::new(), Vec::new());
+    }
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     let query = query.trim().to_lowercase();
@@ -133,6 +136,7 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
                         DevicePanelOwner::Track(_) => "native",
                         DevicePanelOwner::Main => "main",
                         DevicePanelOwner::Return(_) => "return",
+                        DevicePanelOwner::Source(_) => continue,
                     };
                     rows.push(Entry {
                         class,
@@ -196,10 +200,11 @@ fn activate(
                 DevicePanelOwner::Main => EffectBusOwner::Main,
                 DevicePanelOwner::Return(id) => EffectBusOwner::Return(id),
                 // The outer match arm excludes Track.
-                DevicePanelOwner::Track(_) => unreachable!(),
+                DevicePanelOwner::Track(_) | DevicePanelOwner::Source(_) => return,
             };
             bus.insert_request(view.project_generation, state.revision, before, type_id)
         }
+        DevicePanelOwner::Source(_) => return,
     };
     if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
         view.device_panel.message = None;
