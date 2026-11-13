@@ -1176,7 +1176,6 @@ impl WorkerAudioSink for NativeAudioSink {
         };
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs(2);
-        let live_override = self.plugins.override_publication_source(context);
         loop {
             let Some(control) = self
                 .output
@@ -1192,13 +1191,10 @@ impl WorkerAudioSink for NativeAudioSink {
                     && source.audio_revision == audio_revision
                     && source.context == context
             });
-            if let Some(installed) = installed {
-                if live_override.is_some_and(|(_, epoch, playing)| {
-                    status.native_parameter_source(playing) != Some((installed, epoch))
-                }) {
-                    self.relinquish_output();
-                    return Err(Error::SourceLost("vst3 override transport changed".into()));
-                }
+            if installed.is_some() {
+                // The callback has already validated a live override's source
+                // before installing this exact revision. A later transport
+                // change must not turn that installed edit into a refusal.
                 return Ok(());
             }
             if let Some((revision, reason)) = status.rejected_revision()

@@ -221,6 +221,10 @@ impl Active {
     ) {
         self.stream_view().publication_replaces_prewarm(domains);
     }
+    #[cfg(test)]
+    pub(crate) fn publication_abandoned(&mut self) {
+        self.stream_view().publication_abandoned();
+    }
     pub(crate) fn inherit_schedule_observation(&mut self, previous: &mut Active) -> Option<u64> {
         self.stream_view()
             .inherit_schedule_observation(&mut previous.stream_view())

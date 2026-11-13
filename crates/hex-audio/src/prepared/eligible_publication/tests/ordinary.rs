@@ -3252,3 +3252,258 @@ fn compensated_demand_retries_a_smaller_window_at_page_capacity() {
     drop(control);
     finish(&mut retirement);
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn refused_parameter_successor_reenables_predecessor_launch_prewarm() {
+    let _serial = serial();
+    let mut snapshot = super::readiness::project_with_frames(12288).snapshot();
+    let scene = snapshot.next_id;
+    let clip = scene + 1;
+    snapshot.next_id += 2;
+    snapshot.session.scenes.push(hex_project::SceneSnapshot {
+        id: scene,
+        name: "launch".into(),
+    });
+    snapshot
+        .session
+        .cells
+        .push(hex_project::SessionCellSnapshot {
+            track: snapshot.tracks[0].id,
+            scene,
+            content: hex_project::SessionCellContentSnapshot::Audio(
+                hex_project::SessionAudioClipSnapshot {
+                    loop_range: None,
+                    active: true,
+                    flavor: hex_project::ClipFlavor::default(),
+                    gain: hex_project::ClipGain::UNITY,
+                    id: clip,
+                    name: "future".into(),
+                    asset: snapshot.assets[0].id,
+                    source_start: 8192,
+                    source_end: 12288,
+                },
+            ),
+        });
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let hex_project::SessionCellContent::Audio(clip) = project.session_cells()[0].content() else {
+        panic!("audio clip")
+    };
+    let clip = clip.id();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(12288);
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let store = ResidentDeviceAssets::default();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            2,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair_with_pool(vec![definition], 3),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .unwrap_or_else(|_| panic!("source registration"));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata.clone(), &store),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut output = [[0.0; 2]; 32];
+    while control.status.position.load(Acquire) < 64 {
+        measured_render(&mut data, &mut output);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let ticket = control
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::FourQuarter,
+        })
+        .unwrap();
+    measured_render(&mut data, &mut output);
+    assert_eq!(
+        control.status.stream_scheduled_command.load(Acquire),
+        ticket
+    );
+    let pinned = |data: &mut crate::native_callback_owner::Guard<
+        crate::native_callback_owner::NativeCallbackOwner,
+    >| {
+        let mut pinned = false;
+        let counted = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                if let Some(mut active) = callback
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::stream_view)
+                {
+                    pinned = active.test_launch_prewarm_protected(
+                        &mut callback.domain_pages,
+                        callback.stream_prefix,
+                    );
+                }
+            });
+        });
+        assert_eq!(
+            (
+                counted.count_total,
+                counted.bytes_total,
+                counted.count_current,
+                counted.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        pinned
+    };
+    while !pinned(&mut data) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    // Simulate the earlier preflight of this exact successor. The callback's
+    // rejection below must restore the retained graph's pending schedule.
+    data.owner_mut().unwrap().run(|callback, _| {
+        callback
+            .active
+            .as_mut()
+            .unwrap()
+            .stream_view()
+            .unwrap()
+            .publication_replaces_prewarm(&mut callback.domain_pages);
+    });
+    control
+        .status
+        .ordinary_native_revision
+        .store(revision, Release);
+    let (source, epoch) = control.status.native_parameter_source(true).unwrap();
+    let candidate = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata.clone(), &store),
+            PublicationPolicy::InheritUnderNativeParameter {
+                source,
+                transport_epoch: epoch + 1,
+                playing: true,
+            },
+            hex_engine::AudioSourceContext {
+                editor_revision: context.editor_revision + 1,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    while control
+        .status
+        .rejected_revision()
+        .is_none_or(|(id, _)| id != candidate)
+    {
+        measured_render(&mut data, &mut output);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    while !pinned(&mut data) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retained launch never regained prewarm"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        control.status.stream_scheduled_command.load(Acquire),
+        ticket
+    );
+    assert_eq!(control.status.stream_activated_command.load(Acquire), 0);
+    control.reclaim();
+    let candidate = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata, &store),
+            PublicationPolicy::InheritUnderNativeParameter {
+                source,
+                transport_epoch: epoch,
+                playing: true,
+            },
+            hex_engine::AudioSourceContext {
+                editor_revision: context.editor_revision + 1,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    // Receive the graph without stream preflight, then model an earlier
+    // revocation before a command is admitted on the predecessor.
+    data.owner_mut().unwrap().run(|callback, _| {
+        callback.begin_block();
+        assert!(callback.deferred.is_some());
+        callback
+            .active
+            .as_mut()
+            .unwrap()
+            .stream_view()
+            .unwrap()
+            .publication_replaces_prewarm(&mut callback.domain_pages);
+    });
+    control
+        .action_with_ticket(PlaybackAction::SetMetronome(true))
+        .unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    while !pinned(&mut data) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "queued command stranded launch prewarm"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    assert_eq!(
+        control.status.stream_scheduled_command.load(Acquire),
+        ticket
+    );
+    control.stop();
+    while control
+        .status
+        .rejected_revision()
+        .is_none_or(|(id, _)| id != candidate)
+    {
+        measured_render(&mut data, &mut output);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    while control.recover_audio_candidate_domain(domain).is_none() {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
