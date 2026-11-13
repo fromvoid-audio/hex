@@ -46,6 +46,19 @@ pub(crate) struct OrdinaryStreams {
     workspace: Option<Workspace>,
 }
 impl OrdinaryStreams {
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_has_extent(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        extent: StreamResourceExtent,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_has_resource_extent(extent))
+        })
+    }
     pub(crate) fn has_install_pending(&self) -> bool {
         self.workspace.as_ref().is_some_and(|workspace| {
             workspace.role == Some(hex_stream::ProtectionRole::Candidate)

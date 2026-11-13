@@ -1561,6 +1561,8 @@ fn pending_replacement_case(looping: bool, retained_restart: bool) {
     let b_wav = stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |_| 16_384);
     let a_definition = a_wav.definition(a_asset, 11);
     let b_definition = b_wav.definition(b_asset, 11);
+    #[cfg(feature = "stream-test-support")]
+    let a_key = a_definition.metadata.key();
     let metadata = vec![a_definition.metadata.clone(), b_definition.metadata.clone()];
     let store = ResidentDeviceAssets::default();
     let context = hex_engine::AudioSourceContext {
@@ -1628,6 +1630,68 @@ fn pending_replacement_case(looping: bool, retained_restart: bool) {
         hex_engine::STREAM_PAGE_FRAMES as u64
     );
     let mut output = [[0.0; 2]; 256];
+
+    #[cfg(feature = "stream-test-support")]
+    if looping && !retained_restart {
+        // Exercise A1 once so it can remain resident after returning to A0.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 4096 {
+            measured_render(&mut data, &mut output);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "baseline A1 readiness"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(control.status.position.load(Acquire), 4352);
+        assert_eq!(output, [[0.25; 2]; 256], "baseline A1 PCM");
+        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        while control.status.position.load(Acquire) != 4096 {
+            measured_render(&mut data, &mut output[..128]);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "return to A0 boundary"
+            );
+            std::thread::yield_now();
+        }
+        let extent = hex_engine::StreamResourceExtent {
+            source: a_key.into(),
+            page_index: 1,
+            start: 0,
+            end: 1,
+        };
+        let mut cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, extent);
+            }
+        });
+        assert!(cached, "A1 must be resident before candidate publication");
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.stream_buffering.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 4352);
+        assert_eq!(output, [[0.25; 2]; 256], "resident A1 baseline PCM");
+        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        while control.status.position.load(Acquire) != 4096 {
+            measured_render(&mut data, &mut output[..128]);
+            assert!(std::time::Instant::now() < deadline, "restore A0 boundary");
+            std::thread::yield_now();
+        }
+        cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, extent);
+            }
+        });
+        assert!(
+            cached,
+            "A1 must remain resident for the candidate comparison"
+        );
+    }
 
     // The last committed chunk protects A0. The next candidate needs B1, which
     // has never been requested: its first service must return Pending even if
@@ -1715,6 +1779,13 @@ fn pending_replacement_case(looping: bool, retained_restart: bool) {
         }
     };
     render_checked(&mut data, &mut output);
+    #[cfg(feature = "stream-test-support")]
+    if looping && !retained_restart {
+        assert!(
+            !control.status.stream_buffering.load(Acquire),
+            "a pending successor displaced the resident current page"
+        );
+    }
     let refused = control.status.stream_readiness_refused.load(Acquire);
     let rejected = control.status.rejected_revision();
     let pending = control.status.publication_pending.load(Acquire);
