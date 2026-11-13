@@ -344,6 +344,18 @@ impl SessionPlayback {
         ordinary: bool,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<usize, Invalid> {
+        self.visit_current_stream_quantum_at(0, maximum_frames, playing, ordinary, visit)
+    }
+
+    /// Project a bounded window at an offset from the unmodified current clock.
+    pub(crate) fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
         let ordinary = ordinary || self.linear_arrangement_export;
         if !ordinary && !self.supports_closed_stream_demand() {
             return Err(Invalid("stream demand requires a closed audio runtime"));
@@ -352,12 +364,14 @@ impl SessionPlayback {
         if frames == 0 || !playing.unwrap_or(self.playing) {
             return Ok(0);
         }
+        let start = self
+            .performance_frame
+            .checked_add(start_offset)
+            .filter(|start| start.checked_add(frames as u64).is_some())
+            .ok_or(Invalid("stream callback projection overflow"))?;
         let mut offset = 0usize;
         while offset < frames {
-            let performance = self
-                .performance_frame
-                .checked_add(offset as u64)
-                .ok_or(Invalid("stream callback projection overflow"))?;
+            let performance = start + offset as u64;
             let (arrangement, pass) = self.project_stream_arrangement(performance)?;
             self.route_scratch.copy_from_slice(&self.routes);
             self.project_due_stream_routes(performance, self.anchor)?;
