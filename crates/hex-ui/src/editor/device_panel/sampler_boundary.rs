@@ -53,7 +53,7 @@ pub(super) fn reconcile(view: &mut EditorView) {
 
 pub(in crate::editor) fn preview(
     view: &EditorView,
-    track: TrackId,
+    owner: hex_session::service::SamplerParameterOwner,
     device: DeviceId,
     parameter: SamplerParameter,
 ) -> Option<u64> {
@@ -62,7 +62,7 @@ pub(in crate::editor) fn preview(
         .boundary
         .as_ref()
         .filter(|g| {
-            g.source.track == track
+            g.source.owner == owner
                 && g.source.device == device
                 && g.parameter == parameter
                 && g.target.current(view)
@@ -95,12 +95,14 @@ pub(super) fn begin(
     {
         return false;
     }
-    let Some(device) = view
-        .state
-        .as_ref()
-        .and_then(|s| s.project.track(source.track))
-        .and_then(|t| t.instrument())
-    else {
+    let Some(device) = view.state.as_ref().and_then(|state| match source.owner {
+        hex_session::service::SamplerParameterOwner::Track(track) => {
+            state.project.track(track)?.instrument()
+        }
+        hex_session::service::SamplerParameterOwner::Source(source) => {
+            Some(state.project.native_source(source)?.instrument())
+        }
+    }) else {
         return false;
     };
     let parameter_at =
@@ -123,7 +125,7 @@ pub(super) fn begin(
     } else {
         (SamplerParameter::EndFrame, end)
     };
-    let Some(target) = view.sampler_boundary_target(source.track, source.device, parameter) else {
+    let Some(target) = view.sampler_boundary_target(source.owner, source.device, parameter) else {
         return true;
     };
     let owner = cx.entity().downgrade();
@@ -355,7 +357,7 @@ pub(super) fn cursor_action(
                     .cursor
                     .filter(|(source, _)| source.current(view))
                 && let Some(target) =
-                    view.sampler_boundary_target(source.track, source.device, parameter)
+                    view.sampler_boundary_target(source.owner, source.device, parameter)
             {
                 view.submit_sampler_boundary(target, frame);
             }
