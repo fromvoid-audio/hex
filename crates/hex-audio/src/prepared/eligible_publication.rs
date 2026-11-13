@@ -517,14 +517,27 @@ impl Callback {
         let revision = next.revision();
         let context = next.diagnostic_context();
         let streaming_enabled = next.streaming_enabled();
+        let incompatible_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)));
+        let preflight_refusal = next.preflight_refusal(&self.candidate_root);
         self.trace_audio(
             AudioDiagnosticKind::PublicationAttempt,
             revision,
             context,
             frames.unwrap_or(0),
         );
+        if streaming_enabled
+            && !incompatible_active
+            && let Some(reason) = preflight_refusal
+        {
+            self.reject_pending_eligible_successor(reason);
+            return;
+        }
         if let Some(frames) = frames
             && streaming_enabled
+            && !incompatible_active
         {
             let mut reservation = self.reserve_current_stream_window(frames);
             if matches!(
@@ -565,11 +578,7 @@ impl Callback {
                 }
             }
         }
-        let mut decision = if self
-            .active
-            .as_ref()
-            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
-        {
+        let mut decision = if incompatible_active {
             InstallDecision::Refused(PlaybackHandoffRejection::ConstructorClaimsUnavailable)
         } else if let Some(next) = self.deferred_eligible.as_mut() {
             #[cfg(all(test, feature = "allocation-probe"))]

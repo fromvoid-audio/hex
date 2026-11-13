@@ -47,6 +47,23 @@ pub(crate) struct OrdinaryStreams {
 }
 impl OrdinaryStreams {
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_loan_for<'a>(
+        &self,
+        domains: &'a mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> Option<(&'a mut hex_stream::ConstructorPageLoan, &'a mut u64)> {
+        let token = self.refs.iter().flatten().copied().find(|token| {
+            domains
+                .get(token.slot)
+                .and_then(Option::as_ref)
+                .filter(|pages| pages.inner.token == *token)
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.covers_resource_key(source))
+        })?;
+        let pages = &mut super::demand::envelope(domains, token).ok()?.inner;
+        Some((pages.loan.as_mut()?, &mut pages.epoch))
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_has_extent(
         &self,
         domains: &mut [Option<DomainEnvelope>; 2],

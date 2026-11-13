@@ -48,13 +48,11 @@ impl Queued {
     pub(crate) fn revision(&self) -> u64 {
         self.state.revision
     }
-    pub(crate) fn prepare_install(
-        &mut self,
-        mut previous: Option<&mut Active>,
+    pub(crate) fn preflight_refusal(
+        &self,
         root: &CandidateRoot,
-        mut stream: Option<&mut StreamInstall<'_>>,
-    ) -> InstallDecision {
-        let next = &mut self.state;
+    ) -> Option<hex_engine::PlaybackHandoffRejection> {
+        let next = &self.state;
         if !next
             .claims
             .as_ref()
@@ -64,20 +62,24 @@ impl Queued {
             || next.covering_successor.is_some()
             || next.policy != crate::prepared::PublicationPolicy::InheritRuntime
         {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
-            );
+            return Some(hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable);
         }
         let Some(decision) = next.claims.as_ref().map(|claims| &claims.life.cancellation) else {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
-            );
+            return Some(hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable);
         };
-        if decision.load(Ordering::Acquire) == CANCELLED {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
-            );
+        (decision.load(Ordering::Acquire) == CANCELLED)
+            .then_some(hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled)
+    }
+    pub(crate) fn prepare_install(
+        &mut self,
+        mut previous: Option<&mut Active>,
+        root: &CandidateRoot,
+        mut stream: Option<&mut StreamInstall<'_>>,
+    ) -> InstallDecision {
+        if let Some(reason) = self.preflight_refusal(root) {
+            return InstallDecision::Refused(reason);
         }
+        let next = &mut self.state;
         let streamed = next.streaming.is_some()
             || next
                 .runtime
