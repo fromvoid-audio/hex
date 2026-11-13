@@ -444,3 +444,92 @@ fn direct_missing_demand_releases_ready_lookahead_before_requesting_worker() {
     assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
     assert!(worker.endpoint.prefetch_key.is_none());
 }
+
+#[test]
+fn cancelled_coalesced_demand_does_not_evict_a_resident_page() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    // A readiness intent for the prefetched page coalesces with its worker request.
+    worker.endpoint.queue_readiness_demand(
+        ResourcePageKey {
+            source: key.into(),
+            page_index: 2,
+        },
+        16,
+    );
+    worker.endpoint.cancel_readiness_demand(16);
+    // Before the worker returns, that intent is cancelled and current audio
+    // again needs only page 1; page 0 is resident for a later loop boundary.
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    let current = [crate::StreamResourceExtent {
+        source: key.into(),
+        page_index: 1,
+        start: 0,
+        end: 1,
+    }];
+    worker.endpoint.protect_present(16, &current);
+    worker.endpoint.pump_ready_for_pending(3, &[(16, &current)]);
+    assert!(worker.endpoint.has_extent(current[0]));
+    assert!(
+        worker.endpoint.has_extent(crate::StreamResourceExtent {
+            page_index: 0,
+            ..current[0]
+        }),
+        "cancelled lookahead evicted a resident future page"
+    );
+}
+
+#[test]
+fn coalesced_direct_demand_survives_competing_request() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    worker.endpoint.request_page(key, 2);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    worker.endpoint.request_page(key, 3);
+    assert_eq!(worker.endpoint.pump_ready(1), 1);
+    assert!(worker.endpoint.page(key, 2).is_some());
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+}
+
+#[test]
+fn competing_demand_preserves_a_page_still_wanted_by_another_role() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    let page = ResourcePageKey {
+        source: key.into(),
+        page_index: 2,
+    };
+    worker.endpoint.queue_readiness_demand(page, 16);
+    worker.endpoint.queue_readiness_demand(page, 32);
+    worker.endpoint.cancel_readiness_demand(16);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    worker.endpoint.request_page(key, 3);
+    assert!(
+        worker
+            .endpoint
+            .ready_rx
+            .peek()
+            .is_ok_and(|ready| ready.key == Some(page))
+    );
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+}
