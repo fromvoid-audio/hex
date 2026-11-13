@@ -435,6 +435,19 @@ impl ClaimedAudioCandidateRuntime {
         playing: Option<bool>,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::PlaybackHandoffError> {
+        self.preview_stream_handoff_with_report(previous, maximum_frames, playing, visit)
+            .map(|(window, _)| window)
+    }
+    /// Preview the same claimed handoff and its running-audio classification.
+    /// The report is observational and does not grant publication authority.
+    pub fn preview_stream_handoff_with_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), crate::PlaybackHandoffError>
+    {
         let invalid =
             || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         if self.inner.phase != ClaimedPhase::Current
@@ -448,8 +461,14 @@ impl ClaimedAudioCandidateRuntime {
         if next.sampler_sources.is_some() || old.sampler_sources.is_some() {
             return Err(invalid());
         }
-        next.playback
-            .preview_stream_handoff(&mut old.playback, maximum_frames, playing, visit)
+        next.playback.preview_stream_handoff_with_report(
+            &mut old.playback,
+            maximum_frames,
+            playing,
+            visit,
+            false,
+            false,
+        )
     }
     /// The current covering graph is actually borrowed through this runtime's
     /// own original prepared-root handle. There is no detached report accessor.
