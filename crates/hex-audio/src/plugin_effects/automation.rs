@@ -59,6 +59,18 @@ pub struct AuthoredSelection {
     dense_parameter: Option<u32>,
 }
 impl AuthoredSelection {
+    /// An exact source class with no selected authored parameters. This grants
+    /// no SDK target and is used only to inspect an unlaned restored state.
+    pub fn for_no_parameters(class: [u8; 16]) -> Result<Self, &'static str> {
+        Ok(Self {
+            class: hex_plugin_state::ClassId::new(class)
+                .map_err(|_| "authored vst3 class is invalid")?,
+            ids: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
+            len: 0,
+            dense_parameter: None,
+        })
+    }
+
     pub fn from_targets(
         targets: impl IntoIterator<Item = (u32, Option<[u8; 16]>)>,
     ) -> Result<Option<Self>, &'static str> {

@@ -238,8 +238,10 @@ impl CanonicalBasesCapture {
             Some(Progress::Facts(_)) => {
                 output.complete_native_source_preparation(self.scratch, self.presentation)
             }
-            Some(Progress::Prepared { .. }) => output
-                .start_native_effect_with_authored_selection(self.scratch, Some(&self.selection)),
+            Some(Progress::Prepared { .. }) => output.start_native_effect_with_authored_selection(
+                self.scratch,
+                (!self.selection.parameters().1.is_empty()).then_some(&self.selection),
+            ),
             Some(Progress::Effect { prepared }) => self
                 .read_bases(output, prepared)
                 .map(|()| self.phase = Phase::Retire(Ok(()))),

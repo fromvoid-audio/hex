@@ -877,8 +877,13 @@ impl Plugins {
                 return Ok(());
             };
             if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
-                let selection = edits::armed_selection(control, source.binding, cancellation)?
-                    .ok_or("vst3 canonical program selection unavailable")?;
+                let selection = match edits::armed_selection(control, source.binding, cancellation)?
+                {
+                    Some(selection) => selection,
+                    None => AuthoredSelection::for_no_parameters(
+                        Hosting::saved_identity_on_control(state)?.class.bytes(),
+                    )?,
+                };
                 canonical.push(edits::canonical_bases(
                     self.host
                         .as_ref()

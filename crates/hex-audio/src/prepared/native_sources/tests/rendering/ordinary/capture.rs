@@ -420,6 +420,133 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
                 )
                 .is_err()
         );
+        // Qualify the actual captured state on a private restored instance,
+        // even when this original has no authored parameter targets.
+        let identity =
+            crate::plugin_effects::Hosting::saved_identity_on_control(&approved).unwrap();
+        let selection =
+            crate::plugin_effects::AuthoredSelection::for_no_parameters(identity.class.bytes())
+                .unwrap();
+        let (build, _, preparation) =
+            crate::candidate_custody::native_source_test_fixture::input_for(
+                "processing",
+                [
+                    0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+                ],
+            );
+        let host = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+        let source = f.control.status.native_parameter_source(true).unwrap().0;
+        assert!(crate::plugin_effects::AuthoredSelection::for_no_parameters([0; 16]).is_err());
+        let wrong_class =
+            crate::plugin_effects::AuthoredSelection::for_no_parameters([33; 16]).unwrap();
+        assert_eq!(
+            host.begin_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                f.binding,
+                &approved,
+                &wrong_class,
+                true,
+            )
+            .err()
+            .as_deref(),
+            Some("native canonical base class differs"),
+        );
+        let stale = AppliedAudioSource {
+            audio_revision: source.audio_revision + 1,
+            ..source
+        };
+        assert_eq!(
+            host.begin_canonical_bases_capture_on_control(
+                &mut f.control,
+                stale,
+                f.binding,
+                &approved,
+                &selection,
+                true,
+            )
+            .err()
+            .as_deref(),
+            Some("native base capture requires the current ordinary processor"),
+        );
+        let mut query = loop {
+            match host.begin_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                f.binding,
+                &approved,
+                &selection,
+                true,
+            ) {
+                Ok(query) => break query,
+                Err(error)
+                    if error == "native preparation is busy"
+                        || error == "native source is busy" => {}
+                Err(error) => panic!("empty canonical profile admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        let facts = loop {
+            if let Some(result) = query.poll_on_control(&mut f.control, &mut || false) {
+                break result.expect("empty canonical profile must be restorable");
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(facts.binding(), f.binding);
+        assert!(facts.canonical_state().processing_eq(&approved));
+        assert_eq!(facts.parameters().count(), 0);
+        if location == 2 {
+            use hex_lattice::{
+                NativeDeviceDefinition, ProcessorChainOwner, ProcessorInstanceIdentity,
+            };
+            let device = f.editor.project().main_devices()[0].id();
+            let identity =
+                ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device.value()).unwrap();
+            let context = hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            };
+            f.control
+                .with_native_effect_definition(&[f.binding], |definition| {
+                    assert!(
+                        definition
+                            .prepare_instance_state(identity, &approved, &context)
+                            .is_err()
+                    );
+                    let definition = definition
+                        .including_unavailable(&[])
+                        .unwrap()
+                        .including_canonical_bases(std::slice::from_ref(&facts))
+                        .unwrap();
+                    let prepared = definition
+                        .prepare_instance_state(identity, &approved, &context)
+                        .unwrap();
+                    assert!(prepared.processing_eq(&approved));
+                    let automation = definition
+                        .foreign_automation_source(identity, &prepared, &context)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(automation.binding, f.binding);
+                    assert!(automation.parameters.is_empty());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            f.control
+                .native_source_approves_processing_state_on_control(
+                    f.binding,
+                    facts.canonical_state()
+                ),
+            Some(true)
+        );
+        assert_eq!(
+            f.control.native_source_endpoint_status(f.binding),
+            Some((true, true))
+        );
         let next = loop {
             match f
                 .control
