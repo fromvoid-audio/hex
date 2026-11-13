@@ -124,7 +124,8 @@ pub use device_modulation::{
     project_device_can_add_note_pressure, project_device_has_modulation_note_events,
     project_device_host_gain_modulation_supported,
     project_device_instrument_output_modulation_supported,
-    project_device_modulation_target_supported,
+    project_device_modulation_target_supported, project_source_utility_matrix_edit_supported,
+    project_source_utility_mute_edit_supported,
 };
 /// The authored aggregate note-gate ADSR settings.
 pub use hex_devices::modulation::adsr as adsr_modulator;
@@ -4212,9 +4213,9 @@ pub use midi_template::{
     SessionMidiOrigin,
 };
 pub use playback::{
-    PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
-    PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
-    TransportFadeCompletion,
+    MAX_TIMED_TRANSPORT_COMMANDS, PlaybackAction, PlaybackActionError, PlaybackActionRejection,
+    PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability,
+    SessionCapabilityStatus, TimedTransportCommand, TimedTransportError, TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};

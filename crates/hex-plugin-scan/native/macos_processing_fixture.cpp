@@ -33,6 +33,7 @@ namespace {
 struct Observation {
     std::atomic<int> violations{0}, created{0}, initialized{0}, terminated{0};
     std::atomic<int> arrangements{0}, setups{0}, activations{0}, starts{0}, stops{0}, blocks{0}, flushes{0};
+    std::atomic<int> note_ons{0}, note_offs{0}, last_on{-1}, last_off{-1};
 } observed;
 int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
 bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
@@ -82,6 +83,15 @@ static void trace(int stage,int factory_refs=-1) {
         observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
         observed.blocks,observed.flushes,static_cast<int>(objects.load()),factory_refs};
     publish_trace(std::getenv("HEX_ORIGINAL_INSTANCE_TRACE"),values,14);
+    // Opt-in control-side snapshot of the exact helper process. DSP only
+    // updates bounded atomics; it never opens or writes this trace.
+    if (const auto* directory=std::getenv("HEX_ORIGINAL_NOTE_TRACE_DIR"); pthread_main_np() && directory) {
+        if (std::strlen(directory)<=4000) {
+            const auto path=std::string(directory)+"/"+std::to_string(::getpid())+".bin";
+            const int notes[]={stage,observed.note_ons,observed.note_offs,observed.last_on,observed.last_off};
+            publish_trace(path.c_str(),notes,5);
+        }
+    }
     const int restored[]={restoration.component_set,restoration.controller_component,restoration.controller_set,
         restoration.info_reads,restoration.value_reads,restoration.component_gain,restoration.controller_gain,
         restoration.scroll,restoration.latency,restoration.phase,restoration.component_get,restoration.controller_get,
@@ -1038,6 +1048,8 @@ public:
                         *existing={};
                     }
                 }
+                if(on) { ++observed.note_ons;observed.last_on=id; }
+                else { ++observed.note_offs;observed.last_off=id; }
                 if (++next_event<event_count && data.inputEvents->getEvent(next_event,event)!=kResultOk)
                     return kResultFalse;
             }

@@ -96,7 +96,7 @@ pub use audio_sink::{
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationFailure,
     ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -152,7 +152,7 @@ pub use project_rate::ProjectSampleRate;
 pub use recovery::{HeldCheckpoint, hold_next_checkpoint};
 #[cfg(test)]
 mod verified_source_tests;
-pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
+pub use canonical_audio_source::{CanonicalAudioSourceSnapshot, RawArrangementContentWitness};
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
@@ -255,13 +255,21 @@ pub enum SamplerLoadSlot {
         expected_state: hex_lattice_contract::NativeDeviceState,
     },
 }
+/// Captured owner of a sampler parameter edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SamplerParameterOwner {
+    /// The instrument of an existing track.
+    Track(hex_project::TrackId),
+    /// An unassigned retained source; binding it invalidates this target.
+    Source(hex_project::SourceId),
+}
 /// One completed sampler parameter gesture, bound to its captured canonical target.
 #[derive(Clone, Debug)]
 pub struct SamplerParameterEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
-    pub track: hex_project::TrackId,
+    pub owner: SamplerParameterOwner,
     pub device: hex_project::DeviceId,
     pub parameter: hex_engine::SamplerParameter,
     pub value: f64,
@@ -273,7 +281,7 @@ pub struct SamplerReplacementEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
-    pub track: hex_project::TrackId,
+    pub owner: hex_project::InstrumentAssetOwner,
     pub device: hex_project::DeviceId,
     pub expected_state: hex_lattice_contract::NativeDeviceState,
     pub path: PathBuf,
@@ -557,6 +565,13 @@ pub enum DeviceClipboardAction {
     },
 }
 
+/// Direction for an adjacent, source-owned Utility move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceUtilityMove {
+    Earlier,
+    Later,
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 // Fixed request storage is bounded by the 32-slot control FIFO.
@@ -586,6 +601,39 @@ pub enum Request {
         track: hex_project::TrackId,
         source: hex_project::SourceId,
     },
+    /// Append a neutral Utility to the captured bound source. The worker
+    /// validates the project stamps, track binding, instrument and Utility suffix;
+    /// callers must reject their own unsent gestures before submitting.
+    AppendSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+    },
+    /// Remove one exact leaf Utility from a captured bound Utility source.
+    /// Publication retains the live/quiet retirement guard and Undo history.
+    RemoveSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+        effect: hex_project::DeviceId,
+    },
+    /// Move one captured leaf Utility across its exact adjacent leaf sibling.
+    /// The worker revalidates ownership, order and project stamps; live/quiet
+    /// publication remains with the prepared source stage.
+    MoveSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+        effect: hex_project::DeviceId,
+        neighbor: hex_project::DeviceId,
+        direction: SourceUtilityMove,
+    },
     /// Explicitly change a captured track binding, including unlinking. A shared
     /// source's receiver must first be moved when other contributors remain.
     /// Callers must reject unsent gestures; this request never finalizes them.
@@ -595,6 +643,37 @@ pub enum Request {
         track: hex_project::TrackId,
         expected_source: Option<hex_project::SourceId>,
         source: Option<hex_project::SourceId>,
+    },
+    /// Explicitly move a source's audio receiver to an already linked track.
+    /// The captured receiver and project stamps must still match. Callers must
+    /// reject unsent gestures; this request does not finalize them.
+    ChooseNativeSourceReceiver {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::SourceId,
+        expected_receiver: Option<hex_project::TrackId>,
+        track: hex_project::TrackId,
+    },
+    /// Rename a captured retained source without finalizing a caller-owned gesture.
+    RenameRetainedSource {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::SourceId,
+        name: String,
+    },
+    /// Explicitly delete a captured, unreferenced retained source.
+    DeleteRetainedSource {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::SourceId,
+    },
+    /// Create an unassigned source from a registered native instrument default.
+    /// The project stamps must still match; callers must reject unsent gestures.
+    CreateRetainedNativeSource {
+        project_generation: u64,
+        revision: u64,
+        type_id: Box<hex_lattice_contract::DeviceTypeId>,
+        name: String,
     },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
@@ -660,6 +739,9 @@ pub enum Request {
     /// Existing clip drag release, bound to the gesture's source. Existing and
     /// new-track move/copy commands are accepted; unrelated work may precede it,
     /// but an intervening canonical edit must refuse rather than retarget it.
+    /// Resident playback parks this request in FIFO order for at most 500 ms
+    /// behind an in-flight publication; output replacement, refusal, project
+    /// replacement or timeout refuses the edit without changing the project.
     MoveExistingClips {
         project_generation: u64,
         revision: u64,
@@ -3232,26 +3314,32 @@ fn run_worker(
             .as_ref()
             .and_then(resident_preview::Preview::clip_target)
             .is_some_and(|target| target.matches_release(&queued.request));
+        // A move can arrive after its audition was cancelled but before that
+        // preview publication has reached the callback. Keep its FIFO place
+        // behind the same bounded publication wait as a matching release.
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
                 || matches!(
                     &queued.request,
-                    Request::Edit(
-                        Command::ToggleDeviceBypass { .. }
-                            | Command::SetDeviceBypass { .. }
-                            | Command::ReplaceDeviceState { .. }
-                    ) | Request::DeviceGesture(
-                        GestureRequest::Change { .. }
-                            | GestureRequest::ChangePair { .. }
-                            | GestureRequest::ChangeSnapshot { .. }
-                            | GestureRequest::ChangeEqCreation { .. }
-                            | GestureRequest::Commit { .. }
-                            | GestureRequest::CommitPair { .. }
-                            | GestureRequest::CommitSnapshot { .. }
-                            | GestureRequest::CommitEqCreation { .. }
-                            | GestureRequest::Cancel { .. }
-                    ) | Request::SetDeviceParameter { .. }
+                    Request::MoveExistingClips { .. }
+                        | Request::Edit(
+                            Command::ToggleDeviceBypass { .. }
+                                | Command::SetDeviceBypass { .. }
+                                | Command::ReplaceDeviceState { .. }
+                        )
+                        | Request::DeviceGesture(
+                            GestureRequest::Change { .. }
+                                | GestureRequest::ChangePair { .. }
+                                | GestureRequest::ChangeSnapshot { .. }
+                                | GestureRequest::ChangeEqCreation { .. }
+                                | GestureRequest::Commit { .. }
+                                | GestureRequest::CommitPair { .. }
+                                | GestureRequest::CommitSnapshot { .. }
+                                | GestureRequest::CommitEqCreation { .. }
+                                | GestureRequest::Cancel { .. }
+                        )
+                        | Request::SetDeviceParameter { .. }
                 )) {
             match events.defer_publication(queued) {
                 Some(queued) => queued,
@@ -3475,6 +3563,297 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::CreateRetainedNativeSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                type_id,
+                name,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source creation canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before creating a source".into(),
+                    );
+                }
+                let state = hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Instrument,
+                    **type_id,
+                )
+                .map_err(|reason| format!("native instrument unavailable · {reason}"))?;
+                Ok(Command::CreateNativeSource {
+                    name: name.clone(),
+                    devices: vec![state],
+                    instrument_index: 0,
+                })
+            })()),
+            Request::RenameRetainedSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                ..
+            }
+            | Request::DeleteRetainedSource {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source edit canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                if session.project().native_source(*source).is_none() {
+                    return Err("source edit canceled · source no longer exists".into());
+                }
+                match &request {
+                    Request::RenameRetainedSource { name, .. } => Ok(Command::RenameNativeSource {
+                        source: *source,
+                        name: name.clone(),
+                    }),
+                    Request::DeleteRetainedSource { .. } => {
+                        Ok(Command::RemoveNativeSource(*source))
+                    }
+                    _ => Err("source edit was not resolved".into()),
+                }
+            })()),
+            Request::ChooseNativeSourceReceiver {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                expected_receiver,
+                track,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source receiver selection canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before choosing a source receiver"
+                            .into(),
+                    );
+                }
+                let project = session.project();
+                let definition = project
+                    .native_source(*source)
+                    .ok_or("source receiver selection canceled · source no longer exists")?;
+                if definition.receiver() != *expected_receiver {
+                    return Err("source receiver selection canceled · receiver changed".into());
+                }
+                let target = project
+                    .track(*track)
+                    .ok_or("source receiver selection canceled · track no longer exists")?;
+                if target.source_id() != Some(*source) {
+                    return Err(
+                        "source receiver selection canceled · track is not linked to source".into(),
+                    );
+                }
+                if *expected_receiver == Some(*track) {
+                    return Err("source receiver is unchanged".into());
+                }
+                Ok(Command::SetNativeSourceReceiver {
+                    source: *source,
+                    track: Some(*track),
+                })
+            })()),
+            Request::AppendSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let source = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                if source.receiver().is_none()
+                    || source.instrument().id() != *instrument
+                    || source.instrument().state().type_id() != default_instrument.type_id()
+                    || source.devices().count() >= hex_project::MAX_SOURCE_DEVICES
+                    || source.post_instrument_effects().iter().any(|effect| {
+                        effect.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                let state = hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .map_err(|_| "utility is unavailable")?;
+                Ok(Command::InsertNestedDevice {
+                    parent: *instrument,
+                    state,
+                })
+            })()),
+            Request::RemoveSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+                effect,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let source = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                let effects = source.post_instrument_effects();
+                if source.receiver().is_none()
+                    || source.instrument().id() != *instrument
+                    || source.instrument().state().type_id() != default_instrument.type_id()
+                    || !effects.iter().any(|item| item.id() == *effect)
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                    || source.devices().any(|item| item.parent() == Some(*effect))
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                Ok(Command::RemoveDevice(*effect))
+            })()),
+            Request::MoveSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+                effect,
+                neighbor,
+                direction,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let definition = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                let effects = definition.post_instrument_effects();
+                if definition.receiver().is_none()
+                    || definition.instrument().id() != *instrument
+                    || definition.instrument().state().type_id() != default_instrument.type_id()
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                let index = effects
+                    .iter()
+                    .position(|item| item.id() == *effect)
+                    .ok_or("source effect canceled · source chain changed")?;
+                let neighbor_index = match direction {
+                    SourceUtilityMove::Earlier => index.checked_sub(1),
+                    SourceUtilityMove::Later => index.checked_add(1),
+                }
+                .ok_or("source effect canceled · source chain changed")?;
+                let target = effects
+                    .get(index)
+                    .ok_or("source effect canceled · source chain changed")?;
+                let adjacent = effects
+                    .get(neighbor_index)
+                    .ok_or("source effect canceled · source chain changed")?;
+                if adjacent.id() != *neighbor
+                    || target.parent() != adjacent.parent()
+                    || definition.devices().any(|item| {
+                        item.parent() == Some(*effect) || item.parent() == Some(*neighbor)
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or contains children".into(),
+                    );
+                }
+                let before = match direction {
+                    SourceUtilityMove::Earlier => Some(*neighbor),
+                    SourceUtilityMove::Later => index
+                        .checked_add(2)
+                        .and_then(|next| effects.get(next))
+                        .map(hex_project::Device::id),
+                };
+                Ok(Command::MoveNativeSourceDevice {
+                    source: *source,
+                    device: *effect,
+                    before,
+                })
+            })()),
             Request::RebindNativeSource {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5099,6 +5478,8 @@ fn run_worker(
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
+                                        source_origin:
+                                            crate::service::ResidentSourceOrigin::Unknown,
                                         clip_preview: None,
                                         context,
                                         device_preview: None,
@@ -5463,7 +5844,15 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::BindUnassignedNativeSource { .. } | Request::RebindNativeSource { .. } => {
+                Request::AppendSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::RenameRetainedSource { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. } => {
                     error = Some("source assignment was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
@@ -6164,7 +6553,7 @@ fn run_worker(
                                         frames,
                                     )?;
                                 crate::native_assets::NativeAssetDestination::ExistingInstrument {
-                                    track,
+                                    owner: hex_project::InstrumentAssetOwner::Track(track),
                                     device,
                                     expected_state,
                                     state,
@@ -8720,6 +9109,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -8787,6 +9177,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.expression = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -8910,6 +9301,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.audition = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9051,6 +9443,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.keyboard = Some((track, Arc::clone(&input)));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9179,6 +9572,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context,
                                 device_preview: None,

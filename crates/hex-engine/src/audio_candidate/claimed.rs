@@ -426,6 +426,46 @@ impl ClaimedAudioCandidateRuntime {
             .playback
             .visit_next_stream_chunk(maximum_frames, playing, visit)
     }
+    /// Visit bounded callback demand without changing committed playback state.
+    pub fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<usize, crate::Invalid> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::Invalid("candidate runtime is not current"));
+        }
+        self.inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?
+            .playback
+            .visit_current_stream_quantum(maximum_frames, playing, false, visit)
+    }
+    /// Visit at most 256 frames at a checked offset from the current clock.
+    /// This speculative observation does not commit playback state.
+    pub fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::playback::StreamQuantumProjectionError::Projection(
+                crate::Invalid("candidate runtime is not current"),
+            ));
+        }
+        self.inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::playback::StreamQuantumProjectionError::Projection(
+                crate::Invalid("candidate runtime unavailable"),
+            ))?
+            .playback
+            .visit_current_stream_quantum_at(start_offset, maximum_frames, playing, false, visit)
+    }
     /// Runs the real handoff's pure preflight against the actual predecessor.
     /// Scratch planning may change; committed owners/history/routes do not.
     pub fn preview_stream_handoff(
@@ -435,6 +475,19 @@ impl ClaimedAudioCandidateRuntime {
         playing: Option<bool>,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::PlaybackHandoffError> {
+        self.preview_stream_handoff_with_report(previous, maximum_frames, playing, visit)
+            .map(|(window, _)| window)
+    }
+    /// Preview the same claimed handoff and its running-audio classification.
+    /// The report is observational and does not grant publication authority.
+    pub fn preview_stream_handoff_with_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), crate::PlaybackHandoffError>
+    {
         let invalid =
             || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         if self.inner.phase != ClaimedPhase::Current
@@ -448,8 +501,14 @@ impl ClaimedAudioCandidateRuntime {
         if next.sampler_sources.is_some() || old.sampler_sources.is_some() {
             return Err(invalid());
         }
-        next.playback
-            .preview_stream_handoff(&mut old.playback, maximum_frames, playing, visit)
+        next.playback.preview_stream_handoff_with_report(
+            &mut old.playback,
+            maximum_frames,
+            playing,
+            visit,
+            false,
+            false,
+        )
     }
     /// The current covering graph is actually borrowed through this runtime's
     /// own original prepared-root handle. There is no detached report accessor.

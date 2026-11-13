@@ -1979,6 +1979,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
     };
     let metadata = ResidentPublicationMetadata {
+        source_origin: hex_session::service::ResidentSourceOrigin::CanonicalCandidate,
         clip_preview: None,
         context,
         device_preview: None,
@@ -2034,7 +2035,11 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
         .control()
         .unwrap()
         .reclaim();
+    let first_applied = sink.current_runtime_loop(context).unwrap().unwrap();
+    assert_eq!(first_applied.audio_revision, first);
+    assert_eq!(first_applied.source_origin, metadata.source_origin);
     let second_metadata = ResidentPublicationMetadata {
+        source_origin: hex_session::service::ResidentSourceOrigin::ClipStretchPreview,
         computer_keyboard_request: None,
         stopped_restore: true,
         ..metadata
@@ -2058,6 +2063,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
         panic!("active publication")
     };
     assert_ne!(first, second);
+    assert!(sink.current_runtime_loop(context).is_err());
     sink.observe(context, "preparing", EditorPublicationState::Preparing);
     sink.observe(context, "busy", EditorPublicationState::Busy);
     let candidate = graph();
@@ -2136,6 +2142,9 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
             .reclaim();
     }
+    let second_applied = sink.current_runtime_loop(context).unwrap().unwrap();
+    assert_eq!(second_applied.audio_revision, second);
+    assert_eq!(second_applied.source_origin, second_metadata.source_origin);
     drop(refused);
     // Returned audio graphs do not retire a telemetry view still held by a UI consumer. Fill
     // the existing three observation rows, refuse intact, then release one actual external

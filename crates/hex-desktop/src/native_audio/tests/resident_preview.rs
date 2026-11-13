@@ -117,6 +117,10 @@ fn held_single_midi_move_reschedules_the_note_before_commit() {
     assert!(h.service.audition_arrangement_move(Some(target.clone())));
     let (preview, preview_metadata) = h.applied(applied);
     assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert_eq!(
+        preview_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::ClipMovePreview
+    );
     let position = |h: &ResidentHarness| {
         h.audio
             .as_ref()
@@ -575,6 +579,10 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
     let (initial, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
     let (applied, metadata) = h.applied(initial);
+    assert_eq!(
+        metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::CanonicalCandidate
+    );
     let before = imported.state.project.snapshot();
     let clip = imported.state.project.tracks()[0].clips()[0].id();
     h.audio
@@ -628,7 +636,15 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
             ..target
         }));
     h.service.audition_arrangement_stretch(Some(target));
-    let (applied, pcm) = advance(&mut h, applied);
+    let previous = applied;
+    let (applied, pcm) = advance(&mut h, previous);
+    let (reported, preview_metadata) = h.applied(previous);
+    assert_eq!(reported, applied);
+    assert_eq!(preview_metadata.clip_preview, None);
+    assert_eq!(
+        preview_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::ClipStretchPreview
+    );
     assert!(
         pcm.iter().all(|f| *f == [0.0; 2]),
         "latest held target is audible before release"
@@ -780,6 +796,13 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
     render(&h, 0.5);
     h.service.audition_arrangement_play_start(Some(target));
     let preview = advance(&mut h, applied);
+    let (reported, preview_metadata) = h.applied(applied);
+    assert_eq!(reported, preview);
+    assert_eq!(preview_metadata.clip_preview, None);
+    assert_eq!(
+        preview_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview
+    );
     render(&h, 0.25);
     assert!(
         h.service.try_event().is_err(),
@@ -1389,6 +1412,11 @@ struct ResidentSink {
     file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
+}
+struct ConfirmationProbe {
+    ready: SyncSender<()>,
+    resume: mpsc::Receiver<()>,
 }
 struct PublicationProbe {
     ready: SyncSender<()>,
@@ -1632,6 +1660,11 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
     ) -> Result<(), hex_session::service::PluginParameterGestureError> {
+        let probe = self.confirmation_probe.lock().unwrap().take();
+        if let Some(probe) = probe {
+            probe.ready.send(()).unwrap();
+            probe.resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
         self.inner
             .confirm_plugin_parameter_publication(context, acceptance)
     }
@@ -1991,6 +2024,7 @@ pub(super) struct ResidentHarness {
     file_publication_waiting: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
@@ -2223,6 +2257,7 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        let confirmation_probe = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let control_polls = Arc::new(AtomicU64::new(0));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2245,6 +2280,7 @@ impl ResidentHarness {
                 file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
                 publication_probe: Arc::clone(&publication_probe),
+                confirmation_probe: Arc::clone(&confirmation_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -2269,6 +2305,7 @@ impl ResidentHarness {
             file_publication_waiting,
             pending_observation_generation,
             publication_probe,
+            confirmation_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
@@ -2572,6 +2609,21 @@ impl ResidentHarness {
             // are released, without poisoning Root's production Work mutex.
             assert_eq!(result, Some(Ok(())));
         })
+    }
+    pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+        let (ready, entered) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        assert!(
+            self.confirmation_probe
+                .lock()
+                .unwrap()
+                .replace(ConfirmationProbe {
+                    ready,
+                    resume: resumed
+                })
+                .is_none()
+        );
+        (entered, resume)
     }
     pub(super) fn probe_next_native_publication(
         &self,
@@ -3088,7 +3140,12 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         sequence: 1,
         value: ParameterValue::Float(0.5),
     }));
-    (applied, _) = h.applied(applied);
+    let (device_audio, device_metadata) = h.applied(applied);
+    applied = device_audio;
+    assert_eq!(
+        device_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::DevicePreview
+    );
     let identity = preview.device_preview.as_ref().unwrap().identity;
 
     // An explicit input request during a live overlay must not publish the canonical gain.
@@ -3103,6 +3160,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     });
     let (keyboard_audio, metadata) = h.applied(applied);
     assert_eq!(metadata.device_preview, Some(identity));
+    assert_eq!(
+        metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::DevicePreview
+    );
     assert_eq!(metadata.computer_keyboard_request, Some(9));
     assert_eq!(keyboard.device_preview.as_ref().unwrap().identity, identity);
     // The preview was published while stopped; monitoring advances its ramp.
@@ -3277,7 +3338,12 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         sequence: 1,
         tuning: tuned,
     }));
-    (applied, _) = h.applied(applied);
+    let (tuning_audio, tuning_metadata) = h.applied(applied);
+    applied = tuning_audio;
+    assert_eq!(
+        tuning_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::TuningPreview
+    );
     let identity = preview.tuning_preview.as_ref().unwrap().identity;
     assert_eq!(
         preview
@@ -3301,6 +3367,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     let (next_applied, metadata) = h.applied(applied);
     applied = next_applied;
     assert_eq!(metadata.tuning_preview, Some(identity));
+    assert_eq!(
+        metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::TuningPreview
+    );
     assert_eq!(prepared.tuning_preview.as_ref().unwrap().identity, identity);
     assert!(!next.is_cancelled());
     assert_eq!(h.render(), [[0.25; 2]; 64]);

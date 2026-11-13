@@ -148,6 +148,8 @@ pub struct PluginEffectTestView {
     pub selected_owner: Option<hex_session::service::PluginEffectDestination>,
     pub status: String,
     pub applied: Option<hex_audio::prepared::AppliedAudioSource>,
+    /// Original callback status, copied for native graph recovery tests.
+    pub transport: Option<(u64, bool)>,
 }
 
 #[cfg(feature = "ui-test-support")]

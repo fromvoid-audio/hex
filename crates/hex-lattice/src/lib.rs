@@ -330,6 +330,22 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         false
     }
 
+    /// Prove that only the host input matrix changed while this processor's
+    /// authored processing configuration remains identical. Both candidate
+    /// twins must accept the same committed donor before a source handoff.
+    /// This callback-side query must be bounded, allocation-free and read-only.
+    fn can_retarget_source_host_matrix_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+
+    /// Prove that an internal source parameter change can copy the donor's
+    /// history and transition continuously. The host independently requires
+    /// the same input matrix, identity and an unautomated source. Both twins
+    /// must accept the committed donor. This query is bounded and read-only.
+    fn can_retarget_source_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+
     /// This native provider can replace an equivalent static matrix at a
     /// source modulation handoff without losing any filter or signal history.
     /// The host still requires the exact same authored configuration and rate.
@@ -1867,14 +1883,79 @@ impl NativeRuntimeChain {
     /// Preflight a retiring-donor transfer for a source effect recipe. The
     /// native provider, trims and topology must still match. A live edit may
     /// replace a static matrix with a provider that explicitly proves it has
-    /// no signal history to carry. Compatible automation changes keep the
-    /// existing DSP history under the same configuration and tail bound.
-    /// Strict continuation compares the entire prepared declaration.
+    /// no signal history to carry, or retarget a matching unautomated,
+    /// memoryless source matrix through the existing host ramp. A stateful
+    /// provider may also admit a changed host matrix if both candidate twins
+    /// explicitly prove that their own processing configuration is unchanged
+    /// and the ordinary history and retarget preflights succeed. Compatible
+    /// automation changes keep the existing DSP history under the same
+    /// configuration and tail bound.
+    /// A live continuation may append one new, memoryless identity matrix
+    /// after an exactly matching nonempty prefix. The new stage has neutral
+    /// trims, no automation/modulation, latency or tail, and a distinct source
+    /// device identity. Strict continuation compares the entire declaration.
     pub fn can_transfer_source_recipe_history_from(
         &self,
         previous: &Self,
         allow_control_edit: bool,
     ) -> bool {
+        // An identity-only final stage adds no signal or control history. Keep
+        // the old prefix exact and transfer it to the candidate before use.
+        // The candidate's new identity must not alias any donor entry.
+        let neutral_append = allow_control_edit
+            && !previous.is_empty()
+            && previous.len().checked_add(1) == Some(self.len())
+            && self.entries.last().is_some_and(|appended| {
+                matches!(appended.owner, ProcessorChainOwner::Source(_))
+                    && previous.entries.iter().all(|old| {
+                        old.owner == appended.owner
+                            && old.sample_rate == appended.sample_rate
+                            && old.device_id != appended.device_id
+                    })
+                    && matches!(appended.runtime, RuntimeOwnership::Memoryless)
+                    && appended.configuration.is_some()
+                    && !appended.bypassed
+                    && appended.input_gain == 1.0
+                    && appended.output_gain == 1.0
+                    && appended.matrix == StereoMatrix::identity()
+                    && appended.algorithmic_latency_frames == Some(0)
+                    && appended.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                    && appended.automation.is_empty()
+                    && appended.modulation.is_none()
+                    && appended.committed_transient_output_gain
+                        == host_output_gain_ramp::TransientGain::Follow
+                    && appended.scratch_transient_output_gain
+                        == host_output_gain_ramp::TransientGain::Follow
+                    && appended.committed_host_gains == [1.0, 1.0]
+                    && appended.scratch_host_gains == [1.0, 1.0]
+                    && !appended.scratch_matrix_ramp.is_active()
+                    && !appended.scratch_output_gain_ramp.active()
+                    && !appended.scratch_bypass_ramp.is_active()
+                    && !appended.committed_matrix_ramp.is_active()
+                    && !appended.committed_output_gain_ramp.active()
+                    && !appended.committed_bypass_ramp.is_active()
+            });
+        if neutral_append {
+            return self.entries.iter().zip(&previous.entries).enumerate().all(
+                |(index, (left, right))| {
+                    !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                        && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
+                        && left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && left.algorithmic_latency_frames == right.algorithmic_latency_frames
+                        && left.output_tail == right.output_tail
+                        && self.configuration_matches_range(previous, index..index + 1)
+                        && left.runtime.same_foreign_modulation(&right.runtime)
+                        && match (&left.modulation, &right.modulation) {
+                            (None, None) => true,
+                            (Some(left), Some(right)) => left.same_declaration(right),
+                            _ => false,
+                        }
+                },
+            ) && !self.transition_busy_from(previous)
+                && self.can_inherit_from(previous);
+        }
         self.len() == previous.len()
             && self.entries.iter().zip(&previous.entries).enumerate().all(
                 |(index, (left, right))| {
@@ -1888,6 +1969,49 @@ impl NativeRuntimeChain {
                             && self.configuration_matches_range(previous, index..index + 1))
                             || allow_control_edit
                                 && left.matches_memoryless_modulation_handoff(right)
+                            // A static, zero-latency source matrix has no DSP
+                            // history to retarget, even when different authored
+                            // settings resolve to the same matrix. The existing identity preflight
+                            // and inherited matrix ramp preserve its live signal.
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && matches!(left.runtime, RuntimeOwnership::Memoryless)
+                                && matches!(right.runtime, RuntimeOwnership::Memoryless)
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.algorithmic_latency_frames == Some(0)
+                                && right.algorithmic_latency_frames == Some(0)
+                                && left.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                                && right.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.output_tail == right.output_tail
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && left.runtime.can_retarget_source_host_matrix_from(&right.runtime)
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && !left.bypassed
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.output_tail == right.output_tail
+                                && left.matrix == right.matrix
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && left.runtime.can_retarget_source_parameters_from(&right.runtime)
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
                             || allow_control_edit
                                 && left.output_tail == right.output_tail
                                 && left.matrix == right.matrix
@@ -5629,5 +5753,268 @@ mod tests {
         active_reference.commit_block();
 
         assert_eq!(resumed_bypassed, resumed_reference);
+    }
+
+    #[test]
+    fn source_neutral_append_requires_exact_prefix_and_fresh_identity() {
+        let device_type = DeviceTypeId::from_static("test.source-matrix");
+        let entry = |source, id, gain: f32, config: u8| PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Source(source),
+            device_id: id,
+            device_type,
+            matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(std::sync::Arc::new(
+                NativeDeviceState::new(device_type, 1, vec![config]).unwrap(),
+            )),
+            definition: None,
+        };
+        let old = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1)]).unwrap();
+        let candidate =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(1, 5, 1.0, 2)]).unwrap();
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            vec![entry(1, 4, 1.0, 1), entry(1, 5, 2.0, 2)],
+            vec![entry(1, 4, 1.0, 1), entry(1, 4, 1.0, 2)],
+            vec![entry(1, 4, 1.0, 1), entry(2, 5, 1.0, 2)],
+            vec![entry(1, 4, 1.0, 2), entry(1, 5, 1.0, 2)],
+            vec![entry(1, 5, 1.0, 2), entry(1, 4, 1.0, 1)],
+        ] {
+            let candidate = NativeRuntimeChain::new(bad).unwrap();
+            assert!(!candidate.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let mixed_owner =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(2, 6, 1.0, 3)]).unwrap();
+        let mixed_owner_candidate = NativeRuntimeChain::new(vec![
+            entry(1, 4, 1.0, 1),
+            entry(2, 6, 1.0, 3),
+            entry(1, 5, 1.0, 2),
+        ])
+        .unwrap();
+        assert!(!mixed_owner_candidate.can_transfer_source_recipe_history_from(&mixed_owner, true));
+        let mut other_rate = entry(1, 6, 1.0, 3);
+        other_rate.sample_rate = 44_100;
+        let mixed_rate = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), other_rate]).unwrap();
+        let mut other_rate_candidate = entry(1, 6, 1.0, 3);
+        other_rate_candidate.sample_rate = 44_100;
+        let mixed_rate_candidate = NativeRuntimeChain::new(vec![
+            entry(1, 4, 1.0, 1),
+            other_rate_candidate,
+            entry(1, 5, 1.0, 2),
+        ])
+        .unwrap();
+        assert!(!mixed_rate_candidate.can_transfer_source_recipe_history_from(&mixed_rate, true));
+        let mut wrong_rate = entry(1, 5, 1.0, 2);
+        wrong_rate.sample_rate = 44_100;
+        let wrong_rate = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), wrong_rate]).unwrap();
+        assert!(!wrong_rate.can_transfer_source_recipe_history_from(&old, true));
+        let mut automated =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(1, 5, 1.0, 2)]).unwrap();
+        automated.entries[1]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        let mut stateful = entry(1, 5, 1.0, 2);
+        stateful.definition = Some(std::sync::Arc::new(DelayedTailPrepared));
+        let stateful = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), stateful]).unwrap();
+        assert!(!stateful.can_transfer_source_recipe_history_from(&old, true));
+        let mut transient =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(1, 5, 1.0, 2)]).unwrap();
+        transient.entries[1].committed_transient_output_gain =
+            host_output_gain_ramp::TransientGain::Releasing;
+        assert!(!transient.can_transfer_source_recipe_history_from(&old, true));
+        let empty = NativeRuntimeChain::new(vec![]).unwrap();
+        assert!(!old.can_transfer_source_recipe_history_from(&empty, true));
+    }
+
+    #[test]
+    fn source_matrix_retarget_requires_matching_known_memoryless_identity() {
+        let device_type = DeviceTypeId::from_static("test.source-matrix");
+        let make = |source, id, rate, gain: f32, config: Option<u8>, bypassed, definition| {
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Source(source),
+                device_id: id,
+                device_type,
+                matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+                bypassed,
+                sample_rate: rate,
+                configuration: config.map(|n| {
+                    std::sync::Arc::new(NativeDeviceState::new(device_type, 1, vec![n]).unwrap())
+                }),
+                definition,
+            }])
+            .unwrap()
+        };
+        let old = make(1, 4, 48_000, 1.0, Some(1), false, None);
+        let candidate = make(1, 4, 48_000, 2.0, Some(2), false, None);
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        let equivalent = make(1, 4, 48_000, 1.0, Some(2), false, None);
+        assert!(equivalent.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!equivalent.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            make(2, 4, 48_000, 1.0, Some(2), false, None),
+            make(1, 5, 48_000, 1.0, Some(2), false, None),
+            make(1, 4, 48_000, 1.0, None, false, None),
+            make(2, 4, 48_000, 2.0, Some(2), false, None),
+            make(1, 5, 48_000, 2.0, Some(2), false, None),
+            make(1, 4, 44_100, 2.0, Some(2), false, None),
+            make(1, 4, 48_000, 2.0, None, false, None),
+            make(1, 4, 48_000, 2.0, Some(2), true, None),
+        ] {
+            assert!(!bad.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let unknown_old = make(1, 4, 48_000, 1.0, None, false, None);
+        assert!(!candidate.can_transfer_source_recipe_history_from(&unknown_old, true));
+        let mut automated = make(1, 4, 48_000, 2.0, Some(2), false, None);
+        automated.entries[0]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        automated.entries[0].matrix = old.entries[0].matrix;
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        let factory: std::sync::Arc<dyn PreparedNativeProcessor> =
+            std::sync::Arc::new(DelayedTailPrepared);
+        let stateful_old = make(
+            1,
+            4,
+            48_000,
+            1.0,
+            Some(1),
+            false,
+            Some(std::sync::Arc::clone(&factory)),
+        );
+        let stateful_new = make(1, 4, 48_000, 2.0, Some(2), false, Some(factory));
+        assert!(!stateful_new.can_transfer_source_recipe_history_from(&stateful_old, true));
+        let mut equivalent_stateful = stateful_new;
+        equivalent_stateful.entries[0].matrix = stateful_old.entries[0].matrix;
+        assert!(!equivalent_stateful.can_transfer_source_recipe_history_from(&stateful_old, true));
+    }
+
+    struct SourceMatrixWitness(bool);
+    impl NativeProcessorRuntime for SourceMatrixWitness {
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+        fn can_retarget_source_host_matrix_from(
+            &self,
+            previous: &dyn NativeProcessorRuntime,
+        ) -> bool {
+            self.0 && previous.as_any().is::<Self>()
+        }
+        fn can_retarget_source_parameters_from(
+            &self,
+            previous: &dyn NativeProcessorRuntime,
+        ) -> bool {
+            self.0 && previous.as_any().is::<Self>()
+        }
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn source_matrix_provider_proof_requires_both_candidate_twins() {
+        let legacy = |primary, scratch| RuntimeOwnership::Legacy {
+            primary: Box::new(SourceMatrixWitness(primary)),
+            scratch: Box::new(SourceMatrixWitness(scratch)),
+        };
+        let old = legacy(true, true);
+        assert!(legacy(true, true).can_retarget_source_host_matrix_from(&old));
+        assert!(!legacy(false, true).can_retarget_source_host_matrix_from(&old));
+        assert!(!legacy(true, false).can_retarget_source_host_matrix_from(&old));
+        assert!(!RuntimeOwnership::Memoryless.can_retarget_source_host_matrix_from(&old));
+        assert!(legacy(true, true).can_retarget_source_parameters_from(&old));
+        assert!(!legacy(false, true).can_retarget_source_parameters_from(&old));
+        assert!(!legacy(true, false).can_retarget_source_parameters_from(&old));
+        assert!(!RuntimeOwnership::Memoryless.can_retarget_source_parameters_from(&old));
+    }
+
+    struct SourceParameterPrepared;
+    impl PreparedNativeProcessor for SourceParameterPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<SourceParameterRuntime>()
+        }
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(SourceParameterRuntime)
+        }
+    }
+    struct SourceParameterRuntime;
+    impl NativeProcessorRuntime for SourceParameterRuntime {
+        fn process_block(&mut self, _: &mut [StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_parameters_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_source_parameters_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _: &dyn NativeProcessorRuntime) {}
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn source_parameter_proof_requires_same_identity_matrix_and_no_automation() {
+        let device_type = DeviceTypeId::from_static("test.source-parameter");
+        let make = |source, id, rate, gain: f32, config: Option<u8>, bypassed| {
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Source(source),
+                device_id: id,
+                device_type,
+                matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+                bypassed,
+                sample_rate: rate,
+                configuration: config.map(|value| {
+                    std::sync::Arc::new(
+                        NativeDeviceState::new(device_type, 1, vec![value]).unwrap(),
+                    )
+                }),
+                definition: Some(std::sync::Arc::new(SourceParameterPrepared)),
+            }])
+            .unwrap()
+        };
+        let old = make(1, 4, 48_000, 1.0, Some(1), false);
+        let candidate = make(1, 4, 48_000, 1.0, Some(2), false);
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            make(2, 4, 48_000, 1.0, Some(2), false),
+            make(1, 5, 48_000, 1.0, Some(2), false),
+            make(1, 4, 44_100, 1.0, Some(2), false),
+            make(1, 4, 48_000, 2.0, Some(2), false),
+            make(1, 4, 48_000, 1.0, None, false),
+            make(1, 4, 48_000, 1.0, Some(2), true),
+        ] {
+            assert!(!bad.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let mut automated = make(1, 4, 48_000, 1.0, Some(2), false);
+        automated.entries[0]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
     }
 }

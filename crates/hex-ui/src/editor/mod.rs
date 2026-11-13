@@ -540,6 +540,7 @@ fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     device_panel::bind_picker_keys(cx);
     device_panel::bind_source_picker_keys(cx);
+    device_panel::bind_source_manager_keys(cx);
     device_panel::bind_keyboard_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
@@ -1985,6 +1986,10 @@ impl EditorView {
     }
 
     pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
+        if device_panel::source_sampler_edit_active(self) {
+            self.error = Some("finish the sampler edit before changing the source view".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };

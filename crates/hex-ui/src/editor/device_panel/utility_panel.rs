@@ -11,16 +11,16 @@ use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView}
 use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
-const GAIN: ParameterId = ParameterId::from_static(1);
-const BALANCE: ParameterId = ParameterId::from_static(2);
-const WIDTH: ParameterId = ParameterId::from_static(3);
-const CHANNEL: ParameterId = ParameterId::from_static(4);
-const INVERT_LEFT: ParameterId = ParameterId::from_static(5);
-const INVERT_RIGHT: ParameterId = ParameterId::from_static(6);
-const MONO: ParameterId = ParameterId::from_static(7);
-const MUTE: ParameterId = ParameterId::from_static(8);
-const MID_SIDE_ENABLED: ParameterId = ParameterId::from_static(9);
-const MID_SIDE_BALANCE: ParameterId = ParameterId::from_static(10);
+pub(super) const GAIN: ParameterId = ParameterId::from_static(1);
+pub(super) const BALANCE: ParameterId = ParameterId::from_static(2);
+pub(super) const WIDTH: ParameterId = ParameterId::from_static(3);
+pub(super) const CHANNEL: ParameterId = ParameterId::from_static(4);
+pub(super) const INVERT_LEFT: ParameterId = ParameterId::from_static(5);
+pub(super) const INVERT_RIGHT: ParameterId = ParameterId::from_static(6);
+pub(super) const MONO: ParameterId = ParameterId::from_static(7);
+pub(super) const MUTE: ParameterId = ParameterId::from_static(8);
+pub(super) const MID_SIDE_ENABLED: ParameterId = ParameterId::from_static(9);
+pub(super) const MID_SIDE_BALANCE: ParameterId = ParameterId::from_static(10);
 const DC_REMOVE: ParameterId = ParameterId::from_static(11);
 const BASS_MONO: ParameterId = ParameterId::from_static(12);
 const BASS_MONO_CUTOFF: ParameterId = ParameterId::from_static(13);

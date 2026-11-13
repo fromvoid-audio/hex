@@ -185,6 +185,7 @@ pub(in crate::editor) fn window_with_gain(
                     Owner::Main => super::super::device_panel::select_main(view, window, cx),
                     Owner::Return(id) => view.focused_return = Some(id),
                     Owner::Track(_) => {}
+                    Owner::Source(_) => panic!("source has no automation lane"),
                 }
                 view.focus.focus(window);
                 cx.notify();
@@ -223,6 +224,7 @@ fn header_menu(visual: &mut VisualTestContext, owner: Owner) {
         Owner::Track(id) => format!("arrangement-track-header-{}", id.value()),
         Owner::Main => "main-track-header".into(),
         Owner::Return(id) => format!("return-track-header-{}", id.value()),
+        Owner::Source(_) => panic!("source has no track header"),
     };
     let bounds = visual
         .debug_bounds(Box::leak(key.into_boxed_str()))

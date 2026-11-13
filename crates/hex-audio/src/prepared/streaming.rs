@@ -82,6 +82,38 @@ impl Status {
     }
 }
 impl Callback {
+    /// Held only during one render invocation, after candidate validation and
+    /// until either the actual graph swap or completion of the old output.
+    pub(super) fn reserve_current_stream_window(
+        &mut self,
+        frames: usize,
+    ) -> Result<
+        Option<crate::candidate_custody::QuantumPins>,
+        crate::candidate_custody::QuantumFailure,
+    > {
+        if self.current_quantum_pins.is_some() {
+            return Err(crate::candidate_custody::QuantumFailure::PendingAction);
+        }
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        else {
+            return Ok(None);
+        };
+        active
+            .reserve_current_quantum(
+                &mut self.domain_pages,
+                frames,
+                self.stream_pending_play.is_some(),
+            )
+            .map(Some)
+    }
+    pub(super) fn release_current_quantum_pins(&mut self) {
+        if let Some(pins) = self.current_quantum_pins.take() {
+            pins.release(&mut self.domain_pages);
+        }
+    }
     pub(super) fn resolve_recovery_seek(
         &mut self,
         action_pending: bool,
@@ -120,6 +152,35 @@ impl Callback {
             self.yield_stream_successor_once = true;
         }
         yielded
+    }
+    pub(super) fn retry_pending_eligible_capacity(&mut self) -> bool {
+        self.deferred_eligible
+            .as_mut()
+            .is_some_and(|next| next.retry_stream_capacity_conflict())
+    }
+    pub(super) fn reject_pending_eligible_successor(&mut self, reason: PlaybackHandoffRejection) {
+        if self
+            .deferred_eligible
+            .as_ref()
+            .is_some_and(|next| next.streaming_enabled())
+            && let Some(mut next) = self.deferred_eligible.take()
+        {
+            next.cancel_stream_readiness(&mut self.domain_pages);
+            self.reject_publication(next.revision(), reason);
+            self.return_publication(ReturnedPublication::Eligible(next.reject_before_install()));
+            self.status.publication_pending.store(false, Release);
+            if let Some(ticket) = self.stream_pending_play.take() {
+                self.status
+                    .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+                self.stage_stream_outcome(
+                    ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared),
+                );
+                self.status
+                    .stream_applied_command_prefix
+                    .store(self.stream_prefix, Release);
+            }
+        }
     }
     pub(super) fn stream_action_pending(&self) -> bool {
         self.active

@@ -75,7 +75,7 @@ pub(super) fn envelope(
         .ok_or(hex_engine::Invalid("exact stream page loan is unavailable"))
 }
 impl Workspace {
-    fn insert(
+    pub(super) fn insert(
         extents: &mut [Vec<StreamResourceExtent>; 2],
         limit: usize,
         index: usize,
