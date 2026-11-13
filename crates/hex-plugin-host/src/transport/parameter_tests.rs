@@ -9,6 +9,41 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn dense_endpoint_reserves_only_its_original_input_source() {
+    let ordinal = NonZeroU64::new(1).unwrap();
+    let (control, callback, _worker) =
+        dense_effect_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let (other, other_callback, _other_worker) =
+        dense_effect_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    control
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    other
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    let source = control.observe_parameter_input_on_control(ordinal).unwrap();
+    assert!(
+        other_callback
+            .reserve_observed_parameter_input_on_callback(&source)
+            .is_none()
+    );
+    let mut fence = callback
+        .reserve_observed_parameter_input_on_callback(&source)
+        .unwrap();
+    assert!(fence.try_order_before_revocation());
+    control.revoke();
+    assert!(!fence.is_live());
+    drop(fence);
+    assert!(
+        callback
+            .reserve_observed_parameter_input_on_callback(&source)
+            .is_none()
+    );
+}
+
+#[test]
 fn dense_effect_conceals_one_reply_without_dropping_input_parameters() {
     let (control, mut callback, mut worker) =
         dense_effect_channel_from_completed_prefix(BINDING, 4, 0).unwrap();

@@ -404,6 +404,42 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
                 )
                 .is_err()
         );
+        allocation_free(|| {
+            f.data.owner_mut().unwrap().run(|callback, _| {
+                assert!(
+                    callback
+                        .reserve_native_parameter_input_observation(
+                            Binding {
+                                epoch: f.binding.epoch + 1,
+                                ..f.binding
+                            },
+                            &observed,
+                        )
+                        .is_none()
+                );
+                let mut reservation = callback
+                    .reserve_native_parameter_input_observation(f.binding, &observed)
+                    .unwrap();
+                assert!(reservation.is_live());
+                assert!(reservation.try_order_before_revocation());
+                assert!(
+                    callback
+                        .reserve_native_parameter_input_observation(f.binding, &observed)
+                        .is_none()
+                );
+            });
+        });
+        f.control.status.closing.store(true, Release);
+        allocation_free(|| {
+            f.data.owner_mut().unwrap().run(|callback, _| {
+                assert!(
+                    callback
+                        .reserve_native_parameter_input_observation(f.binding, &observed)
+                        .is_none()
+                );
+            });
+        });
+        f.control.status.closing.store(false, Release);
         assert_eq!(
             f.control
                 .native_source_approves_captured_state_on_control(f.binding, fact.state()),
@@ -606,6 +642,15 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
             assert!(Instant::now() < until);
             std::thread::yield_now();
         }
+        allocation_free(|| {
+            f.data.owner_mut().unwrap().run(|callback, _| {
+                assert!(
+                    callback
+                        .reserve_native_parameter_input_observation(f.binding, &observed)
+                        .is_none()
+                );
+            });
+        });
         f.control.status.closing.store(true, Release);
         assert!(matches!(
             f.control

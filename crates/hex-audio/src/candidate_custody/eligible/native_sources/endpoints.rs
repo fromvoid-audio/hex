@@ -38,6 +38,34 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    /// Borrow only the currently installed exact pair. An observed return
+    /// request, stale input, revocation or contention refuses. A return request
+    /// may race this observation; it does not authorize a commit.
+    pub(crate) fn reserve_observed_parameter_input(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+        if self.cycle.revoked() {
+            return None;
+        }
+        let position = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .ok()?;
+        let envelope = self.entries[self.routing[position]].as_ref()?;
+        if envelope.return_requested() || !envelope.0.signal.installed.load(Ordering::Acquire) {
+            return None;
+        }
+        envelope
+            .0
+            .callback
+            .as_ref()?
+            .callback()
+            .reserve_observed_parameter_input(source)
+    }
+
     pub(crate) fn take_accepted_editor_quantum(
         &mut self,
         binding: Binding,

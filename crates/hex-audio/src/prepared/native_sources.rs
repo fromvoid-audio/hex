@@ -1381,6 +1381,21 @@ impl PublicationControl {
     }
 }
 impl Callback {
+    /// Borrow the installed original endpoint's input observation without
+    /// waiting, allocation, or ownership transfer. This is not graph, source,
+    /// transport, state, or publication authority; callers must validate each.
+    pub fn reserve_native_parameter_input_observation(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.native_sources
+            .reserve_observed_parameter_input(binding, source)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_root_for_control_fixture(
         &self,
