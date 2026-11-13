@@ -107,10 +107,15 @@ impl Queued {
                     return InstallDecision::Retry;
                 }
                 Err(_) => {
-                    if next
+                    let capacity_conflict = next
                         .streaming
                         .as_ref()
-                        .is_some_and(|workspace| workspace.capacity_conflict)
+                        .is_some_and(|workspace| workspace.capacity_conflict);
+                    if capacity_conflict
+                        && next
+                            .streaming
+                            .as_mut()
+                            .is_some_and(|workspace| workspace.retry_capacity_conflict())
                     {
                         next.cancel_stream_pending(request.domains);
                         return InstallDecision::Retry;
@@ -122,6 +127,8 @@ impl Queued {
                     next.cancel_stream_pending(request.domains);
                     return InstallDecision::Refused(if source_changed {
                         hex_engine::PlaybackHandoffRejection::StreamSourceChanged
+                    } else if capacity_conflict {
+                        hex_engine::PlaybackHandoffRejection::StreamedPageCapacity
                     } else {
                         hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady
                     });

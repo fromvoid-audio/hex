@@ -35,6 +35,7 @@ pub(super) struct Workspace {
     pub(super) source_changed: bool,
     pub(super) read_failed: bool,
     pub(super) capacity_conflict: bool,
+    capacity_attempts: u8,
     pub(super) extents: [Vec<StreamResourceExtent>; 2],
     pub(super) quantum_extents: [Vec<StreamResourceExtent>; 2],
     pub(super) limit: usize,
@@ -69,6 +70,7 @@ impl Workspace {
             source_changed: false,
             read_failed: false,
             capacity_conflict: false,
+            capacity_attempts: 0,
             extents,
             quantum_extents,
             limit,
@@ -105,6 +107,7 @@ impl Workspace {
         self.source_changed = false;
         self.read_failed = false;
         self.capacity_conflict = false;
+        self.capacity_attempts = 0;
         for rows in &mut self.extents {
             rows.clear();
         }
@@ -119,6 +122,14 @@ impl Workspace {
         self.scheduled = None;
         self.prewarm_stamps = [None; 2];
         self.candidate_role = CandidateRole::None;
+    }
+
+    /// Retry a bounded number of current-window capacity conflicts before
+    /// returning a capacity-specific refusal to the publication owner.
+    pub(super) fn retry_capacity_conflict(&mut self) -> bool {
+        const MAX_CAPACITY_ATTEMPTS: u8 = 8;
+        self.capacity_attempts = self.capacity_attempts.saturating_add(1);
+        self.capacity_attempts < MAX_CAPACITY_ATTEMPTS
     }
 }
 impl Custody {

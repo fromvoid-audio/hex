@@ -262,6 +262,7 @@ pub enum PlaybackHandoffRejection {
     SourceHistoryUnavailable = 11,
     StreamSourceChanged = 12,
     SharedSourceVoiceCapacity = 13,
+    StreamedPageCapacity = 14,
 }
 
 impl PlaybackHandoffRejection {
@@ -311,6 +312,7 @@ impl PlaybackHandoffRejection {
             11 => Some(Self::SourceHistoryUnavailable),
             12 => Some(Self::StreamSourceChanged),
             13 => Some(Self::SharedSourceVoiceCapacity),
+            14 => Some(Self::StreamedPageCapacity),
             _ => None,
         }
     }
@@ -338,6 +340,7 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::StreamedPageCapacity => "stream cache capacity is full · stop playback or retry",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::SharedSourceVoiceCapacity => {
                 "shared source voice capacity is full · release notes or wait for tails, then retry"

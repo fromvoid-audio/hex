@@ -20,12 +20,16 @@ pub(crate) struct ActiveView<'a> {
     pub(super) state: StateView<'a>,
 }
 pub(crate) struct QuantumPins {
+    complete: bool,
     entries: [Option<(
         AudioCandidateDomainToken,
         hex_stream::CurrentQuantumReservation,
     )>; 2],
 }
 impl QuantumPins {
+    pub(crate) fn complete(&self) -> bool {
+        self.complete
+    }
     pub(crate) fn release(self, domains: &mut [Option<DomainEnvelope>; 2]) {
         for (token, reservation) in self.entries.into_iter().flatten() {
             if let Ok(pages) = super::demand::envelope(domains, token)
@@ -96,6 +100,7 @@ impl ActiveView<'_> {
                 .ok_or(hex_engine::Invalid("stream offset overflow"))?;
         }
         let mut pins = QuantumPins {
+            complete: true,
             entries: std::array::from_fn(|_| None),
         };
         for token in refs.into_iter().flatten() {
@@ -108,11 +113,14 @@ impl ActiveView<'_> {
                         .ok_or(hex_engine::Invalid("stream loan unavailable"))
                 })
                 .and_then(|loan| {
-                    loan.reserve_current_quantum(&workspace.quantum_extents[token.slot])
+                    loan.reserve_resident_current_quantum(&workspace.quantum_extents[token.slot])
                         .map_err(|_| hex_engine::Invalid("current stream reservation refused"))
                 });
             match result {
-                Ok(reservation) => pins.entries[token.slot] = Some((token, reservation)),
+                Ok((reservation, complete)) => {
+                    pins.complete &= complete;
+                    pins.entries[token.slot] = Some((token, reservation));
+                }
                 Err(error) => {
                     pins.release(domains);
                     return Err(error);

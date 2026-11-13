@@ -83,6 +83,11 @@ impl OrdinaryStreams {
             .as_ref()
             .is_some_and(|workspace| workspace.capacity_conflict)
     }
+    pub(crate) fn retry_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_capacity_conflict)
+    }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_coalesced_prefetch(
         &self,

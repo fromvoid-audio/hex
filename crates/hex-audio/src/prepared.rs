@@ -3542,10 +3542,15 @@ impl Callback {
                         return;
                     }
                     refused => {
-                        if next
+                        let capacity_conflict = next
                             .streams
                             .as_ref()
-                            .is_some_and(|streams| streams.capacity_conflict())
+                            .is_some_and(|streams| streams.capacity_conflict());
+                        if capacity_conflict
+                            && next
+                                .streams
+                                .as_mut()
+                                .is_some_and(|streams| streams.retry_capacity_conflict())
                         {
                             if let Some(streams) = next.streams.as_mut() {
                                 streams.cancel_install(&mut self.domain_pages);
@@ -3583,7 +3588,11 @@ impl Callback {
                                 PlaybackHandoffRejection::StreamSourceChanged
                             } else {
                                 handoff.map_or(
-                                    PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    if capacity_conflict {
+                                        PlaybackHandoffRejection::StreamedPageCapacity
+                                    } else {
+                                        PlaybackHandoffRejection::StreamedPagesNotReady
+                                    },
                                     PlaybackHandoffRejection::from_error,
                                 )
                             },
@@ -4412,11 +4421,20 @@ impl Callback {
                     )
             };
             match reserve(self) {
-                Ok(reservation) => pins = Some(reservation),
+                Ok(reservation) => {
+                    if !reservation.complete() {
+                        self.yield_pending_stream_successor();
+                        allow_successor = false;
+                    }
+                    pins = Some(reservation);
+                }
                 Err(_) => {
                     self.yield_pending_stream_successor();
                     match reserve(self) {
-                        Ok(reservation) => pins = Some(reservation),
+                        Ok(reservation) => {
+                            allow_successor = reservation.complete();
+                            pins = Some(reservation);
+                        }
                         Err(_) => allow_successor = false,
                     }
                 }

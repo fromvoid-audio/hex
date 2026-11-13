@@ -1510,30 +1510,36 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
 
 #[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
-    pending_replacement_case(true, false, None, false);
+    pending_replacement_case(true, false, None, false, false);
 }
 
 #[test]
 fn ordinary_short_one_shot_replacement_at_device_cadence() {
-    pending_replacement_case(false, false, None, false);
+    pending_replacement_case(false, false, None, false, false);
 }
 
 #[test]
 fn fenced_retained_restart_waits_for_missing_pages_without_displacing_current_audio() {
-    pending_replacement_case(false, true, None, false);
+    pending_replacement_case(false, true, None, false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_loop_seek_keeps_resident_destination_while_prefetching() {
-    pending_replacement_case(true, false, Some(false), false);
-    pending_replacement_case(true, false, Some(true), false);
+    pending_replacement_case(true, false, Some(false), false, false);
+    pending_replacement_case(true, false, Some(true), false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_pending_replacement_preserves_resident_loop_page_in_same_callback() {
-    pending_replacement_case(true, false, None, true);
+    pending_replacement_case(true, false, None, true, false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_pending_replacement_preserves_resident_loop_pages_in_long_callback() {
+    pending_replacement_case(true, false, None, true, true);
 }
 
 fn pending_replacement_case(
@@ -1541,6 +1547,7 @@ fn pending_replacement_case(
     retained_restart: bool,
     lookahead: Option<bool>,
     _short_loop: bool,
+    _long_callback: bool,
 ) {
     use hex_project::{Command, Created, Editor};
 
@@ -1900,6 +1907,24 @@ fn pending_replacement_case(
             assert!(std::time::Instant::now() < deadline, "restore A1 boundary");
             std::thread::yield_now();
         }
+        let long_baseline = if _long_callback {
+            let mut long = [[0.0; 2]; 512];
+            measured_render(&mut data, &mut long);
+            assert!(!control.status.stream_buffering.load(Acquire));
+            assert_eq!(control.status.position.load(Acquire), 3904);
+            control.command(PlaybackCommand::Seek(4096)).unwrap();
+            while control.status.position.load(Acquire) != 4160 {
+                measured_render(&mut data, &mut output[..64]);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "restore long callback boundary"
+                );
+                std::thread::yield_now();
+            }
+            Some(long)
+        } else {
+            None
+        };
         cached = false;
         data.owner_mut().unwrap().run(|c, _| {
             if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
@@ -1912,7 +1937,7 @@ fn pending_replacement_case(
             cached,
             "loop destination must remain resident before successor"
         );
-        Some(baseline)
+        Some((baseline, long_baseline))
     } else {
         None
     };
@@ -2064,14 +2089,41 @@ fn pending_replacement_case(
         }
     };
     #[cfg(feature = "stream-test-support")]
-    if let Some(baseline) = loop_baseline {
-        measured_render(&mut data, &mut output);
+    if let Some((baseline, long_baseline)) = loop_baseline {
+        let mut long_output = [[0.0; 2]; 512];
+        if long_baseline.is_some() {
+            measured_render(&mut data, &mut long_output);
+        } else {
+            measured_render(&mut data, &mut output);
+        }
         assert!(
             !control.status.stream_buffering.load(Acquire),
             "successor displaced resident loop destination"
         );
-        assert_eq!(control.status.position.load(Acquire), 4032);
-        assert_eq!(output, baseline, "successor changed current callback PCM");
+        if let Some(long_baseline) = long_baseline {
+            assert_eq!(control.status.position.load(Acquire), 3904);
+            assert_eq!(
+                long_output, long_baseline,
+                "successor changed long callback PCM"
+            );
+            for _ in 0..7 {
+                let before = control.status.position.load(Acquire);
+                measured_render(&mut data, &mut long_output);
+                assert!(!control.status.stream_buffering.load(Acquire));
+                assert_eq!(
+                    control.status.position.load(Acquire),
+                    3840 + ((before - 3840 + 512) % (4224 - 3840))
+                );
+            }
+            assert_eq!(
+                control.status.rejected_revision(),
+                Some((b_revision, PlaybackHandoffRejection::StreamedPageCapacity))
+            );
+            assert!(!control.status.publication_pending.load(Acquire));
+        } else {
+            assert_eq!(control.status.position.load(Acquire), 4032);
+            assert_eq!(output, baseline, "successor changed current callback PCM");
+        }
         assert!(control.retire_audio_candidate_domain(domain));
         control.request_shutdown();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
