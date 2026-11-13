@@ -2012,11 +2012,25 @@ fn live_source_utility_gain_and_mute_retarget_without_touching_local_audio() {
         (true, false, Some(11)),
         (true, true, Some(12)),
     ] {
-        source_utility_matrix_retarget(mute, settled, prefix);
+        source_utility_matrix_retarget(mute, settled, prefix, None);
     }
 }
 
-fn source_utility_matrix_retarget(mute: bool, settled: bool, prefix: Option<u32>) {
+#[test]
+fn live_source_utility_filtered_mute_preserves_history_and_local_audio() {
+    for filter in [11, 12] {
+        for settled in [false, true] {
+            source_utility_matrix_retarget(true, settled, None, Some(filter));
+        }
+    }
+}
+
+fn source_utility_matrix_retarget(
+    mute: bool,
+    settled: bool,
+    prefix: Option<u32>,
+    filter: Option<u32>,
+) {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -2043,10 +2057,20 @@ fn source_utility_matrix_retarget(mute: bool, settled: bool, prefix: Option<u32>
                 })
                 .unwrap();
         }
+        let mut target_state = UTILITY_DEFINITION.default_state().unwrap();
+        if let Some(filter) = filter {
+            target_state = UTILITY_DEFINITION
+                .patch_parameter(
+                    &target_state,
+                    hex_lattice_contract::ParameterId::from_static(filter),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+        }
         let Created::Device(effect) = editor
             .execute(Command::InsertNestedDevice {
                 parent: instrument,
-                state: UTILITY_DEFINITION.default_state().unwrap(),
+                state: target_state,
             })
             .unwrap()
         else {
@@ -2741,7 +2765,7 @@ fn centered_source_utility_mid_side_mode_keeps_live_pcm_and_history() {
 }
 
 #[test]
-fn source_utility_equivalent_silent_matrix_refuses_filter_or_mute_changes() {
+fn source_utility_equivalent_silent_matrix_refuses_filter_changes_even_with_mute() {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -2776,14 +2800,19 @@ fn source_utility_equivalent_silent_matrix_refuses_filter_or_mute_changes() {
     let mut previous = SessionPlayback::new(prepare(&editor)).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     previous.render(&mut [[0.0; 2]; 64]).unwrap();
-    for parameter in [parameter::BASS_MONO, parameter::MUTE] {
-        let state = UTILITY_DEFINITION
+    for mute in [false, true] {
+        let mut state = UTILITY_DEFINITION
             .patch_parameter(
                 editor.project().device(effect).unwrap().state(),
-                parameter,
+                parameter::BASS_MONO,
                 ParameterValue::Bool(true),
             )
             .unwrap();
+        if mute {
+            state = UTILITY_DEFINITION
+                .patch_parameter(&state, parameter::MUTE, ParameterValue::Bool(true))
+                .unwrap();
+        }
         editor
             .execute(Command::ReplaceDeviceState {
                 device: effect,
@@ -2795,12 +2824,29 @@ fn source_utility_equivalent_silent_matrix_refuses_filter_or_mute_changes() {
             candidate
                 .try_inherit_state_live_from(&mut previous)
                 .is_err(),
-            "parameter={parameter:?}"
+            "mute={mute}"
         );
         assert_eq!(previous.performance_frame(), 64);
         assert_eq!(candidate.performance_frame(), 0);
         assert!(editor.undo());
     }
+    let muted = UTILITY_DEFINITION
+        .patch_parameter(
+            editor.project().device(effect).unwrap().state(),
+            parameter::MUTE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: effect,
+            state: muted,
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+    candidate
+        .try_inherit_state_live_from(&mut previous)
+        .unwrap();
 }
 
 #[test]
