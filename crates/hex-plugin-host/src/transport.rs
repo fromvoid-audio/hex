@@ -35,7 +35,7 @@ pub use dense::{
     DenseEffectCallback, DenseParameterRequest, dense_effect_channel_from_completed_prefix,
 };
 mod parameter_fence;
-pub use parameter_fence::{ParameterInputAdmission, ParameterInputFence};
+pub use parameter_fence::{ParameterInputAdmission, ParameterInputFence, ParameterInputSource};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};

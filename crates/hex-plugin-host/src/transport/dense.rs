@@ -248,6 +248,15 @@ impl DenseEffectCallback {
         self.callback.is_revoked()
     }
 
+    /// Reserve an observed generation only on its actual paired dense endpoint.
+    pub fn reserve_observed_parameter_input_on_callback(
+        &self,
+        source: &super::ParameterInputSource,
+    ) -> Option<super::ParameterInputFence<'_>> {
+        self.callback
+            .reserve_observed_parameter_input_on_callback(source)
+    }
+
     /// Reserve the exact input generation on this paired dense endpoint.
     pub fn reserve_parameter_input_on_callback(
         &self,

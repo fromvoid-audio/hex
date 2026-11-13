@@ -3,8 +3,19 @@
 use super::{Callback, Control, Fault, Revocation};
 use std::{
     num::NonZeroU64,
-    sync::atomic::Ordering::{AcqRel, Acquire, Release},
+    sync::{
+        Arc, Weak,
+        atomic::Ordering::{AcqRel, Acquire, Release},
+    },
 };
+
+/// Control-side observation of one generation on the actual source pair.
+/// This retains only a weak identity, not the worker or permission to publish.
+/// It must be destroyed on control, never in an audio callback.
+pub struct ParameterInputSource {
+    signal: Weak<Revocation>,
+    ordinal: NonZeroU64,
+}
 
 /// A private control-side admission. Dropping without publishing restores the
 /// previous generation; retain the original source while this borrow exists.
@@ -57,6 +68,24 @@ impl Drop for ParameterInputFence<'_> {
 }
 
 impl Control {
+    /// Observe a currently admitted generation on this exact pair. The result
+    /// may already be stale when returned; the callback must reserve it again.
+    /// This does not prove that the worker processed the input.
+    pub fn observe_parameter_input_on_control(
+        &self,
+        ordinal: NonZeroU64,
+    ) -> Option<ParameterInputSource> {
+        let generation = ordinal.get().checked_mul(2)?;
+        if self.is_revoked() || self.revoked.parameter_input_generation.load(Acquire) != generation
+        {
+            return None;
+        }
+        Some(ParameterInputSource {
+            signal: Arc::downgrade(&self.revoked),
+            ordinal,
+        })
+    }
+
     /// Reserve the next monotonically increasing input without waiting. A busy
     /// callback returns Saturated before the caller admits or publishes input.
     pub fn reserve_parameter_input_on_control(
@@ -92,6 +121,18 @@ impl Control {
 }
 
 impl Callback {
+    /// Reserve a previously observed generation only on its actual paired
+    /// endpoint. Scalar bindings and equal ordinals on another pair do not match.
+    pub fn reserve_observed_parameter_input_on_callback(
+        &self,
+        source: &ParameterInputSource,
+    ) -> Option<ParameterInputFence<'_>> {
+        if !std::ptr::eq(source.signal.as_ptr(), Arc::as_ptr(&self.revoked)) {
+            return None;
+        }
+        self.reserve_parameter_input_on_callback(source.ordinal)
+    }
+
     /// Reserve only the named generation on this actual paired endpoint. None
     /// covers stale generation, contention, exhaustion and revocation. This
     /// operation never waits, allocates, or transfers source custody.

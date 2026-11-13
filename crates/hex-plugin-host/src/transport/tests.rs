@@ -99,6 +99,58 @@ fn parameter_input_reservation_serializes_admission_and_callback() {
     ));
 }
 
+#[test]
+fn observed_parameter_input_requires_the_original_pair_and_current_generation() {
+    use std::num::NonZeroU64;
+    let one = NonZeroU64::new(1).unwrap();
+    let two = NonZeroU64::new(2).unwrap();
+    let (control, callback, worker) = channel(BINDING, 8).unwrap();
+    let (other_control, other_callback, _other_worker) = channel(BINDING, 8).unwrap();
+    assert!(control.observe_parameter_input_on_control(one).is_none());
+    control
+        .reserve_parameter_input_on_control(one)
+        .unwrap()
+        .publish();
+    other_control
+        .reserve_parameter_input_on_control(one)
+        .unwrap()
+        .publish();
+    let observed = control.observe_parameter_input_on_control(one).unwrap();
+    assert!(
+        other_callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let fence = callback
+        .reserve_observed_parameter_input_on_callback(&observed)
+        .unwrap();
+    assert!(fence.is_live());
+    drop(fence);
+    control
+        .reserve_parameter_input_on_control(two)
+        .unwrap()
+        .publish();
+    assert!(
+        callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let current = control.observe_parameter_input_on_control(two).unwrap();
+    control.revoke();
+    assert!(
+        callback
+            .reserve_observed_parameter_input_on_callback(&current)
+            .is_none()
+    );
+    drop((control, callback, worker));
+    // The weak identity survives the pair without keeping the worker alive.
+    assert!(
+        other_callback
+            .reserve_observed_parameter_input_on_callback(&current)
+            .is_none()
+    );
+}
+
 #[cfg(feature = "allocation-probe")]
 #[test]
 fn parameter_input_reservation_does_not_allocate_or_free_on_callback() {
@@ -109,9 +161,10 @@ fn parameter_input_reservation_does_not_allocate_or_free_on_callback() {
         .reserve_parameter_input_on_control(ordinal)
         .unwrap()
         .publish();
+    let observed = control.observe_parameter_input_on_control(ordinal).unwrap();
     let measured = allocation_counter::measure(|| {
         let fence = callback
-            .reserve_parameter_input_on_callback(ordinal)
+            .reserve_observed_parameter_input_on_callback(&observed)
             .unwrap();
         assert!(fence.is_live());
         drop(fence);

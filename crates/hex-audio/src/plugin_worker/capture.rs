@@ -323,6 +323,26 @@ impl NativeWorker {
             == Some((fact.parameter_ordinal, fact.parameter, fact.normalized_bits)))
     }
 
+    /// Observe the paired input generation only after the original worker
+    /// processed this exact captured input. This can become stale immediately;
+    /// it is neither a graph continuation nor permission to publish a candidate.
+    /// The returned weak source identity must be reclaimed on control.
+    pub fn observe_sequenced_capture_input_on_control(
+        &self,
+        fact: &NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.sequenced_capture_is_current_on_control(fact)? {
+            return Ok(None);
+        }
+        let Some(ordinal) = std::num::NonZeroU64::new(fact.parameter_ordinal) else {
+            return Ok(None);
+        };
+        Ok(self
+            .reaper
+            .control
+            .observe_parameter_input_on_control(ordinal))
+    }
+
     fn poll_state_capture(
         &mut self,
         request: &NativeWorkerCapture,

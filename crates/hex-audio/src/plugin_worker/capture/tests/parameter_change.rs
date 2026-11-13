@@ -16,7 +16,7 @@ fn captured_state_follows_only_the_latest_processed_input_on_the_original_worker
         return;
     }
     let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
-    let (mut other, _other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
     let input = begin_change(&mut owner, 0, 0.5);
     assert!(
         owner
@@ -66,6 +66,26 @@ fn captured_state_follows_only_the_latest_processed_input_on_the_original_worker
             .sequenced_capture_is_current_on_control(&fact)
             .unwrap()
     );
+    assert!(
+        other
+            .observe_sequenced_capture_input_on_control(&fact)
+            .unwrap()
+            .is_none()
+    );
+    let observed = owner
+        .observe_sequenced_capture_input_on_control(&fact)
+        .unwrap()
+        .unwrap();
+    assert!(
+        other_endpoint
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let fence = endpoint
+        .reserve_observed_parameter_input_on_callback(&observed)
+        .unwrap();
+    assert!(fence.is_live());
+    drop(fence);
     let stale_capture = owner
         .begin_state_capture_after_parameter_on_control(&input)
         .unwrap();
@@ -74,6 +94,17 @@ fn captured_state_follows_only_the_latest_processed_input_on_the_original_worker
         !owner
             .sequenced_capture_is_current_on_control(&fact)
             .unwrap()
+    );
+    assert!(
+        owner
+            .observe_sequenced_capture_input_on_control(&fact)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        endpoint
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
     );
     assert!(
         owner
