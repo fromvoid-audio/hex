@@ -381,7 +381,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
             let target = Target {
                 generation: 2,
                 revision: 7,
-                track,
+                owner: hex_session::service::SamplerParameterOwner::Track(track),
                 device,
                 parameter: SamplerParameter::StartFrame,
             };
@@ -520,7 +520,7 @@ pub(in crate::editor) fn pending_request(
         request_id: pending.id,
         project_generation: target.generation,
         revision: target.revision,
-        owner: hex_session::service::SamplerParameterOwner::Track(target.track),
+        owner: target.owner,
         device: target.device,
         parameter: target.parameter,
         value: pending.value?,

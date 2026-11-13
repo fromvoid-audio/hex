@@ -891,6 +891,33 @@ fn render_owner(
     }
 }
 
+/// Whether a retained source is still the visible, unassigned panel owner.
+pub(super) fn source_owner_current(view: &EditorView, source: hex_project::SourceId) -> bool {
+    if !view.clip_view_open
+        || !view.device_panel_active
+        || view.device_panel.owner != Some(DevicePanelOwner::Source(source))
+    {
+        return false;
+    }
+    let Some(state) = view.state.as_ref() else {
+        return false;
+    };
+    view.device_panel
+        .source_manager
+        .source_view
+        .is_some_and(|(generation, selected, anchor)| {
+            generation == view.project_generation
+                && selected == source
+                && anchor == effect_bus::selected_track_owner(view, state)
+        })
+        && state.project.native_source(source).is_some()
+        && !state
+            .project
+            .tracks()
+            .iter()
+            .any(|track| track.source_id() == Some(source))
+}
+
 fn render_source(
     view: &mut EditorView,
     window: Option<&Window>,
