@@ -3160,6 +3160,72 @@ fn source_picker_moves_shared_utility(cx: &mut TestAppContext, earlier: bool) {
     });
 }
 
+fn open_unassigned_fm(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    source_label: &str,
+) -> super::super::SourceManagerAction {
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let manager = editor.read_with(&*visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    == "manage sources"
+            })
+            .unwrap()
+    });
+    for _ in 0..manager {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let source_index = editor.read_with(&*visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains(source_label)
+            })
+            .unwrap()
+    });
+    for _ in 0..source_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let edit = editor.read_with(&*visual, |view, _| {
+        let item = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item)) == "edit source"
+            })
+            .unwrap();
+        let EditorContextAction::SourceManager(action) = &item.action else {
+            panic!("edit source")
+        };
+        action.clone()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual
+        .update(|window, cx| editor.update(cx, |view, cx| edit.clone().perform(view, window, cx)));
+    visual.run_until_parked();
+    edit
+}
+
 #[gpui::test]
 fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
@@ -3209,64 +3275,7 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(700.0)));
     visual.run_until_parked();
-    let picker = visual.debug_bounds("device-source-picker").unwrap();
-    visual.simulate_click(picker.center(), Modifiers::default());
-    visual.run_until_parked();
-    let manager = editor.read_with(&visual, |view, _| {
-        view.context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .position(|item| {
-                theme::text(crate::editor::context_menu::context_item_label(item))
-                    == "manage sources"
-            })
-            .unwrap()
-    });
-    for _ in 0..manager {
-        visual.simulate_keystrokes("down");
-    }
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    let source_index = editor.read_with(&visual, |view, _| {
-        view.context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .position(|item| {
-                theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("unassigned fm · 0 midi")
-            })
-            .unwrap()
-    });
-    for _ in 0..source_index {
-        visual.simulate_keystrokes("down");
-    }
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    let edit = editor.read_with(&visual, |view, _| {
-        let item = view
-            .context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .find(|item| {
-                theme::text(crate::editor::context_menu::context_item_label(item)) == "edit source"
-            })
-            .unwrap();
-        let EditorContextAction::SourceManager(action) = &item.action else {
-            panic!("edit source")
-        };
-        action.clone()
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    visual
-        .update(|window, cx| editor.update(cx, |view, cx| edit.clone().perform(view, window, cx)));
-    visual.run_until_parked();
+    let edit = open_unassigned_fm(&mut visual, &editor, "unassigned fm · 0 midi");
     editor.read_with(&visual, |view, _| {
         assert_eq!(
             view.device_panel.owner,
@@ -3568,63 +3577,7 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(700.0)));
     visual.run_until_parked();
-    let picker = visual.debug_bounds("device-source-picker").unwrap();
-    visual.simulate_click(picker.center(), Modifiers::default());
-    visual.run_until_parked();
-    let manager = editor.read_with(&visual, |view, _| {
-        view.context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .position(|item| {
-                theme::text(crate::editor::context_menu::context_item_label(item))
-                    == "manage sources"
-            })
-            .unwrap()
-    });
-    for _ in 0..manager {
-        visual.simulate_keystrokes("down");
-    }
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    let source_index = editor.read_with(&visual, |view, _| {
-        view.context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .position(|item| {
-                theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("pending fm · 0 midi")
-            })
-            .unwrap()
-    });
-    for _ in 0..source_index {
-        visual.simulate_keystrokes("down");
-    }
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    let edit = editor.read_with(&visual, |view, _| {
-        let item = view
-            .context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .find(|item| {
-                theme::text(crate::editor::context_menu::context_item_label(item)) == "edit source"
-            })
-            .unwrap();
-        let EditorContextAction::SourceManager(action) = &item.action else {
-            panic!("source action")
-        };
-        action.clone()
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    visual.update(|window, cx| editor.update(cx, |view, cx| edit.perform(view, window, cx)));
-    visual.run_until_parked();
+    open_unassigned_fm(&mut visual, &editor, "pending fm · 0 midi");
     enter_typed_value(&mut visual, device, parameter, "2");
     editor.update(&mut visual, |view, cx| {
         assert!(super::super::finalize_controls(view, cx))
