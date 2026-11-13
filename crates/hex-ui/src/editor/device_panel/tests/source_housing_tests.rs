@@ -110,8 +110,8 @@ fn shared_source_utility_matrix_edits_from_contributor(cx: &mut TestAppContext) 
         Some(hex_devices::utility::parameter::DC_REMOVE),
         Some(hex_devices::utility::parameter::BASS_MONO),
     ] {
-        for balance in [false, true] {
-            shared_source_utility_matrix_with_filter(cx, filter, balance);
+        for parameter in 1..=3 {
+            shared_source_utility_matrix_with_filter(cx, filter, parameter);
         }
     }
 }
@@ -119,7 +119,7 @@ fn shared_source_utility_matrix_edits_from_contributor(cx: &mut TestAppContext) 
 fn shared_source_utility_matrix_with_filter(
     cx: &mut TestAppContext,
     filter: Option<hex_lattice_contract::ParameterId>,
-    balance: bool,
+    parameter: u32,
 ) {
     cx.update(crate::editor::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
@@ -205,14 +205,13 @@ fn shared_source_utility_matrix_with_filter(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(700.0)));
     visual.run_until_parked();
-    let gain = hex_lattice_contract::ParameterId::from_static(if balance { 2 } else { 1 });
-    let original = if balance { 0.0 } else { 1.0 };
-    let desired = if balance {
-        0.5
-    } else {
-        10.0_f32.powf(6.0 / 20.0)
+    let gain = hex_lattice_contract::ParameterId::from_static(parameter);
+    let (original, desired, typed) = match parameter {
+        1 => (1.0, 10.0_f32.powf(6.0 / 20.0), "6 db"),
+        2 => (0.0, 0.5, "50 r"),
+        3 => (1.0, 0.0, "0%"),
+        _ => panic!("unsupported test parameter"),
     };
-    let typed = if balance { "50 r" } else { "6 db" };
     let selector = Box::leak(
         format!("device-{}-parameter-{}-value", device.value(), gain.value()).into_boxed_str(),
     );
@@ -224,7 +223,7 @@ fn shared_source_utility_matrix_with_filter(
             format!("source-effect-modulation-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    for parameter in [1, 2] {
+    for parameter in [1, 2, 3] {
         let key = Box::leak(
             format!("device-{}-parameter-{}", device.value(), parameter).into_boxed_str(),
         );

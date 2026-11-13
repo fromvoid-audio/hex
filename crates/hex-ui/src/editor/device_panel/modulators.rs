@@ -473,7 +473,7 @@ impl HostGainStages {
 
 pub(super) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
-/// Static Utility gain and balance share the verified matrix handoff.
+/// Static Utility matrix controls share the verified source handoff.
 pub(super) fn source_utility_gain_available(
     project: &hex_project::Project,
     device: &Device,
@@ -526,6 +526,11 @@ pub(super) fn source_effect_card(
             "balance",
             Some(numeric_display::NumericDisplayCodec::Balance),
         ),
+        (
+            utility_panel::WIDTH,
+            "width",
+            Some(numeric_display::NumericDisplayCodec::Percent),
+        ),
     ]
     .map(|(parameter, label, codec)| {
         if !hex_engine::project_source_utility_matrix_edit_supported(&state.project, id, parameter)
@@ -550,7 +555,7 @@ pub(super) fn source_effect_card(
                 row.descriptor.id,
             )
     });
-    let mut control_row = div().flex().gap(px(2.0));
+    let mut control_row = div().flex().flex_wrap().w_full().gap(px(2.0));
     for (row, label, codec) in controls.iter().flatten() {
         let identity = DeviceControlIdentity {
             class: NativeDeviceClass::Effect,
@@ -573,11 +578,7 @@ pub(super) fn source_effect_card(
         body = body.child(control_row);
     }
     for row in &metadata.parameters {
-        if !controls
-            .iter()
-            .flatten()
-            .any(|(control, _, _)| control.descriptor.id == row.descriptor.id)
-        {
+        if controls.iter().all(Option::is_none) {
             body = body.child(
                 div()
                     .relative()
