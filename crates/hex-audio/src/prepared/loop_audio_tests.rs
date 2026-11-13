@@ -447,10 +447,16 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
 }
 
 #[test]
-fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations() {
+fn shared_source_utility_matrix_handoff_preserves_pcm_without_allocations() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::BeatTime;
-    for (dc, bass) in [(true, false), (false, true)] {
+    for (dc, bass, equivalent) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+        (true, false, true),
+        (false, true, true),
+    ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(receiver) = editor
             .execute(Command::InsertTrackWithDevice {
@@ -475,19 +481,22 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
             .unwrap()
             .instrument()
             .id();
-        let state = hex_devices::utility::UTILITY_DEFINITION
-            .patch_parameter(
-                &hex_devices::utility::UTILITY_DEFINITION
-                    .default_state()
-                    .unwrap(),
-                if dc {
-                    hex_devices::utility::parameter::DC_REMOVE
-                } else {
-                    hex_devices::utility::parameter::BASS_MONO
-                },
-                ParameterValue::Bool(true),
-            )
+        let mut state = hex_devices::utility::UTILITY_DEFINITION
+            .default_state()
             .unwrap();
+        if dc || bass {
+            state = hex_devices::utility::UTILITY_DEFINITION
+                .patch_parameter(
+                    &state,
+                    if dc {
+                        hex_devices::utility::parameter::DC_REMOVE
+                    } else {
+                        hex_devices::utility::parameter::BASS_MONO
+                    },
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+        }
         let Created::Device(effect) = editor
             .execute(Command::InsertNestedDevice {
                 parent: instrument,
@@ -567,8 +576,16 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
         let state = hex_devices::utility::UTILITY_DEFINITION
             .patch_parameter(
                 editor.project().device(effect).unwrap().state(),
-                hex_devices::utility::parameter::GAIN,
-                ParameterValue::Float(2.0),
+                if equivalent {
+                    hex_devices::utility::parameter::MID_SIDE_ENABLED
+                } else {
+                    hex_devices::utility::parameter::GAIN
+                },
+                if equivalent {
+                    ParameterValue::Bool(true)
+                } else {
+                    ParameterValue::Float(2.0)
+                },
             )
             .unwrap();
         editor
@@ -608,7 +625,7 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
             for (a, b) in actual.iter().zip(expected) {
                 assert!(
                     (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5,
-                    "dc={dc} bass={bass} undo={undo}: {a:?} vs {b:?}"
+                    "dc={dc} bass={bass} equivalent={equivalent} undo={undo}: {a:?} vs {b:?}"
                 );
             }
             control.reclaim();
