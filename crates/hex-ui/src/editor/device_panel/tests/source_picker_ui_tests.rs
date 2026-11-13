@@ -2271,3 +2271,480 @@ fn source_picker_adds_first_utility(cx: &mut TestAppContext, from_contributor: b
                 == 1
     });
 }
+
+#[gpui::test]
+fn source_picker_removes_sole_utility_from_receiver(cx: &mut TestAppContext) {
+    source_picker_removes_sole_utility(cx, false);
+}
+
+#[gpui::test]
+fn source_picker_removes_sole_utility_from_contributor(cx: &mut TestAppContext) {
+    source_picker_removes_sole_utility(cx, true);
+}
+
+fn source_picker_removes_sole_utility(cx: &mut TestAppContext, from_contributor: bool) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(receiver).unwrap().source_id().unwrap();
+    let instrument = state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let added = receive_service_event(&service);
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    let bound = receive_service_event(&service);
+    service
+        .submit(Request::AppendSourceUtility {
+            project_generation: 0,
+            revision: bound.state.revision,
+            track: receiver,
+            source,
+            instrument,
+        })
+        .unwrap();
+    let inserted = receive_service_event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let effect = inserted
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()[0]
+        .id();
+    let local = inserted
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .devices()
+        .to_vec();
+    let target = if from_contributor {
+        contributor
+    } else {
+        receiver
+    };
+    let (handle, editor) = actor_editor_window(cx, service, inserted.state, target);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let (choice, index) = editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        let index = menu
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("remove utility from source")
+            })
+            .expect("source remove action");
+        let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
+            panic!("source action")
+        };
+        (choice.clone(), index)
+    });
+    if !from_contributor {
+        use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+            headless_status_output, status_fixture_guard,
+        };
+        use std::sync::atomic::Ordering;
+        let _guard = status_fixture_guard();
+        let (mut output, _backend) = headless_status_output();
+        let control = output.take_client().unwrap();
+        control
+            .status()
+            .unwrap()
+            .playing
+            .store(true, Ordering::Release);
+        editor.update(&mut visual, |view, _| {
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control,
+                sample_rate: 48_000,
+                label: "private control".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+        });
+        editor.read_with(&visual, |view, _| assert!(!choice.current(view)));
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
+        });
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .native_source(source)
+                    .unwrap()
+                    .post_instrument_effects()
+                    .iter()
+                    .any(|item| item.id() == effect)
+            );
+            assert!(!view.edit_pending());
+        });
+        editor.update(&mut visual, |view, _| {
+            view.audio = None;
+        });
+    }
+    editor.update(&mut visual, |view, _| {
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track: target },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_some());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()[0]
+                .id(),
+            effect
+        );
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.context_menu = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    for _ in 0..index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .is_empty()
+    });
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(receiver).unwrap().devices(), local);
+        assert_eq!(
+            project.track(contributor).unwrap().source_id(),
+            Some(source)
+        );
+    });
+    visual.update(|window, cx| editor.update(cx, |view, cx| choice.perform(view, window, cx)));
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .is_empty()
+        )
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .len()
+                == 1
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .is_empty()
+    });
+}
+
+#[gpui::test]
+fn source_picker_appends_utility_from_receiver(cx: &mut TestAppContext) {
+    source_picker_appends_utility(cx, false);
+}
+
+#[gpui::test]
+fn source_picker_appends_utility_from_contributor(cx: &mut TestAppContext) {
+    source_picker_appends_utility(cx, true);
+}
+
+fn source_picker_appends_utility(cx: &mut TestAppContext, from_contributor: bool) {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(receiver).unwrap().source_id().unwrap();
+    let instrument = state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let added = receive_service_event(&service);
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    receive_service_event(&service);
+    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+    let state = definition
+        .patch_parameter(
+            &definition.default_state().unwrap(),
+            hex_devices::utility::parameter::BASS_MONO,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: instrument,
+            state,
+        }))
+        .unwrap();
+    let inserted = receive_service_event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let first = inserted
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()[0]
+        .clone();
+    let local = inserted
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .devices()
+        .to_vec();
+    let target = if from_contributor {
+        contributor
+    } else {
+        receiver
+    };
+    let (handle, editor) = actor_editor_window(cx, service, inserted.state, target);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let (choice, index) = editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        let index = menu
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("add utility to source")
+            })
+            .expect("append action");
+        let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
+            panic!("source action")
+        };
+        (choice.clone(), index)
+    });
+    editor.update(&mut visual, |view, _| {
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track: target },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_some());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects(),
+            std::slice::from_ref(&first)
+        );
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.context_menu = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    for _ in 0..index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .len()
+                == 2
+    });
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            &project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()[0],
+            &first
+        );
+        assert_eq!(project.track(receiver).unwrap().devices(), local);
+        assert_eq!(
+            project.track(contributor).unwrap().source_id(),
+            Some(source)
+        );
+    });
+    visual.update(|window, cx| editor.update(cx, |view, cx| choice.perform(view, window, cx)));
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .len(),
+            2
+        )
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .len()
+                == 1
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .post_instrument_effects()
+                .len()
+                == 2
+    });
+}
+
+#[gpui::test]
+fn source_picker_hides_utility_append_for_other_effect_types(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let source = state.project.track(receiver).unwrap().source_id().unwrap();
+    let instrument = state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let state = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: instrument,
+            state,
+        }))
+        .unwrap();
+    let inserted = receive_service_event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let (handle, editor) = actor_editor_window(cx, service, inserted.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert!(menu.items.iter().all(|item| {
+            !theme::text(crate::editor::context_menu::context_item_label(item))
+                .contains("add utility to source")
+        }));
+    });
+}

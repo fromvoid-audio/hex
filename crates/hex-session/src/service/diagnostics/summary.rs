@@ -1376,14 +1376,24 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("choose_native_source_receiver"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "expected_receiver" => expected_receiver.map(|id| id.value()), "track" => track.value()]; omitted="")
         }
-        Request::AddFirstSourceUtility {
+        Request::RemoveOnlySourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+        } => {
+            describe!("remove_only_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
+        }
+        Request::AppendSourceUtility {
             project_generation,
             revision,
             track,
             source,
             instrument,
         } => {
-            describe!("add_first_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
+            describe!("append_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
         }
         Request::RebindNativeSource {
             project_generation,

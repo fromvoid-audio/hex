@@ -96,7 +96,7 @@ fn appended_foreign_effect<'a>(
 /// tail in the same callback. Fresh local scalar history cannot reset or clone
 /// that external source. Compare exact bindings, including root and epoch,
 /// before accepting the transition; no resource or DSP owner moves here.
-fn validate_foreign_tail_sources(
+pub(super) fn validate_foreign_tail_sources(
     candidate: &SessionPlayback,
     tail: &hex_lattice::NativeRuntimeChain,
     start: usize,
@@ -3471,6 +3471,7 @@ impl SessionPlayback {
         }
 
         let mut old_track_tail_slots = [None; MAX_TRACKS];
+        let mut completed_foreign_suffixes = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
         let mut retain_mutable_sends = [false; MAX_TRACKS];
@@ -3746,7 +3747,24 @@ impl SessionPlayback {
                         || retargetable_effect_configuration
                         || retained_prefix_extension)
             });
-            if !detached || old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
+            if !detached {
+                continue;
+            }
+            if old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
+                // A completed foreign suffix with distinct endpoints needs no
+                // retained tail. Keep other runtimes on their normal history path.
+                if suffix_start < old_chain.len()
+                    && old_chain
+                        .storage_view()
+                        .entries()
+                        .skip(suffix_start)
+                        .all(|entry| entry.foreign_processor().is_some())
+                    && validate_foreign_tail_sources(self, old_chain, suffix_start).is_ok()
+                {
+                    *completed_foreign_suffixes
+                        .get_mut(old_index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)? = Some(suffix_start);
+                }
                 continue;
             }
             let Some(slot) = (0..self.tail_groups.len()).find(|slot| {
@@ -4014,10 +4032,15 @@ impl SessionPlayback {
             } else {
                 None
             };
-            let can_inherit = excluded_old_range.map_or_else(
-                || candidate.can_inherit_from(old),
-                |range| candidate.can_inherit_from_excluding_old_range(old, range),
-            );
+            let can_inherit =
+                if let Some(start) = completed_foreign_suffixes.get(old_index).copied().flatten() {
+                    candidate.can_inherit_with_completed_foreign_range(old, start..old.len())
+                } else {
+                    excluded_old_range.map_or_else(
+                        || candidate.can_inherit_from(old),
+                        |range| candidate.can_inherit_from_excluding_old_range(old, range),
+                    )
+                };
             if !can_inherit {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
@@ -4591,6 +4614,13 @@ impl SessionPlayback {
                 } else {
                     None
                 };
+                let excluded_old_range = excluded_old_range.or_else(|| {
+                    completed_foreign_suffixes
+                        .get(old_index)
+                        .copied()
+                        .flatten()
+                        .map(|start| start..old.len())
+                });
                 if let Some(range) = excluded_old_range {
                     candidate
                         .transfer_history_excluding_old_range(old, range)
