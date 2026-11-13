@@ -716,17 +716,12 @@ pub(super) fn view(
     if !inventory_is_current {
         let devices = state
             .project
-            .tracks()
+            .native_sources()
             .iter()
-            .flat_map(|track| track.ordered_device_chain())
-            .filter_map(|device| match device {
-                hex_project::TrackDeviceRef::Instrument(device)
-                    if device.state().type_id().as_str().ok()
-                        == Some("hex.instrument.operator") =>
-                {
-                    Some(device.id())
-                }
-                _ => None,
+            .filter_map(|source| {
+                let device = source.instrument();
+                (device.state().type_id().as_str().ok() == Some("hex.instrument.operator"))
+                    .then_some(device.id())
             })
             .collect();
         view.device_panel.operator_preview_inventory = Some(OperatorPreviewInventory {
@@ -1188,6 +1183,7 @@ fn render_track(
             .then_some(*device)
         })
         .collect();
+    operator_panel::preview::cancel_hidden(view, &alive_operator);
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
     let alive_eq8: HashSet<_> = identities
