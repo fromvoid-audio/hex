@@ -4277,33 +4277,43 @@ impl SessionPlayback {
         }
         // Pure inputs only: refuse before any commit, so the live path can
         // restart instead of leaving the old graph applied.
-        // A detached old track suffix is summed straight into Main's input.
-        // Under compensation it may carry over only where that sum stays on
-        // Main's clock in both revisions, with the clock itself unchanged: no
-        // tempo map or loop edit remaps it (Pulse #4188).
-        let detached_tails_aligned = match (
-            previous.revision.arrangement().signal_graph.as_deref(),
-            self.revision.arrangement().signal_graph.as_deref(),
-        ) {
-            (Some(old), Some(new)) => {
-                !timing_changed
-                    && old_loop == new_loop
-                    && !new.has_group_outputs()
-                    && old.main_input_arrival() == new.main_input_arrival()
-                    && old_track_tail_slots
-                        .iter()
-                        .enumerate()
-                        .all(|(index, slot)| {
-                            slot.is_none() || old.detached_suffix_reaches_main_aligned(index)
-                        })
-            }
-            _ => false,
-        };
+        // Flat tails enter Main directly, so their old suffix must already be
+        // aligned there. Grouped tails enter the old track's fader output and
+        // traverse its group path. They can use that path only when its whole
+        // signal graph and the copied compensation history are unchanged.
+        // Group-path and ancestor runtime custody were checked above.
+        let has_new_track_tail = old_track_tail_slots.iter().any(Option::is_some);
+        let detached_tails_aligned = !has_new_track_tail
+            || match (
+                previous.revision.arrangement().signal_graph.as_deref(),
+                self.revision.arrangement().signal_graph.as_deref(),
+            ) {
+                (Some(old), Some(new)) => {
+                    !timing_changed
+                        && old_loop == new_loop
+                        && old.main_input_arrival() == new.main_input_arrival()
+                        && if new.has_group_outputs() {
+                            old == new
+                                && clock_transfer == 1
+                                && self.compensation.is_some()
+                                && previous.compensation.is_some()
+                        } else {
+                            old_track_tail_slots
+                                .iter()
+                                .enumerate()
+                                .all(|(index, slot)| {
+                                    slot.is_none()
+                                        || old.detached_suffix_reaches_main_aligned(index)
+                                })
+                        }
+                }
+                _ => false,
+            };
         if (self.revision.arrangement().main_latency_frames() > 0
             || previous.revision.arrangement().main_latency_frames() > 0)
             && (return_tail_plan.captures_bus()
                 || old_track_mutable_tail_slots.iter().any(Option::is_some)
-                || (old_track_tail_slots.iter().any(Option::is_some) && !detached_tails_aligned)
+                || !detached_tails_aligned
                 || previous.tail_output_active.iter().any(|&active| active)
                 || previous
                     .return_effect_tails
