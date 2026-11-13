@@ -125,7 +125,7 @@ impl Choice {
                     instrument,
                 },
                 SourceUtilityAction::Remove { instrument, effect } => {
-                    Request::RemoveOnlySourceUtility {
+                    Request::RemoveSourceUtility {
                         project_generation: self.generation,
                         revision: self.revision,
                         track: self.track,
@@ -399,36 +399,59 @@ fn open(
                 }),
             })
         }))
-        .chain(expected_source.and_then(|source_id| {
-            let source = state.project.native_source(source_id)?;
-            let default = hex_project::default_instrument_state().ok()?;
-            let [effect] = source.post_instrument_effects() else {
-                return None;
+        .chain(expected_source.into_iter().flat_map(|source_id| {
+            let Some(source) = state.project.native_source(source_id) else {
+                return Vec::new();
             };
-            (source.receiver().is_some()
-                && source.instrument().state().type_id() == default.type_id()
-                && effect.state().type_id()
-                    == hex_lattice_contract::DeviceTypeId::from_static("hex.utility"))
-            .then(|| MenuItem {
-                label: "remove source utility",
-                swatch: None,
-                checked: false,
-                action: EditorContextAction::SourcePicker(Choice {
-                    generation,
-                    revision: state.revision,
-                    track,
-                    source: source_id,
-                    expected_source,
-                    unlink: false,
-                    destination: None,
-                    receiver: None,
-                    utility_action: Some(SourceUtilityAction::Remove {
-                        instrument: source.instrument().id(),
-                        effect: effect.id(),
-                    }),
-                    label: "remove utility from source · stop first".into(),
-                }),
-            })
+            let Ok(default) = hex_project::default_instrument_state() else {
+                return Vec::new();
+            };
+            let effects = source.post_instrument_effects();
+            if source.receiver().is_none()
+                || source.instrument().state().type_id() != default.type_id()
+                || effects.iter().any(|item| {
+                    item.state().type_id()
+                        != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                })
+            {
+                return Vec::new();
+            }
+            effects
+                .iter()
+                .enumerate()
+                .filter(|(_, effect)| {
+                    !source
+                        .devices()
+                        .any(|item| item.parent() == Some(effect.id()))
+                })
+                .map(|(index, effect)| {
+                    let label = if effects.len() == 1 {
+                        "remove utility from source · stop first".to_string()
+                    } else {
+                        format!("remove utility {} from source · stop first", index + 1)
+                    };
+                    MenuItem {
+                        label: "remove source utility",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::SourcePicker(Choice {
+                            generation,
+                            revision: state.revision,
+                            track,
+                            source: source_id,
+                            expected_source,
+                            unlink: false,
+                            destination: None,
+                            receiver: None,
+                            utility_action: Some(SourceUtilityAction::Remove {
+                                instrument: source.instrument().id(),
+                                effect: effect.id(),
+                            }),
+                            label: label.into(),
+                        }),
+                    }
+                })
+                .collect::<Vec<_>>()
         }))
         .chain(expected_source.map(|source| MenuItem {
             label: "unlink source",

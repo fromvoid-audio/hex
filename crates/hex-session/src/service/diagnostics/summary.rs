@@ -1376,7 +1376,7 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("choose_native_source_receiver"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "expected_receiver" => expected_receiver.map(|id| id.value()), "track" => track.value()]; omitted="")
         }
-        Request::RemoveOnlySourceUtility {
+        Request::RemoveSourceUtility {
             project_generation,
             revision,
             track,
@@ -1384,7 +1384,7 @@ pub(super) fn request(value: &Request) -> Description {
             instrument,
             effect,
         } => {
-            describe!("remove_only_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
+            describe!("remove_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
         }
         Request::AppendSourceUtility {
             project_generation,

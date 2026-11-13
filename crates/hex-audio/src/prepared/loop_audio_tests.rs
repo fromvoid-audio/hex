@@ -1083,7 +1083,7 @@ fn appending_neutral_source_utility_preserves_audio_without_callback_allocations
 fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocations() {
     use hex_lattice_contract::{ParameterId, ParameterValue};
     use hex_project::BeatTime;
-    for remove_first in [true, false] {
+    for (remove_first, append_third) in [(true, false), (false, false), (false, true)] {
         for partition in [1, 7, 64, 128, 257] {
             let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
             let Created::Track(receiver) = editor
@@ -1198,12 +1198,20 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
             let Created::Device(last) = editor
                 .execute(Command::InsertNestedDevice {
                     parent: instrument,
-                    state: default,
+                    state: default.clone(),
                 })
                 .unwrap()
             else {
                 panic!("last")
             };
+            if append_third {
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state: default,
+                    })
+                    .unwrap();
+            }
             let media = BTreeMap::from([(asset, Audio::new(48_000, vec![LOCAL; 512]).unwrap())]);
             let table = Arc::new(SineTable::new());
             let prepare = |editor: &Editor| {

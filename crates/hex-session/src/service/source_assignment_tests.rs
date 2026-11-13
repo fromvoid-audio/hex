@@ -1342,15 +1342,14 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
             .id(),
         effect
     );
-    let remove =
-        |revision, generation, track, instrument, effect| Request::RemoveOnlySourceUtility {
-            project_generation: generation,
-            revision,
-            track,
-            source,
-            instrument,
-            effect,
-        };
+    let remove = |revision, generation, track, instrument, effect| Request::RemoveSourceUtility {
+        project_generation: generation,
+        revision,
+        track,
+        source,
+        instrument,
+        effect,
+    };
     let revision = redone.state.revision;
     assert!(!remove(revision, 0, receiver, instrument, effect).finalizes_parameter_gesture());
     refused(
@@ -1516,6 +1515,186 @@ fn append_source_utility_refuses_a_full_or_nonutility_chain() {
                 source,
                 instrument,
             },
+            "source chain changed or unsupported",
+        );
+    }
+}
+
+#[test]
+fn remove_source_utility_first_keeps_other_units() {
+    remove_source_utility_leaf(0);
+}
+#[test]
+fn remove_source_utility_middle_keeps_other_units() {
+    remove_source_utility_leaf(1);
+}
+#[test]
+fn remove_source_utility_last_keeps_other_units() {
+    remove_source_utility_leaf(2);
+}
+
+fn remove_source_utility_leaf(target: usize) {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(receiver) = added.created.unwrap() else {
+        panic!("receiver")
+    };
+    let source = added
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let instrument = added
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }),
+    );
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    run(
+        &service,
+        Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }),
+    );
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let mut current = run(
+        &service,
+        Request::Edit(Command::InsertDevice {
+            track: receiver,
+            before: None,
+            state: utility.clone(),
+        }),
+    );
+    let local = current
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .devices()
+        .to_vec();
+    for _ in 0..3 {
+        current = run(
+            &service,
+            Request::Edit(Command::InsertNestedDevice {
+                parent: instrument,
+                state: utility.clone(),
+            }),
+        );
+    }
+    let original = current
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()
+        .to_vec();
+    let effect = original[target].id();
+    let remove = |revision, track, effect| Request::RemoveSourceUtility {
+        project_generation: 0,
+        revision,
+        track,
+        source,
+        instrument,
+        effect,
+    };
+    refused(
+        &service,
+        &current,
+        remove(current.state.revision - 1, contributor, effect),
+        "project changed",
+    );
+    let removed = run(
+        &service,
+        remove(current.state.revision, contributor, effect),
+    );
+    let expected: Vec<_> = original
+        .iter()
+        .filter(|item| item.id() != effect)
+        .cloned()
+        .collect();
+    assert_eq!(
+        removed
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        expected
+    );
+    assert_eq!(
+        removed.state.project.track(receiver).unwrap().devices(),
+        local
+    );
+    assert_eq!(
+        removed
+            .state
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id(),
+        Some(source)
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        undone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        original
+    );
+    let redone = run(&service, Request::Redo);
+    assert_eq!(
+        redone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects(),
+        expected
+    );
+    if target == 1 {
+        let restored = run(&service, Request::Undo);
+        let parent = original[1].id();
+        let nested = run(
+            &service,
+            Request::Edit(Command::InsertNestedDevice {
+                parent,
+                state: utility,
+            }),
+        );
+        assert!(nested.state.revision > restored.state.revision);
+        refused(
+            &service,
+            &nested,
+            remove(nested.state.revision, receiver, parent),
             "source chain changed or unsupported",
         );
     }
