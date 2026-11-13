@@ -840,3 +840,226 @@ fn reversed_edited_repeat_keeps_pcm_when_musical_placement_is_disabled() {
         pcm
     );
 }
+
+#[test]
+fn plain_reverse_streamed_edit_matches_resident_and_refuses_unsupported_processing() {
+    struct Pages<'a> {
+        key: crate::StreamSourceKey,
+        frames: &'a [crate::Frame],
+    }
+    impl crate::MediaPages for Pages<'_> {
+        fn page(
+            &mut self,
+            key: crate::StreamSourceKey,
+            index: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            if key != self.key {
+                return None;
+            }
+            let first = usize::try_from(index)
+                .ok()?
+                .checked_mul(crate::STREAM_PAGE_FRAMES)?;
+            let last = first
+                .checked_add(crate::STREAM_PAGE_FRAMES)?
+                .min(self.frames.len());
+            Some(crate::BorrowedMediaPage {
+                page_index: index,
+                frames: self.frames.get(first..last)?,
+            })
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            panic!("all fixture pages are available")
+        }
+    }
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 7_000,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let key = crate::StreamSourceKey::new(1, asset);
+    let metadata = Arc::new(
+        crate::StreamedSourceMetadata::new(
+            key,
+            16_000,
+            16_000,
+            8_000,
+            8_000,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap(),
+    );
+    let sources = BTreeMap::from([(
+        asset,
+        crate::compile::PreparedAudioSource::Streamed(metadata),
+    )]);
+    editor
+        .execute_prepared(Command::ReverseClips(vec![clip]), |candidate| {
+            crate::compile::project_with_prepared_audio_sources(candidate, &sources, 1)
+        })
+        .unwrap();
+    assert!(!AudioTransformPreparation::clip_requires_resident_source(
+        editor.project().clip(clip).unwrap()
+    ));
+    let streamed =
+        crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1).unwrap();
+    let resident = crate::compile::project(editor.project(), &media).unwrap();
+    for block in [1, 127, 512] {
+        let mut pages = Pages {
+            key,
+            frames: media[&asset].frames(),
+        };
+        let mut a = crate::Renderer::new(&streamed);
+        let mut b = crate::Renderer::new(&resident);
+        a.seek(993);
+        b.seek(993);
+        a.play();
+        b.play();
+        let mut actual = vec![[0.0; 2]; 6_014];
+        let mut expected = actual.clone();
+        for (a_chunk, b_chunk) in actual.chunks_mut(block).zip(expected.chunks_mut(block)) {
+            a.render_with_pages(a_chunk, &mut pages).unwrap();
+            b.render(b_chunk).unwrap();
+        }
+        assert_eq!(actual, expected);
+    }
+    let before = editor.project().snapshot();
+    for command in [
+        Command::SetAudioClipPitch { clip, cents: 100 },
+        Command::SetClipFades {
+            clip,
+            fade_in: 10,
+            fade_out: 10,
+        },
+        Command::SetClipLooping {
+            clip,
+            looping: true,
+        },
+    ] {
+        assert!(
+            editor
+                .execute_prepared(command, |candidate| {
+                    crate::compile::project_with_prepared_audio_sources(candidate, &sources, 1)
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+    }
+    assert!(editor.undo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), before);
+}
+
+#[test]
+fn plain_reverse_crop_of_long_stream_reads_only_bounded_pages() {
+    struct Pages {
+        key: crate::StreamSourceKey,
+        frames: Box<[crate::Frame; crate::STREAM_PAGE_FRAMES]>,
+    }
+    impl crate::MediaPages for Pages {
+        fn page(
+            &mut self,
+            key: crate::StreamSourceKey,
+            index: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            if key != self.key {
+                return None;
+            }
+            let first = index.checked_mul(crate::STREAM_PAGE_FRAMES as u64)?;
+            if first >= 20_000_000 {
+                return None;
+            }
+            let length = (20_000_000 - first).min(crate::STREAM_PAGE_FRAMES as u64) as usize;
+            for (offset, frame) in self.frames.iter_mut().take(length).enumerate() {
+                let value = ((first + offset as u64) % 1_024) as f32;
+                *frame = [value, -value];
+            }
+            Some(crate::BorrowedMediaPage {
+                page_index: index,
+                frames: &self.frames[..length],
+            })
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            panic!("fixture supplies each page")
+        }
+    }
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long source".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: 20_000_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 19_992_000,
+        })
+        .unwrap();
+    let key = crate::StreamSourceKey::new(3, asset);
+    let source = Arc::new(
+        crate::StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            20_000_000,
+            20_000_000,
+            hex_project::IDENTITY_CONVERSION,
+            [3; 32],
+        )
+        .unwrap(),
+    );
+    let sources = BTreeMap::from([(asset, crate::compile::PreparedAudioSource::Streamed(source))]);
+    let (_, compiled) = editor
+        .execute_prepared(Command::ReverseClips(vec![clip]), |candidate| {
+            crate::compile::project_with_prepared_audio_sources(candidate, &sources, 3)
+        })
+        .unwrap();
+    assert!(compiled.contains_streamed_sources());
+    let mut pages = Pages {
+        key,
+        frames: Box::new([[0.0; 2]; crate::STREAM_PAGE_FRAMES]),
+    };
+    let mut renderer = crate::Renderer::new(&compiled);
+    renderer.seek(19_992_000);
+    renderer.play();
+    let mut output = vec![[0.0; 2]; 8_000];
+    for chunk in output.chunks_mut(127) {
+        renderer.render_with_pages(chunk, &mut pages).unwrap();
+    }
+    for (offset, frame) in output.iter().enumerate() {
+        let value = ((19_999_999 - offset as u64) % 1_024) as f32;
+        assert_eq!(*frame, [value, -value]);
+    }
+}

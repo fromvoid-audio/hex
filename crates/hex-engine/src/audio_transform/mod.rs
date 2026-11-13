@@ -760,7 +760,7 @@ impl AudioTransformPreparation {
     /// resident boundary; this pure query grants no decoding/admission custody.
     pub fn clip_requires_resident_source(clip: &hex_project::Clip) -> bool {
         clip.audio_edit().is_some_and(|edit| {
-            edit.content_view.is_some()
+            (edit.content_view.is_some() && plain_streamed_reverse(clip, edit).is_none())
                 || edit.placement.is_some()
                 || edit.domain.events.is_some()
                 || edit.domain.pitch_cents != 0
@@ -782,6 +782,19 @@ impl AudioTransformPreparation {
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
         if edit.content_view.is_some() {
+            if let PreparedAudioSourceRef::Streamed(source) = source
+                && let Some((offset, length)) = plain_streamed_reverse(clip, edit)
+            {
+                return Clip::streamed_region_reversed(
+                    Arc::clone(source),
+                    clip.start(),
+                    clip.duration(),
+                    offset,
+                    length,
+                    false,
+                )
+                .map(|prepared| Some(prepared.with_gain(clip.gain())));
+            }
             return self
                 .compile_content(tempo_map, clip, edit, asset, source)
                 .map(Some);
@@ -853,6 +866,45 @@ impl AudioTransformPreparation {
         )
         .map(|clip_engine| Some(clip_engine.with_gain(clip.gain())))
     }
+}
+
+/// A plain finite frame reflection can read the existing stream backwards.
+/// Other directed views still require the resident transform compiler.
+fn plain_streamed_reverse(clip: &hex_project::Clip, edit: &AudioClipEdit) -> Option<(u64, u64)> {
+    let view = edit.content_view?;
+    let hex_project::AudioDomainClock::Frames(length) = edit.domain.clock else {
+        return None;
+    };
+    (view.restore_plain
+        && view.window.reversed
+        && view.window.start == 0
+        && view.window.end == length
+        && view.base_view_start == 0
+        && view.base_view_end == length
+        && view.base_placement.is_none()
+        && view.base_start_delta == 0
+        && edit.view_start == 0
+        && edit.view_end == length
+        && edit.placement.is_none()
+        && edit.processing_projection.is_none()
+        && matches!(edit.timing, hex_project::AudioClipTiming::Frames)
+        && edit.placement_start_offset == 0
+        && edit.placement_end_offset == 0
+        && clip.duration() == length
+        && length <= edit.domain.source_length
+        && !edit.domain.looping
+        && edit.domain.source_phase == 0
+        && edit.domain.pitch_cents == 0
+        && !edit.domain.warp_enabled
+        && edit.domain.warp.is_none()
+        && edit.domain.sample_bpm.is_none()
+        && edit.domain.events.is_none()
+        && edit.domain.musical_event_source.is_none()
+        && edit.domain.source_gain.is_empty()
+        && edit.domain.fade.is_neutral()
+        && edit.domain.fade_start == 0
+        && edit.domain.fade_projection.is_none())
+    .then_some((edit.domain.source_offset, length))
 }
 /// A root's processing origin only enters its render through tempo points
 /// relative to it, `tempo_at`, and differences `frame(origin + x) - frame(origin)`

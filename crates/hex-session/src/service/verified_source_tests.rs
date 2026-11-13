@@ -1187,3 +1187,77 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
     };
     assert_eq!(before, after);
 }
+
+#[test]
+fn plain_reverse_file_backed_clip_commits_and_reopens_without_resident_pcm() {
+    let files = Files::new();
+    let media = files.wav("reverse.wav", 48_000, 8_000, 4096);
+    let media_bytes = fs::read(&media).unwrap();
+    let service = Service::new(48_000, 16, 16).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(media.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let reversed = run(&service, Request::Edit(Command::ReverseClips(vec![clip])));
+    let expected = reversed.state.project.snapshot();
+    let asset = reversed.state.project.clip(clip).unwrap().asset();
+    assert!(matches!(
+        reversed
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    assert!(
+        reversed
+            .state
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .content_view
+            .unwrap()
+            .window
+            .reversed
+    );
+    let path = files.0.join("reverse.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let reopened = run(&service, Request::Open(path));
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert!(matches!(
+        reopened
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    assert_eq!(fs::read(media).unwrap(), media_bytes);
+}
