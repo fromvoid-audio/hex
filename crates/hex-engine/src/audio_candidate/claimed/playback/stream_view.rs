@@ -175,6 +175,24 @@ impl StreamPlayback<'_> {
             }
         }
     }
+    /// Visit stream demand for at most 256 upcoming frames and return the
+    /// covered width. A longer callback is only partially covered. This is a
+    /// speculative observation, not a readiness receipt or transport commit.
+    pub fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => {
+                r.visit_current_stream_quantum(maximum_frames, playing, visit)
+            }
+            Runtime::Ordinary(r, _) => {
+                r.visit_current_stream_quantum(maximum_frames, playing, true, visit)
+            }
+        }
+    }
     pub fn preview_stream_handoff(
         &mut self,
         previous: &mut StreamPlayback<'_>,
