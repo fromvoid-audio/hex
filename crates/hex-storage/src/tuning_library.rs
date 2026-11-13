@@ -216,20 +216,18 @@ pub fn duplicate(directory: &Path, slot: usize) -> Result<usize, String> {
     }
     let name = format!("{}{suffix}", &old.name[..end]);
     let text = preset::encode(&name, old.scale).map_err(|e| e.to_string())?;
-    publish(&slot_path(directory, target)?, text.as_bytes(), false)?;
+    publish(&slot_path(directory, target)?, text.as_bytes())?;
     Ok(target)
 }
 /// Export is create-new; an existing file is never silently replaced.
-/// Filesystems without hardlinks use an exclusively created destination. A failed
-/// write may leave that new file incomplete; destinations are never deleted.
+/// Publication is atomic, including on supported volumes without hard links.
+/// Volumes without atomic create-new publication return an error.
 pub fn export_file(path: &Path, name: &str, scale: Scale) -> Result<(), String> {
     let text = preset::encode(name, scale).map_err(|e| e.to_string())?;
-    publish(path, text.as_bytes(), false)
+    publish(path, text.as_bytes())
 }
-fn publish(destination: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
-    publish_with_link(destination, bytes, replace, |source, target| {
-        fs::hard_link(source, target)
-    })
+fn publish(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+    publish_with_guard(destination, bytes, || Ok(()))
 }
 fn publish_slot(
     destination: &Path,
@@ -240,16 +238,10 @@ fn publish_slot(
     if let Some(expected) = expected {
         return replace_preserving(destination, bytes, expected, before_check);
     }
-    publish_with_guard(
-        destination,
-        bytes,
-        false,
-        |source, target| fs::hard_link(source, target),
-        || {
-            before_check();
-            Ok(())
-        },
-    )
+    publish_with_guard(destination, bytes, || {
+        before_check();
+        Ok(())
+    })
 }
 
 /// Stage each replacement under its permanent recovery name. Once exchanged,
@@ -361,19 +353,9 @@ fn exchange_files(_: &Path, _: &Path) -> std::io::Result<()> {
         "atomic tuning replacement is unavailable",
     ))
 }
-fn publish_with_link(
-    destination: &Path,
-    bytes: &[u8],
-    replace: bool,
-    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
-) -> Result<(), String> {
-    publish_with_guard(destination, bytes, replace, link, || Ok(()))
-}
 fn publish_with_guard(
     destination: &Path,
     bytes: &[u8],
-    replace: bool,
-    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
     before_publish: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let parent = destination
@@ -390,9 +372,7 @@ fn publish_with_guard(
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err("tuning destination is not a regular file".into());
         }
-        if !replace {
-            return Err("tuning destination already exists".into());
-        }
+        return Err("tuning destination already exists".into());
     }
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut temporary = None;
@@ -418,19 +398,9 @@ fn publish_with_guard(
             .map_err(|e| format!("cannot write tuning preset · {e}"))?;
         drop(file);
         before_publish()?;
-        if replace {
-            fs::rename(&temporary, destination)
-                .map_err(|e| format!("cannot publish tuning slot · {e}"))?;
-        } else {
-            if link(&temporary, destination).is_err() {
-                let mut destination = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(destination)
-                    .map_err(|e| format!("cannot publish new tuning preset · {e}"))?;
-                destination.write_all(bytes).and_then(|()| destination.sync_all())
-                    .map_err(|e| format!("new tuning preset could not be completed · incomplete file retained · {e}"))?;
-            }
+        let published = crate::publication::publish_new_atomic(&temporary, destination)
+            .map_err(|e| format!("cannot publish new tuning preset atomically · {e}"))?;
+        if published.staging_remains() {
             fs::remove_file(&temporary)
                 .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
         }
@@ -475,52 +445,29 @@ mod tests {
         fs::create_dir(&p).unwrap();
         Directory(p)
     }
-    fn check_substituted_tuning_temporary(fail_before_publish: bool) {
+    #[test]
+    fn export_refuses_without_atomic_publication_and_cleans_up() {
+        let d = directory();
+        let _volume = crate::publication::simulate::volume(
+            crate::publication::simulate::Volume::NoAtomicCreate,
+        );
+        let destination = d.0.join("export.freqs");
+        assert!(export_file(&destination, "scale", Scale::equal(19)).is_err());
+        assert!(!destination.exists());
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 0);
+    }
+    #[test]
+    fn destination_created_before_publication_is_preserved() {
         let d = directory();
         let destination = d.0.join("export.freqs");
-        let original = d.0.join("original-stage");
-        let mut substituted = None;
-        let result = publish_with_guard(
-            &destination,
-            b"intended preset",
-            false,
-            |source, target| fs::hard_link(source, target),
-            || {
-                let entry = fs::read_dir(&d.0).unwrap().next().unwrap().unwrap().path();
-                fs::rename(&entry, &original).unwrap();
-                fs::write(&entry, b"foreign work").unwrap();
-                substituted = Some(entry);
-                if fail_before_publish {
-                    Err("simulated failure".into())
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        let path = substituted.unwrap();
-        if fail_before_publish {
-            assert!(result.is_err(), "prepublication error must be reported");
-            assert!(
-                !destination.exists(),
-                "error must not publish a destination"
-            );
-        } else if destination.exists() {
-            assert_eq!(fs::read(&destination).unwrap(), b"intended preset");
-        } else {
-            assert!(result.is_err(), "success must publish the destination");
-        }
-        assert_eq!(fs::read(&path).unwrap(), b"foreign work");
-        assert_eq!(fs::read(&original).unwrap(), b"intended preset");
+        let result = publish_with_guard(&destination, b"new preset", || {
+            fs::write(&destination, b"existing file").unwrap();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing file");
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
     }
-    #[test]
-    fn substituted_tuning_temporary_survives_failed_publication() {
-        check_substituted_tuning_temporary(true);
-    }
-    #[test]
-    fn substituted_tuning_temporary_never_publishes_foreign_bytes() {
-        check_substituted_tuning_temporary(false);
-    }
-
     #[cfg(unix)]
     #[test]
     fn slot_lock_releases_when_an_inherited_descriptor_remains_open() {
@@ -936,25 +883,28 @@ mod tests {
         assert_eq!(fs::read_link(&link).unwrap(), target);
         assert!(!target.exists());
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn review_create_new_export_does_not_require_hardlinks_or_replace_existing_files() {
+    fn export_and_new_slot_use_atomic_rename_without_hard_links() {
         let d = directory();
-        let path = d.0.join("removable.freqs");
-        let text = preset::encode("portable", Scale::equal(19)).unwrap();
-        let no_links =
-            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
-        publish_with_link(&path, text.as_bytes(), false, no_links).unwrap();
-        assert_eq!(read_file(&path).unwrap().scale, Scale::equal(19));
-        assert!(publish_with_link(&path, b"replacement", false, no_links).is_err());
-        assert_eq!(fs::read(&path).unwrap(), text.as_bytes());
+        let _volume = crate::publication::simulate::volume(
+            crate::publication::simulate::Volume::NoHardLinks(libc::ENOTSUP),
+        );
+        let path = d.0.join("export.freqs");
+        export_file(&path, "portable", Scale::equal(19)).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(export_file(&path, "replacement", Scale::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
-        let raced = d.0.join("raced.freqs");
-        let competing_writer = |_: &Path, target: &Path| {
-            fs::write(target, b"another writer's file")?;
-            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
-        };
-        assert!(publish_with_link(&raced, text.as_bytes(), false, competing_writer).is_err());
-        assert_eq!(fs::read(&raced).unwrap(), b"another writer's file");
+        save(&d.0, 1, "slot", Scale::equal(24)).unwrap();
+        assert_eq!(load(&d.0, 1).unwrap().scale, Scale::equal(24));
+        assert!(fs::read_dir(&d.0).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
     }
     #[test]
     fn library_roundtrip_rename_duplicate_and_full_refusal() {
