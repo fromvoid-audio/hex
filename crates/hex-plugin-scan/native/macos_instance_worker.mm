@@ -12,6 +12,7 @@
 #include <mutex>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <optional>
 #include <os/log.h>
 #include <thread>
@@ -95,15 +96,21 @@ bool send_state_overflow(int channel,const wire::Config& config,uint64_t blocks,
     wire::number(body,1,1);wire::number(body,observed,4);
     return wire::send(channel,"HXVICR02",body);
 }
+// The processing lane owns reads, including EOF. On macOS a concurrent
+// MSG_PEEK can consume its wakeup and leave a partial-frame read blocked.
+// poll and FIONREAD observe closure without becoming another socket reader.
+bool peer_closed(int channel) {
+    pollfd descriptor{channel,POLLIN,0};
+    const int ready=::poll(&descriptor,1,0);
+    if(ready<=0 || !(descriptor.revents&POLLHUP)) return false;
+    int available=0;
+    return ::ioctl(channel,FIONREAD,&available)==0 && available==0;
+}
 bool wait_for_peer_close(int channel) {
     pollfd descriptor{channel,POLLIN,0};
     const int ready=::poll(&descriptor,1,failed_main_wait_ms);
     if(ready==0) return false;
-    if(ready>0) {
-        uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-        // A closed peer with unread bytes still reports hangup.
-        if(peer==0 || (descriptor.revents&POLLHUP)) return true;
-    }
+    if(ready>0 && (descriptor.revents&POLLHUP)) return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
     return false;
 }
@@ -358,6 +365,7 @@ int main(int argc,char** argv) {
             hex_instance::ParameterFeedback parameter_feedback;
             std::atomic<uint64_t> diagnostic_pcm_blocks{0},diagnostic_nonzero_input_blocks{0};
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
+            std::atomic<bool> worker_retiring{false};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             const auto control_failure=[&](uint32_t code) {
                 // Share the epoch wait mutex so failure publication cannot
@@ -824,7 +832,7 @@ int main(int argc,char** argv) {
                         if((received==2 || received==3) && live_stage.load(std::memory_order_acquire)!=LiveIdle) {
                             worker_failure.store(ProtocolFailure);break;
                         }
-                        if(received==2) { normal_stop=true;break; }
+                        if(received==2) { worker_retiring.store(true,std::memory_order_release);normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
                         if(received==3) {
                             if(packet.release_gates) {
@@ -912,7 +920,7 @@ int main(int argc,char** argv) {
                             if(worker_failure.load()) break;
                             continue;
                         }
-                        if(received!=1) { worker_failure.store(ProtocolFailure);break; }
+                        if(received!=1) { worker_retiring.store(true,std::memory_order_release);worker_failure.store(ProtocolFailure);break; }
                         bool valid=true;output_right.fill(0);input.silenceFlags=input_silence;output.silenceFlags=0;
                         bool nonzero_input=false;
                         for(size_t n=0;n<packet.frames;++n) {
@@ -1100,8 +1108,7 @@ int main(int argc,char** argv) {
             // Ready means the actual worker's fallible setProcessing succeeded,
             // not merely that a control-side configuration was copied.
             while(!startup.load(std::memory_order_acquire)) {
-                uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-                if(peer==0) std::_Exit(Cancelled);
+                if(peer_closed(channel)) std::_Exit(Cancelled);
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
@@ -1113,6 +1120,15 @@ int main(int argc,char** argv) {
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
+            std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
+            const auto may_cancel_closed_peer=[&] {
+                if(!worker_retiring.load(std::memory_order_acquire)) return true;
+                const auto now=std::chrono::steady_clock::now();
+                // Give an already admitted terminal reply a bounded chance to
+                // finish; a hung foreign stop cannot hold a closed peer forever.
+                if(!retirement_deadline) retirement_deadline=now+std::chrono::milliseconds(250);
+                return now>=*retirement_deadline;
+            };
             while(!done.load(std::memory_order_acquire)) @autoreleasepool {
                 try {
                     if(trace_messages) {
@@ -1132,7 +1148,10 @@ int main(int argc,char** argv) {
                         // unless the worker itself is receiving (it then sees
                         // EOF and finishes); a hung DSP/stop never returns.
                         if(wait_for_peer_close(channel) && phase.load(std::memory_order_acquire)!=1 &&
-                            !done.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+                            !done.load(std::memory_order_acquire)) {
+                            if(may_cancel_closed_peer()) std::_Exit(Cancelled);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
+                        }
                         continue;
                     }
                     // The worker owns active response framing. Publishing a
@@ -1344,8 +1363,7 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
                     }
-                    uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-                    if(peer==0 && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire)) {
+                    if(peer_closed(channel) && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire) && may_cancel_closed_peer()) {
                         // EOF is cancellation, not the graceful HXVE terminal.
                         // Retire the isolated process rather than wait on hung DSP
                         // or unload code beneath its processing thread.
