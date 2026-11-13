@@ -592,6 +592,14 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
         })
         .unwrap();
     assert!(eligible(&editor, device));
+    let mode = |editor: &Editor| {
+        crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            parameter::MID_SIDE_ENABLED,
+        )
+    };
+    assert!(mode(&editor));
     let width = |editor: &Editor| {
         crate::project_source_utility_matrix_edit_supported(
             editor.project(),
@@ -620,6 +628,7 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
             .unwrap();
         assert!(!width(&editor));
         assert_eq!(mid_side(&editor), id == parameter::MID_SIDE_ENABLED);
+        assert_eq!(mode(&editor), id == parameter::MID_SIDE_ENABLED);
         assert!(eligible(&editor, device));
         assert!(editor.undo());
     }
@@ -646,4 +655,5 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
         .unwrap();
     assert!(!eligible(&editor, device));
     assert!(!mid_side(&editor));
+    assert!(!mode(&editor));
 }

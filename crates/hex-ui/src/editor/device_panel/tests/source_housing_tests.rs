@@ -514,3 +514,295 @@ fn source_utility_gain_is_limited_to_unautomated_active_processing() {
         .unwrap();
     assert!(!available(&editor));
 }
+
+macro_rules! source_mode_case {
+    ($name:ident, $filter:expr, $initial:expr) => {
+        #[gpui::test]
+        fn $name(cx: &mut TestAppContext) {
+            shared_source_mode_with_filter(cx, $filter, $initial, false);
+        }
+    };
+}
+source_mode_case!(shared_source_mode_on_plain, None, false);
+source_mode_case!(shared_source_mode_off_plain, None, true);
+source_mode_case!(
+    shared_source_mode_on_dc,
+    Some(hex_devices::utility::parameter::DC_REMOVE),
+    false
+);
+source_mode_case!(
+    shared_source_mode_off_dc,
+    Some(hex_devices::utility::parameter::DC_REMOVE),
+    true
+);
+source_mode_case!(
+    shared_source_mode_on_bass,
+    Some(hex_devices::utility::parameter::BASS_MONO),
+    false
+);
+source_mode_case!(
+    shared_source_mode_off_bass,
+    Some(hex_devices::utility::parameter::BASS_MONO),
+    true
+);
+
+#[gpui::test]
+fn shared_source_mode_restores_after_worker_refusal(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(cx, None, false, true);
+}
+
+fn shared_source_mode_with_filter(
+    cx: &mut TestAppContext,
+    filter: Option<hex_lattice_contract::ParameterId>,
+    initial: bool,
+    reject: bool,
+) {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    cx.update(crate::editor::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&service);
+    let edit = |command| {
+        service.submit(Request::Edit(command)).unwrap();
+        let event = receive_service_event(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        event
+    };
+    let Some(Created::Track(receiver)) = edit(Command::AddMidiTrack {
+        name: "receiver".into(),
+    })
+    .created
+    else {
+        panic!("receiver")
+    };
+    let Some(Created::Track(contributor)) = edit(Command::AddMidiTrack {
+        name: "contributor".into(),
+    })
+    .created
+    else {
+        panic!("contributor")
+    };
+    let mut utility = hex_devices::utility::UTILITY_DEFINITION
+        .default_state()
+        .unwrap();
+    if let Some(filter) = filter {
+        utility = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(&utility, filter, ParameterValue::Bool(true))
+            .unwrap();
+    }
+    utility = hex_devices::utility::UTILITY_DEFINITION
+        .patch_parameter(
+            &utility,
+            hex_devices::utility::parameter::MID_SIDE_ENABLED,
+            ParameterValue::Bool(initial),
+        )
+        .unwrap();
+    let created = edit(Command::CreateNativeSource {
+        name: "shared".into(),
+        devices: vec![
+            hex_project::default_instrument_state().unwrap(),
+            utility.clone(),
+        ],
+        instrument_index: 0,
+    });
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()[0]
+        .id();
+    edit(Command::BindTrackSource {
+        track: receiver,
+        source: Some(source),
+    });
+    edit(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    });
+    let other = edit(Command::CreateNativeSource {
+        name: "other source".into(),
+        devices: vec![hex_project::default_instrument_state().unwrap()],
+        instrument_index: 0,
+    });
+    let Some(Created::NativeSource(other)) = other.created else {
+        panic!("other source")
+    };
+    let bound = edit(Command::InsertDevice {
+        track: contributor,
+        before: None,
+        state: utility,
+    });
+    let local = bound
+        .state
+        .project
+        .track(contributor)
+        .unwrap()
+        .devices()
+        .to_vec();
+    let (handle, editor) = actor_editor_window(cx, service, bound.state, contributor);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let choice = editor.read_with(&visual, |view, _| {
+        let item = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("other source")
+            })
+            .unwrap();
+        let crate::editor::context_menu::EditorContextAction::SourcePicker(choice) = &item.action
+        else {
+            panic!("choice")
+        };
+        choice.clone()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let mode = hex_lattice_contract::ParameterId::from_static(9);
+    let button = Box::leak(format!("device-{}-parameter-9", device.value()).into_boxed_str());
+    let target = visual.debug_bounds(button).expect("mode button");
+    visual.simulate_click(target.center(), Modifiers::default());
+    visual.run_until_parked();
+    let key = ParameterKey {
+        device,
+        parameter: mode,
+    };
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
+    });
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let snapshot = view
+                .device_gesture
+                .snapshot()
+                .expect("pending mode gesture");
+            assert_eq!(snapshot.value, ParameterValue::Bool(!initial));
+            let Some(ParameterControl::Bool { entity, .. }) = view.device_panel.controls.get(&key)
+            else {
+                panic!("mode control")
+            };
+            assert_eq!(entity.read(cx).checked(), !initial);
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(contributor)
+                    .unwrap()
+                    .source_id(),
+                Some(source)
+            );
+            assert_ne!(source, other);
+        });
+        let selected = if initial { 3 } else { 10 };
+        let selected = Box::leak(
+            format!("device-{}-parameter-{selected}-value", device.value()).into_boxed_str(),
+        );
+        let selected_bounds = visual
+            .debug_bounds(selected)
+            .expect("pending selected control");
+        visual.simulate_click(selected_bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let selected_parameter =
+                hex_lattice_contract::ParameterId::from_static(if initial { 3 } else { 10 });
+            let Some(ParameterControl::Float { entity, .. }) =
+                view.device_panel.controls.get(&ParameterKey {
+                    device,
+                    parameter: selected_parameter,
+                })
+            else {
+                panic!("pending numeric control")
+            };
+            assert!(!entity.read(cx).is_editing());
+            assert_eq!(
+                view.device_gesture.snapshot().unwrap().target,
+                hex_session::device_gesture::GestureTarget::DeviceParameter {
+                    device,
+                    parameter: mode
+                }
+            );
+        });
+    }
+    let value = |view: &EditorView| {
+        let device = view.state.as_ref()?.project.device(device)?;
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            device.state(),
+            mode,
+        )
+        .ok()
+    };
+    if reject {
+        editor.update(cx, |view, _| {
+            view.service
+                .shutdown(std::time::Duration::from_secs(2))
+                .unwrap()
+        });
+        pump_until(&editor, cx, |view| {
+            view.device_gesture.snapshot().is_none() && view.error.is_some()
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(value(view), Some(ParameterValue::Bool(initial)));
+            let Some(ParameterControl::Bool { entity, .. }) = view.device_panel.controls.get(&key)
+            else {
+                panic!("restored mode")
+            };
+            assert_eq!(entity.read(cx).checked(), initial);
+        });
+        let original = if initial { 10 } else { 3 };
+        let selector = Box::leak(
+            format!("device-{}-parameter-{original}-value", device.value()).into_boxed_str(),
+        );
+        visual
+            .debug_bounds(selector)
+            .expect("canonical control restored");
+        return;
+    }
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Bool(!initial))
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(contributor).unwrap().devices(), local);
+        assert_eq!(project.track(receiver).unwrap().source_id(), Some(source));
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Bool(initial))
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Bool(!initial))
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_track(receiver, window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let receiver_button = visual.debug_bounds(button).expect("mode on receiver");
+    visual.simulate_click(receiver_button.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| {
+        value(view) == Some(ParameterValue::Bool(initial))
+            && view.device_gesture.snapshot().is_none()
+    });
+}
