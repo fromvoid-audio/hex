@@ -882,9 +882,15 @@ pub(super) fn prepare_document_replacement(
             .checked_add(1)
             .ok_or("project revision exhausted")?,
     };
-    if candidate.audio_mode() == DocumentAudioMode::Resident
-        && let Some(sink) = events.resident_audio()
-    {
+    // Mixed verified/file and private sampler preparation needs the ordinary
+    // resource owner. Public mixed opening remains guarded until the native
+    // publication-owner transition is implemented.
+    let ordinary = candidate.audio_mode() == DocumentAudioMode::Resident
+        || (candidate.audio_mode() == DocumentAudioMode::VerifiedStreaming
+            && hex_engine::native_device_resources::requires_private_sampler_sources(
+                candidate.project(),
+            ));
+    if ordinary && let Some(sink) = events.resident_audio() {
         let resident = candidate
             .prepare_resident_document_replacement(old, context, sink, admission, current)
             .map_err(|e| e.to_string())?;
