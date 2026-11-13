@@ -121,6 +121,13 @@ pub struct NativeWorkerCapture {
     after_parameter: Option<(u64, u32, u64)>,
 }
 
+#[cfg(test)]
+impl NativeWorkerCapture {
+    pub(crate) fn original_worker_released_on_control(&self) -> bool {
+        self.source.upgrade().is_none()
+    }
+}
+
 /// State observed after one processed input on this exact worker. This is a
 /// control-side ordering fact, not controller readback or graph authority.
 pub struct NativeWorkerStateAfterParameter {

@@ -341,11 +341,24 @@ impl Custody {
         binding: Binding,
         input: &NativeWorkerParameterChange,
     ) -> Result<NativeWorkerCapture, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.begin_capture_after_parameter(input),
-            Owner::Loaned(owner) => owner.begin_capture_after_parameter(input),
-            _ => Err("native capture owner differs"),
-        })
+        self.sequenced_capture_admission(binding, input, || {})
+    }
+    fn sequenced_capture_admission(
+        &self,
+        binding: Binding,
+        input: &NativeWorkerParameterChange,
+        after_admission: impl FnOnce(),
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => owner.begin_capture_after_parameter(input),
+                Owner::Loaned(owner) => owner.begin_capture_after_parameter(input),
+                _ => Err("native capture owner differs"),
+            },
+            after_admission,
+            "native sequenced capture was not admitted",
+        )
     }
     pub(in crate::candidate_custody) fn poll_capture_after_parameter(
         &self,
