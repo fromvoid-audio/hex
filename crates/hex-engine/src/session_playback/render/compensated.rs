@@ -1097,8 +1097,8 @@ impl SessionPlayback {
             output[0][0] += scratch[0][0];
             output[0][1] += scratch[0][1];
         }
-        // Only zero-latency routed layouts admit detached old chains. Positive
-        // latency revisions refuse those transitions before moving audible owners.
+        // Grouped tails were routed through their track output above. Flat tails
+        // enter Main directly after the handoff has proved their alignment.
         if !grouped {
             self.render_detached_tails(
                 performance_frame,
