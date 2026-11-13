@@ -783,6 +783,12 @@ fn session_seek_releases_old_sdk_instrument_gate() {
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
+fn session_priority_stop_releases_gate_on_original_sdk_endpoint() {
+    instrument_entrypoint(InstrumentWorkflow::SessionStopTrace);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
 fn session_pause_releases_sdk_gate_without_rechasing_on_resume() {
     instrument_entrypoint(InstrumentWorkflow::SessionPause);
 }
@@ -1025,6 +1031,7 @@ enum InstrumentWorkflow {
     SessionLoop,
     SessionPause,
     SessionSeek,
+    SessionStopTrace,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
@@ -1041,6 +1048,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             | InstrumentWorkflow::SessionLoop
             | InstrumentWorkflow::SessionPause
             | InstrumentWorkflow::SessionSeek
+            | InstrumentWorkflow::SessionStopTrace
     );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
@@ -1061,6 +1069,11 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         child
             .args(["--exact", &name, "--ignored", "--nocapture"])
             .env(CHILD, "1");
+        let trace_directory =
+            matches!(workflow, InstrumentWorkflow::SessionStopTrace).then(Files::new);
+        if let Some(directory) = &trace_directory {
+            child.env("HEX_ORIGINAL_NOTE_TRACE_DIR", &directory.0);
+        }
         if installed.is_none() {
             child.env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
@@ -1452,6 +1465,103 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         assert!(status.position.load(Acquire) >= 12_000);
         assert!(status.rejected_action().is_none());
         assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionStopTrace) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let sounding = render_completed_block(&harness);
+        assert!(
+            sounding
+                .iter()
+                .all(|frame| (frame[0] - 88.0 / 127.0).abs() < 1e-5)
+        );
+        let directory = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+        let paths: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+            .collect();
+        assert_eq!(
+            paths.len(),
+            1,
+            "expected the one sounding SDK helper: {paths:?}"
+        );
+        let original = &paths[0];
+        use std::os::unix::fs::MetadataExt as _;
+        let before_inode = std::fs::metadata(original).unwrap().ino();
+        harness.audio.as_ref().unwrap().control.stop();
+        assert_eq!(harness.render_plugin_block(), [[0.0; 2]; 256]);
+        let mut restored = harness.run(Request::RestoreStoppedPlayback);
+        if !restored.stopped_playback_restore_complete {
+            restored = restored_terminal(&mut harness);
+        }
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        let (_, metadata) = harness.applied(applied);
+        assert!(metadata.stopped_restore);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let notes = loop {
+            harness.pump();
+            let updated =
+                std::fs::metadata(original).is_ok_and(|metadata| metadata.ino() != before_inode);
+            let words = updated
+                .then(|| std::fs::read(original).ok())
+                .flatten()
+                .filter(|bytes| bytes.len() == 20)
+                .map(|bytes| {
+                    bytes
+                        .chunks_exact(4)
+                        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+                        .collect::<Vec<_>>()
+                });
+            if let Some(words) = words.filter(|words| words[1] >= 2) {
+                break words;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original SDK helper trace did not update"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            notes[1], notes[2],
+            "original SDK endpoint retained a note: {notes:?}"
+        );
+        assert!(
+            notes[3] > 0,
+            "the held gate needs a real occurrence identity: {notes:?}"
+        );
+        assert_eq!(
+            notes[3], notes[4],
+            "the released identity differs: {notes:?}"
+        );
+        println!("original SDK helper {original:?} note trace={notes:?}");
         return;
     }
     if matches!(workflow, InstrumentWorkflow::SessionPause) {
