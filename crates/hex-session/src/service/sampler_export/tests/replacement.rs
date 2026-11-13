@@ -108,7 +108,7 @@ fn replacement_history_requires_exact_forward_template_and_shared_catalog_in_bot
         hex_engine::sampler_replacement_template_on_control(&old, 6).unwrap();
     editor
         .execute(Command::ImportDeviceAssetReplacingInstrument {
-            track,
+            owner: hex_project::InstrumentAssetOwner::Track(track),
             device: id,
             expected_state: old,
             path: files.output.clone(),
