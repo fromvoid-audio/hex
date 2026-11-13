@@ -112,6 +112,15 @@ fn source_picker_preserves_sampler_numeric_draft(cx: &mut TestAppContext) {
     editor.read_with(&visual, |view, _| {
         assert!(view.sampler_parameter.numeric_draft_active())
     });
+    visual.simulate_click(button.center(), Modifiers::default());
+    editor.read_with(&visual, |view, cx| {
+        assert!(view.context_menu.is_none());
+        assert!(view.sampler_parameter.numeric_draft_active());
+        assert_eq!(
+            crate::editor::sampler_parameter::tests::sampler_text(view, cx),
+            "invalid"
+        );
+    });
     editor.update(&mut visual, |view, _| {
         let revision = view.state.as_ref().unwrap().revision;
         let requests = [
