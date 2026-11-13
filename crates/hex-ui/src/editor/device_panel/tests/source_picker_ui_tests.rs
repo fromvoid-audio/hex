@@ -32,6 +32,183 @@ fn settle(
 }
 
 #[gpui::test]
+fn source_picker_preserves_sampler_numeric_draft(cx: &mut TestAppContext) {
+    use crate::editor::device_automation::host_tests::{Slot, TestWave, window_with_gain};
+
+    let wave = TestWave::new();
+    let (mut visual, editor, _, track, _) =
+        window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&wave.0));
+    visual.simulate_resize(size(px(1600.0), px(800.0)));
+    visual.run_until_parked();
+    let (sampler, source, revision) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let track = state.project.track(track).unwrap();
+        (
+            track.instrument().unwrap().id(),
+            track.source_id().unwrap(),
+            state.revision,
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "linked".into()
+        })));
+    });
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending() && view.state.as_ref().unwrap().revision > revision
+    });
+    let (linked, revision) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let linked = state
+            .project
+            .tracks()
+            .iter()
+            .find(|candidate| candidate.name() == "linked")
+            .unwrap()
+            .id();
+        (linked, state.revision)
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::BindTrackSource {
+            track: linked,
+            source: Some(source)
+        })));
+    });
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending() && view.state.as_ref().unwrap().revision > revision
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_track(track, window);
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let jump = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find_map(|item| {
+                let EditorContextAction::SourcePicker(choice) = &item.action else {
+                    return None;
+                };
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("linked")
+                    .then(|| choice.clone())
+            })
+            .unwrap()
+    });
+    visual.simulate_keystrokes("escape");
+    let selector = Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
+    let sampler_at = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(sampler_at, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.sampler_parameter.numeric_draft_active())
+    });
+    editor.update(&mut visual, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        let requests = [
+            Request::AppendSourceUtility {
+                project_generation: 0,
+                revision,
+                track,
+                source,
+                instrument: sampler,
+            },
+            Request::RemoveSourceUtility {
+                project_generation: 0,
+                revision,
+                track,
+                source,
+                instrument: sampler,
+                effect: sampler,
+            },
+            Request::MoveSourceUtility {
+                project_generation: 0,
+                revision,
+                track,
+                source,
+                instrument: sampler,
+                effect: sampler,
+                neighbor: sampler,
+                direction: hex_session::service::SourceUtilityMove::Earlier,
+            },
+        ];
+        for request in &requests {
+            assert!(!view.admit_independent_edit_with_local_draft(request));
+        }
+    });
+    visual
+        .update(|window, cx| editor.update(cx, |view, cx| jump.clone().perform(view, window, cx)));
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.selected_track(), Some(track));
+        assert!(view.sampler_parameter.numeric_draft_active());
+        assert_eq!(
+            crate::editor::sampler_parameter::tests::sampler_text(view, cx),
+            "invalid"
+        );
+    });
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.cancel_sampler_drafts(cx))
+    });
+    visual.update(|window, cx| editor.update(cx, |view, cx| jump.perform(view, window, cx)));
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_track(), Some(linked))
+    });
+    editor.update(&mut visual, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        let requests = [
+            Request::AppendSourceUtility {
+                project_generation: 0,
+                revision,
+                track: linked,
+                source,
+                instrument: sampler,
+            },
+            Request::RemoveSourceUtility {
+                project_generation: 0,
+                revision,
+                track: linked,
+                source,
+                instrument: sampler,
+                effect: sampler,
+            },
+            Request::MoveSourceUtility {
+                project_generation: 0,
+                revision,
+                track: linked,
+                source,
+                instrument: sampler,
+                effect: sampler,
+                neighbor: sampler,
+                direction: hex_session::service::SourceUtilityMove::Earlier,
+            },
+        ];
+        for request in requests {
+            view.latched_seek_intent = Some(crate::editor::arrangement_seek::SeekIntent {
+                kind: crate::editor::arrangement_seek::SeekKind::Fresh,
+                recovery_generation: None,
+                destination_frame: 0,
+                start_playing: true,
+                project_generation: 0,
+                project_revision: revision,
+                prepared_revision: None,
+                device_preview_identity: None,
+            });
+            assert!(view.enqueue(request));
+            assert!(view.latched_seek_intent.is_none());
+        }
+    });
+}
+
+#[gpui::test]
 fn source_picker_assigns_only_after_explicit_choice_and_undoes(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, receiver, _, _, _) = actor_utility_fixture();
