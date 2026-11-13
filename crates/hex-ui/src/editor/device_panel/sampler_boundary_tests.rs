@@ -55,7 +55,12 @@ fn terminal(
         state.project = Arc::new(model.project().clone());
         state.revision += 1;
         state.can_undo = true;
-        let source = SourceTarget::resolve(view, track, request.device).unwrap();
+        let source = SourceTarget::resolve(
+            view,
+            hex_session::service::SamplerParameterOwner::Track(track),
+            request.device,
+        )
+        .unwrap();
         state.source_overviews = hex_session::source_overview_test_support::Fixture::new(
             source.asset,
             &vec![[0.5, -0.25]; source.frames as usize],
@@ -379,7 +384,7 @@ fn sampler_boundary_rejects_a_cursor_edit_conflicting_with_the_authored_loop(
 ) {
     let (handle, editor, track, device) = fixture(cx, 1024, true);
     editor.update(cx, |view, cx| {
-        let source = SourceTarget::resolve(view, track, device).unwrap();
+        let source = SourceTarget::resolve(view, hex_session::service::SamplerParameterOwner::Track(track), device).unwrap();
         let mut state = copy_fixture_state(view.state.as_ref().unwrap());
         let mut model = Editor::new((*state.project).clone(), 16).unwrap();
         model.execute(Command::ReplaceDeviceState { device,
