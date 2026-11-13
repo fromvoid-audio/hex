@@ -2307,7 +2307,7 @@ impl SessionPlayback {
     }
 
     /// Current pass and active loop law at the Arrangement cursor. The pass
-    /// distinguishes repeated visits to the same frame; this is not a fence.
+    /// distinguishes loop wraps but can reset on a seek; this is not a fence.
     pub fn arrangement_loop_state(&self) -> ArrangementLoopState {
         ArrangementLoopState {
             pass: self.arrangement_loop_pass,
