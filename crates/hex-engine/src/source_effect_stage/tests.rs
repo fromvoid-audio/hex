@@ -3259,3 +3259,86 @@ fn authored_first_source_utility_attachment_preserves_shared_voices_and_local_au
         removed.try_inherit_state_live_from(&mut candidate).unwrap();
     }
 }
+
+#[test]
+fn appending_neutral_source_utility_preserves_filter_history_and_shared_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    for partition in [1, 7, 64, 128, 257] {
+        let (mut editor, asset) = authored_fixture(0, false);
+        let receiver = editor.project().tracks()[0].id();
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let filter = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::BASS_MONO,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let filter = UTILITY_DEFINITION
+            .patch_parameter(&filter, parameter::BALANCE, ParameterValue::Float(1.0))
+            .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: filter,
+            })
+            .unwrap();
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+        let table = Arc::new(crate::SineTable::new());
+        let prepare = |editor: &Editor| {
+            Arc::new(
+                PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                    .unwrap(),
+            )
+        };
+        let original = prepare(&editor);
+        let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut reference = SessionPlayback::new(original).unwrap();
+        for playback in [&mut donor, &mut reference] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: UTILITY_DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+        candidate.try_inherit_state_live_from(&mut donor).unwrap();
+        let mut actual = [[0.0; 2]; 128];
+        let mut expected = actual;
+        for chunk in actual.chunks_mut(partition) {
+            candidate.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            expected
+                .iter()
+                .any(|frame| (frame[0] - CLIP[0]).abs() > 1e-5)
+        );
+        for (i, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1e-5,
+                    "partition={partition} frame={i} channel={channel}"
+                );
+            }
+        }
+    }
+}
