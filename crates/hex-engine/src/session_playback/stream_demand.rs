@@ -237,6 +237,31 @@ impl SessionPlayback {
             visit,
         )
     }
+
+    // Test-only projection for an unchanged route. It carries no admission or
+    // page-protection authority and refuses pending route changes.
+    #[cfg(test)]
+    pub(crate) fn test_project_ordinary_stream_chunk(
+        &self,
+        performance_frame: u64,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, Invalid> {
+        if self.routes.iter().any(|route| route.pending.is_some()) {
+            return Err(Invalid("test projection requires unchanged routes"));
+        }
+        let (arrangement_frame, loop_pass) = self.project_stream_arrangement(performance_frame)?;
+        self.visit_stream_chunk_sources_at(
+            &self.routes,
+            performance_frame,
+            arrangement_frame,
+            self.route_state_generation,
+            loop_pass,
+            self.playing,
+            maximum_frames,
+            visit,
+        )
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn visit_stream_chunk_sources_at(
         &self,

@@ -456,6 +456,33 @@ fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
 
 #[test]
 fn delayed_scalar_prewarm_projects_future_loop_origin_and_matches_due_render() {
+    struct ObservedPages {
+        inner: Pages,
+        reads: Vec<(ScalarSourceKey, u64)>,
+    }
+    impl MediaPages for ObservedPages {
+        fn page(
+            &mut self,
+            key: crate::StreamSourceKey,
+            index: u64,
+        ) -> Option<BorrowedMediaPage<'_>> {
+            self.inner.page(key, index)
+        }
+        fn request_page(&mut self, key: crate::StreamSourceKey, index: u64) {
+            self.inner.request_page(key, index);
+        }
+        fn scalar_page(
+            &mut self,
+            key: ScalarSourceKey,
+            index: u64,
+        ) -> Option<BorrowedScalarPage<'_>> {
+            self.reads.push((key, index));
+            self.inner.scalar_page(key, index)
+        }
+        fn request_scalar_page(&mut self, key: ScalarSourceKey, index: u64) {
+            self.inner.request_scalar_page(key, index);
+        }
+    }
     let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
     let (mut f, device, _, mut pages) = fixture(target);
     f.editor
@@ -491,6 +518,72 @@ fn delayed_scalar_prewarm_projects_future_loop_origin_and_matches_due_render() {
     );
     let latency = revision.arrangement().main_latency_frames();
     assert!(latency > 0);
+    let mut future_runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    future_runtime
+        .apply(SessionPlaybackCommand::Seek(4092))
+        .unwrap();
+    future_runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut future_pages = ObservedPages {
+        inner: pages.clone(),
+        reads: Vec::new(),
+    };
+    future_runtime
+        .render_with_pages(&mut [[0.0; 2]; 8], &mut future_pages)
+        .unwrap();
+    let mut projected_windows = Vec::new();
+    let mut frontier = future_runtime.performance_frame();
+    // Cover both retained history and the point where delayed scalar origins
+    // come entirely from the projected future, including several loop wraps.
+    let mut remaining = usize::try_from(latency).unwrap() + 128;
+    while remaining > 0 {
+        let mut extents = Vec::new();
+        let window = future_runtime
+            .test_project_ordinary_stream_chunk(frontier, remaining, &mut |extent| {
+                extents.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert!(window.frames > 0);
+        remaining -= window.frames;
+        frontier += window.frames as u64;
+        projected_windows.push((window, extents));
+    }
+    assert!(
+        projected_windows.len() > 16,
+        "projection must cross loop wraps"
+    );
+    assert!(
+        projected_windows
+            .iter()
+            .any(|(_, extents)| !extents.is_empty())
+    );
+    let mut read_count = 0;
+    for (projected, expected) in projected_windows {
+        let mut actual = Vec::new();
+        let window = future_runtime
+            .visit_ordinary_stream_chunk(projected.frames, None, &mut |extent| {
+                actual.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(window, projected);
+        assert_eq!(actual, expected);
+        future_pages.reads.clear();
+        future_runtime
+            .render_with_pages(&mut vec![[0.0; 2]; window.frames], &mut future_pages)
+            .unwrap();
+        read_count += future_pages.reads.len();
+        for &(key, page) in &future_pages.reads {
+            assert!(
+                expected
+                    .iter()
+                    .any(|extent| { extent.source == key.into() && extent.page_index == page })
+            );
+        }
+    }
+    assert!(read_count > 0, "render must read actual scalar pages");
+    assert_eq!(future_pages.inner.requests, 0);
+
     let mut runtime = SessionPlayback::new(revision).unwrap();
     runtime.apply(SessionPlaybackCommand::Seek(4092)).unwrap();
     runtime.apply(SessionPlaybackCommand::Play).unwrap();
