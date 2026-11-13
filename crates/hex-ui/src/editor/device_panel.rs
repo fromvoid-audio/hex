@@ -478,9 +478,20 @@ pub(super) fn device_layout_style() -> ControlStyle {
     theme::device_style(theme::DeviceStyleRole::Layout)
 }
 
+/// A source-owned Sampler edit retains its visible owner until its terminal.
+pub(super) fn source_sampler_edit_active(view: &EditorView) -> bool {
+    matches!(view.device_panel.owner, Some(DevicePanelOwner::Source(_)))
+        && (view.sampler_parameter_pending() || view.sampler_parameter.numeric_draft_active())
+}
+
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
 /// A bad typed value stays in its field and blocks the caller.
 pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
+    if source_sampler_edit_active(view) {
+        view.error = Some("finish the sampler edit before changing the source view".into());
+        cx.notify();
+        return false;
+    }
     if source_manager::naming(view) {
         view.error = Some("finish or cancel the source name before continuing".into());
         cx.notify();
@@ -751,7 +762,9 @@ pub(super) fn view(
                 .is_some_and(|definition| {
                     matches!(
                         definition.instrument().state().type_id().as_str(),
-                        Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                        Ok("hex.instrument.fm4"
+                            | "hex.instrument.operator"
+                            | "hex.instrument.sampler")
                     )
                 })
             || state
@@ -950,7 +963,56 @@ fn render_source(
         device.id(),
         (identity.class, device.state().clone(), Ok(metadata.clone())),
     );
-    let body = if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
+    let body = if metadata.type_id.as_str() == Ok("hex.instrument.sampler") {
+        if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+            div()
+                .id("source-sampler-empty")
+                .debug_selector(|| "source-sampler-empty".into())
+                .p(px(8.0))
+                .child(theme::text(
+                    "empty sampler · sample loading from source view is not yet available",
+                ))
+        } else {
+            let owner = hex_session::service::SamplerParameterOwner::Source(source);
+            let mut fields = [
+                hex_engine::SamplerParameter::Gain,
+                hex_engine::SamplerParameter::Transpose,
+                hex_engine::SamplerParameter::StartFrame,
+                hex_engine::SamplerParameter::EndFrame,
+            ]
+            .into_iter()
+            .map(|parameter| view.sampler_parameter_control(owner, device, parameter, cx))
+            .collect::<Vec<_>>();
+            let loop_available = hex_engine::sampler_parameter_value_on_control(
+                hex_engine::SamplerParameter::LoopEnabled,
+                device.state(),
+            )
+            .is_ok();
+            if loop_available {
+                for parameter in [
+                    hex_engine::SamplerParameter::LoopEnabled,
+                    hex_engine::SamplerParameter::LoopStartFrame,
+                    hex_engine::SamplerParameter::LoopEndFrame,
+                    hex_engine::SamplerParameter::LoopCrossfadeMs,
+                ] {
+                    fields.push(view.sampler_parameter_control(owner, device, parameter, cx));
+                }
+            }
+            for parameter in [
+                hex_engine::SamplerParameter::AttackMs,
+                hex_engine::SamplerParameter::DecayMs,
+                hex_engine::SamplerParameter::SustainPercent,
+                hex_engine::SamplerParameter::ReleaseMs,
+            ] {
+                fields.push(view.sampler_parameter_control(owner, device, parameter, cx));
+            }
+            div().id("source-sampler-scroll").debug_selector(|| "source-sampler-scroll".into())
+                .flex_1().min_h_0().w_full().overflow_x_scroll().overflow_y_hidden()
+                .child(div().w(px(crate::device_composition::SAMPLER_FRAME_WIDTH)).flex_shrink_0().flex().flex_col().gap(px(4.0)).p(px(4.0))
+                    .child(theme::text("waveform view and sample loading from source view are not yet available"))
+                    .child(div().grid().grid_cols(if loop_available { 12 } else { 8 }).gap(px(2.0)).children(fields)))
+        }
+    } else if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
         let body = operator_panel::render_body(view, cx, device.id(), &metadata);
         let width = operator_panel::frame_width(
             view.device_panel
@@ -3076,8 +3138,12 @@ fn render_instrument(
         } else {
             "audio not ready · offline export supported"
         };
-        let gain =
-            view.sampler_parameter_control(track, device, hex_engine::SamplerParameter::Gain, cx);
+        let gain = view.sampler_parameter_control(
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            hex_engine::SamplerParameter::Gain,
+            cx,
+        );
         let modulation_view = device_view.as_ref().ok().filter(|_| {
             view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                 && device.state().asset_references().len() == 1
@@ -3101,19 +3167,19 @@ fn render_instrument(
             .children(gain_overlay)
             .into_any_element();
         let pitch = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::Transpose,
             cx,
         );
         let start = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::StartFrame,
             cx,
         );
         let end = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::EndFrame,
             cx,
@@ -3130,7 +3196,12 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEndFrame,
                     hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
-                    fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+                    fields.push(view.sampler_parameter_control(
+                        hex_session::service::SamplerParameterOwner::Track(track),
+                        device,
+                        parameter,
+                        cx,
+                    ));
                 }
                 None
             }
@@ -3142,7 +3213,12 @@ fn render_instrument(
             hex_engine::SamplerParameter::SustainPercent,
             hex_engine::SamplerParameter::ReleaseMs,
         ] {
-            fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+            fields.push(view.sampler_parameter_control(
+                hex_session::service::SamplerParameterOwner::Track(track),
+                device,
+                parameter,
+                cx,
+            ));
         }
         let controls = div()
             .grid()

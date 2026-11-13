@@ -613,3 +613,14 @@ fn scalar_sampler_preview_survives_repaints_until_matching_terminal(cx: &mut Tes
         );
     });
 }
+
+pub(in crate::editor) fn control_editing(
+    view: &EditorView,
+    parameter: SamplerParameter,
+    cx: &gpui::App,
+) -> bool {
+    view.sampler_parameter
+        .controls
+        .get(&parameter)
+        .is_some_and(|control| control.entity.read(cx).is_editing())
+}

@@ -107,7 +107,7 @@ pub(in crate::editor) fn selected_owner(
             .is_some_and(|definition| {
                 matches!(
                     definition.instrument().state().type_id().as_str(),
-                    Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                    Ok("hex.instrument.fm4" | "hex.instrument.operator" | "hex.instrument.sampler")
                 )
             })
         && !state

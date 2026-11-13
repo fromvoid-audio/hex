@@ -237,16 +237,17 @@ impl EditorView {
         }
     }
 
-    /// Keep the active boundary draft and admitted numeric value visible until
-    /// its exact terminal installs canonical state.
+    /// A source boundary draft and its accepted keyed request share one display
+    /// value with numeric controls. Only the exact terminal retires the latter.
     pub(super) fn sampler_display_value(
         &self,
-        track: TrackId,
+        owner: hex_session::service::SamplerParameterOwner,
         device: &hex_project::Device,
         parameter: SamplerParameter,
         cx: &gpui::App,
     ) -> Result<f64, hex_engine::Invalid> {
         if parameter.is_source_frame()
+            && let hex_session::service::SamplerParameterOwner::Track(track) = owner
             && let Some(value) =
                 super::device_panel::sampler_boundary_preview(self, track, device.id(), parameter)
         {
@@ -254,7 +255,7 @@ impl EditorView {
         }
         if let Some(pending) = self.sampler_parameter.pending.as_ref()
             && let PendingTarget::Parameter(target) = pending.target
-            && target.owner == hex_session::service::SamplerParameterOwner::Track(track)
+            && target.owner == owner
             && target.device == device.id()
             && target.parameter == parameter
             && target.current(self)
@@ -262,9 +263,8 @@ impl EditorView {
         {
             return Ok(value);
         }
-        if parameter.is_source_frame()
-            && let Some(control) = self.sampler_parameter.controls.get(&parameter)
-            && control.target.owner == hex_session::service::SamplerParameterOwner::Track(track)
+        if let Some(control) = self.sampler_parameter.controls.get(&parameter)
+            && control.target.owner == owner
             && control.target.device == device.id()
             && control.target.current(self)
             && control.entity.read(cx).is_interacting()
@@ -482,12 +482,12 @@ impl EditorView {
     }
     pub(super) fn sampler_parameter_control(
         &mut self,
-        track: TrackId,
+        owner: hex_session::service::SamplerParameterOwner,
         device: &hex_project::Device,
         parameter: SamplerParameter,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let value = match self.sampler_display_value(track, device, parameter, cx) {
+        let value = match self.sampler_display_value(owner, device, parameter, cx) {
             Ok(value) => value,
             Err(error) => {
                 return div()
@@ -544,7 +544,7 @@ impl EditorView {
         let target = Target::new(
             self.project_generation,
             state.revision,
-            hex_session::service::SamplerParameterOwner::Track(track),
+            owner,
             device.id(),
             parameter,
         );
