@@ -444,9 +444,50 @@ fn timed_transport_with_borrowed_pages_matches_prepared_session_spans() {
     ];
     let mut actual = [[0.0; 2]; 40];
     let mut expected = [[0.0; 2]; 40];
-    timed
-        .render_with_timed_transport_and_pages(&mut actual, &commands, &mut pages())
-        .unwrap();
+    let mut master = [[0.0; 2]; 40];
+    let mut track = [[0.0; 2]; 40];
+    let mut clock = [None; 40];
+    let mut nodes = Vec::new();
+    {
+        let mut observe = |signal, offset, frames: &[Frame]| {
+            let target = match signal {
+                crate::ProjectSignal::Master => &mut master,
+                crate::ProjectSignal::Track(1) => &mut track,
+                other => panic!("unexpected signal {other:?}"),
+            };
+            target[offset..offset + frames.len()].copy_from_slice(frames);
+        };
+        let mut timing = |offset, frame, len, _: &crate::PreparedTempoMap| {
+            for i in 0..len {
+                clock[offset + i] = Some(frame + i as u64);
+            }
+        };
+        let mut tap = crate::ProjectOutputTap::new(&[1], &mut observe)
+            .unwrap()
+            .with_timing(&mut timing);
+        timed
+            .render_with_timed_transport_pages_and_signal_observers(
+                &mut actual,
+                &commands,
+                &mut pages(),
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    nodes.push((identity, phase, offset, frames.len()))
+                }),
+                Some(&mut tap),
+            )
+            .unwrap();
+    }
+    assert_eq!(master, actual);
+    assert_eq!(track, actual);
+    assert!(!nodes.is_empty());
+    assert!(nodes.iter().all(|(_, _, offset, len)| offset + len <= 40));
+    for offset in [0, 7, 23] {
+        assert!(nodes.iter().any(|(_, _, at, _)| *at == offset));
+    }
+    assert_eq!(clock[0], Some(4090));
+    assert_eq!(clock[7], Some(2));
+    assert_eq!(clock[19], None);
+    assert_eq!(clock[23], Some(4094));
     let mut provider = pages();
     for (index, command) in commands.iter().enumerate() {
         oracle

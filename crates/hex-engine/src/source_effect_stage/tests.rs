@@ -906,10 +906,29 @@ fn moving_a_loop_behind_the_cursor_keeps_source_effect_history() {
         assert_eq!(runtime.arrangement_frame(), 96);
     }
     let mut edited = make(64);
+    let (_, preview) = edited
+        .preview_stream_handoff_with_policy_and_report(
+            &mut playing,
+            32,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+        )
+        .unwrap();
+    assert!(!preview.running_audio_restart());
+    let mut donor_after_preview = [[0.0; 2]; 32];
+    let mut oracle_after_preview = donor_after_preview;
+    playing.render(&mut donor_after_preview).unwrap();
+    oracle.render(&mut oracle_after_preview).unwrap();
+    assert_eq!(
+        donor_after_preview, oracle_after_preview,
+        "preview must not transfer source-effect history"
+    );
     edited.try_inherit_state_live_from(&mut playing).unwrap();
     assert_eq!(
         (edited.arrangement_frame(), edited.performance_frame()),
-        (96, 1120)
+        (128, 1152)
     );
     // Neither runtime reaches a wrap during this block. Matching PCM proves
     // the retained effect (with a one-sample memory) did not restart at the edit.
@@ -920,7 +939,7 @@ fn moving_a_loop_behind_the_cursor_keeps_source_effect_history() {
     assert_eq!(actual, expected);
     assert_eq!(
         (edited.arrangement_frame(), edited.performance_frame()),
-        (128, 1152)
+        (160, 1184)
     );
 }
 
@@ -2241,6 +2260,195 @@ fn live_source_utility_filter_gain_preserves_filter_history_and_local_audio() {
                     assert!(
                         (actual[channel] - expected).abs() < 1e-4,
                         "dc={dc} bass={bass} partition={partition} frame={i} actual={} expected={expected}",
+                        actual[channel]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_preview_preserves_owned_source_delay_history() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let (mut editor, asset) = authored_fixture(0, false);
+    let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+    let definition = &hex_devices::delay::DEFINITION;
+    let mut state = definition.default_state().unwrap();
+    for id in [hex_devices::delay::LEFT_SYNC, hex_devices::delay::FILTER] {
+        state = definition
+            .patch_parameter(&state, id, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    state = definition
+        .patch_parameter(
+            &state,
+            hex_devices::delay::TIME,
+            ParameterValue::Float(10.0),
+        )
+        .unwrap();
+    state = definition
+        .patch_parameter(
+            &state,
+            hex_devices::delay::DRY_WET,
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 700]).unwrap();
+    }
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    candidate
+        .preview_stream_handoff_with_policy_and_report(
+            &mut previous,
+            64,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+        )
+        .unwrap();
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-5));
+    assert_eq!(
+        actual, expected,
+        "preview must preserve the donor's owned delay history"
+    );
+    candidate
+        .try_inherit_state_live_from(&mut previous)
+        .unwrap();
+    candidate.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(
+        actual, expected,
+        "commit must transfer the live donor history"
+    );
+}
+
+#[test]
+fn live_source_utility_balance_preserves_stereo_filter_history_and_local_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_devices::utility_filters::{PreparedUtilityFilters, UtilityFilterProcessor};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    const PREFIX: usize = 64;
+    const SEGMENT: usize = 128;
+    const TOTAL: usize = PREFIX + 2 * SEGMENT;
+    const RAMP: f32 = 240.0;
+    for (dc, bass) in [(false, false), (true, false), (false, true)] {
+        for partition in [1, 7, 64, 128, 257] {
+            let (mut editor, asset) = authored_fixture(0, false);
+            let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+            let mut state = UTILITY_DEFINITION.default_state().unwrap();
+            for (id, enabled) in [(parameter::DC_REMOVE, dc), (parameter::BASS_MONO, bass)] {
+                state = UTILITY_DEFINITION
+                    .patch_parameter(&state, id, ParameterValue::Bool(enabled))
+                    .unwrap();
+            }
+            let Created::Device(effect) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("source effect")
+            };
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+            let table = Arc::new(crate::SineTable::new());
+            let prepare = |editor: &Editor| {
+                Arc::new(
+                    PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                        .unwrap(),
+                )
+            };
+            let original = prepare(&editor);
+            let mut dry = [[0.0; 2]; TOTAL];
+            crate::render_source_generators(
+                original.arrangement(),
+                0,
+                0,
+                TOTAL as u64,
+                &mut dry,
+                None,
+            )
+            .unwrap();
+            assert!(dry.iter().flatten().any(|sample| sample.abs() > 1e-5));
+            let mut oracle = UtilityFilterProcessor::new(
+                PreparedUtilityFilters::new(48_000, dc, bass, 200.0, false).unwrap(),
+            );
+            let mut previous = SessionPlayback::new(original).unwrap();
+            previous.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut actual = [[0.0; 2]; TOTAL];
+            previous.render(&mut actual[..PREFIX]).unwrap();
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    editor.project().device(effect).unwrap().state(),
+                    parameter::BALANCE,
+                    ParameterValue::Float(1.0),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device: effect,
+                    state,
+                })
+                .unwrap();
+            let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+            candidate
+                .try_inherit_state_live_from(&mut previous)
+                .unwrap();
+            for chunk in actual[PREFIX..PREFIX + SEGMENT].chunks_mut(partition) {
+                candidate.render(chunk).unwrap();
+            }
+            assert!(editor.undo());
+            let mut restored = SessionPlayback::new(prepare(&editor)).unwrap();
+            restored
+                .try_inherit_state_live_from(&mut candidate)
+                .unwrap();
+            for chunk in actual[PREFIX + SEGMENT..].chunks_mut(partition) {
+                restored.render(chunk).unwrap();
+            }
+            for (i, (actual, input)) in actual.iter().zip(dry).enumerate() {
+                let left = if i < PREFIX {
+                    1.0
+                } else if i < PREFIX + SEGMENT {
+                    1.0 - (i - PREFIX + 1) as f32 / RAMP
+                } else {
+                    let from = 1.0 - SEGMENT as f32 / RAMP;
+                    from + (1.0 - from) * (i - PREFIX - SEGMENT + 1) as f32 / RAMP
+                };
+                let filtered = oracle.process_frame([input[0] * left, input[1]]);
+                let local = if i < WIDTH { CLIP } else { [0.0; 2] };
+                for channel in 0..2 {
+                    let expected = filtered[channel] + local[channel];
+                    assert!(
+                        (actual[channel] - expected).abs() < 1e-4,
+                        "dc={dc} bass={bass} partition={partition} frame={i} channel={channel} actual={} expected={expected}",
                         actual[channel]
                     );
                 }
