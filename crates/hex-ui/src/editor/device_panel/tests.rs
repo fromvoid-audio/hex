@@ -9284,6 +9284,17 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     pump_until(&editor, cx, |view| source_slot(view).is_some());
     let slot = editor.read_with(cx, |view, _| source_slot(view).unwrap());
     visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let device = project.device(device).unwrap();
+        assert!(!super::modulators::source_utility_gain_available(
+            project, device
+        ));
+    });
+    let gain_control = Box::leak(
+        format!("device-{}-parameter-{}-value", device.value(), gain.value()).into_boxed_str(),
+    );
+    assert!(visual.debug_bounds(gain_control).is_none());
     click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
     click_modulator_control(
         &mut visual,
