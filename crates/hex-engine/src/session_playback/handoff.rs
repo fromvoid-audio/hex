@@ -4280,9 +4280,8 @@ impl SessionPlayback {
         // Flat tails enter Main directly, so their old suffix must already be
         // aligned there. Grouped tails enter the old track's fader output and
         // traverse its group path. They can use that path only when its whole
-        // signal graph and the copied compensation history are unchanged and
-        // the detached track has no sends or feeds, which are upstream of the
-        // tail injection. Group-path and ancestor custody were checked above.
+        // signal graph and the copied compensation history are unchanged.
+        // Group-path and ancestor custody were checked above.
         let has_new_track_tail = old_track_tail_slots.iter().any(Option::is_some);
         let detached_tails_aligned = !has_new_track_tail
             || match (
@@ -4298,16 +4297,6 @@ impl SessionPlayback {
                                 && clock_transfer == 1
                                 && self.compensation.is_some()
                                 && previous.compensation.is_some()
-                                && old_track_tail_slots
-                                    .iter()
-                                    .enumerate()
-                                    .all(|(index, slot)| {
-                                        slot.is_none()
-                                            || old.tracks.get(index).is_some_and(|track| {
-                                                track.sends.is_empty()
-                                                    && track.audio_feeds.is_empty()
-                                            })
-                                    })
                         } else {
                             old_track_tail_slots
                                 .iter()
@@ -4326,6 +4315,14 @@ impl SessionPlayback {
                 || old_track_mutable_tail_slots.iter().any(Option::is_some)
                 || !detached_tails_aligned
                 || previous.tail_output_active.iter().any(|&active| active)
+                || active_tail_groups.iter().enumerate().any(|(slot, active)| {
+                    *active
+                        && previous
+                            .tail_route_sends
+                            .get(slot)
+                            .copied()
+                            .unwrap_or(false)
+                })
                 || previous
                     .return_effect_tails
                     .slots()
@@ -4335,6 +4332,11 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
         }
+        let route_new_tail_sends = has_new_track_tail
+            && detached_tails_aligned
+            && new_graph.is_some_and(|graph| graph.has_group_outputs())
+            && (self.revision.arrangement().main_latency_frames() > 0
+                || previous.revision.arrangement().main_latency_frames() > 0);
         if let Some(demand) = demand {
             let generation = if visible_state_changed {
                 previous.route_state_generation.wrapping_add(1)
@@ -4685,6 +4687,8 @@ impl SessionPlayback {
             {
                 std::mem::swap(candidate, previous_group);
                 self.tail_track_ids[slot] = previous.tail_track_ids[slot];
+                self.tail_route_sends[slot] = previous.tail_route_sends[slot];
+                self.has_tail_route_sends |= self.tail_route_sends[slot];
                 if let (Some(candidate_active), Some(previous_active)) = (
                     self.tail_output_active.get_mut(slot),
                     previous.tail_output_active.get(slot).copied(),
@@ -4743,6 +4747,13 @@ impl SessionPlayback {
                     hex_lattice::NativeRuntimeChain::empty(),
                 ));
                 self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
+                self.tail_route_sends[slot] = route_new_tail_sends
+                    && old_graph
+                        .and_then(|graph| graph.tracks.get(old_index))
+                        .is_some_and(|track| {
+                            !track.sends.is_empty() || !track.audio_feeds.is_empty()
+                        });
+                self.has_tail_route_sends |= self.tail_route_sends[slot];
                 if let (Some(active), Some(prepared_active)) = (
                     self.tail_output_active.get_mut(slot),
                     old_track_tail_output_active.get(old_index).copied(),

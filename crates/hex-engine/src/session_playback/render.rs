@@ -1980,6 +1980,7 @@ impl SessionPlayback {
             frame_offset,
             capture,
             None,
+            None,
             foreign,
         )?;
         self.render_return_buses(
@@ -2135,6 +2136,7 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)] // Both bounded routing buffers share the render context.
     fn render_detached_tails(
         &mut self,
         performance_frame: u64,
@@ -2142,6 +2144,7 @@ impl SessionPlayback {
         frame_offset: usize,
         capture: &mut Option<&mut dyn CaptureSink>,
         mut routed: Option<&mut [Frame]>,
+        mut routed_sends: Option<&mut [Frame]>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
@@ -2320,6 +2323,8 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 &mut routed,
+                &mut routed_sends,
+                self.tail_route_sends[group_index],
             )?;
         }
         for group_index in 0..self.tail_mutable_instruments.len() {
@@ -2411,6 +2416,8 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 &mut routed,
+                &mut routed_sends,
+                self.tail_route_sends[group_index],
             )?;
         }
         // Once an old source has stopped, its committed effect history still
@@ -2482,6 +2489,8 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 &mut routed,
+                &mut routed_sends,
+                self.tail_route_sends[group_index],
             )?;
         }
         Ok(())
@@ -2514,8 +2523,8 @@ fn add_detached_source_sends(
     Ok(())
 }
 
-/// A retained suffix is already post-fader. Grouped rendering adds it to its
-/// original track's default route once, without refeeding current sends.
+/// A retained suffix is post-fader. Grouped rendering adds it to its original
+/// default route and, only with a retained graph proof, its sends and feeds.
 #[allow(clippy::too_many_arguments)]
 fn emit_detached_tail(
     graph: Option<&crate::signal_graph::SignalGraph>,
@@ -2526,6 +2535,8 @@ fn emit_detached_tail(
     offset: usize,
     capture: &mut Option<&mut dyn CaptureSink>,
     routed: &mut Option<&mut [Frame]>,
+    routed_sends: &mut Option<&mut [Frame]>,
+    allow_sends: bool,
 ) -> Result<(), SessionPlaybackError> {
     if let Some(destinations) = routed.as_deref_mut() {
         if tail.len() != 1 {
@@ -2539,6 +2550,13 @@ fn emit_detached_tail(
             .get_mut(index)
             .ok_or(SessionPlaybackError::UnknownTrack)?;
         mix.add_frame(destination, tail[0]);
+        if allow_sends {
+            let send_destination = routed_sends
+                .as_deref_mut()
+                .and_then(|destinations| destinations.get_mut(index))
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            mix.add_frame(send_destination, tail[0]);
+        }
     } else {
         for (destination, source) in output.iter_mut().zip(tail.iter().copied()) {
             mix.add_frame(destination, source);
