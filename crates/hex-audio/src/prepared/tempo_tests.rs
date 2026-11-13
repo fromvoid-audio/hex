@@ -51,6 +51,7 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
             Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
         };
         let old = prepare(editor.project());
+        let old_for_anchor = Arc::clone(&old);
         assert_eq!(old.arrangement().main_latency_frames() > 0, compensated);
         let (mut control, mut callback) = channel(48_000).unwrap();
         control
@@ -73,6 +74,35 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
             candidate.arrangement().main_latency_frames() > 0,
             compensated
         );
+        if compensated {
+            let anchor = hex_engine::session_playback::PreparedTempoAnchor::prepare(
+                Arc::clone(&old_for_anchor),
+                Arc::clone(&candidate),
+                600,
+                600,
+            )
+            .unwrap();
+            let mut donor = Playback::try_from_prepared_with_session(old_for_anchor).unwrap();
+            donor.apply(PlaybackCommand::Play);
+            donor.render(&mut [[0.0; 2]; 600]).unwrap();
+            let mut planned =
+                Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
+            let measured = allocation_counter::measure(|| {
+                planned
+                    .try_inherit_runtime_with_tempo_anchor(&mut donor, Some(1), Some(1), &anchor)
+                    .unwrap();
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(planned.position(), 800);
+        }
         let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
         oracle.apply(PlaybackCommand::PlayFrom(800));
         let mut expected = [[0.0; 2]; 1024];

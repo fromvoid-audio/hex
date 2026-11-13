@@ -2045,7 +2045,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false)
+        self.try_inherit_runtime_impl(previous, false, false, None)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -2062,7 +2062,29 @@ impl Playback {
             previous,
             generation.is_some() && generation == previous_generation,
             false,
+            None,
         )
+    }
+
+    /// Borrow a control-prepared tempo anchor through the ordinary Playback
+    /// lifecycle. Both graphs must have the same known control generation.
+    /// The publication owner must validate the output, command,
+    /// route, fault and cancellation fence and reclaim the plan on control.
+    pub fn try_inherit_runtime_with_tempo_anchor(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none()
+            || generation != previous_generation
+            || self.session_runtime.is_none()
+            || previous.session_runtime.is_none()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, false, Some(anchor))
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -2081,7 +2103,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true)
+        self.try_inherit_runtime_impl(previous, true, true, None)
     }
 
     fn try_inherit_runtime_impl(
@@ -2089,6 +2111,7 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
         fenced_restart: bool,
+        tempo_anchor: Option<&crate::session_playback::PreparedTempoAnchor>,
     ) -> Result<(), PlaybackHandoffError> {
         if previous
             .session_runtime
@@ -2167,6 +2190,8 @@ impl Playback {
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
+            } else if let Some(anchor) = tempo_anchor {
+                next.try_inherit_state_with_tempo_anchor(old, anchor)
             } else {
                 next.try_inherit_state_live_from(old)
             })
