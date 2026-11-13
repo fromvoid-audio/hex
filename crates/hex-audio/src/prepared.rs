@@ -1726,7 +1726,8 @@ impl PublicationControl {
     /// fence for conditional control-side preparation. A command batch can
     /// make the observation lag until a later callback publication. The pair
     /// can become stale immediately and does not authorize installation; the
-    /// callback must recheck the fence, exact graph and predicted clock.
+    /// callback must recheck the fence, exact graph and predicted clock. A
+    /// zero control generation is conservatively refused, even if explicit.
     pub fn capture_running_transport_fence(
         &self,
     ) -> Option<(TransportObservation, FreshRuntimeFence)> {
