@@ -763,6 +763,12 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     instrument_entrypoint(InstrumentWorkflow::Playback);
 }
 
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_play_from_releases_old_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::SessionRestart);
+}
+
 /// An opt-in wall-clock driver for the actual native worker, not a physical
 /// audio deadline or a reproduction of any particular user project.
 #[test]
@@ -997,6 +1003,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
+    SessionRestart,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
@@ -1006,7 +1013,10 @@ enum InstrumentWorkflow {
 }
 
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
-    let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
+    let shared_authoring = !matches!(
+        workflow,
+        InstrumentWorkflow::Playback | InstrumentWorkflow::SessionRestart
+    );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
         workflow,
@@ -1336,6 +1346,78 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     let console = console.unwrap();
+    if matches!(workflow, InstrumentWorkflow::SessionRestart) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        let peak = |frames: [hex_engine::Frame; 256]| {
+            frames
+                .into_iter()
+                .flatten()
+                .map(f32::abs)
+                .fold(0.0, f32::max)
+        };
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let before = peak(render_completed_block(&harness));
+        assert!(
+            (before - 88.0 / 127.0).abs() < 0.0001,
+            "Session note must sound before restart, got {before}"
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(12_000))
+            .unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let after = peak(render_completed_block(&harness));
+        assert!(
+            (before - after).abs() < 0.0001,
+            "Session restart must leave exactly one SDK gate: before={before}, after={after}"
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.position.load(Acquire) >= 12_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        return;
+    }
     // Exercise the resident keyboard request on a newly inserted worker
     // before the authored transport has ever started.
     let keys = Arc::new(
