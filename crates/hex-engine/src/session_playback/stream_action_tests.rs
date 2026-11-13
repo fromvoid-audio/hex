@@ -378,7 +378,60 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
         .unwrap();
     assert_eq!(early, projected);
     actual
-        .render_with_pages(&mut vec![[0.0; 2]; (due - 8) as usize], &mut pages())
+        .render_with_pages(&mut vec![[0.0; 2]; (due - 16) as usize], &mut pages())
+        .unwrap();
+    assert_eq!(actual.performance_frame(), due - 8);
+    let before_callback = (
+        actual.position(),
+        actual.performance_frame(),
+        actual.session_route_status(0),
+    );
+    assert_eq!(
+        actual.visit_current_stream_quantum(16, Some(false), false, &mut |_| {
+            panic!("paused callback must not visit pages")
+        }),
+        Ok(0)
+    );
+    assert!(
+        actual
+            .visit_current_stream_quantum(16, None, false, &mut |_| {
+                Err(crate::Invalid("visitor refused"))
+            })
+            .is_err()
+    );
+    assert_eq!(
+        (
+            actual.position(),
+            actual.performance_frame(),
+            actual.session_route_status(0)
+        ),
+        before_callback
+    );
+    let mut callback_demand = Vec::new();
+    assert_eq!(
+        actual.visit_current_stream_quantum(16, None, false, &mut |row| {
+            callback_demand.push(row);
+            Ok(())
+        }),
+        Ok(16)
+    );
+    assert_eq!(
+        (
+            actual.position(),
+            actual.performance_frame(),
+            actual.session_route_status(0)
+        ),
+        before_callback
+    );
+    let mut committed_callback = Vec::new();
+    actual
+        .visit_next_stream_chunk(16, None, &mut |row| {
+            committed_callback.push(row);
+            Ok(())
+        })
+        .unwrap();
+    actual
+        .render_with_pages(&mut [[0.0; 2]; 8], &mut pages())
         .unwrap();
     assert_eq!(actual.performance_frame(), due);
     assert!(actual.session_route_status(0).unwrap().pending.is_some());
@@ -390,6 +443,8 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
         })
         .unwrap();
     assert_eq!(exact, projected);
+    committed_callback.extend_from_slice(&exact);
+    assert_eq!(callback_demand, committed_callback);
     actual
         .render_with_pages(&mut [[0.0; 2]; 8], &mut pages())
         .unwrap();
@@ -676,4 +731,34 @@ fn timed_transport_with_borrowed_pages_matches_prepared_session_spans() {
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
     assert_eq!(timed.position(), oracle.position());
+}
+
+#[test]
+fn callback_stream_projection_refuses_clock_overflow_without_changing_runtime() {
+    let mut actual = Playback::from_prepared(action_revision(false));
+    actual
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    actual
+        .session_runtime_mut_for_stream_action()
+        .unwrap()
+        .performance_frame = u64::MAX;
+    let before = (
+        actual.position(),
+        actual.performance_frame(),
+        actual.session_route_status(0),
+    );
+    assert!(
+        actual
+            .visit_current_stream_quantum(2, None, false, &mut |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(
+        (
+            actual.position(),
+            actual.performance_frame(),
+            actual.session_route_status(0)
+        ),
+        before
+    );
 }

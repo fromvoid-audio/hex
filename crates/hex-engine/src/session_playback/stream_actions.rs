@@ -332,6 +332,54 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    /// Visit every stream chunk in the next quantum of at most 256 frames.
+    /// The returned width is capped even when the caller asks for more; callers
+    /// must not treat it as coverage of a longer callback. Route planning uses
+    /// preallocated scratch and does not change committed clocks, routes or
+    /// owners. A failed visit leaves partial caller storage speculative.
+    pub(crate) fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        let ordinary = ordinary || self.linear_arrangement_export;
+        if !ordinary && !self.supports_closed_stream_demand() {
+            return Err(Invalid("stream demand requires a closed audio runtime"));
+        }
+        let frames = maximum_frames.min(256);
+        if frames == 0 || !playing.unwrap_or(self.playing) {
+            return Ok(0);
+        }
+        let mut offset = 0usize;
+        while offset < frames {
+            let performance = self
+                .performance_frame
+                .checked_add(offset as u64)
+                .ok_or(Invalid("stream callback projection overflow"))?;
+            let (arrangement, pass) = self.project_stream_arrangement(performance)?;
+            self.route_scratch.copy_from_slice(&self.routes);
+            self.project_due_stream_routes(performance, self.anchor)?;
+            let window = self.visit_stream_chunk_in_scope(
+                ordinary,
+                &self.route_scratch,
+                performance,
+                arrangement,
+                self.route_state_generation,
+                pass,
+                true,
+                frames - offset,
+                visit,
+            )?;
+            if window.frames == 0 || window.frames > frames - offset {
+                return Err(Invalid("stream callback projection made no progress"));
+            }
+            offset += window.frames;
+        }
+        Ok(offset)
+    }
+
     /// Observe an already scheduled original due boundary, including loop wrap.
     /// Native prewarm is revocable; current due demand must still be validated.
     pub(crate) fn visit_pending_stream_chunk(
