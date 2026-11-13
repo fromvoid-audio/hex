@@ -855,10 +855,26 @@ impl Gesture {
                         self.sequenced_capture = None;
                         return Err(refused("vst3 input changed during capture"));
                     }
+                    let state = if let Some(fact) = self.sequenced_capture.as_ref() {
+                        admit(control, |control| {
+                            control.approve_native_sequenced_capture_on_control(self.binding, fact)
+                        })?
+                    } else {
+                        state
+                    };
                     #[cfg(all(test, feature = "allocation-probe"))]
                     if self.before.is_some()
                         && let Some(path) = std::env::var_os("HEX_TEST_LATE_EDITOR_INTERCEPT")
                     {
+                        assert!(
+                            admit(control, |control| {
+                                control.try_native_source_approves_captured_state_on_control(
+                                    self.binding,
+                                    &state,
+                                )
+                            })
+                            .unwrap()
+                        );
                         late_editor_test_intercept(control, self, &path);
                     }
                     return Ok(state);

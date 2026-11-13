@@ -84,6 +84,25 @@ impl PublicationControl {
         self.candidate_root
             .try_native_source_approves_captured_state(binding, state)
     }
+    /// Mark the exact original worker's completed capture as source-corresponding.
+    /// This is not a processing-profile approval or graph publication permit.
+    pub fn approve_native_sequenced_capture_on_control(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_sequenced_capture(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        Ok(state)
+    }
+
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,

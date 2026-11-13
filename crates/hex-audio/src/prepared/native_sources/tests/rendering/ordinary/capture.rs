@@ -377,6 +377,110 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
                 )
                 .is_err()
         );
+        assert_eq!(
+            f.control
+                .native_source_approves_captured_state_on_control(f.binding, fact.state()),
+            Some(false)
+        );
+        let approved = loop {
+            match f
+                .control
+                .approve_native_sequenced_capture_on_control(f.binding, &fact)
+            {
+                Ok(state) => break state,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native capture mailbox is busy",
+                ) => {}
+                Err(error) => panic!("sequenced capture provenance: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert!(approved.processing_eq(fact.state()));
+        assert_eq!(
+            f.control
+                .native_source_approves_captured_state_on_control(f.binding, &approved),
+            Some(true)
+        );
+        assert_eq!(
+            f.control
+                .native_source_approves_processing_state_on_control(f.binding, &approved),
+            Some(false)
+        );
+        assert!(
+            f.control
+                .approve_native_sequenced_capture_on_control(
+                    Binding {
+                        epoch: f.binding.epoch + 1,
+                        ..f.binding
+                    },
+                    &fact
+                )
+                .is_err()
+        );
+        let next = loop {
+            match f
+                .control
+                .begin_native_source_parameter_change_on_control(f.binding, 7, 0.5)
+            {
+                Ok(next) => break next,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native parameter mailbox is busy",
+                ) => {}
+                Err(error) => panic!("next input admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        loop {
+            match f
+                .control
+                .approve_native_sequenced_capture_on_control(f.binding, &fact)
+            {
+                Err("native sequenced capture is not current") => break,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native capture mailbox is busy",
+                ) => {}
+                _ => panic!("new input must invalidate capture provenance admission"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        loop {
+            match f
+                .control
+                .withdraw_native_source_parameter_change_on_control(f.binding, &next)
+            {
+                Ok(true) => break,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native parameter mailbox is busy",
+                ) => {}
+                other => panic!("withdraw queued input: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        loop {
+            match f
+                .control
+                .poll_native_source_parameter_change_on_control(f.binding, &next)
+            {
+                Ok(crate::plugin_worker::NativeWorkerParameterProgress::Withdrawn) => break,
+                Ok(crate::plugin_worker::NativeWorkerParameterProgress::Pending)
+                | Err("native preparation is busy" | "native source is busy") => {}
+                other => panic!("withdrawn input terminal: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
         let capture = begin(&mut f);
         let actual = captured(&mut f, &capture);
         assert_eq!(

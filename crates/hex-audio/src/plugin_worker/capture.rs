@@ -154,6 +154,7 @@ impl NativeWorkerStateAfterParameter {
     }
 }
 
+#[allow(clippy::large_enum_variant)] // One bounded control-side result; keep capture transfer allocation-free.
 pub enum NativeWorkerSequencedCaptureProgress {
     Pending,
     Captured(NativeWorkerStateAfterParameter),
