@@ -193,7 +193,7 @@ impl ConstructorStreamDomain {
             {
                 reservation
                     .extents_per_role
-                    .checked_mul(6)
+                    .checked_mul(7)
                     .and_then(|count| {
                         count.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>())
                     })
@@ -348,6 +348,12 @@ impl ConstructorStreamDomain {
                 .is_some_and(|(loan, lease)| loan.pages.matches_catalog(lease))
         {
             return Err(AudioStreamStorageError::PairMismatch);
+        }
+        if loan
+            .as_ref()
+            .is_some_and(|loan| loan.readiness.has_current_quantum())
+        {
+            return Err(AudioStreamStorageError::UnresolvedObligations);
         }
         // Every destination/association is validated before either owner moves.
         match (loan.take(), self.loaned_control.take()) {
