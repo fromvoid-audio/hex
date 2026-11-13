@@ -81,7 +81,15 @@ fn cold_track_add_and_remove_preserve_pcm_without_callback_allocations()
 }
 
 #[test]
-fn unused_return_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>> {
+fn unused_return_add_and_remove_preserve_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    for remove in [false, true] {
+        unused_return_case(remove)?;
+    }
+    Ok(())
+}
+
+fn unused_return_case(remove: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
@@ -97,6 +105,17 @@ fn unused_return_add_preserves_pcm_without_callback_allocations() -> Result<(), 
         before: None,
         state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
     })?;
+    let empty = if remove {
+        let Created::ReturnTrack(id) = editor.execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })?
+        else {
+            return Err("expected empty return".into());
+        };
+        Some(id)
+    } else {
+        None
+    };
     let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.25, -0.125]; 4096])?)]);
     let table = Arc::new(SineTable::new());
     let first = Arc::new(PreparedRevision::prepare(
@@ -117,9 +136,13 @@ fn unused_return_add_preserves_pcm_without_callback_allocations() -> Result<(), 
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
     assert_eq!(actual, expected);
-    editor.execute(Command::AddReturnTrack {
-        name: "unused".into(),
-    })?;
+    if let Some(id) = empty {
+        editor.execute(Command::RemoveReturnTrack(id))?;
+    } else {
+        editor.execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })?;
+    }
     let next = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
