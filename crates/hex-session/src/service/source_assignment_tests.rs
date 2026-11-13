@@ -2129,3 +2129,211 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
     assert_eq!(cancelled.state.revision, redone.state.revision);
     assert_eq!(initial.state.project.native_sources().len(), 0);
 }
+
+#[test]
+fn unassigned_source_gesture_retires_with_replaced_instrument_state() {
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let track_event = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "track".into(),
+        }),
+    );
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("track")
+    };
+    let kind = DeviceTypeId::from_static("hex.instrument.fm4");
+    let created = run(
+        &service,
+        create_source(track_event.state.revision, 0, kind, "source"),
+    );
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let old = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let key = GestureKey {
+        generation: 0,
+        token: 7866,
+    };
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter {
+                device: old,
+                parameter: ParameterId::from_static(1),
+            },
+        }),
+    );
+    let preview = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(2.0),
+        }),
+    );
+    assert!(preview.active_device_gesture.is_some());
+    let bound = run(
+        &service,
+        Request::Edit(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        }),
+    );
+    assert_eq!(
+        bound.state.project.track(track).unwrap().source_id(),
+        Some(source)
+    );
+    assert!(bound.active_device_gesture.is_some());
+    let replacement = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        kind,
+    )
+    .unwrap();
+    let replaced = run(
+        &service,
+        Request::Edit(Command::ReplaceTrackInstrument {
+            track,
+            replacing: old,
+            state: replacement,
+        }),
+    );
+    let new = replaced
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    assert_ne!(new, old);
+    assert!(replaced.state.project.device(old).is_none());
+    assert!(replaced.active_device_gesture.is_none());
+    assert!(replaced.device_preview.is_none());
+    let ack = replaced
+        .gesture_ack
+        .as_ref()
+        .expect("source-loss acknowledgement accompanies replacement");
+    assert_eq!(ack.key, key);
+    assert!(
+        ack.reason
+            .as_ref()
+            .is_some_and(|reason| reason.contains("removed or replaced"))
+    );
+    let original = hex_engine::native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        replaced.state.project.device(new).unwrap().state(),
+        ParameterId::from_static(1),
+    )
+    .unwrap();
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 2,
+            manual_edit: false,
+            value: ParameterValue::Float(3.0),
+        }))
+        .unwrap();
+    let stale = next_event(&service);
+    assert!(
+        stale
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| !ack.accepted && ack.key == key)
+    );
+    assert_eq!(stale.state.project, replaced.state.project);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            stale.state.project.device(new).unwrap().state(),
+            ParameterId::from_static(1)
+        )
+        .unwrap(),
+        original
+    );
+}
+
+#[test]
+fn unassigned_source_gesture_retires_with_source_deletion() {
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let service = Service::new(48_000, 32, 0).unwrap();
+    let initial = next_event(&service);
+    let kind = DeviceTypeId::from_static("hex.instrument.fm4");
+    let created = run(
+        &service,
+        create_source(initial.state.revision, 0, kind, "source"),
+    );
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let key = GestureKey {
+        generation: 0,
+        token: 7867,
+    };
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter {
+                device,
+                parameter: ParameterId::from_static(1),
+            },
+        }),
+    );
+    let preview = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(2.0),
+        }),
+    );
+    assert!(preview.active_device_gesture.is_some());
+    let deleted = run(&service, Request::Edit(Command::RemoveNativeSource(source)));
+    assert!(deleted.state.project.native_source(source).is_none());
+    assert!(deleted.active_device_gesture.is_none());
+    assert!(deleted.device_preview.is_none());
+    let ack = deleted
+        .gesture_ack
+        .as_ref()
+        .expect("source-loss acknowledgement accompanies deletion");
+    assert_eq!(ack.key, key);
+    assert!(
+        ack.reason
+            .as_ref()
+            .is_some_and(|reason| reason.contains("removed or replaced"))
+    );
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 2,
+            manual_edit: false,
+            value: ParameterValue::Float(3.0),
+        }))
+        .unwrap();
+    let stale = next_event(&service);
+    assert!(
+        stale
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| !ack.accepted && ack.key == key)
+    );
+    assert_eq!(stale.state.project, deleted.state.project);
+}
