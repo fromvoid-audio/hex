@@ -39,7 +39,7 @@ pub use eligible::{
     AudioCandidatePublicationReservation,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use eligible::{NativeEndpointBank, NativeEndpointEnvelope};
+pub(crate) use eligible::{EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use eligible::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,

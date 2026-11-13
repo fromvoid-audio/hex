@@ -429,9 +429,15 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
                 );
             });
         });
-        f.control.status.closing.store(true, Release);
+        let status = &f.control.status;
         allocation_free(|| {
             f.data.owner_mut().unwrap().run(|callback, _| {
+                let mut reservation = callback
+                    .reserve_native_parameter_input_observation(f.binding, &observed)
+                    .unwrap();
+                status.closing.store(true, Release);
+                assert!(!reservation.is_live());
+                assert!(!reservation.try_order_before_revocation());
                 assert!(
                     callback
                         .reserve_native_parameter_input_observation(f.binding, &observed)

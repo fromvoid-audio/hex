@@ -83,6 +83,8 @@ pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native_sources;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use native_sources::NativeParameterInputFence;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};

@@ -45,7 +45,10 @@ impl NativeEndpointBank {
         &self,
         binding: Binding,
         source: &hex_plugin_host::transport::ParameterInputSource,
-    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+    ) -> Option<(
+        hex_plugin_host::transport::ParameterInputFence<'_>,
+        EndpointReturnFence<'_>,
+    )> {
         if self.cycle.revoked() {
             return None;
         }
@@ -58,12 +61,14 @@ impl NativeEndpointBank {
         if envelope.return_requested() || !envelope.0.signal.installed.load(Ordering::Acquire) {
             return None;
         }
-        envelope
+        let return_fence = envelope.0.signal.reserve()?;
+        let input_fence = envelope
             .0
             .callback
             .as_ref()?
             .callback()
-            .reserve_observed_parameter_input(source)
+            .reserve_observed_parameter_input(source)?;
+        Some((input_fence, return_fence))
     }
 
     pub(crate) fn take_accepted_editor_quantum(
@@ -321,7 +326,7 @@ impl NativeEndpointBank {
     pub(crate) fn request_epoch_return(&mut self) {
         self.reject_rendering();
         for endpoint in self.entries.iter().flatten() {
-            endpoint.0.signal.store(true, Ordering::Release);
+            endpoint.0.signal.request_return();
         }
         self.epoch_returned = true;
     }
@@ -445,7 +450,7 @@ impl Custody {
         slot.endpoint_loaned = loaned;
         if loaned {
             if slot.retiring {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
             slot.endpoint_return = Some(signal);
         }

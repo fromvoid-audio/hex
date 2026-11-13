@@ -1380,6 +1380,31 @@ impl PublicationControl {
         Ok(())
     }
 }
+/// Bounded observation of the exact paired input and endpoint return signal.
+/// This grants no graph or publication authority; the caller must additionally
+/// validate the source, candidate, transport and actual native custody.
+pub struct NativeParameterInputFence<'a> {
+    input: hex_plugin_host::transport::ParameterInputFence<'a>,
+    endpoint: crate::candidate_custody::EndpointReturnFence<'a>,
+    closing: &'a std::sync::atomic::AtomicBool,
+}
+impl NativeParameterInputFence<'_> {
+    pub fn is_live(&self) -> bool {
+        self.input.is_live() && self.endpoint.is_live() && !self.closing.load(Acquire)
+    }
+    /// Order one decision before source revocation, endpoint return, and output
+    /// shutdown. The later atomic decisions are sticky with respect to the
+    /// first decision; the caller must still authenticate and commit its graph.
+    pub fn try_order_before_revocation(&mut self) -> bool {
+        self.input.try_order_before_revocation()
+            && self.endpoint.try_order_before_return()
+            && self
+                .closing
+                .compare_exchange(false, false, AcqRel, Acquire)
+                .is_ok()
+    }
+}
+
 impl Callback {
     /// Borrow the installed original endpoint's input observation without
     /// waiting, allocation, or ownership transfer. This is not graph, source,
@@ -1388,12 +1413,19 @@ impl Callback {
         &self,
         binding: Binding,
         source: &hex_plugin_host::transport::ParameterInputSource,
-    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+    ) -> Option<NativeParameterInputFence<'_>> {
         if self.status.closing.load(Acquire) {
             return None;
         }
-        self.native_sources
-            .reserve_observed_parameter_input(binding, source)
+        let (input, endpoint) = self
+            .native_sources
+            .reserve_observed_parameter_input(binding, source)?;
+        let fence = NativeParameterInputFence {
+            input,
+            endpoint,
+            closing: &self.status.closing,
+        };
+        fence.is_live().then_some(fence)
     }
 
     #[cfg(feature = "allocation-probe")]
