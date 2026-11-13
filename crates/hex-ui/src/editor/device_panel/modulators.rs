@@ -557,6 +557,20 @@ pub(super) fn source_effect_card(
             .copied()
     })
     .flatten();
+    let mute_row = (metadata.type_id
+        == hex_lattice_contract::DeviceTypeId::from_static("hex.utility"))
+    .then(|| {
+        metadata
+            .parameters
+            .iter()
+            .find(|row| row.descriptor.id == utility_panel::MUTE)
+            .copied()
+    })
+    .flatten()
+    .map(|mut row| {
+        row.enabled &= hex_engine::project_source_utility_mute_edit_supported(&state.project, id);
+        row
+    });
     let controls = [
         (utility_panel::GAIN, "gain", None),
         (
@@ -672,7 +686,28 @@ pub(super) fn source_effect_card(
             },
         ));
     }
-    if controls.iter().any(Option::is_some) || mode_row.is_some() || mono_row.is_some() {
+    if let Some(row) = mute_row {
+        control_row = control_row.child(parameter_control_with_presentation(
+            view,
+            cx,
+            id,
+            DeviceControlIdentity {
+                class: NativeDeviceClass::Effect,
+                type_id: metadata.type_id,
+            },
+            &row,
+            ControlPresentation::CompactButton,
+            ControlText {
+                label: Some("mute"),
+                codec: None,
+            },
+        ));
+    }
+    if controls.iter().any(Option::is_some)
+        || mode_row.is_some()
+        || mono_row.is_some()
+        || mute_row.is_some()
+    {
         body = body.child(control_row);
     }
     for row in &metadata.parameters {

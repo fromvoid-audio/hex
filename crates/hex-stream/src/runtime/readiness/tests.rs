@@ -132,6 +132,86 @@ fn finish(domain: &mut ConstructorStreamDomain) -> PagePoolReport {
 }
 
 #[test]
+fn cancellation_retains_prefetch_origin_after_real_service_coalesces() {
+    let Some(mut owner) = artifact() else { return };
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (publication_tx, _publication_rx) = mpsc::sync_channel(2);
+    let (_wav, control, pages, key) = pair_with_hooks(Some(crate::worker::TestWorkerHooks {
+        read_gate: None,
+        scalar_steps: None,
+        entered: entered_tx,
+        release: release_rx,
+        publications: publication_tx,
+    }));
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    loan.pages.prefetch_page(key, 1);
+    let extent = [StreamPageExtent {
+        source: key,
+        page_index: 1,
+        start: 0,
+        end: 8,
+    }];
+    let candidate = stamp(&owner, 1);
+    loan.submit(ProtectionRole::Candidate, candidate, &extent)
+        .unwrap();
+    #[cfg(feature = "allocation-probe")]
+    let mut progress = None;
+    #[cfg(feature = "allocation-probe")]
+    let mut cancelled = false;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        progress = Some(loan.service(ProtectionRole::Candidate, candidate, 1, 1));
+        cancelled = loan.cancel(ProtectionRole::Candidate, candidate.request_epoch);
+    });
+    #[cfg(not(feature = "allocation-probe"))]
+    let (progress, cancelled) = (
+        Some(loan.service(ProtectionRole::Candidate, candidate, 1, 1)),
+        loan.cancel(ProtectionRole::Candidate, candidate.request_epoch),
+    );
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(progress, Some(Ok(ReadinessProgress::Pending)));
+    assert_eq!(loan.pages.endpoint.stats().coalesced_requests, 1);
+    assert!(cancelled);
+    assert!(
+        loan.pages
+            .endpoint
+            .test_speculative_request(crate::ResourcePageKey {
+                source: key.into(),
+                page_index: 1,
+            })
+    );
+    release_tx.send(()).unwrap();
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
+}
+
+#[test]
 fn pending_arrivals_survive_unrelated_cache_turnover_until_receipt_or_cancel() {
     let Some(mut owner) = artifact() else { return };
     let (_wav, control, pages, key) = pair_with_frames(None, 24000);
