@@ -9,6 +9,7 @@ mod offline_bounce;
 mod performance_profile;
 mod state;
 mod ui;
+mod unlaned_effect_commit;
 mod unsealed_admission;
 use super::resident_preview::ResidentHarness;
 use super::*;
