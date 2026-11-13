@@ -3502,7 +3502,7 @@ fn parameter_control_with_presentation(
     display: ControlText,
 ) -> Div {
     let compact_toggle_width = match display.label {
-        Some("bass mono" | "mono" | "maximize" | "auto") => 64.0,
+        Some("bass mono" | "mono" | "maximize" | "auto" | "mid/side") => 64.0,
         Some("bass mono audition" | "r" | "q") => 14.0,
         Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "on" | "fix" | "") => 18.0,
         Some("ø l" | "ø r" | "mute" | "dc") => 31.0,

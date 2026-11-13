@@ -126,7 +126,10 @@ pub fn project_source_utility_matrix_edit_supported(
     use hex_devices::utility::parameter::{
         BALANCE, GAIN, MID_SIDE_BALANCE, MID_SIDE_ENABLED, WIDTH,
     };
-    if !matches!(parameter, GAIN | BALANCE | WIDTH | MID_SIDE_BALANCE) {
+    if !matches!(
+        parameter,
+        GAIN | BALANCE | WIDTH | MID_SIDE_BALANCE | MID_SIDE_ENABLED
+    ) {
         return false;
     }
     let Some(location) = project.device_location(device) else {
