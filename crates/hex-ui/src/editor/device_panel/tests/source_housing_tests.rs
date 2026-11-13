@@ -513,6 +513,10 @@ fn source_utility_gain_is_limited_to_unautomated_active_processing() {
         })
         .unwrap();
     assert!(!available(&editor));
+    assert!(!hex_engine::project_source_utility_mute_edit_supported(
+        editor.project(),
+        device
+    ));
 }
 
 macro_rules! source_mode_case {
@@ -605,12 +609,73 @@ source_mono_case!(
 );
 source_mono_case!(shared_source_mono_refusal, None, false, true);
 
+#[gpui::test]
+fn shared_source_mute_on_and_off(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(
+        cx,
+        None,
+        false,
+        false,
+        hex_devices::utility::parameter::MUTE,
+    );
+}
+
+#[gpui::test]
+fn shared_source_unmute_and_mute(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(cx, None, true, false, hex_devices::utility::parameter::MUTE);
+}
+
+#[gpui::test]
+fn shared_source_dc_mute_and_unmute(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(
+        cx,
+        Some(hex_devices::utility::parameter::DC_REMOVE),
+        false,
+        false,
+        hex_devices::utility::parameter::MUTE,
+    );
+}
+
+#[gpui::test]
+fn shared_source_bass_unmute_and_mute(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(
+        cx,
+        Some(hex_devices::utility::parameter::BASS_MONO),
+        true,
+        false,
+        hex_devices::utility::parameter::MUTE,
+    );
+}
+
+#[gpui::test]
+fn shared_source_automated_mute_is_disabled(cx: &mut TestAppContext) {
+    shared_source_mode_inner(
+        cx,
+        Some(hex_devices::utility::parameter::DC_REMOVE),
+        false,
+        false,
+        hex_devices::utility::parameter::MUTE,
+        true,
+    );
+}
+
 fn shared_source_mode_with_filter(
     cx: &mut TestAppContext,
     filter: Option<hex_lattice_contract::ParameterId>,
     initial: bool,
     reject: bool,
     parameter: hex_lattice_contract::ParameterId,
+) {
+    shared_source_mode_inner(cx, filter, initial, reject, parameter, false);
+}
+
+fn shared_source_mode_inner(
+    cx: &mut TestAppContext,
+    filter: Option<hex_lattice_contract::ParameterId>,
+    initial: bool,
+    reject: bool,
+    parameter: hex_lattice_contract::ParameterId,
+    unsupported: bool,
 ) {
     use hex_lattice_contract::NativeDeviceMetadata;
     cx.update(crate::editor::bind_editor_keys);
@@ -687,6 +752,21 @@ fn shared_source_mode_with_filter(
         before: None,
         state: utility,
     });
+    let bound = if unsupported {
+        use hex_lattice_contract::DeviceAutomationTarget;
+        use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+        edit(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN),
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+    } else {
+        bound
+    };
     let local = bound
         .state
         .project
@@ -722,20 +802,86 @@ fn shared_source_mode_with_filter(
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     let mode = parameter;
-    let button = Box::leak(
-        format!(
-            "device-{}-parameter-{}",
-            device.value(),
-            if mode == hex_devices::utility::parameter::MONO {
-                7
-            } else {
-                9
-            }
-        )
-        .into_boxed_str(),
-    );
+    let button =
+        Box::leak(format!("device-{}-parameter-{}", device.value(), mode.value()).into_boxed_str());
     let target = visual.debug_bounds(button).expect("mode button");
-    visual.simulate_click(target.center(), Modifiers::default());
+    if unsupported {
+        visual.simulate_click(target.center(), Modifiers::default());
+        visual.run_until_parked();
+        let toggle = editor.read_with(&visual, |view, _| {
+            let Some(ParameterControl::Bool { entity, .. }) =
+                view.device_panel.controls.get(&ParameterKey {
+                    device,
+                    parameter: mode,
+                })
+            else {
+                panic!("mute control")
+            };
+            entity.clone()
+        });
+        // Simulate an already queued activation reaching the old control after
+        // its source state became ineligible.
+        toggle.update(&mut visual, |_, cx| {
+            cx.emit(ToggleChanged { checked: true })
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.error.is_some());
+            assert_eq!(
+                hex_engine::native_device_parameter_for_class(
+                    NativeDeviceClass::Effect,
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .state(),
+                    mode,
+                )
+                .unwrap(),
+                ParameterValue::Bool(initial)
+            );
+        });
+        return;
+    }
+    if mode == hex_devices::utility::parameter::MUTE && !initial {
+        use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+            headless_status_output, status_fixture_guard,
+        };
+        use std::sync::atomic::Ordering;
+        let _guard = status_fixture_guard();
+        let (mut output, _backend) = headless_status_output();
+        let control = output.take_client().unwrap();
+        control
+            .status()
+            .unwrap()
+            .playing
+            .store(true, Ordering::Release);
+        editor.update(&mut visual, |view, cx| {
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control,
+                sample_rate: 48_000,
+                label: "private control".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_click(target.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.device_gesture.snapshot().is_some())
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.audio = None;
+            cx.notify();
+        });
+    } else {
+        visual.simulate_click(target.center(), Modifiers::default());
+    }
     visual.run_until_parked();
     let key = ParameterKey {
         device,

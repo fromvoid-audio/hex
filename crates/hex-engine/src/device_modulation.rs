@@ -152,6 +152,18 @@ pub fn project_source_utility_matrix_edit_supported(
             .unwrap_or(false)
 }
 
+/// A bound, unautomated source Utility whose mute may use the prepared
+/// matrix or filter-history transition. Publication checks the actual handoff.
+pub fn project_source_utility_mute_edit_supported(project: &Project, device: DeviceId) -> bool {
+    use hex_devices::utility::parameter::{GAIN, MUTE};
+    project_source_utility_matrix_edit_supported(project, device, GAIN)
+        && project.device(device).is_some_and(|device| {
+            hex_devices::utility::UTILITY_DEFINITION
+                .parameter_enabled(device.state(), MUTE)
+                .unwrap_or(false)
+        })
+}
+
 /// State-aware eligibility for native device-panel mapping. Ownership is
 /// resolved from the current project. Preparation independently validates the
 /// actual factory, runtime binding and source program before publication.

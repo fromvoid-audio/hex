@@ -123,6 +123,10 @@ pub(crate) struct Endpoint {
     pending_count: usize,
     // At most one speculative request; its ready buffer remains owned by the queue.
     prefetch_key: Option<ResourcePageKey>,
+    // Direct callers have no cancellation receipt; readiness roles clear their
+    // own bits on cancellation so other consumers keep their pending page.
+    prefetch_direct_demand: bool,
+    prefetch_readiness_mask: u8,
     source_keys: Vec<StreamResourceKey>,
     request_tx: Producer<PageRequest>,
     ready_rx: Consumer<Box<PageBuffer>>,
@@ -231,6 +235,8 @@ impl Endpoint {
             pending_mask: pending_count - 1,
             pending_count: 0,
             prefetch_key: None,
+            prefetch_direct_demand: false,
+            prefetch_readiness_mask: 0,
             source_keys: sources,
             request_tx: queues.request_tx,
             ready_rx: queues.ready_rx,
@@ -248,6 +254,16 @@ impl Endpoint {
             #[cfg(test)]
             pending_probe_count: Cell::new(0),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_speculative_request(&self, key: ResourcePageKey) -> bool {
+        self.prefetch_key == Some(key)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_coalesced_prefetch(&self, key: ResourcePageKey) -> bool {
+        self.prefetch_key == Some(key) && self.prefetch_readiness_mask != 0
     }
 
     #[cfg(feature = "test-support")]
@@ -275,6 +291,7 @@ impl Endpoint {
             // different demand is missing, release the speculative buffer so
             // the worker can service it rather than blocking behind lookahead.
             if !pending.is_empty()
+                && !self.prefetch_direct_demand
                 && self.cache_count >= self.max_cached_pages
                 && let Some(key) = self.prefetch_key
                 && self.source_keys.binary_search(&key.source).is_ok()
@@ -303,6 +320,7 @@ impl Endpoint {
                 continue;
             };
             let prefetched = self.prefetch_key == Some(key);
+            let direct_demand = self.prefetch_direct_demand;
             self.pending_remove(key);
             if self.source_keys.binary_search(&key.source).is_err() {
                 self.stale_pages = self.stale_pages.saturating_add(1);
@@ -325,10 +343,11 @@ impl Endpoint {
                     }
                 }
             }
-            let keep = (prefetched && pending_mask == 0).then_some(ResourcePageKey {
-                source: key.source,
-                page_index: key.page_index.wrapping_sub(1),
-            });
+            let keep =
+                (prefetched && pending_mask == 0 && !direct_demand).then_some(ResourcePageKey {
+                    source: key.source,
+                    page_index: key.page_index.wrapping_sub(1),
+                });
             if self.insert_ready_with_mask_keeping(page, pending_mask, keep) {
                 installed += 1;
             }
@@ -494,6 +513,8 @@ impl Endpoint {
         let key = key.into();
         if self.prefetch_key == Some(key) {
             self.prefetch_key = None;
+            self.prefetch_direct_demand = false;
+            self.prefetch_readiness_mask = 0;
         }
         let mut slot = page_slot(key, self.pending_mask);
         for _ in 0..self.pending.len() {
@@ -532,11 +553,26 @@ impl Endpoint {
     }
 
     fn queue_demand(&mut self, key: ResourcePageKey) {
+        self.queue_demand_inner(key, true, 0);
+    }
+
+    pub(crate) fn queue_readiness_demand(&mut self, key: ResourcePageKey, mask: u8) {
+        self.queue_demand_inner(key, false, mask);
+    }
+
+    pub(crate) fn cancel_readiness_demand(&mut self, mask: u8) {
+        self.prefetch_readiness_mask &= !mask;
+    }
+
+    fn queue_demand_inner(&mut self, key: ResourcePageKey, direct: bool, mask: u8) {
         if let Some(prefetched) = self.prefetch_key {
             if prefetched == key {
-                // A previously speculative request is now actual demand.
-                self.prefetch_key = None;
-            } else if self.source_keys.binary_search(&key.source).is_ok()
+                // Preserve the request origin even if a readiness intent later cancels.
+                self.prefetch_direct_demand |= direct;
+                self.prefetch_readiness_mask |= mask;
+            } else if !self.prefetch_direct_demand
+                && self.prefetch_readiness_mask == 0
+                && self.source_keys.binary_search(&key.source).is_ok()
                 && self.cache_lookup(key).is_none()
                 && self
                     .ready_rx
@@ -924,6 +960,8 @@ impl Endpoint {
             pending_mask: _,
             pending_count: _,
             prefetch_key: _,
+            prefetch_direct_demand: _,
+            prefetch_readiness_mask: _,
             source_keys,
             request_tx: _,
             ready_rx: _,

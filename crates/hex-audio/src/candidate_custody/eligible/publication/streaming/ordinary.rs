@@ -79,6 +79,19 @@ impl OrdinaryStreams {
         })
     }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_coalesced_prefetch(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        key: hex_stream::ResourcePageKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_coalesced_prefetch(key))
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_domain_cached(
         &self,
         domains: &mut [Option<DomainEnvelope>; 2],
