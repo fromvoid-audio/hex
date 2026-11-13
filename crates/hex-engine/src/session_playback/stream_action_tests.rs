@@ -415,6 +415,20 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
         }),
         Ok(16)
     );
+    let mut after_due = Vec::new();
+    assert_eq!(
+        actual.visit_current_stream_quantum_at(8, 8, None, false, &mut |row| {
+            after_due.push(row);
+            Ok(())
+        }),
+        Ok(8)
+    );
+    assert_eq!(after_due, projected);
+    assert!(
+        actual
+            .visit_current_stream_quantum_at(u64::MAX, 8, None, false, &mut |_| Ok(()))
+            .is_err()
+    );
     assert_eq!(
         (
             actual.position(),
@@ -544,6 +558,13 @@ fn later_due_projection_does_not_restart_an_earlier_route_release() {
         })
         .unwrap();
     let advance = usize::try_from(later_due - actual.performance_frame()).unwrap();
+    let mut offset_projection = Vec::new();
+    actual
+        .visit_current_stream_quantum_at(advance as u64, 8, None, false, &mut |extent| {
+            offset_projection.push(extent);
+            Ok(())
+        })
+        .unwrap();
     actual
         .render_with_pages(&mut vec![[0.0; 2]; advance], &mut pages())
         .unwrap();
@@ -569,6 +590,7 @@ fn later_due_projection_does_not_restart_an_earlier_route_release() {
         pending, observed,
         "pending demand must retain earlier release timing"
     );
+    assert_eq!(offset_projection, observed);
 }
 
 #[test]
