@@ -81,7 +81,9 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = COINCIDENT_AUTOMATION_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LONG_REVERSE_SCHEMA_VERSION;
+/// Exact plain reversals of frame domains beyond the resident transform cap.
+pub const LONG_REVERSE_SCHEMA_VERSION: u32 = 116;
 /// Adds ordered pairs of device automation points at the same beat.
 pub const COINCIDENT_AUTOMATION_SCHEMA_VERSION: u32 = 115;
 /// Schema114 persists frame-anchored arrangement locators.
@@ -214,6 +216,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 }
 
 /// Schema [`encode`] writes for `project`:
+/// [`LONG_REVERSE_SCHEMA_VERSION`] for an exact long plain reversal,
 /// [`VST3_AUTOMATION_SCHEMA_VERSION`] when VST3 lanes are present,
 /// [`SAMPLE_RATE_MODE_SCHEMA_VERSION`] when the mode is Follow Interface,
 /// [`VST3_STATE_SIZE_SCHEMA_VERSION`] when any VST3 state exceeds 4 KiB,
@@ -248,9 +251,13 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free-running Steps uses schema107, or schema108 alongside those touches.
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema116 wraps the appropriate prior document for exact long plain reversals.
 /// Schema115 wraps the appropriate prior document only when an authored device
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
+    if schema::long_reverse::contains(project) {
+        return LONG_REVERSE_SCHEMA_VERSION;
+    }
     if schema::coincident_automation::contains(project) {
         return COINCIDENT_AUTOMATION_SCHEMA_VERSION;
     }
@@ -520,6 +527,9 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if schema::long_reverse::contains(project) {
+        return schema::long_reverse::encode(project);
+    }
     if schema::coincident_automation::contains(project) {
         return schema::coincident_automation::encode(project);
     }
@@ -855,6 +865,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
+    if header.version == LONG_REVERSE_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_reverse::decode(bytes);
+    }
     if header.version == COINCIDENT_AUTOMATION_SCHEMA_VERSION && !inside_envelope {
         return schema::coincident_automation::decode(bytes);
     }
@@ -971,6 +984,11 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if schema::long_reverse::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long plain reversal requires its current project schema",
+        ));
+    }
     if schema::coincident_automation::contains(&project) {
         return Err(StorageError::Invalid(
             "coincident automation points require their current project schema",

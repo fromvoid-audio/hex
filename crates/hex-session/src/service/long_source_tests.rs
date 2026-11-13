@@ -276,11 +276,10 @@ fn timeline_edits_on_a_streamed_clip_past_the_edit_domain_survive_history_and_re
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
 }
 
-/// Pulse #4145: transform edits render the whole root through the bounded
-/// resident workspace, so past the edit domain they refuse with the limit at
-/// the project's rate and the remedy, leaving the project untouched.
+/// A full long plain reverse stays streamed and survives history and storage;
+/// other transforms still refuse outside the bounded resident workspace.
 #[test]
-fn transform_edits_past_the_edit_domain_name_the_limit_and_the_remedy() {
+fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
     let files = Files::new();
     let path = files.long_wav("twenty-million.wav", 20_000_000);
     let service = service_in(DocumentAudioMode::VerifiedStreaming);
@@ -288,8 +287,14 @@ fn transform_edits_past_the_edit_domain_name_the_limit_and_the_remedy() {
     let imported = next(&service);
     assert!(imported.error.is_none(), "{:?}", imported.error);
     let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let project_path = files.0.join("long-reversed.hex");
+    service
+        .submit(Request::SaveNew(project_path.clone()))
+        .unwrap();
+    let saved_base = next(&service);
+    assert!(saved_base.error.is_none(), "{:?}", saved_base.error);
+    let original_project_bytes = fs::read(&project_path).unwrap();
     for command in [
-        hex_project::Command::ReverseClips(vec![clip]),
         hex_project::Command::SetAudioClipPitch { clip, cents: 100 },
         hex_project::Command::SetAudioClipMusical {
             clip,
@@ -306,13 +311,75 @@ fn transform_edits_past_the_edit_domain_name_the_limit_and_the_remedy() {
         let error = refused.error.as_deref().expect("transform refusal");
         assert!(
             error.contains(
-                "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; \
+                "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; \
                  trim or split the clip first"
             ),
             "{command:?}: {error}"
         );
         assert_eq!(refused.state.project, imported.state.project);
     }
+    service
+        .submit(Request::Edit(hex_project::Command::ReverseClips(vec![
+            clip,
+        ])))
+        .unwrap();
+    let reversed = next(&service);
+    assert!(reversed.error.is_none(), "{:?}", reversed.error);
+    let expected = reversed.state.project.snapshot();
+    let edited = reversed.state.project.clip(clip).unwrap();
+    assert_eq!(
+        edited.audio_edit().unwrap().plain_reversed_source(edited),
+        Some((0, 20_000_000))
+    );
+    assert_eq!(streamed_frames(&reversed), 20_000_000);
+    for command in [
+        hex_project::Command::SetAudioClipPitch { clip, cents: 100 },
+        hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 10,
+            fade_out: 10,
+        },
+    ] {
+        service.submit(Request::Edit(command)).unwrap();
+        let refused = next(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project.snapshot(), expected);
+    }
+    service.submit(Request::Undo).unwrap();
+    let undone = next(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(
+        undone.state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redone = next(&service);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project.snapshot(), expected);
+    service.submit(Request::SaveCurrent).unwrap();
+    let refused = next(&service);
+    assert!(refused.save_confirmation_required && refused.error.is_some());
+    assert_eq!(fs::read(&project_path).unwrap(), original_project_bytes);
+    let generation = redone
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    service
+        .submit(Request::SaveCurrentWithFormatUpgrade {
+            project_generation: generation,
+            path: project_path.clone(),
+        })
+        .unwrap();
+    let saved = next(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    service.submit(Request::Open(project_path)).unwrap();
+    let reopened = next(&service);
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert_eq!(streamed_frames(&reopened), 20_000_000);
 }
 
 #[test]

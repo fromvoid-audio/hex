@@ -17,31 +17,31 @@ pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
 pub const MAX_SPARSE_AUDIO_TIMELINE_FRAMES: u64 = 1 << 36;
 
 /// Refusal for an edit whose whole root must fit the bounded resident transform
-/// workspace (reverse, pitch, warp and stretch; #4145). Durations are
+/// workspace (processed reverse, pitch, warp and stretch; #4145). Durations are
 /// `MAX_AUDIO_DOMAIN_FRAMES / rate` rounded down for common project rates, so
 /// the static message stays exact; other rates name the frame cap instead.
 pub(crate) fn transform_domain_limit(sample_rate: u32) -> Invalid {
     Invalid(match sample_rate {
         44_100 => {
-            "reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
         }
         48_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
         }
         88_200 => {
-            "reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
         }
         96_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
         }
         176_400 => {
-            "reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
         }
         192_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
         }
         _ => {
-            "reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
         }
     })
 }
@@ -462,6 +462,29 @@ fn signed_round(numerator: i128, denominator: u128) -> Result<i128, Invalid> {
 }
 
 impl AudioClipEdit {
+    /// Whether this is exactly the reversal created from an unedited clip.
+    /// Unlike the playback shape query, this proves that removing and then
+    /// recreating the edit preserves every authored field.
+    pub fn is_plain_reversed_capture(&self, clip: &Clip) -> bool {
+        let Some((_, length)) = self.plain_reversed_source(clip) else {
+            return false;
+        };
+        let Ok(window) = crate::ContentWindow::new(0, length, true) else {
+            return false;
+        };
+        let mut expected = Self::capture(clip);
+        expected.content_view = Some(AudioContentView {
+            restore_plain: true,
+            base_view_start: 0,
+            base_view_end: length,
+            base_placement: None,
+            base_start_delta: 0,
+            window,
+            read_resampler: WarpResampler::default(),
+        });
+        self == &expected
+    }
+
     /// Return the source offset and length of an unprocessed, full-frame
     /// reversal. This is a shape query only: callers still validate the clip
     /// and establish source availability and custody before reading it.
@@ -898,22 +921,23 @@ impl AudioClipEdit {
             && self.domain.source_gain.is_empty()
     }
 
-    pub(crate) fn accepts_projected_extent(&self, length: u64) -> bool {
+    pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
         }
         length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
-            && self.plain_frame_event_root()
-            && self.domain.events.as_ref().is_some_and(|events| {
-                events
-                    .events
-                    .iter()
-                    .try_fold(0u64, |n, event| {
-                        n.checked_add(event.end.checked_sub(event.start)?)
-                            .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
-                    })
-                    .is_some()
-            })
+            && (self.is_plain_reversed_capture(clip)
+                || (self.plain_frame_event_root()
+                    && self.domain.events.as_ref().is_some_and(|events| {
+                        events
+                            .events
+                            .iter()
+                            .try_fold(0u64, |n, event| {
+                                n.checked_add(event.end.checked_sub(event.start)?)
+                                    .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
+                            })
+                            .is_some()
+                    })))
     }
 
     pub fn validate(
@@ -1069,7 +1093,7 @@ impl AudioClipEdit {
             return Err(Invalid("active warp needs settings and markers"));
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if !self.accepts_projected_extent(length) {
+        if !self.accepts_projected_extent(length, clip) {
             return Err(transform_domain_limit(tempo.sample_rate()));
         }
         if length == 0 || view_start >= view_end {
