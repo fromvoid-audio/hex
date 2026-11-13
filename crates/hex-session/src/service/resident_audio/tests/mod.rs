@@ -1159,7 +1159,7 @@ fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
                 request_id: 2,
                 project_generation: 0,
                 revision: current_revision(),
-                track: sampler_track_id,
+                owner: SamplerParameterOwner::Track(sampler_track_id),
                 device,
                 parameter: hex_engine::SamplerParameter::Gain,
                 value: 0.5,

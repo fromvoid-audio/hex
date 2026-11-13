@@ -219,8 +219,10 @@ impl Action {
                         .project
                         .native_source(source)
                         .is_some_and(|definition| {
-                            definition.instrument().state().type_id().as_str()
-                                == Ok("hex.instrument.fm4")
+                            matches!(
+                                definition.instrument().state().type_id().as_str(),
+                                Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                            )
                         })
                         && !state
                             .project
@@ -460,12 +462,14 @@ fn details(
             }),
         },
     ];
-    if definition.instrument().state().type_id().as_str() == Ok("hex.instrument.fm4")
-        && !state
-            .project
-            .tracks()
-            .iter()
-            .any(|track| track.source_id() == Some(source))
+    if matches!(
+        definition.instrument().state().type_id().as_str(),
+        Ok("hex.instrument.fm4" | "hex.instrument.operator")
+    ) && !state
+        .project
+        .tracks()
+        .iter()
+        .any(|track| track.source_id() == Some(source))
     {
         items.push(MenuItem {
             label: "edit source",

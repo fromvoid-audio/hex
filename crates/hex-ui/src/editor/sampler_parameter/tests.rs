@@ -520,7 +520,7 @@ pub(in crate::editor) fn pending_request(
         request_id: pending.id,
         project_generation: target.generation,
         revision: target.revision,
-        track: target.track,
+        owner: hex_session::service::SamplerParameterOwner::Track(target.track),
         device: target.device,
         parameter: target.parameter,
         value: pending.value?,
