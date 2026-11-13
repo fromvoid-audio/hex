@@ -1583,3 +1583,128 @@ fn source_picker_without_sources_is_an_inert_empty_state(cx: &mut TestAppContext
         assert!(!view.edit_pending());
     });
 }
+
+#[gpui::test]
+fn source_picker_keeps_released_device_preview_until_terminal_ack(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = actor_native_effect_fixture(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    );
+    let original_source = state.project.track(track).unwrap().source_id().unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "other source".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::NativeSource(other) = event.created.unwrap() else {
+        panic!("source")
+    };
+    // Do not tick the service: the released gesture's terminal remains in UI custody.
+    let revision = event.state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let choice = editor.read_with(&visual, |view, _| {
+        let item = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("other source")
+            })
+            .unwrap();
+        let EditorContextAction::SourcePicker(choice) = &item.action else {
+            panic!("source choice")
+        };
+        choice.clone()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let selector =
+        Box::leak(format!("device-{}-parameter-2-slider-thumb", device.value()).into_boxed_str());
+    let initial = visual.debug_bounds(selector).unwrap();
+    let start = initial.center();
+    let end = point(start.x, start.y + px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let preview = visual.debug_bounds(selector).unwrap();
+    assert!(preview.top() > initial.top());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.device_gesture.terminal(),
+            Some((hex_session::device_gesture::GesturePhase::Commit, _))
+        ));
+    });
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| editor.update(cx, |view, cx| choice.perform(view, window, cx)));
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector).unwrap(), preview);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.context_menu.is_none());
+            assert!(view.device_gesture.snapshot().is_some());
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .source_id(),
+                Some(original_source)
+            );
+            assert_ne!(Some(original_source), Some(other));
+        });
+    }
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none()
+            && !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision > revision)
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(selector).unwrap(), preview);
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let index = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("other source")
+            })
+            .unwrap()
+    });
+    for _ in 0..index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.track(track).unwrap().source_id() == Some(other))
+    });
+}
