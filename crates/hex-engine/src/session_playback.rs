@@ -2551,6 +2551,26 @@ impl SessionPlayback {
         self.inherit_state_live(previous, None)
     }
 
+    /// Internal engine comparison for a host-authenticated continuation. The
+    /// caller owns candidate/source/transport validation and callback custody.
+    pub(crate) fn try_inherit_state_live_with_foreign_continuation_from(
+        &mut self,
+        previous: &mut Self,
+        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_planned(previous, None, None, true, false, Some(continuation))
+    }
+
     /// Reset a prepared bounce successor at an authenticated Arrangement fence.
     /// The audio publication owner must validate the live fence before calling;
     /// this does not grant permission to use an unfenced live handoff.

@@ -110,6 +110,28 @@ impl SessionPlayback {
         ordinary: bool,
         fenced_restart: bool,
     ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
+        self.preview_stream_handoff_with_continuation_and_report(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Preserve the actual source, preview scope and exact borrowed matcher.
+    pub(crate) fn preview_stream_handoff_with_continuation_and_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
@@ -132,7 +154,7 @@ impl SessionPlayback {
             Some(&mut demand),
             true,
             fenced_restart,
-            None,
+            continuation,
         )?;
         let window = demand
             .window

@@ -1211,7 +1211,7 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
         };
         let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-        let mut refused = SessionPlayback::new(revision).unwrap();
+        let mut refused = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         match location {
             0 => {
                 old.device_chains[0] = chain(Arc::clone(&previous));
@@ -1248,26 +1248,128 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
             Err(SessionPlaybackError::ForeignTailSourceBusy)
         ));
         assert_eq!(old.performance_frame, old_frame);
+        let wrong_binding = hex_lattice_contract::ForeignProcessorBinding {
+            epoch: binding.epoch + 1,
+            ..binding
+        };
+        let wrong_endpoint = hex_lattice::ForeignConfigurationContinuation::new(
+            identity,
+            wrong_binding,
+            &previous,
+            &candidate,
+        )
+        .unwrap();
+        assert!(matches!(
+            refused.inherit_state_planned(
+                &mut old,
+                None,
+                None,
+                false,
+                false,
+                Some(&wrong_endpoint)
+            ),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
         let proof = hex_lattice::ForeignConfigurationContinuation::new(
             identity, binding, &previous, &candidate,
         )
         .unwrap();
-        let mut visit = |_| Ok(());
-        let mut demand = super::stream_demand::HandoffDemand {
-            ordinary: true,
-            maximum_frames: 8,
-            playing: None,
-            visit: &mut visit,
-            window: None,
-        };
-        next.inherit_state_planned(&mut old, None, Some(&mut demand), true, false, Some(&proof))
-            .unwrap();
-        assert!(demand.window.is_some());
+        next.preview_stream_handoff_with_continuation_and_report(
+            &mut old,
+            8,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+            Some(&proof),
+        )
+        .unwrap();
         assert_eq!(old.performance_frame, old_frame);
-        next.inherit_state_planned(&mut old, None, None, false, false, Some(&proof))
+        next.try_inherit_state_live_with_foreign_continuation_from(&mut old, &proof)
             .unwrap();
         assert_eq!(next.performance_frame, old_frame);
         next.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+
+        // Exercise the public ordinary playback preview and commit facades,
+        // with the same actual session graphs and original source pair.
+        let mut old_playback =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        let mut next_playback =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        {
+            let old_session = old_playback
+                .session_runtime_mut_for_stream_action()
+                .unwrap();
+            let next_session = next_playback
+                .session_runtime_mut_for_stream_action()
+                .unwrap();
+            match location {
+                0 => {
+                    old_session.device_chains[0] = chain(Arc::clone(&previous));
+                    next_session.device_chains[0] = chain(Arc::clone(&candidate));
+                }
+                1 => {
+                    old_session.return_chains[0] = chain(Arc::clone(&previous));
+                    next_session.return_chains[0] = chain(Arc::clone(&candidate));
+                }
+                _ => {
+                    old_session.main_chain = chain(Arc::clone(&previous));
+                    next_session.main_chain = chain(Arc::clone(&candidate));
+                }
+            }
+            old_session.apply(SessionPlaybackCommand::Play).unwrap();
+            old_session
+                .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+                .unwrap();
+        }
+        let context = crate::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        assert!(matches!(
+            next_playback
+                .stream_playback(context)
+                .preview_ordinary_with_foreign_continuation(
+                    &mut old_playback.stream_playback(context),
+                    8,
+                    None,
+                    &mut |_| Ok(()),
+                    &wrong_proof,
+                ),
+            Err(crate::playback::PlaybackHandoffError::Session(
+                SessionPlaybackError::ForeignTailSourceBusy
+            ))
+        ));
+        next_playback
+            .stream_playback(context)
+            .preview_ordinary_with_foreign_continuation(
+                &mut old_playback.stream_playback(context),
+                8,
+                None,
+                &mut |_| Ok(()),
+                &proof,
+            )
+            .unwrap();
+        assert!(matches!(
+            next_playback.try_inherit_runtime_with_foreign_continuation_in_control_context(
+                &mut old_playback,
+                Some(1),
+                Some(2),
+                &proof
+            ),
+            Err(crate::playback::PlaybackHandoffError::RuntimeFenceChanged)
+        ));
+        next_playback
+            .try_inherit_runtime_with_foreign_continuation_in_control_context(
+                &mut old_playback,
+                Some(1),
+                Some(1),
+                &proof,
+            )
             .unwrap();
     }
 }

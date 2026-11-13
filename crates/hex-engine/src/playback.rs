@@ -2038,7 +2038,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false)
+        self.try_inherit_runtime_impl(previous, false, false, None)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -2055,7 +2055,25 @@ impl Playback {
             previous,
             generation.is_some() && generation == previous_generation,
             false,
+            None,
         )
+    }
+
+    /// Compare one exact foreign continuation while inheriting the runtime.
+    /// The audio publication owner must independently authenticate the exact
+    /// source, predecessor, candidate, transport and custody at commit. The
+    /// borrowed matcher is not such authority and must not outlive its states.
+    pub fn try_inherit_runtime_with_foreign_continuation_in_control_context(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none() || generation != previous_generation {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, false, Some(continuation))
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -2074,7 +2092,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true)
+        self.try_inherit_runtime_impl(previous, true, true, None)
     }
 
     fn try_inherit_runtime_impl(
@@ -2082,7 +2100,15 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
         fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<(), PlaybackHandoffError> {
+        if continuation.is_some()
+            && (fenced_restart
+                || self.session_runtime.is_none()
+                || previous.session_runtime.is_none())
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
         if previous
             .session_runtime
             .as_ref()
@@ -2160,6 +2186,8 @@ impl Playback {
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
+            } else if let Some(continuation) = continuation {
+                next.try_inherit_state_live_with_foreign_continuation_from(old, continuation)
             } else {
                 next.try_inherit_state_live_from(old)
             })
@@ -2625,19 +2653,41 @@ impl Playback {
         ordinary: bool,
         fenced_restart: bool,
     ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
+        self.preview_stream_handoff_with_continuation_and_report(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // Exact borrowed comparison plus the existing preview inputs.
+    pub(crate) fn preview_stream_handoff_with_continuation_and_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+    ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
         if fenced_restart && !self.live_restart_requested() {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff_with_policy_and_report(
+        next.preview_stream_handoff_with_continuation_and_report(
             old,
             maximum_frames,
             playing,
             visit,
             ordinary,
             fenced_restart,
+            continuation,
         )
         .map_err(PlaybackHandoffError::Session)
     }
