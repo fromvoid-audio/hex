@@ -1290,6 +1290,7 @@ impl SignalGraph {
                 Some(FreshHistory::Track(_)) | None => self.returns.len() != other.returns.len(),
                 Some(FreshHistory::Return(id)) => {
                     self.added_isolated_return_from(other) != Some(id)
+                        && other.added_isolated_return_from(self) != Some(id)
                 }
             }
             || if let Some(owner) = fresh {
