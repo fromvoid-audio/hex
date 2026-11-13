@@ -215,3 +215,168 @@ fn primed_pcm_origin_requires_processing_clock_offset() {
         }
     }
 }
+
+#[derive(Clone, Copy)]
+enum SilentLatencyCase {
+    Eligible,
+    ActiveChangedTrack,
+    StaleMutedHistory,
+    IncreasedMaximum,
+    ConnectedTrack,
+}
+
+#[test]
+fn silent_isolated_latency_addition_preserves_other_track_reverb() {
+    for partition in [1, 257] {
+        silent_latency_addition_case(SilentLatencyCase::Eligible, partition);
+    }
+}
+
+#[test]
+fn unproven_latency_additions_keep_existing_restart_behavior() {
+    for case in [
+        SilentLatencyCase::ActiveChangedTrack,
+        SilentLatencyCase::StaleMutedHistory,
+        SilentLatencyCase::IncreasedMaximum,
+        SilentLatencyCase::ConnectedTrack,
+    ] {
+        silent_latency_addition_case(case, 257);
+    }
+}
+
+fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::Created;
+    let mut f = fixture(&[&[], &[]], 12000);
+    for (index, audio) in f.media.values_mut().enumerate() {
+        let mut samples = vec![[0.0; 2]; 12000];
+        if index == 0
+            && matches!(
+                case,
+                SilentLatencyCase::ActiveChangedTrack | SilentLatencyCase::StaleMutedHistory
+            )
+        {
+            samples[..7000].fill([0.125, -0.0625]);
+        } else {
+            samples[..512].fill([0.25, -0.125]);
+        }
+        *audio = crate::Audio::new(48_000, samples).unwrap();
+    }
+    if !matches!(
+        case,
+        SilentLatencyCase::ActiveChangedTrack | SilentLatencyCase::StaleMutedHistory
+    ) {
+        f.editor
+            .execute(Command::Mute {
+                track: f.tracks[0],
+                muted: true,
+            })
+            .unwrap();
+    }
+    if matches!(case, SilentLatencyCase::ConnectedTrack) {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "room".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+    }
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[1],
+            before: None,
+            state: limiter(),
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let state = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[1],
+            before: None,
+            state,
+        })
+        .unwrap();
+    let old_revision = prepare(&f);
+    let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(old_revision).unwrap();
+    for runtime in [&mut old, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    if matches!(
+        case,
+        SilentLatencyCase::ActiveChangedTrack | SilentLatencyCase::StaleMutedHistory
+    ) {
+        f.editor
+            .execute(Command::Mute {
+                track: f.tracks[0],
+                muted: true,
+            })
+            .unwrap();
+        if matches!(case, SilentLatencyCase::StaleMutedHistory) {
+            let mut muted = SessionPlayback::new(prepare(&f)).unwrap();
+            muted.try_inherit_state_live_from(&mut old).unwrap();
+            old = muted;
+        }
+    }
+    let added = if matches!(case, SilentLatencyCase::IncreasedMaximum) {
+        let definition = &hex_devices::limiter::DEFINITION;
+        definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::limiter::parameter::LOOKAHEAD,
+                ParameterValue::Choice(2),
+            )
+            .unwrap()
+    } else {
+        limiter()
+    };
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: None,
+            state: added,
+        })
+        .unwrap();
+    let revision = prepare(&f);
+    let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    candidate.try_inherit_state_live_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 512];
+    for chunk in actual.chunks_mut(partition) {
+        candidate.render(chunk).unwrap();
+    }
+    let mut expected = [[0.0; 2]; 512];
+    if matches!(case, SilentLatencyCase::Eligible) {
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            expected.iter().flatten().any(|sample| *sample != 0.0),
+            "reference tail must sound"
+        );
+    } else {
+        let mut restart = SessionPlayback::new(revision).unwrap();
+        restart.play_from(6000).unwrap();
+        for chunk in expected.chunks_mut(partition) {
+            restart.render(chunk).unwrap();
+        }
+    }
+    assert_eq!(actual, expected);
+}
