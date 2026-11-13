@@ -953,7 +953,6 @@ fn render_track(
     };
     let source_effects = track
         .source_id()
-        .filter(|_| track.receives_source_audio())
         .and_then(|source| state.project.native_source(source))
         .map_or(&[][..], hex_project::NativeSource::post_instrument_effects);
     let is_source_effect = |id| source_effects.iter().any(|effect| effect.id() == id);
