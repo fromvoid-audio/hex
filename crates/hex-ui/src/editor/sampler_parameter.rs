@@ -342,7 +342,7 @@ impl EditorView {
             request_id: id,
             project_generation: target.generation,
             revision: target.revision,
-            track: target.track,
+            owner: hex_session::service::SamplerParameterOwner::Track(target.track),
             device: target.device,
             parameter: target.parameter,
             value,

@@ -1803,7 +1803,14 @@ pub(super) fn request(value: &Request) -> Description {
             let (generation, revision) = match edit {
                 crate::service::SamplerEdit::Parameter(e) => {
                     description.operation = Some("parameter");
-                    description.field("track", format_args!("{}", e.track.value()));
+                    match e.owner {
+                        crate::service::SamplerParameterOwner::Track(track) => {
+                            description.field("track", format_args!("{}", track.value()))
+                        }
+                        crate::service::SamplerParameterOwner::Source(source) => {
+                            description.field("source", format_args!("{}", source.value()))
+                        }
+                    }
                     description.field("device", format_args!("{}", e.device.value()));
                     description.field("parameter", format_args!("{:?}", e.parameter));
                     description.field("value", format_args!("{}", e.value));

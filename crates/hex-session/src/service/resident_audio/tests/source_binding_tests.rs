@@ -469,3 +469,312 @@ fn source_effect_binding_commits_only_after_its_terminal_and_survives_history() 
     assert_eq!(session.project().snapshot(), expected);
     assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 7);
 }
+
+#[test]
+fn unassigned_sampler_parameter_owner_validates_and_commits_resident_history() {
+    let files = sampler_export::tests::Files::new(false);
+    let mut session = interactive_sampler_session(&files);
+    let mut sink = OfflineSink {
+        observed: Arc::new(Observed::default()),
+        pending: None,
+    };
+    let snapshot = prepare(&session, &mut sink);
+    let track = session.project().tracks()[0].id();
+    let source = session.project().track(track).unwrap().source_id().unwrap();
+    let device = session
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let (_, snapshot) = command(
+        &mut session,
+        &snapshot,
+        &mut sink,
+        Command::BindTrackSource {
+            track,
+            source: None,
+        },
+        1,
+    );
+    let (Created::NativeSource(other), snapshot) = command(
+        &mut session,
+        &snapshot,
+        &mut sink,
+        Command::CreateNativeSource {
+            name: "other".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        },
+        2,
+    ) else {
+        panic!("other source")
+    };
+    let original = session.project().clone();
+    let other_original = original.native_source(other).unwrap().clone();
+    let make_edit = |owner, generation, revision, cancel| SamplerParameterEdit {
+        request_id: 1,
+        project_generation: generation,
+        revision,
+        owner,
+        device,
+        parameter: hex_engine::SamplerParameter::Gain,
+        value: 0.5,
+        cancel,
+    };
+    let cancel = || Arc::new(AtomicBool::new(false));
+    for mut invalid in [
+        make_edit(SamplerParameterOwner::Source(source), 1, 2, cancel()),
+        make_edit(SamplerParameterOwner::Source(source), 0, 1, cancel()),
+        make_edit(SamplerParameterOwner::Track(track), 0, 2, cancel()),
+        make_edit(
+            SamplerParameterOwner::Source(source),
+            0,
+            2,
+            Arc::new(AtomicBool::new(true)),
+        ),
+        make_edit(SamplerParameterOwner::Source(other), 0, 2, cancel()),
+    ]
+    .map(SamplerEdit::Parameter)
+    {
+        assert!(invalid.validate(&session, 0, 2).is_err());
+        assert!(invalid.validate_resident(&session, 0, 2).is_err());
+        assert_eq!(session.project(), &original);
+    }
+    let mut edit = SamplerEdit::Parameter(make_edit(
+        SamplerParameterOwner::Source(source),
+        0,
+        2,
+        cancel(),
+    ));
+    assert!(edit.validate(&session, 0, 2).unwrap());
+    assert!(edit.validate_resident(&session, 0, 2).unwrap());
+    let (_, edited_snapshot) = session
+        .sampler_resident_edit(
+            edit,
+            context(3),
+            &mut sink,
+            sampler_export::Admission::default(),
+            Some(&snapshot),
+        )
+        .unwrap()
+        .expect("parameter change");
+    let edited = session.project().clone();
+    assert_eq!(edited.track(track).unwrap().source_id(), None);
+    assert_eq!(
+        edited.native_source(source).unwrap().instrument().id(),
+        device
+    );
+    assert_eq!(
+        hex_engine::sampler_parameter_value_on_control(
+            hex_engine::SamplerParameter::Gain,
+            edited.device(device).unwrap().state()
+        )
+        .unwrap(),
+        0.5
+    );
+    assert_eq!(edited.native_source(other).unwrap(), &other_original);
+    let undo = history(&mut session, &edited_snapshot, &mut sink, false, 4);
+    assert_eq!(session.project(), &original);
+    let redo = history(&mut session, &undo, &mut sink, true, 5);
+    assert_eq!(session.project(), &edited);
+    let (_, bound) = command(
+        &mut session,
+        &redo,
+        &mut sink,
+        Command::BindTrackSource {
+            track,
+            source: Some(source),
+        },
+        6,
+    );
+    let bound_project = session.project().clone();
+    let mut stale = SamplerEdit::Parameter(make_edit(
+        SamplerParameterOwner::Source(source),
+        0,
+        6,
+        cancel(),
+    ));
+    assert!(stale.validate(&session, 0, 6).is_err());
+    assert!(stale.validate_resident(&session, 0, 6).is_err());
+    assert_eq!(session.project(), &bound_project);
+    let mut track_edit = SamplerEdit::Parameter(make_edit(
+        SamplerParameterOwner::Track(track),
+        0,
+        6,
+        cancel(),
+    ));
+    assert!(!track_edit.validate(&session, 0, 6).unwrap());
+    assert!(!track_edit.validate_resident(&session, 0, 6).unwrap());
+    let replacement = hex_project::default_instrument_state().unwrap();
+    let (_, replaced) = command(
+        &mut session,
+        &bound,
+        &mut sink,
+        Command::ReplaceTrackInstrument {
+            track,
+            replacing: device,
+            state: replacement,
+        },
+        7,
+    );
+    let (_, unbound) = command(
+        &mut session,
+        &replaced,
+        &mut sink,
+        Command::BindTrackSource {
+            track,
+            source: None,
+        },
+        8,
+    );
+    let after_replace = session.project().clone();
+    let mut stale = SamplerEdit::Parameter(make_edit(
+        SamplerParameterOwner::Source(source),
+        0,
+        8,
+        cancel(),
+    ));
+    assert!(stale.validate(&session, 0, 8).is_err());
+    assert!(stale.validate_resident(&session, 0, 8).is_err());
+    assert_eq!(session.project(), &after_replace);
+    let (_, removed) = command(
+        &mut session,
+        &unbound,
+        &mut sink,
+        Command::RemoveNativeSource(source),
+        9,
+    );
+    let after_remove = session.project().clone();
+    let mut stale = SamplerEdit::Parameter(make_edit(
+        SamplerParameterOwner::Source(source),
+        0,
+        9,
+        cancel(),
+    ));
+    assert!(stale.validate(&session, 0, 9).is_err());
+    assert!(stale.validate_resident(&session, 0, 9).is_err());
+    assert_eq!(session.project(), &after_remove);
+    assert_eq!(
+        session.project().native_source(other).unwrap(),
+        &other_original
+    );
+    drop(removed);
+}
+
+#[test]
+fn resident_worker_edits_unassigned_sampler_without_binding_a_track() {
+    let observed = Arc::new(Observed::default());
+    let bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+    let service = Service::with_audio_sink_and_native_reservation(
+        16,
+        1024,
+        None,
+        Box::new(OfflineSink {
+            observed,
+            pending: None,
+        }),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: bytes * 2,
+                max_construction_peak_bytes: bytes * 3,
+            },
+            max_scan_frames: 1024,
+        },
+    )
+    .unwrap();
+    let receive = || {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
+    };
+    receive();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "unassigned".into(),
+        }))
+        .unwrap();
+    let added = receive();
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let track = added.state.project.tracks()[0].id();
+    let files = sampler_export::tests::Files::new(false);
+    service
+        .submit(Request::LoadFirstSampler {
+            request_id: 2,
+            project_generation: 0,
+            revision: added.state.revision,
+            track,
+            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            path: files.source().to_owned(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        })
+        .unwrap();
+    let loaded = receive();
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    let source = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let device = loaded
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track,
+            source: None,
+        }))
+        .unwrap();
+    let created = receive();
+    assert!(created.error.is_none(), "{:?}", created.error);
+    service
+        .submit(Request::SamplerEdit(SamplerEdit::Parameter(
+            SamplerParameterEdit {
+                request_id: 1,
+                project_generation: 0,
+                revision: created.state.revision,
+                owner: SamplerParameterOwner::Source(source),
+                device,
+                parameter: hex_engine::SamplerParameter::Gain,
+                value: 0.5,
+                cancel: Arc::new(AtomicBool::new(false)),
+            },
+        )))
+        .unwrap();
+    let edited = receive();
+    assert!(edited.error.is_none(), "{:?}", edited.error);
+    assert_eq!(edited.sampler_edit_complete, Some(1));
+    assert_eq!(edited.state.project.track(track).unwrap().source_id(), None);
+    assert_eq!(
+        hex_engine::sampler_parameter_value_on_control(
+            hex_engine::SamplerParameter::Gain,
+            edited
+                .state
+                .project
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .state(),
+        )
+        .unwrap(),
+        0.5
+    );
+    service.submit(Request::Undo).unwrap();
+    let undone = receive();
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project, created.state.project);
+    service.submit(Request::Redo).unwrap();
+    let redone = receive();
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, edited.state.project);
+}

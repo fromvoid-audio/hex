@@ -35,12 +35,10 @@ fn terminal(
     let mut event = crate::editor::arrangement_main_track_ui_test::completed_event(old);
     let mut state = copy_fixture_state(old);
     if success {
-        let device = state
-            .project
-            .track(request.track)
-            .unwrap()
-            .instrument()
-            .unwrap();
+        let hex_session::service::SamplerParameterOwner::Track(track) = request.owner else {
+            panic!("expected track owner")
+        };
+        let device = state.project.track(track).unwrap().instrument().unwrap();
         let next = hex_engine::patch_sampler_parameter_on_control(
             request.parameter,
             device.state(),
@@ -57,7 +55,7 @@ fn terminal(
         state.project = Arc::new(model.project().clone());
         state.revision += 1;
         state.can_undo = true;
-        let source = SourceTarget::resolve(view, request.track, request.device).unwrap();
+        let source = SourceTarget::resolve(view, track, request.device).unwrap();
         state.source_overviews = hex_session::source_overview_test_support::Fixture::new(
             source.asset,
             &vec![[0.5, -0.25]; source.frames as usize],

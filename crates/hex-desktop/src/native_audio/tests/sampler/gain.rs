@@ -44,7 +44,7 @@ pub(super) fn edit(
             .context()
             .project_generation,
         revision: state.revision,
-        track,
+        owner: hex_session::service::SamplerParameterOwner::Track(track),
         device,
         parameter: hex_engine::SamplerParameter::Gain,
         value: 0.5,
