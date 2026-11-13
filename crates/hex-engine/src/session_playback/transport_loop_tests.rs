@@ -108,6 +108,32 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
         live_oracle.performance_frame()
     );
     assert_eq!(live_actual, live_expected);
+}
+
+#[test]
+fn compensated_tempo_anchor_preserves_samples_and_clock() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(compensated_tempo_anchor_preserves_samples_and_clock_inner)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
+    let (linear, looped, media) = limiter_loop_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let loop_revision = prepare(&looped);
     let mut tempo_snapshot = linear.snapshot();
     tempo_snapshot.tempo_points = vec![TempoPoint::new(
         BeatTime::ZERO,
@@ -172,6 +198,8 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
     for block in [1, 257] {
         let mut running = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
         running.apply(SessionPlaybackCommand::Play).unwrap();
+        let old_strong = Arc::strong_count(&old_revision);
+        let new_strong = Arc::strong_count(&new_revision);
         let anchor = PreparedTempoAnchor::prepare(
             Arc::clone(&old_revision),
             Arc::clone(&new_revision),
@@ -179,9 +207,8 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
             600,
         )
         .unwrap();
-        let retained = anchor.retained_revisions();
-        assert!(std::ptr::eq(retained[0], old_revision.as_ref()));
-        assert!(std::ptr::eq(retained[1], new_revision.as_ref()));
+        assert_eq!(Arc::strong_count(&old_revision), old_strong);
+        assert_eq!(Arc::strong_count(&new_revision), new_strong);
         for chunk in [[0.0; 2]; 599].chunks_mut(block) {
             running.render(chunk).unwrap();
         }
@@ -358,16 +385,67 @@ fn prepared_tempo_anchor_after_loop_is_linear() {
 }
 
 #[test]
-fn projected_tempo_cut_matches_running_loop() {
-    run_projected_tempo_cut(false);
+fn tempo_anchor_does_not_retain_or_reidentify_expired_revisions() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (linear, _, media) = limiter_loop_fixture();
+            let prepare = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare(
+                        project,
+                        &media,
+                        Arc::new(hex_devices::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let mut snapshot = linear.snapshot();
+            snapshot.tempo_points = vec![TempoPoint::new(
+                BeatTime::ZERO,
+                Tempo::new(90_000_000).unwrap(),
+            )];
+            let edited = legacy_project_from_snapshot(snapshot).unwrap();
+            let old = prepare(&linear);
+            let candidate = prepare(&edited);
+            let old_weak = Arc::downgrade(&old);
+            let candidate_weak = Arc::downgrade(&candidate);
+            let anchor = PreparedTempoAnchor::prepare(old, candidate, 600, 600).unwrap();
+            assert!(old_weak.upgrade().is_none());
+            assert!(candidate_weak.upgrade().is_none());
+
+            let mut replacement = SessionPlayback::new(prepare(&linear)).unwrap();
+            replacement.apply(SessionPlaybackCommand::Play).unwrap();
+            replacement.render(&mut [[0.0; 2]; 600]).unwrap();
+            let mut next = SessionPlayback::new(prepare(&edited)).unwrap();
+            assert_eq!(
+                next.try_inherit_state_with_tempo_anchor(&mut replacement, &anchor),
+                Err(SessionPlaybackError::InvalidCommand)
+            );
+            assert_eq!(replacement.arrangement_frame(), 600);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn projected_tempo_cut_matches_running_loop_one_frame() {
+    run_projected_tempo_cut(false, &[1]);
+}
+
+#[test]
+fn projected_tempo_cut_matches_running_loop_257_frames() {
+    run_projected_tempo_cut(false, &[257]);
 }
 
 #[test]
 fn projected_tempo_cut_after_loop_is_linear() {
-    run_projected_tempo_cut(true);
+    run_projected_tempo_cut(true, &[1, 257]);
 }
 
-fn run_projected_tempo_cut(post_loop: bool) {
+fn run_projected_tempo_cut(post_loop: bool, blocks: &'static [usize]) {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
@@ -390,7 +468,7 @@ fn run_projected_tempo_cut(post_loop: bool) {
                 Tempo::new(90_000_000).unwrap(),
             )];
             let candidate = prepare(&legacy_project_from_snapshot(snapshot).unwrap());
-            for block in [1, 257] {
+            for &block in blocks {
                 let distances: &[u64] = if post_loop {
                     &[0, 2300]
                 } else {

@@ -6,13 +6,16 @@ use std::collections::BTreeMap;
 
 #[test]
 fn compensated_tempo_restart_publishes_without_callback_allocations() {
-    for (partition, compensated, looped) in [
-        (1, true, false),
-        (257, true, false),
-        (257, false, false),
-        (1, true, true),
-        (257, true, true),
-    ] {
+    run_tempo_cases(&[(1, true, false), (257, true, false), (257, false, false)]);
+}
+
+#[test]
+fn looped_compensated_tempo_restart_publishes_without_callback_allocations() {
+    run_tempo_cases(&[(1, true, true), (257, true, true)]);
+}
+
+fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
+    for &(partition, compensated, looped) in cases {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { track, asset, .. } = editor
             .execute(Command::ImportAudioTrack {
@@ -69,9 +72,28 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
         let old_for_anchor = Arc::clone(&old);
         assert_eq!(old.arrangement().main_latency_frames() > 0, compensated);
         let (mut control, mut callback) = channel(48_000).unwrap();
-        control
-            .publish(Playback::try_from_prepared_with_session(old).unwrap())
+        assert!(matches!(
+            control.prepare_fenced_tempo_anchor(1, 1, Arc::clone(&old), Arc::clone(&old), 1),
+            Ok(None)
+        ));
+        let source_revision = control
+            .publish_with_policy_and_context_generation(
+                Playback::try_from_prepared_with_session(old).unwrap(),
+                PublicationPolicy::InstallFreshRuntime,
+                1,
+            )
             .unwrap();
+        callback.begin_block();
+        assert!(matches!(
+            control.prepare_fenced_tempo_anchor(
+                source_revision,
+                1,
+                Arc::clone(&old_for_anchor),
+                Arc::clone(&old_for_anchor),
+                1
+            ),
+            Ok(None)
+        ));
         control.command(PlaybackCommand::Play).unwrap();
         let cut_frames = if looped { 4600 } else { 600 };
         for chunk in vec![[0.0; 2]; cut_frames].chunks_mut(partition) {
@@ -91,29 +113,44 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
             compensated
         );
         if compensated {
+            for (revision, generation) in [(source_revision + 1, 1), (source_revision, 2)] {
+                assert!(matches!(
+                    control.prepare_fenced_tempo_anchor(
+                        revision,
+                        generation,
+                        Arc::clone(&old_for_anchor),
+                        Arc::clone(&candidate),
+                        cut_frames as u64 + 257
+                    ),
+                    Ok(None)
+                ));
+            }
+            assert!(matches!(
+                control.prepare_fenced_tempo_anchor(
+                    source_revision,
+                    1,
+                    Arc::clone(&old_for_anchor),
+                    Arc::clone(&candidate),
+                    cut_frames as u64 - 1
+                ),
+                Err(hex_engine::session_playback::SessionPlaybackError::InvalidCommand)
+            ));
             let mut donor =
                 Playback::try_from_prepared_with_session(Arc::clone(&old_for_anchor)).unwrap();
             donor.apply(PlaybackCommand::Play);
             donor.render(&mut vec![[0.0; 2]; cut_frames]).unwrap();
-            let anchor = if looped {
-                let state = donor.arrangement_loop_state().unwrap();
-                assert_eq!(state.pass, 2);
-                hex_engine::session_playback::PreparedTempoAnchor::prepare_with_loop_state(
-                    old_for_anchor,
+            let (anchor, fence) = control
+                .prepare_fenced_tempo_anchor(
+                    source_revision,
+                    1,
+                    Arc::clone(&old_for_anchor),
                     Arc::clone(&candidate),
-                    600,
-                    cut_frames as u64,
-                    state,
+                    cut_frames as u64 + 257,
                 )
-            } else {
-                hex_engine::session_playback::PreparedTempoAnchor::prepare(
-                    old_for_anchor,
-                    Arc::clone(&candidate),
-                    600,
-                    cut_frames as u64,
-                )
-            }
-            .unwrap();
+                .unwrap()
+                .unwrap();
+            assert_eq!(fence.expected_active_revision(), source_revision);
+            donor.render(&mut [[0.0; 2]; 257]).unwrap();
             let mut planned =
                 Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
             let measured = allocation_counter::measure(|| {
@@ -130,7 +167,17 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
                 ),
                 (0, 0, 0, 0)
             );
-            assert_eq!(planned.position(), 800);
+            let mut fresh =
+                Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
+            fresh.apply(PlaybackCommand::PlayFrom(planned.position()));
+            let mut projected = [[0.0; 2]; 512];
+            let mut expected = projected;
+            planned.render(&mut projected).unwrap();
+            fresh.render(&mut expected).unwrap();
+            assert_eq!(
+                projected, expected,
+                "future cut partition={partition} looped={looped}"
+            );
         }
         let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
         oracle.apply(PlaybackCommand::PlayFrom(800));
@@ -163,6 +210,17 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
             "partition {partition}, compensated {compensated}"
         );
         assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+        control.command(PlaybackCommand::Seek(5)).unwrap();
+        assert!(matches!(
+            control.prepare_fenced_tempo_anchor(
+                applied,
+                1,
+                Arc::clone(&old_for_anchor),
+                Arc::clone(&old_for_anchor),
+                cut_frames as u64 + 2048,
+            ),
+            Ok(None)
+        ));
         control.reclaim();
         control.request_shutdown();
         callback.begin_block();
