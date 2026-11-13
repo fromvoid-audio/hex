@@ -1902,7 +1902,8 @@ impl NativeRuntimeChain {
                             || allow_control_edit
                                 && left.matches_memoryless_modulation_handoff(right)
                             // A static, zero-latency source matrix has no DSP
-                            // history to retarget. The existing identity preflight
+                            // history to retarget, even when different authored
+                            // settings resolve to the same matrix. The existing identity preflight
                             // and inherited matrix ramp preserve its live signal.
                             || allow_control_edit
                                 && matches!(left.owner, ProcessorChainOwner::Source(_))
@@ -1918,7 +1919,6 @@ impl NativeRuntimeChain {
                                 && right.automation.is_empty()
                                 && left.modulation.is_none()
                                 && right.modulation.is_none()
-                                && left.matrix != right.matrix
                                 && self.can_retarget_parameters_from_range(previous, index..index + 1)
                             || allow_control_edit
                                 && matches!(left.owner, ProcessorChainOwner::Source(_))
@@ -1929,7 +1929,6 @@ impl NativeRuntimeChain {
                                 && right.automation.is_empty()
                                 && left.modulation.is_none()
                                 && right.modulation.is_none()
-                                && left.matrix != right.matrix
                                 && left.runtime.can_retarget_source_host_matrix_from(&right.runtime)
                                 && self.can_retarget_parameters_from_range(previous, index..index + 1)
                             || allow_control_edit
@@ -5698,7 +5697,13 @@ mod tests {
         let candidate = make(1, 4, 48_000, 2.0, Some(2), false, None);
         assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
         assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        let equivalent = make(1, 4, 48_000, 1.0, Some(2), false, None);
+        assert!(equivalent.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!equivalent.can_transfer_source_recipe_history_from(&old, false));
         for bad in [
+            make(2, 4, 48_000, 1.0, Some(2), false, None),
+            make(1, 5, 48_000, 1.0, Some(2), false, None),
+            make(1, 4, 48_000, 1.0, None, false, None),
             make(2, 4, 48_000, 2.0, Some(2), false, None),
             make(1, 5, 48_000, 2.0, Some(2), false, None),
             make(1, 4, 44_100, 2.0, Some(2), false, None),
@@ -5715,6 +5720,8 @@ mod tests {
             .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
             .unwrap();
         assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        automated.entries[0].matrix = old.entries[0].matrix;
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
         let factory: std::sync::Arc<dyn PreparedNativeProcessor> =
             std::sync::Arc::new(DelayedTailPrepared);
         let stateful_old = make(
@@ -5728,6 +5735,9 @@ mod tests {
         );
         let stateful_new = make(1, 4, 48_000, 2.0, Some(2), false, Some(factory));
         assert!(!stateful_new.can_transfer_source_recipe_history_from(&stateful_old, true));
+        let mut equivalent_stateful = stateful_new;
+        equivalent_stateful.entries[0].matrix = stateful_old.entries[0].matrix;
+        assert!(!equivalent_stateful.can_transfer_source_recipe_history_from(&stateful_old, true));
     }
 
     struct SourceMatrixWitness(bool);
