@@ -1706,7 +1706,7 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
         }
     }
     let (mut editor, identity) = fixture();
-    let Created::Imported { asset, .. } = editor
+    let Created::Imported { asset, track, .. } = editor
         .execute(Command::ImportAudioTrack {
             name: "stream".into(),
             path: "stream.wav".into(),
@@ -1717,6 +1717,16 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     else {
         panic!("stream")
     };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: crate::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
     let key = StreamSourceKey::new(23, asset);
     let source =
         StreamedSourceMetadata::new(key, 48_000, 48_000, 8192, 8192, 0, [0x48; 32]).unwrap();
@@ -1738,7 +1748,8 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
         instrument_profile: true,
         epoch: 1,
     };
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::utility::UTILITY_DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let revision = Arc::new(
         PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
@@ -1790,14 +1801,55 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     let mut runtime = playback();
     let mut endpoint = NoteEndpoint::default();
     let mut output = [[0.0; 2]; 80];
-    runtime
-        .render_with_timed_transport_pages_and_foreign_processors(
-            &mut output,
-            &commands,
-            &mut pages,
-            &mut endpoint,
-        )
-        .unwrap();
+    let mut master = [[0.0; 2]; 80];
+    let mut track_output = [[0.0; 2]; 80];
+    let mut clock = [None; 80];
+    let mut node_calls = Vec::new();
+    {
+        let mut observe = |signal, offset, frames: &[Frame]| {
+            let target = match signal {
+                crate::ProjectSignal::Master => &mut master,
+                crate::ProjectSignal::Track(id) if id == track.value() => &mut track_output,
+                other => panic!("unexpected signal {other:?}"),
+            };
+            target[offset..offset + frames.len()].copy_from_slice(frames);
+        };
+        let mut timing = |offset, frame, len, _: &crate::PreparedTempoMap| {
+            for i in 0..len {
+                clock[offset + i] = Some(frame + i as u64);
+            }
+        };
+        let tracks = [track.value()];
+        let mut tap = crate::ProjectOutputTap::new(&tracks, &mut observe)
+            .unwrap()
+            .with_timing(&mut timing);
+        runtime
+            .render_with_timed_transport_foreign_and_signal_observers(
+                &mut output,
+                &commands,
+                Some(&mut pages),
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    node_calls.push((identity, phase, offset, frames.len()))
+                }),
+                Some(&mut tap),
+                &mut endpoint,
+            )
+            .unwrap();
+    }
+    assert_eq!(master, output);
+    assert!(track_output.iter().flatten().any(|value| *value != 0.0));
+    assert!(!node_calls.is_empty());
+    assert!(
+        node_calls
+            .iter()
+            .all(|(_, _, offset, len)| offset + len <= 80)
+    );
+    for offset in [0, 32] {
+        assert!(node_calls.iter().any(|(_, _, at, _)| *at == offset));
+    }
+    assert_eq!(clock[0], Some(0));
+    assert_eq!(clock[32], Some(4093));
+    assert_eq!(clock[64], None);
     let events = &endpoint.notes;
     assert_eq!(events.len(), 4, "{events:?}");
     assert_eq!((events[0].0, events[0].1.on), (0, true));
@@ -1820,14 +1872,21 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     let mut runtime = playback();
     let mut endpoint = NoteEndpoint::default();
     let mut output = [[9.0; 2]; 80];
+    let mut missing_node_calls = 0;
+    let mut missing_project_calls = 0;
+    let mut project = |_, _, _: &[Frame]| missing_project_calls += 1;
+    let mut tap = crate::ProjectOutputTap::new(&[], &mut project).unwrap();
     runtime
-        .render_with_timed_transport_pages_and_foreign_processors(
+        .render_with_timed_transport_foreign_and_signal_observers(
             &mut output,
             &commands,
-            &mut missing,
+            Some(&mut missing),
+            Some(&mut |_, _, _, _: &[Frame]| missing_node_calls += 1),
+            Some(&mut tap),
             &mut endpoint,
         )
         .unwrap();
+    assert!(missing_node_calls > 0 && missing_project_calls > 0);
     assert_eq!(output, [[0.0; 2]; 80]);
     assert_eq!(&endpoint.notes, events);
     assert!(missing.requests.contains(&(key, 0)));
@@ -1843,14 +1902,17 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
         missing: true,
         requests: Vec::new(),
     };
+    let mut invalid_calls = 0;
     assert_eq!(
-        invalid.render_with_timed_transport_pages_and_foreign_processors(
+        invalid.render_with_timed_transport_foreign_and_signal_observers(
             &mut untouched,
             &[Timed {
                 offset: 81,
                 command: PlaybackCommand::Play
             }],
-            &mut untouched_pages,
+            Some(&mut untouched_pages),
+            Some(&mut |_, _, _, _: &[Frame]| invalid_calls += 1),
+            None,
             &mut endpoint,
         ),
         Err(TimedTransportError::InvalidOffset { index: 0 })
@@ -1858,6 +1920,7 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     assert_eq!(untouched, [[9.0; 2]; 80]);
     assert!(untouched_pages.requests.is_empty() && endpoint.notes.is_empty() && !endpoint.rejected);
     assert!(!invalid.playing());
+    assert_eq!(invalid_calls, 0);
 
     let mut runtime = playback();
     let mut endpoint = NoteEndpoint {
@@ -1865,15 +1928,25 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
         ..Default::default()
     };
     let mut output = [[9.0; 2]; 80];
+    let mut prefix_calls = 0;
+    let mut project_calls = 0;
+    let mut project = |_, _, _: &[Frame]| project_calls += 1;
+    let mut tap = crate::ProjectOutputTap::new(&[], &mut project).unwrap();
     assert!(matches!(
-        runtime.render_with_timed_transport_pages_and_foreign_processors(
+        runtime.render_with_timed_transport_foreign_and_signal_observers(
             &mut output,
             &commands,
-            &mut pages,
+            Some(&mut pages),
+            Some(&mut |_, _, offset, frames: &[Frame]| {
+                assert!(offset + frames.len() <= 80);
+                prefix_calls += 1;
+            }),
+            Some(&mut tap),
             &mut endpoint
         ),
         Err(TimedTransportError::Render { offset: 32, .. })
     ));
     assert!(endpoint.rejected);
+    assert!(prefix_calls > 0 && project_calls > 0);
     assert_eq!(output, [[0.0; 2]; 80]);
 }

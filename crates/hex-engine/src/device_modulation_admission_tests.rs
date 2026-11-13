@@ -522,3 +522,144 @@ fn saved_square_lfo_uses_its_shape_at_each_utility_sample() {
         }
     }
 }
+
+#[test]
+fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::ParameterValue;
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Device(local) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("local")
+    };
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "source".into(),
+            devices: vec![
+                hex_project::default_instrument_state().unwrap(),
+                UTILITY_DEFINITION.default_state().unwrap(),
+            ],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let device = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()[0]
+        .id();
+    let eligible = |editor: &Editor, id| {
+        assert!(!crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::MUTE
+        ));
+        let gain = crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::GAIN,
+        );
+        let balance = crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::BALANCE,
+        );
+        let mono = crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::MONO,
+        );
+        assert_eq!(gain, balance);
+        assert_eq!(gain, mono);
+        gain
+    };
+    assert!(!eligible(&editor, local));
+    assert!(!eligible(&editor, device));
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })
+        .unwrap();
+    assert!(eligible(&editor, device));
+    let mode = |editor: &Editor| {
+        crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            parameter::MID_SIDE_ENABLED,
+        )
+    };
+    assert!(mode(&editor));
+    let width = |editor: &Editor| {
+        crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            parameter::WIDTH,
+        )
+    };
+    let mid_side = |editor: &Editor| {
+        crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            parameter::MID_SIDE_BALANCE,
+        )
+    };
+    assert!(width(&editor));
+    assert!(!mid_side(&editor));
+    for (id, value) in [
+        (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(true)),
+        (parameter::CHANNEL, ParameterValue::Choice(1)),
+    ] {
+        let state = UTILITY_DEFINITION
+            .patch_parameter(editor.project().device(device).unwrap().state(), id, value)
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        assert!(!width(&editor));
+        assert_eq!(mid_side(&editor), id == parameter::MID_SIDE_ENABLED);
+        assert_eq!(mode(&editor), id == parameter::MID_SIDE_ENABLED);
+        assert!(eligible(&editor, device));
+        assert!(editor.undo());
+    }
+    for filter in [parameter::DC_REMOVE, parameter::BASS_MONO] {
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                editor.project().device(device).unwrap().state(),
+                filter,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        assert!(eligible(&editor, device));
+        assert!(width(&editor));
+        assert!(editor.undo());
+    }
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    assert!(!eligible(&editor, device));
+    assert!(!mid_side(&editor));
+    assert!(!mode(&editor));
+}

@@ -182,13 +182,25 @@ impl StreamPlayback<'_> {
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        self.preview_stream_handoff_with_report(previous, maximum_frames, playing, visit)
+            .map(|(window, _)| window)
+    }
+    /// Preview stream demand and the running-audio handoff classification.
+    /// The report does not authorize admission or a later publication.
+    pub fn preview_stream_handoff_with_report(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<(StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
         // Constructor/constructor retains its exact existing identity and class
         // preflight. Mixed ownership can only borrow closed Current runtimes;
         // it never changes their owner, anchors, phase or publication eligibility.
         if let (Runtime::Constructor(next), Runtime::Constructor(old)) =
             (&mut self.runtime, &mut previous.runtime)
         {
-            return next.preview_stream_handoff(old, maximum_frames, playing, visit);
+            return next.preview_stream_handoff_with_report(old, maximum_frames, playing, visit);
         }
         fn musical_runtime<'a>(
             runtime: &'a mut Runtime<'_>,
@@ -215,11 +227,14 @@ impl StreamPlayback<'_> {
         let ordinary = matches!(self.runtime, Runtime::Ordinary(..));
         let next = musical_runtime(&mut self.runtime)?;
         let old = musical_runtime(&mut previous.runtime)?;
-        if ordinary {
-            next.preview_ordinary_stream_handoff(old, maximum_frames, playing, visit)
-        } else {
-            next.preview_stream_handoff(old, maximum_frames, playing, visit)
-        }
+        next.preview_stream_handoff_with_report(
+            old,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            false,
+        )
     }
     /// Preview only: the publication owner must validate the actual live fence
     /// and protect these pages before committing the corresponding reset.
@@ -230,10 +245,27 @@ impl StreamPlayback<'_> {
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        self.preview_ordinary_fenced_restart_with_report(previous, maximum_frames, playing, visit)
+            .map(|(window, _)| window)
+    }
+    /// Classify a fenced ordinary restart without committing its fence or pages.
+    pub fn preview_ordinary_fenced_restart_with_report(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<(StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
         match (&mut self.runtime, &mut previous.runtime) {
-            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
-                next.preview_ordinary_fenced_restart(old, maximum_frames, playing, visit)
-            }
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_report(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                    true,
+                    true,
+                ),
             _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
         }
     }

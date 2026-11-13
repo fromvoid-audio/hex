@@ -119,6 +119,16 @@ fn fenced_retained_restart_preview_matches_committed_stream_demand() {
         )
         .unwrap();
     let mut next = Playback::from_prepared(prepare(&retained));
+    assert!(matches!(
+        next.stream_playback(context)
+            .preview_ordinary_fenced_restart_with_report(
+                &mut old.stream_playback(context),
+                32,
+                None,
+                &mut |_| Ok(())
+            ),
+        Err(crate::PlaybackHandoffError::RuntimeFenceChanged)
+    ));
     assert!(next.request_live_restart());
     assert!(
         next.stream_playback(context)
@@ -127,9 +137,9 @@ fn fenced_retained_restart_preview_matches_committed_stream_demand() {
     );
     let position = old.position();
     let mut predicted = Vec::new();
-    let window = next
+    let (window, report) = next
         .stream_playback(context)
-        .preview_ordinary_fenced_restart(
+        .preview_ordinary_fenced_restart_with_report(
             &mut old.stream_playback(context),
             32,
             None,
@@ -139,6 +149,7 @@ fn fenced_retained_restart_preview_matches_committed_stream_demand() {
             },
         )
         .unwrap();
+    assert!(report.running_audio_restart());
     assert_eq!(old.position(), position);
     assert_eq!(window.frames, 32);
     assert!(!predicted.is_empty());
@@ -498,12 +509,16 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
     let mut successor = Playback::from_prepared(streamed);
     let mut resident_successor = Playback::from_prepared(resident);
     let clock = (actual.position(), actual.performance_frame());
-    let window = successor
+    let (window, report) = successor
         .stream_playback(context)
-        .preview_stream_handoff(&mut actual.stream_playback(context), 32, None, &mut |_| {
-            Ok(())
-        })
+        .preview_stream_handoff_with_report(
+            &mut actual.stream_playback(context),
+            32,
+            None,
+            &mut |_| Ok(()),
+        )
         .unwrap();
+    assert!(!report.running_audio_restart());
     assert_eq!(window.frames, 32);
     assert_eq!((actual.position(), actual.performance_frame()), clock);
     successor.try_inherit_runtime_from(&mut actual).unwrap();
