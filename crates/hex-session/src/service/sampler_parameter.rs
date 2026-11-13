@@ -348,20 +348,24 @@ fn validate_replacement_history_forward(
         .map_err(|_| "sampler original frame count exceeds range")?;
     let (template, slot) = hex_engine::sampler_replacement_template_on_control(old, frames)
         .map_err(|e| e.to_string())?;
-    let reference = old
-        .asset_references()
-        .first()
-        .filter(|r| old.asset_references().len() == 1 && r.slot == slot)
-        .ok_or("replacement history requires one original source binding")?;
-    let old_asset = old_project
-        .assets()
-        .find(|asset| asset.id().value() == reference.asset.value())
-        .ok_or("replacement history old source is unavailable")?;
-    if old_asset.id() == added.id()
-        || old_project.asset(added.id()).is_some()
-        || new_project.asset(old_asset.id()) != Some(old_asset)
-    {
-        return Err("next history step does not preserve the old sampler catalog source".into());
+    if old_project.asset(added.id()).is_some() {
+        return Err("next history step does not add a new sampler source".into());
+    }
+    if !hex_engine::is_empty_sampler_state_on_control(old) {
+        let reference = old
+            .asset_references()
+            .first()
+            .filter(|r| old.asset_references().len() == 1 && r.slot == slot)
+            .ok_or("replacement history requires one original source binding")?;
+        let old_asset = old_project
+            .assets()
+            .find(|asset| asset.id().value() == reference.asset.value())
+            .ok_or("replacement history old source is unavailable")?;
+        if old_asset.id() == added.id() || new_project.asset(old_asset.id()) != Some(old_asset) {
+            return Err(
+                "next history step does not preserve the old sampler catalog source".into(),
+            );
+        }
     }
     let expected = template
         .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
