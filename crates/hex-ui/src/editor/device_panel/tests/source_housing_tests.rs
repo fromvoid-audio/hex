@@ -610,6 +610,40 @@ source_mono_case!(
 source_mono_case!(shared_source_mono_refusal, None, false, true);
 
 #[gpui::test]
+fn shared_source_invert_left_with_dc(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(
+        cx,
+        Some(hex_devices::utility::parameter::DC_REMOVE),
+        false,
+        false,
+        hex_devices::utility::parameter::INVERT_LEFT,
+    );
+}
+
+#[gpui::test]
+fn shared_source_invert_right_with_bass(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(
+        cx,
+        Some(hex_devices::utility::parameter::BASS_MONO),
+        true,
+        false,
+        hex_devices::utility::parameter::INVERT_RIGHT,
+    );
+}
+
+#[gpui::test]
+fn shared_source_automated_invert_is_disabled(cx: &mut TestAppContext) {
+    shared_source_mode_inner(
+        cx,
+        Some(hex_devices::utility::parameter::DC_REMOVE),
+        false,
+        false,
+        hex_devices::utility::parameter::INVERT_LEFT,
+        true,
+    );
+}
+
+#[gpui::test]
 fn shared_source_mute_on_and_off(cx: &mut TestAppContext) {
     shared_source_mode_with_filter(
         cx,

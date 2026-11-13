@@ -768,7 +768,7 @@ fn create_parameter_control(
                     return;
                 }
                 view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                let source_matrix_switch = matches!(key.parameter, super::utility_panel::MID_SIDE_ENABLED | super::utility_panel::MONO | super::utility_panel::MUTE)
+                let source_matrix_switch = matches!(key.parameter, super::utility_panel::MID_SIDE_ENABLED | super::utility_panel::MONO | super::utility_panel::MUTE | super::utility_panel::INVERT_LEFT | super::utility_panel::INVERT_RIGHT)
                     && view.state.as_ref().is_some_and(|state| {
                         state.project.device_location(key.device).is_some_and(|location|
                             matches!(location.owner, hex_project::DeviceOwner::Source(_))
