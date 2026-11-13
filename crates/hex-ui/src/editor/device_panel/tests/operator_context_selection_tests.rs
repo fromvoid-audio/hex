@@ -250,6 +250,12 @@ fn unassigned_operator_context_rejects_stale_source_and_selection(cx: &mut TestA
                 .unwrap(),
             &original_track
         );
+        view.clip_view_open = false;
+        assert!(owner.state(view).is_none());
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        assert!(owner.state(view).is_none());
+        view.device_panel_active = true;
         view.selected_track = None;
         assert!(owner.state(view).is_none());
         assert!(!operator_panel::context::select_oscillator(

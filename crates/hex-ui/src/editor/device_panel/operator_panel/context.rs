@@ -89,7 +89,9 @@ impl Owner {
                         && view.device_panel.owner == Some(DevicePanelOwner::Track(track))
                 }
                 InstrumentOwner::Source(source) => {
-                    view.device_panel.owner == Some(DevicePanelOwner::Source(source))
+                    view.clip_view_open
+                        && view.device_panel_active
+                        && view.device_panel.owner == Some(DevicePanelOwner::Source(source))
                         && view.state.as_ref().is_some_and(|state| {
                             view.device_panel.source_manager.source_view.is_some_and(
                                 |(generation, selected, anchor)| {
