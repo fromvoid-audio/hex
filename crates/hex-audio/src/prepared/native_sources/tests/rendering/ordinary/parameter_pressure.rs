@@ -4,6 +4,16 @@ use super::*;
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_parameter_successor_under_stream_pressure_preserves_playback() {
+    pressure_case(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn queued_play_survives_stale_native_parameter_successor() {
+    pressure_case(true);
+}
+
+fn pressure_case(queued_play: bool) {
     let _serial = serial();
     let mut f = fixture_with_quantum("processing", 2, 256);
     let mut ids = Vec::new();
@@ -158,7 +168,19 @@ fn native_parameter_successor_under_stream_pressure_preserves_playback() {
         assert!(Instant::now() < deadline, "current stream did not warm");
         std::thread::yield_now();
     }
-    let (source, transport_epoch) = f.control.status.native_parameter_source(true).unwrap();
+    if queued_play {
+        f.control.command(PlaybackCommand::Pause).unwrap();
+        while f.control.status.playing.load(Acquire) {
+            render(&mut f);
+            assert!(Instant::now() < deadline, "Pause did not finish");
+            std::thread::yield_now();
+        }
+    }
+    let (source, transport_epoch) = f
+        .control
+        .status
+        .native_parameter_source(!queued_play)
+        .unwrap();
     assert_eq!(source.audio_revision, revision);
     let next = compile_streamed(&f, &successor);
     let next_revision = publish_in_context(
@@ -167,50 +189,77 @@ fn native_parameter_successor_under_stream_pressure_preserves_playback() {
         PublicationPolicy::InheritUnderNativeParameter {
             source,
             transport_epoch,
-            playing: true,
+            playing: !queued_play,
         },
         hex_engine::AudioSourceContext {
             editor_revision: source.context.editor_revision + 1,
             ..source.context
         },
     );
-    let before = f.control.status.position.load(Acquire);
-    let pcm = render(&mut f);
-    assert!(
-        baseline
-            .iter()
-            .all(|frame| frame[0] != 0.0 && frame[1] != 0.0)
-    );
-    // This SDK fixture increases its gain by 1/8 per completed block;
-    // the constant 1/4 input therefore rises by exactly 1/32 per frame.
-    for (actual, previous) in pcm.iter().zip(baseline) {
-        assert_eq!(*actual, [previous[0] + 0.03125, previous[1] + 0.03125]);
-    }
-    assert_eq!(f.control.status.position.load(Acquire), before + 256);
-    assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
-    assert_eq!(f.control.status.rejected_revision(), None);
-    assert!(f.control.status.publication_pending.load(Acquire));
-    assert!(!f.control.status.stream_buffering.load(Acquire));
-    f.control.stop();
-    while f
-        .control
-        .status
-        .rejected_revision()
-        .is_none_or(|(id, _)| id != next_revision)
-    {
-        render(&mut f);
-        assert!(
-            Instant::now() < deadline,
-            "priority Stop did not retire successor"
+    if queued_play {
+        let ticket = f
+            .control
+            .command_with_ticket(PlaybackCommand::Play)
+            .unwrap();
+        while f
+            .control
+            .status
+            .rejected_revision()
+            .is_none_or(|(id, _)| id != next_revision)
+            || !f.control.status.playing.load(Acquire)
+        {
+            render(&mut f);
+            assert!(
+                Instant::now() < deadline,
+                "queued Play or stale candidate did not settle"
+            );
+            std::thread::yield_now();
+        }
+        assert!(f.control.status.consumed_command.load(Acquire) >= ticket);
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            f.control.status.rejected_revision(),
+            Some((next_revision, PlaybackHandoffRejection::RuntimeFenceChanged))
         );
-        std::thread::yield_now();
+    } else {
+        let before = f.control.status.position.load(Acquire);
+        let pcm = render(&mut f);
+        assert!(
+            baseline
+                .iter()
+                .all(|frame| frame[0] != 0.0 && frame[1] != 0.0)
+        );
+        // This SDK fixture increases its gain by 1/8 per completed block;
+        // the constant 1/4 input therefore rises by exactly 1/32 per frame.
+        for (actual, previous) in pcm.iter().zip(baseline) {
+            assert_eq!(*actual, [previous[0] + 0.03125, previous[1] + 0.03125]);
+        }
+        assert_eq!(f.control.status.position.load(Acquire), before + 256);
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(f.control.status.rejected_revision(), None);
+        assert!(f.control.status.publication_pending.load(Acquire));
+        assert!(!f.control.status.stream_buffering.load(Acquire));
+        f.control.stop();
+        while f
+            .control
+            .status
+            .rejected_revision()
+            .is_none_or(|(id, _)| id != next_revision)
+        {
+            render(&mut f);
+            assert!(
+                Instant::now() < deadline,
+                "priority Stop did not retire successor"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            f.control.status.rejected_revision(),
+            Some((next_revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+        );
+        assert!(!f.control.status.playing.load(Acquire));
     }
-    assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
-    assert_eq!(
-        f.control.status.rejected_revision(),
-        Some((next_revision, PlaybackHandoffRejection::RuntimeFenceChanged))
-    );
-    assert!(!f.control.status.playing.load(Acquire));
     assert!(f.control.retire_audio_candidate_domain(domain));
     f.control.request_shutdown();
     while f.control.recover_audio_candidate_domain(domain).is_none() {
