@@ -32,6 +32,7 @@ pub(in crate::editor) struct Choice {
     unlink: bool,
     destination: Option<TrackId>,
     receiver: Option<(Option<TrackId>, TrackId)>,
+    add_utility: Option<DeviceId>,
     pub(in crate::editor) label: SharedString,
 }
 
@@ -94,6 +95,17 @@ impl Choice {
             || view.tuning.client.has_pending_requests()
         {
             view.error = Some("source assignment canceled · finish the current edit".into());
+            cx.notify();
+            return;
+        }
+        if let Some(instrument) = self.add_utility {
+            let _ = view.enqueue(Request::AddFirstSourceUtility {
+                project_generation: self.generation,
+                revision: self.revision,
+                track: self.track,
+                source: self.source,
+                instrument,
+            });
             cx.notify();
             return;
         }
@@ -266,6 +278,7 @@ fn open(
                     unlink: false,
                     destination: None,
                     receiver: None,
+                    add_utility: None,
                     label: label.into(),
                 }),
             };
@@ -293,6 +306,7 @@ fn open(
                             unlink: false,
                             destination: Some(linked.id()),
                             receiver: None,
+                            add_utility: None,
                             label: format!(
                                 "  go to · {role} · {}",
                                 hex_session::service::text::verbatim(linked.name())
@@ -315,6 +329,7 @@ fn open(
                             unlink: false,
                             destination: None,
                             receiver: Some((source.receiver(), linked.id())),
+                            add_utility: None,
                             label: format!(
                                 "  make receiver · {}",
                                 hex_session::service::text::verbatim(linked.name())
@@ -326,6 +341,30 @@ fn open(
                 });
             std::iter::once(assignment).chain(tracks)
         })
+        .chain(expected_source.and_then(|source_id| {
+            let source = state.project.native_source(source_id)?;
+            let default = hex_project::default_instrument_state().ok()?;
+            (source.receiver().is_some()
+                && source.post_instrument_effects().is_empty()
+                && source.instrument().state().type_id() == default.type_id())
+            .then(|| MenuItem {
+                label: "add source utility",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::SourcePicker(Choice {
+                    generation,
+                    revision: state.revision,
+                    track,
+                    source: source_id,
+                    expected_source,
+                    unlink: false,
+                    destination: None,
+                    receiver: None,
+                    add_utility: Some(source.instrument().id()),
+                    label: "add utility to source".into(),
+                }),
+            })
+        }))
         .chain(expected_source.map(|source| MenuItem {
             label: "unlink source",
             swatch: None,
@@ -339,6 +378,7 @@ fn open(
                 unlink: true,
                 destination: None,
                 receiver: None,
+                add_utility: None,
                 label: "unlink source".into(),
             }),
         }))
