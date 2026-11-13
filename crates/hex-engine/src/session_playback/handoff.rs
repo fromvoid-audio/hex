@@ -1070,12 +1070,23 @@ impl SessionPlayback {
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old).or_else(|| cold_added_track(old, new))
         });
-        let fresh_history = history_track.filter(|_| {
-            self.compensation
-                .as_ref()
-                .zip(previous.compensation.as_ref())
-                .is_some_and(|(candidate, old)| !candidate.can_copy_from(old, None))
-        });
+        let fresh_history = self
+            .compensation
+            .as_ref()
+            .zip(previous.compensation.as_ref())
+            .and_then(|(candidate, old)| {
+                if candidate.can_copy_from(old, None) {
+                    return None;
+                }
+                history_track
+                    .map(crate::signal_graph::FreshHistory::Track)
+                    .or_else(|| {
+                        candidate
+                            .graph
+                            .added_isolated_return_from(&old.graph)
+                            .map(crate::signal_graph::FreshHistory::Return)
+                    })
+            });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)

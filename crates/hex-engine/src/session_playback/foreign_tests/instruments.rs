@@ -249,11 +249,13 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
         let crate::signal_graph::TrackOutput::Main { edge } = donor.graph.tracks[1].output else {
             panic!("direct main route");
         };
-        assert!(target.can_copy_from(donor, Some(track)));
+        assert!(target.can_copy_from(donor, Some(crate::signal_graph::FreshHistory::Track(track))));
         donor.delays.begin_transaction().unwrap();
         donor.edge(edge, [1.0, 0.0]).unwrap();
         donor.delays.commit_transaction().unwrap();
-        assert!(!target.can_copy_from(donor, Some(track)));
+        assert!(
+            !target.can_copy_from(donor, Some(crate::signal_graph::FreshHistory::Track(track)))
+        );
         donor.delays.begin_transaction().unwrap();
         let mut pending = [[0.0; 2]; 19];
         donor.edge_block(edge, &mut pending).unwrap();
