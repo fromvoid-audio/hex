@@ -1423,6 +1423,7 @@ pub struct Callback {
     stream_outcome_count: usize,
     transport_fade: Option<transport_fade::PendingFade>,
     yield_stream_successor_once: bool,
+    current_quantum_pins: Option<crate::candidate_custody::QuantumPins>,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -1593,6 +1594,7 @@ pub(crate) fn channel_with_interface(
             stream_outcome_count: 0,
             transport_fade: None,
             yield_stream_successor_once: false,
+            current_quantum_pins: None,
             stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -3410,12 +3412,12 @@ impl Callback {
             }
             let mut promotions = None;
             if !forced_refusal && stale_fence.is_none() && next.streams.is_some() {
-                if let Some(mut active) = self
+                let pending_window = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::stream_view)
-                    && active.has_pending_render_window()
-                {
+                    .is_some_and(|active| active.has_pending_render_window());
+                if pending_window {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InheritRuntime
@@ -3423,13 +3425,67 @@ impl Callback {
                             | PublicationPolicy::InheritUnderStoppedNative { .. }
                     ) {
                         // Give an inheriting successor's predecessor a chance
-                        // to commit its exact pending window first.
+                        // to commit its exact pending window first, while
+                        // bounding a current demand that can never fit.
+                        if let Some(frames) = frames {
+                            let mut reservation = self.reserve_current_stream_window(frames);
+                            if matches!(
+                                reservation,
+                                Err(crate::candidate_custody::QuantumFailure::Capacity)
+                            ) {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                reservation = self.reserve_current_stream_window(frames);
+                            }
+                            match reservation {
+                                Ok(Some(pins)) => self.current_quantum_pins = Some(pins),
+                                Ok(None)
+                                | Err(crate::candidate_custody::QuantumFailure::PendingAction) => {}
+                                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                                    if !next
+                                        .streams
+                                        .as_mut()
+                                        .is_some_and(|streams| streams.retry_capacity_conflict())
+                                    {
+                                        if let Some(streams) = next.streams.as_mut() {
+                                            streams.cancel_install(&mut self.domain_pages);
+                                        }
+                                        self.reject_publication(
+                                            next.revision,
+                                            PlaybackHandoffRejection::StreamedPageCapacity,
+                                        );
+                                        self.return_graph(next);
+                                        self.status.publication_pending.store(false, Release);
+                                        return;
+                                    }
+                                }
+                                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                                    if let Some(streams) = next.streams.as_mut() {
+                                        streams.cancel_install(&mut self.domain_pages);
+                                    }
+                                    self.reject_publication(
+                                        next.revision,
+                                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    );
+                                    self.return_graph(next);
+                                    self.status.publication_pending.store(false, Release);
+                                    return;
+                                }
+                            }
+                        }
                         self.deferred = Some(next);
                         return;
                     }
                     // A fresh replacement is a recovery path when the current
                     // source cannot complete; it must not wait on that source.
-                    active.cancel_pending_render_window(&mut self.domain_pages);
+                    if let Some(mut active) = self
+                        .active
+                        .as_mut()
+                        .and_then(ActivePublication::stream_view)
+                    {
+                        active.cancel_pending_render_window(&mut self.domain_pages);
+                    }
                 }
                 self.cancel_active_stream_action();
                 if let Some(mut active) = self
@@ -3461,6 +3517,70 @@ impl Callback {
                     self.return_graph(next);
                     self.status.publication_pending.store(false, Release);
                     return;
+                }
+                if let Some(frames) = frames {
+                    let mut reservation = self.reserve_current_stream_window(frames);
+                    if matches!(
+                        reservation,
+                        Err(crate::candidate_custody::QuantumFailure::Capacity)
+                    ) {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        reservation = self.reserve_current_stream_window(frames);
+                    }
+                    let refusal = match reservation {
+                        Ok(Some(pins)) => {
+                            let complete = pins.complete();
+                            self.current_quantum_pins = Some(pins);
+                            if !complete
+                                && matches!(
+                                    next.policy,
+                                    PublicationPolicy::InheritRuntime
+                                        | PublicationPolicy::InheritUnderArrangement(_)
+                                        | PublicationPolicy::InheritUnderStoppedNative { .. }
+                                )
+                            {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            None
+                        }
+                        Ok(None) => None,
+                        Err(crate::candidate_custody::QuantumFailure::PendingAction) => {
+                            self.deferred = Some(next);
+                            return;
+                        }
+                        Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                            if next
+                                .streams
+                                .as_mut()
+                                .is_some_and(|streams| streams.retry_capacity_conflict())
+                            {
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            Some(PlaybackHandoffRejection::StreamedPageCapacity)
+                        }
+                        Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                            Some(PlaybackHandoffRejection::StreamedPagesNotReady)
+                        }
+                    };
+                    if let Some(reason) = refusal {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                            cancellation.finish();
+                        }
+                        self.reject_publication(next.revision, reason);
+                        self.return_graph(next);
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
                 }
                 let previous = if matches!(
                     next.policy,
@@ -3825,6 +3945,7 @@ impl Callback {
                     }
                     let diagnostic_context = next.source_context;
                     let previous = self.active.replace(ActivePublication::Legacy(next));
+                    self.release_current_quantum_pins();
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
                     // native references. No lock/allocation/owner drop occurs.
@@ -4387,92 +4508,8 @@ impl Callback {
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
-        let old_revision = self
-            .active
-            .as_ref()
-            .and_then(ActivePublication::current)
-            .map(|active| (active.revision, active.control_context_generation));
-        let successor = !output.is_empty()
-            && (self
-                .deferred
-                .as_ref()
-                .is_some_and(|next| next.streams.is_some())
-                || self
-                    .deferred_eligible
-                    .as_ref()
-                    .is_some_and(|next| next.streaming_enabled()));
-        let mut pins = None;
-        let mut allow_successor = true;
-        if !self.yield_stream_successor_once
-            && !self.status.closing.load(Acquire)
-            && !self.status.device_fault.load(Acquire)
-            && self
-                .deferred_eligible
-                .as_ref()
-                .is_some_and(|next| next.streaming_enabled())
-        {
-            // Eligible publication has always invalidated the predecessor's
-            // pending action before attempting streamed readiness.
-            self.cancel_active_stream_action();
-        }
-        if successor
-            && self
-                .active
-                .as_ref()
-                .is_some_and(ActivePublication::streaming_enabled)
-        {
-            let reserve = |this: &mut Self| {
-                this.active
-                    .as_mut()
-                    .and_then(ActivePublication::stream_view)
-                    .ok_or(crate::candidate_custody::QuantumFailure::Invalid)?
-                    .reserve_current_quantum(
-                        &mut this.domain_pages,
-                        output.len(),
-                        this.stream_pending_play.is_some(),
-                    )
-            };
-            match reserve(self) {
-                Ok(reservation) => {
-                    if !reservation.complete() {
-                        self.yield_pending_stream_successor();
-                        allow_successor = false;
-                    }
-                    pins = Some(reservation);
-                }
-                Err(_) => {
-                    self.yield_pending_stream_successor();
-                    match reserve(self) {
-                        Ok(reservation) => {
-                            allow_successor = reservation.complete();
-                            pins = Some(reservation);
-                        }
-                        Err(reason) => {
-                            allow_successor = false;
-                            match reason {
-                                crate::candidate_custody::QuantumFailure::PendingAction => {}
-                                crate::candidate_custody::QuantumFailure::Capacity => {
-                                    if !self.retry_pending_stream_capacity() {
-                                        self.reject_pending_stream_successor(
-                                            PlaybackHandoffRejection::StreamedPageCapacity,
-                                        );
-                                    }
-                                }
-                                crate::candidate_custody::QuantumFailure::Invalid => {
-                                    self.reject_pending_stream_successor(
-                                        PlaybackHandoffRejection::StreamedPagesNotReady,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let result = self.render_inner(output, allow_successor, old_revision, &mut pins);
-        if let Some(reservation) = pins {
-            reservation.release(&mut self.domain_pages);
-        }
+        let result = self.render_inner(output);
+        self.release_current_quantum_pins();
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if result.is_ok()
@@ -4535,13 +4572,7 @@ impl Callback {
             );
         }
     }
-    fn render_inner(
-        &mut self,
-        output: &mut [Frame],
-        allow_successor: bool,
-        old_revision: Option<(u64, u64)>,
-        pins: &mut Option<crate::candidate_custody::QuantumPins>,
-    ) -> Result<(), Invalid> {
+    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
@@ -4553,8 +4584,7 @@ impl Callback {
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
         }
-        if allow_successor
-            && !yield_successor
+        if !yield_successor
             && !self.status.closing.load(Acquire)
             && self
                 .deferred
@@ -4564,8 +4594,7 @@ impl Callback {
             self.advance_legacy_publication(Some(output.len()));
         }
 
-        if allow_successor
-            && !yield_successor
+        if !yield_successor
             && !self.status.closing.load(Acquire)
             && self
                 .deferred_eligible
@@ -4573,16 +4602,6 @@ impl Callback {
                 .is_some_and(|next| next.streaming_enabled())
         {
             self.advance_eligible_publication(Some(output.len()));
-        }
-        if old_revision
-            != self
-                .active
-                .as_ref()
-                .and_then(ActivePublication::current)
-                .map(|active| (active.revision, active.control_context_generation))
-            && let Some(reservation) = pins.take()
-        {
-            reservation.release(&mut self.domain_pages);
         }
         if !output.is_empty() {
             self.prepare_midi_recording_quantum(output.len());

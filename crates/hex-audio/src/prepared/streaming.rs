@@ -82,6 +82,38 @@ impl Status {
     }
 }
 impl Callback {
+    /// Held only during one render invocation, after candidate validation and
+    /// until either the actual graph swap or completion of the old output.
+    pub(super) fn reserve_current_stream_window(
+        &mut self,
+        frames: usize,
+    ) -> Result<
+        Option<crate::candidate_custody::QuantumPins>,
+        crate::candidate_custody::QuantumFailure,
+    > {
+        if self.current_quantum_pins.is_some() {
+            return Err(crate::candidate_custody::QuantumFailure::PendingAction);
+        }
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        else {
+            return Ok(None);
+        };
+        active
+            .reserve_current_quantum(
+                &mut self.domain_pages,
+                frames,
+                self.stream_pending_play.is_some(),
+            )
+            .map(Some)
+    }
+    pub(super) fn release_current_quantum_pins(&mut self) {
+        if let Some(pins) = self.current_quantum_pins.take() {
+            pins.release(&mut self.domain_pages);
+        }
+    }
     pub(super) fn resolve_recovery_seek(
         &mut self,
         action_pending: bool,
@@ -121,35 +153,12 @@ impl Callback {
         }
         yielded
     }
-    pub(super) fn retry_pending_stream_capacity(&mut self) -> bool {
-        if let Some(streams) = self
-            .deferred
-            .as_mut()
-            .and_then(|next| next.streams.as_mut())
-        {
-            return streams.retry_capacity_conflict();
-        }
+    pub(super) fn retry_pending_eligible_capacity(&mut self) -> bool {
         self.deferred_eligible
             .as_mut()
             .is_some_and(|next| next.retry_stream_capacity_conflict())
     }
-    pub(super) fn reject_pending_stream_successor(&mut self, reason: PlaybackHandoffRejection) {
-        if self
-            .deferred
-            .as_ref()
-            .is_some_and(|next| next.streams.is_some())
-            && let Some(mut next) = self.deferred.take()
-        {
-            if let Some(streams) = next.streams.as_mut() {
-                streams.cancel_install(&mut self.domain_pages);
-            }
-            if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
-                cancellation.finish();
-            }
-            self.reject_publication(next.revision, reason);
-            self.return_graph(next);
-            self.status.publication_pending.store(false, Release);
-        }
+    pub(super) fn reject_pending_eligible_successor(&mut self, reason: PlaybackHandoffRejection) {
         if self
             .deferred_eligible
             .as_ref()

@@ -516,12 +516,55 @@ impl Callback {
         };
         let revision = next.revision();
         let context = next.diagnostic_context();
+        let streaming_enabled = next.streaming_enabled();
         self.trace_audio(
             AudioDiagnosticKind::PublicationAttempt,
             revision,
             context,
             frames.unwrap_or(0),
         );
+        if let Some(frames) = frames
+            && streaming_enabled
+        {
+            let mut reservation = self.reserve_current_stream_window(frames);
+            if matches!(
+                reservation,
+                Err(crate::candidate_custody::QuantumFailure::Capacity)
+            ) {
+                if let Some(next) = self.deferred_eligible.as_mut() {
+                    next.cancel_stream_readiness(&mut self.domain_pages);
+                }
+                reservation = self.reserve_current_stream_window(frames);
+            }
+            match reservation {
+                Ok(Some(pins)) => {
+                    let complete = pins.complete();
+                    self.current_quantum_pins = Some(pins);
+                    if !complete {
+                        if let Some(next) = self.deferred_eligible.as_mut() {
+                            next.cancel_stream_readiness(&mut self.domain_pages);
+                        }
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(crate::candidate_custody::QuantumFailure::PendingAction) => return,
+                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                    if !self.retry_pending_eligible_capacity() {
+                        self.reject_pending_eligible_successor(
+                            PlaybackHandoffRejection::StreamedPageCapacity,
+                        );
+                    }
+                    return;
+                }
+                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                    self.reject_pending_eligible_successor(
+                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                    );
+                    return;
+                }
+            }
+        }
         let mut decision = if self
             .active
             .as_ref()
@@ -622,6 +665,7 @@ impl Callback {
                     let previous = self
                         .active
                         .replace(ActivePublication::Eligible(next.into_active()));
+                    self.release_current_quantum_pins();
                     if let Some(ActivePublication::Eligible(mut previous)) = previous {
                         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
                             && let Some(ticket) = active.inherit_schedule_observation(&mut previous)
