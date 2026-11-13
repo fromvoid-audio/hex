@@ -44,6 +44,7 @@ impl<'a> AudioRootStorageLedger<'a> {
         let crate::ClipMetadata {
             gain: _,
             source_phase: _,
+            reversed: _,
             fade: _,
             streamed: _,
             sparse,

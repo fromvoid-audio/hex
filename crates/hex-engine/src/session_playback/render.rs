@@ -3514,6 +3514,7 @@ fn render_session_audio_clip<P: MediaPages + ?Sized>(
                     source,
                     StreamedPageSpan {
                         source_frame,
+                        reversed: false,
                         timeline_frame,
                         output_offset,
                         count,
