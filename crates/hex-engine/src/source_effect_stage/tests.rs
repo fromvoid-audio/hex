@@ -3348,7 +3348,7 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
-    for remove_first in [true, false] {
+    for (remove_first, append_third) in [(true, false), (false, false), (false, true)] {
         for partition in [1, 7, 64, 128, 257] {
             let (mut editor, asset) = authored_fixture(0, false);
             let receiver = editor.project().tracks()[0].id();
@@ -3392,6 +3392,14 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
             else {
                 panic!("last")
             };
+            if append_third {
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state: UTILITY_DEFINITION.default_state().unwrap(),
+                    })
+                    .unwrap();
+            }
             let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
             let table = Arc::new(crate::SineTable::new());
             let prepare = |editor: &Editor| {

@@ -596,9 +596,9 @@ pub enum Request {
         source: hex_project::SourceId,
         instrument: hex_project::DeviceId,
     },
-    /// Remove the exact sole Utility from a captured bound source. Publication
-    /// retains the existing live/quiet retirement guard and normal Undo history.
-    RemoveOnlySourceUtility {
+    /// Remove one exact leaf Utility from a captured bound Utility source.
+    /// Publication retains the live/quiet retirement guard and Undo history.
+    RemoveSourceUtility {
         project_generation: u64,
         revision: u64,
         track: hex_project::TrackId,
@@ -3694,7 +3694,7 @@ fn run_worker(
                     state,
                 })
             })()),
-            Request::RemoveOnlySourceUtility {
+            Request::RemoveSourceUtility {
                 project_generation: captured_generation,
                 revision: captured_revision,
                 track,
@@ -3725,17 +3725,16 @@ fn run_worker(
                     .ok_or("source effect canceled · source no longer exists")?;
                 let default_instrument = hex_project::default_instrument_state()
                     .map_err(|_| "source instrument unavailable")?;
-                let [only_effect] = source.post_instrument_effects() else {
-                    return Err(
-                        "source effect canceled · source chain changed or unsupported".into(),
-                    );
-                };
+                let effects = source.post_instrument_effects();
                 if source.receiver().is_none()
                     || source.instrument().id() != *instrument
                     || source.instrument().state().type_id() != default_instrument.type_id()
-                    || only_effect.id() != *effect
-                    || only_effect.state().type_id()
-                        != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    || !effects.iter().any(|item| item.id() == *effect)
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                    || source.devices().any(|item| item.parent() == Some(*effect))
                 {
                     return Err(
                         "source effect canceled · source chain changed or unsupported".into(),
@@ -5732,7 +5731,7 @@ fn run_worker(
                     error = Some("device reorder was not resolved".into());
                 }
                 Request::AppendSourceUtility { .. }
-                | Request::RemoveOnlySourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
                 | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
