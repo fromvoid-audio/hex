@@ -102,8 +102,13 @@ fn sampler_boundary_live_drag_release_and_exact_terminal_keep_one_display_value(
                 .instrument()
                 .unwrap();
             assert_eq!(
-                view.sampler_display_value(track, device, SamplerParameter::StartFrame, cx)
-                    .unwrap(),
+                view.sampler_display_value(
+                    hex_session::service::SamplerParameterOwner::Track(track),
+                    device,
+                    SamplerParameter::StartFrame,
+                    cx
+                )
+                .unwrap(),
                 256.0
             );
             assert_eq!(
@@ -186,8 +191,13 @@ fn sampler_boundary_live_drag_release_and_exact_terminal_keep_one_display_value(
                 .instrument()
                 .unwrap();
             assert_eq!(
-                view.sampler_display_value(track, device, SamplerParameter::StartFrame, cx)
-                    .unwrap(),
+                view.sampler_display_value(
+                    hex_session::service::SamplerParameterOwner::Track(track),
+                    device,
+                    SamplerParameter::StartFrame,
+                    cx
+                )
+                .unwrap(),
                 if success { 256.0 } else { 0.0 }
             );
         });
