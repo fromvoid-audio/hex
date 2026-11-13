@@ -1435,13 +1435,17 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(self.observation()[10], 0)
 
     def test_partial_pcm_is_not_a_completed_block(self):
-        session = self.session()
-        self.ready(session)
-        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
-        session.socket.shutdown(socket.SHUT_WR)
-        self.error(session, 8)
-        self.terminal(session, 8)
-        self.assertEqual(self.observation()[10], 0)
+        # Exercise the actual reader and control-lane EOF observation together.
+        # On macOS, concurrent peeking could strand the partial read after EOF.
+        for attempt in range(32):
+            with self.subTest(attempt=attempt):
+                session = self.session()
+                self.ready(session)
+                session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def test_eof_cancels_without_fabricating_graceful_retirement(self):
         session = self.session()
@@ -1450,6 +1454,13 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(session.socket.recv(1), b"")
         self.assertEqual(session.process.wait(timeout=10), 9)
         self.assertNotEqual(self.observation()[0], 6)
+
+    def test_buffered_stop_precedes_write_shutdown(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVE", 1, 0, 0, *BINDING, 0, 0))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.terminal(session, 0)
 
     def test_instance_profile_excludes_discovery_fixtures_and_generic_run_refuses(self):
         info = BOOT.verify(self.receipt)
