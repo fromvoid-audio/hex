@@ -801,6 +801,42 @@ fn first_shared_source_utility_attachment_preserves_pcm_without_callback_allocat
                 );
             }
         }
+        control.reclaim();
+        assert!(editor.undo());
+        let removed = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+            .unwrap();
+        let mut refused_audio = [[0.0; 2]; 64];
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut refused_audio).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            control
+                .status
+                .rejected_revision()
+                .map(|rejected| rejected.0),
+            Some(removed)
+        );
+        let mut dry_after = [[0.0; 2]; 64];
+        reference.begin_block();
+        reference.render(&mut dry_after).unwrap();
+        for (actual, dry) in refused_audio.iter().zip(dry_after) {
+            for channel in 0..2 {
+                let expected = 2.0 * (dry[channel] - LOCAL[channel]) + LOCAL[channel];
+                assert!((actual[channel] - expected).abs() < 1e-4);
+            }
+        }
         control.command(PlaybackCommand::Stop).unwrap();
         let counts = allocation_counter::measure(|| {
             callback.begin_block();
@@ -816,6 +852,27 @@ fn first_shared_source_utility_attachment_preserves_pcm_without_callback_allocat
             (0, 0, 0, 0)
         );
         assert!(!control.status.playing.load(Acquire));
+        control.reclaim();
+        let removed_after_stop = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+            .unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 1]).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            removed_after_stop
+        );
         for (ctl, cb) in [
             (&mut control, &mut callback),
             (&mut reference_control, &mut reference),

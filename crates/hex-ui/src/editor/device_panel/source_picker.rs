@@ -22,6 +22,15 @@ pub(super) struct State {
     bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
+#[derive(Clone, Copy)]
+enum SourceUtilityAction {
+    Add(DeviceId),
+    Remove {
+        instrument: DeviceId,
+        effect: DeviceId,
+    },
+}
+
 #[derive(Clone)]
 pub(in crate::editor) struct Choice {
     generation: u64,
@@ -32,7 +41,7 @@ pub(in crate::editor) struct Choice {
     unlink: bool,
     destination: Option<TrackId>,
     receiver: Option<(Option<TrackId>, TrackId)>,
-    add_utility: Option<DeviceId>,
+    utility_action: Option<SourceUtilityAction>,
     pub(in crate::editor) label: SharedString,
 }
 
@@ -41,6 +50,12 @@ impl Choice {
     // the target. An unchanged generation/revision keeps those facts current.
     pub(in crate::editor) fn current(&self, view: &EditorView) -> bool {
         view.project_generation == self.generation
+            && (!matches!(
+                self.utility_action,
+                Some(SourceUtilityAction::Remove { .. })
+            ) || view
+                .audio_status()
+                .is_none_or(|status| !status.playing.load(std::sync::atomic::Ordering::Acquire)))
             && view.selected_track() == Some(self.track)
             && view.track_selection.only_or_empty(self.track)
             && view.device_panel.owner == Some(DevicePanelOwner::Track(self.track))
@@ -80,7 +95,9 @@ impl Choice {
                     })
             })
         {
-            view.error = Some(if self.destination.is_some() {
+            view.error = Some(if self.utility_action.is_some() {
+                "source effect canceled · selection or playback changed".into()
+            } else if self.destination.is_some() {
                 "source navigation canceled · selection changed".into()
             } else if self.receiver.is_some() {
                 "source receiver selection canceled · selection changed".into()
@@ -98,14 +115,27 @@ impl Choice {
             cx.notify();
             return;
         }
-        if let Some(instrument) = self.add_utility {
-            let _ = view.enqueue(Request::AddFirstSourceUtility {
-                project_generation: self.generation,
-                revision: self.revision,
-                track: self.track,
-                source: self.source,
-                instrument,
-            });
+        if let Some(action) = self.utility_action {
+            let request = match action {
+                SourceUtilityAction::Add(instrument) => Request::AddFirstSourceUtility {
+                    project_generation: self.generation,
+                    revision: self.revision,
+                    track: self.track,
+                    source: self.source,
+                    instrument,
+                },
+                SourceUtilityAction::Remove { instrument, effect } => {
+                    Request::RemoveOnlySourceUtility {
+                        project_generation: self.generation,
+                        revision: self.revision,
+                        track: self.track,
+                        source: self.source,
+                        instrument,
+                        effect,
+                    }
+                }
+            };
+            let _ = view.enqueue(request);
             cx.notify();
             return;
         }
@@ -278,7 +308,7 @@ fn open(
                     unlink: false,
                     destination: None,
                     receiver: None,
-                    add_utility: None,
+                    utility_action: None,
                     label: label.into(),
                 }),
             };
@@ -306,7 +336,7 @@ fn open(
                             unlink: false,
                             destination: Some(linked.id()),
                             receiver: None,
-                            add_utility: None,
+                            utility_action: None,
                             label: format!(
                                 "  go to · {role} · {}",
                                 hex_session::service::text::verbatim(linked.name())
@@ -329,7 +359,7 @@ fn open(
                             unlink: false,
                             destination: None,
                             receiver: Some((source.receiver(), linked.id())),
-                            add_utility: None,
+                            utility_action: None,
                             label: format!(
                                 "  make receiver · {}",
                                 hex_session::service::text::verbatim(linked.name())
@@ -360,8 +390,39 @@ fn open(
                     unlink: false,
                     destination: None,
                     receiver: None,
-                    add_utility: Some(source.instrument().id()),
+                    utility_action: Some(SourceUtilityAction::Add(source.instrument().id())),
                     label: "add utility to source".into(),
+                }),
+            })
+        }))
+        .chain(expected_source.and_then(|source_id| {
+            let source = state.project.native_source(source_id)?;
+            let default = hex_project::default_instrument_state().ok()?;
+            let [effect] = source.post_instrument_effects() else {
+                return None;
+            };
+            (source.receiver().is_some()
+                && source.instrument().state().type_id() == default.type_id()
+                && effect.state().type_id()
+                    == hex_lattice_contract::DeviceTypeId::from_static("hex.utility"))
+            .then(|| MenuItem {
+                label: "remove source utility",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::SourcePicker(Choice {
+                    generation,
+                    revision: state.revision,
+                    track,
+                    source: source_id,
+                    expected_source,
+                    unlink: false,
+                    destination: None,
+                    receiver: None,
+                    utility_action: Some(SourceUtilityAction::Remove {
+                        instrument: source.instrument().id(),
+                        effect: effect.id(),
+                    }),
+                    label: "remove utility from source · stop first".into(),
                 }),
             })
         }))
@@ -378,7 +439,7 @@ fn open(
                 unlink: true,
                 destination: None,
                 receiver: None,
-                add_utility: None,
+                utility_action: None,
                 label: "unlink source".into(),
             }),
         }))
