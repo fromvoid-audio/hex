@@ -626,7 +626,7 @@ fn shared_source_unmute_and_mute(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn shared_source_filtered_mute_is_disabled(cx: &mut TestAppContext) {
+fn shared_source_dc_mute_and_unmute(cx: &mut TestAppContext) {
     shared_source_mode_with_filter(
         cx,
         Some(hex_devices::utility::parameter::DC_REMOVE),
@@ -636,12 +636,46 @@ fn shared_source_filtered_mute_is_disabled(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn shared_source_bass_unmute_and_mute(cx: &mut TestAppContext) {
+    shared_source_mode_with_filter(
+        cx,
+        Some(hex_devices::utility::parameter::BASS_MONO),
+        true,
+        false,
+        hex_devices::utility::parameter::MUTE,
+    );
+}
+
+#[gpui::test]
+fn shared_source_automated_mute_is_disabled(cx: &mut TestAppContext) {
+    shared_source_mode_inner(
+        cx,
+        Some(hex_devices::utility::parameter::DC_REMOVE),
+        false,
+        false,
+        hex_devices::utility::parameter::MUTE,
+        true,
+    );
+}
+
 fn shared_source_mode_with_filter(
     cx: &mut TestAppContext,
     filter: Option<hex_lattice_contract::ParameterId>,
     initial: bool,
     reject: bool,
     parameter: hex_lattice_contract::ParameterId,
+) {
+    shared_source_mode_inner(cx, filter, initial, reject, parameter, false);
+}
+
+fn shared_source_mode_inner(
+    cx: &mut TestAppContext,
+    filter: Option<hex_lattice_contract::ParameterId>,
+    initial: bool,
+    reject: bool,
+    parameter: hex_lattice_contract::ParameterId,
+    unsupported: bool,
 ) {
     use hex_lattice_contract::NativeDeviceMetadata;
     cx.update(crate::editor::bind_editor_keys);
@@ -718,6 +752,21 @@ fn shared_source_mode_with_filter(
         before: None,
         state: utility,
     });
+    let bound = if unsupported {
+        use hex_lattice_contract::DeviceAutomationTarget;
+        use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+        edit(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN),
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+    } else {
+        bound
+    };
     let local = bound
         .state
         .project
@@ -756,7 +805,7 @@ fn shared_source_mode_with_filter(
     let button =
         Box::leak(format!("device-{}-parameter-{}", device.value(), mode.value()).into_boxed_str());
     let target = visual.debug_bounds(button).expect("mode button");
-    if mode == hex_devices::utility::parameter::MUTE && filter.is_some() {
+    if unsupported {
         visual.simulate_click(target.center(), Modifiers::default());
         visual.run_until_parked();
         let toggle = editor.read_with(&visual, |view, _| {
