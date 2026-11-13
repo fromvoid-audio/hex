@@ -116,9 +116,17 @@ pub fn fm4_note_pressure_parameter_supported(parameter: ParameterId) -> bool {
     (carrier(1)..=carrier(4)).contains(&parameter)
 }
 
-/// Whether a bound source Utility permits an unautomated static gain edit.
+/// Whether a bound source Utility permits a verified static matrix control edit.
 /// Preparation still validates the candidate and runtime handoff before commit.
-pub fn project_source_utility_gain_edit_supported(project: &Project, device: DeviceId) -> bool {
+pub fn project_source_utility_matrix_edit_supported(
+    project: &Project,
+    device: DeviceId,
+    parameter: ParameterId,
+) -> bool {
+    use hex_devices::utility::parameter::{BALANCE, GAIN};
+    if !matches!(parameter, GAIN | BALANCE) {
+        return false;
+    }
     let Some(location) = project.device_location(device) else {
         return false;
     };
@@ -130,7 +138,7 @@ pub fn project_source_utility_gain_edit_supported(project: &Project, device: Dev
         && device.automation().is_empty()
         && device.modulation().is_empty()
         && hex_devices::utility::UTILITY_DEFINITION
-            .parameter_enabled(device.state(), hex_devices::utility::parameter::GAIN)
+            .parameter_enabled(device.state(), parameter)
             .unwrap_or(false)
 }
 
