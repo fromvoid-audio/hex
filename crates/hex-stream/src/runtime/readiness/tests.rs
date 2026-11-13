@@ -967,3 +967,146 @@ fn borrowing_transition_windows_preserves_active_span_and_candidate() {
     assert!(report.accounting_complete && report.worker_joined);
     owner.dispose_on_control().unwrap();
 }
+
+#[test]
+fn candidate_union_survives_current_window_promotions() {
+    let Some(mut predecessor) = artifact() else {
+        return;
+    };
+    let Some(mut successor) = artifact() else {
+        predecessor.dispose_on_control().unwrap();
+        return;
+    };
+    let (_wav, control, pages, key) = pair_with_frames_and_pool(None, 24000, 5);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 4,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let extent = |page_index| StreamPageExtent {
+        source: key,
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let current = [extent(0)];
+    // Pages 1 and 2 model the old span; page 3 models the successor's
+    // first window. The stream loan does not prove either engine demand.
+    let union = [extent(1), extent(2), extent(3)];
+    let active = stamp(&predecessor, 1);
+    loan.submit(ProtectionRole::Active, active, &current)
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while loan.service(ProtectionRole::Active, active, 4, 4).unwrap()
+        != ReadinessProgress::InstalledProtected
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "active page did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge(ProtectionRole::Active, active, &current));
+
+    let mut candidate = stamp(&successor, 2);
+    candidate.predecessor = Some(predecessor.identity().into());
+    assert_ne!(Some(candidate.artifact), candidate.predecessor);
+    loan.submit(ProtectionRole::Candidate, candidate, &union)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Candidate, candidate, 0, 0),
+        Ok(ReadinessProgress::Pending)
+    );
+    let transition = stamp(&predecessor, 3);
+    loan.submit(ProtectionRole::Transition, transition, &current)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Transition, transition, 0, 0),
+        Ok(ReadinessProgress::InstalledProtected)
+    );
+    assert!(loan.acknowledge(ProtectionRole::Transition, transition, &current));
+    assert!(loan.promote_to_active(ProtectionRole::Transition, transition, &current));
+    assert!(loan.matches_intent(ProtectionRole::Candidate, candidate, &union));
+    assert!(loan.cancel(ProtectionRole::Candidate, candidate.request_epoch));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, transition, &current)
+            .is_some()
+    );
+
+    candidate.request_epoch = 4;
+    loan.submit(ProtectionRole::Candidate, candidate, &union)
+        .unwrap();
+    while loan
+        .service(ProtectionRole::Candidate, candidate, 4, 4)
+        .unwrap()
+        != ReadinessProgress::InstalledProtected
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "candidate pages did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge(ProtectionRole::Candidate, candidate, &union));
+    assert_eq!(
+        loan.submit(
+            ProtectionRole::Transition,
+            stamp(&predecessor, 5),
+            &[extent(4)]
+        ),
+        Err(ReadinessRefusal::Capacity)
+    );
+    let transition = stamp(&predecessor, 5);
+    loan.submit(ProtectionRole::Transition, transition, &current)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Transition, transition, 0, 0),
+        Ok(ReadinessProgress::InstalledProtected)
+    );
+    assert!(loan.acknowledge(ProtectionRole::Transition, transition, &current));
+    assert!(loan.promote_to_active(ProtectionRole::Transition, transition, &current));
+    assert!(
+        loan.protected_pages(ProtectionRole::Candidate, candidate, &union)
+            .is_some()
+    );
+    let mut wrong_predecessor = candidate;
+    wrong_predecessor.predecessor = None;
+    assert!(!loan.can_promote(ProtectionRole::Candidate, wrong_predecessor, &union));
+    #[cfg(feature = "allocation-probe")]
+    let measured = allocation_counter::measure(|| {
+        assert!(loan.promote_to_active(ProtectionRole::Candidate, candidate, &union));
+    });
+    #[cfg(not(feature = "allocation-probe"))]
+    assert!(loan.promote_to_active(ProtectionRole::Candidate, candidate, &union));
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    let mut protected = loan
+        .protected_pages(ProtectionRole::Active, candidate, &union)
+        .unwrap();
+    for page in 1..=3 {
+        assert!(protected.page(key, page).is_some());
+    }
+    drop(protected);
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    predecessor.dispose_on_control().unwrap();
+    successor.dispose_on_control().unwrap();
+}
