@@ -454,6 +454,17 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
         self.automation.is_none()
     }
 
+    fn can_retarget_source_host_matrix_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.automation.is_none()
+                    && previous.automation.is_none()
+                    && self.prepared == previous.prepared
+            })
+    }
+
     fn supports_parameter_automation(&self, parameter: hex_lattice_contract::ParameterId) -> bool {
         self.automation
             .is_some_and(|automation| automation.supports(parameter))

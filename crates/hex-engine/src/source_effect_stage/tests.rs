@@ -2095,3 +2095,156 @@ fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
         }
     }
 }
+
+#[test]
+fn live_source_utility_filter_gain_preserves_filter_history_and_local_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_devices::utility_filters::{PreparedUtilityFilters, UtilityFilterProcessor};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    const PREFIX: usize = 64;
+    const SEGMENT: usize = 128;
+    const TOTAL: usize = PREFIX + 2 * SEGMENT;
+    const RAMP: f32 = 240.0;
+    for (dc, bass) in [(true, false), (false, true)] {
+        for partition in [1, 7, 64, 128, 257] {
+            let (mut editor, asset) = authored_fixture(0, false);
+            let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+            let filter = if dc {
+                parameter::DC_REMOVE
+            } else {
+                parameter::BASS_MONO
+            };
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    &UTILITY_DEFINITION.default_state().unwrap(),
+                    filter,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            let Created::Device(effect) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("source effect")
+            };
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+            let table = Arc::new(crate::SineTable::new());
+            let prepare = |editor: &Editor| {
+                Arc::new(
+                    PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                        .unwrap(),
+                )
+            };
+            let original = prepare(&editor);
+            let mut dry = [[0.0; 2]; TOTAL];
+            crate::render_source_generators(
+                original.arrangement(),
+                0,
+                0,
+                TOTAL as u64,
+                &mut dry,
+                None,
+            )
+            .unwrap();
+            assert!(
+                dry.iter().flatten().any(|sample| sample.abs() > 1e-5),
+                "source oracle is silent"
+            );
+            let mut oracle = UtilityFilterProcessor::new(
+                PreparedUtilityFilters::new(48_000, dc, bass, 200.0, false).unwrap(),
+            );
+            let mut previous = SessionPlayback::new(Arc::clone(&original)).unwrap();
+            previous.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut actual = [[0.0; 2]; TOTAL];
+            previous.render(&mut actual[..PREFIX]).unwrap();
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    editor.project().device(effect).unwrap().state(),
+                    parameter::GAIN,
+                    ParameterValue::Float(2.0),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device: effect,
+                    state,
+                })
+                .unwrap();
+            let other_filter = if dc {
+                parameter::BASS_MONO
+            } else {
+                parameter::DC_REMOVE
+            };
+            let incompatible = UTILITY_DEFINITION
+                .patch_parameter(
+                    editor.project().device(effect).unwrap().state(),
+                    other_filter,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device: effect,
+                    state: incompatible,
+                })
+                .unwrap();
+            let mut refused = SessionPlayback::new(prepare(&editor)).unwrap();
+            assert!(refused.try_inherit_state_live_from(&mut previous).is_err());
+            assert_eq!(previous.performance_frame(), PREFIX as u64);
+            assert_eq!(refused.performance_frame(), 0);
+            assert!(editor.undo());
+            let candidate_revision = prepare(&editor);
+            let old_recipe = &original.arrangement().source_effects[0].instances;
+            let new_recipe = &candidate_revision.arrangement().source_effects[0].instances;
+            let old_chain = NativeRuntimeChain::new_from_source_recipe(old_recipe).unwrap();
+            let mut wrong = new_recipe.to_vec();
+            wrong[0].owner = ProcessorChainOwner::Source(u64::MAX);
+            let wrong_source = NativeRuntimeChain::new_from_source_recipe(&wrong).unwrap();
+            assert!(!wrong_source.can_transfer_source_recipe_history_from(&old_chain, true));
+            wrong[0].owner = new_recipe[0].owner;
+            wrong[0].device_id = u64::MAX;
+            let wrong_device = NativeRuntimeChain::new_from_source_recipe(&wrong).unwrap();
+            assert!(!wrong_device.can_transfer_source_recipe_history_from(&old_chain, true));
+            let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+            candidate
+                .try_inherit_state_live_from(&mut previous)
+                .unwrap();
+            for chunk in actual[PREFIX..PREFIX + SEGMENT].chunks_mut(partition) {
+                candidate.render(chunk).unwrap();
+            }
+            assert!(editor.undo());
+            let mut restored = SessionPlayback::new(prepare(&editor)).unwrap();
+            restored
+                .try_inherit_state_live_from(&mut candidate)
+                .unwrap();
+            for chunk in actual[PREFIX + SEGMENT..].chunks_mut(partition) {
+                restored.render(chunk).unwrap();
+            }
+            for (i, (actual, input)) in actual.iter().zip(dry).enumerate() {
+                let gain = if i < PREFIX {
+                    1.0
+                } else if i < PREFIX + SEGMENT {
+                    1.0 + (i - PREFIX + 1) as f32 / RAMP
+                } else {
+                    let from = 1.0 + SEGMENT as f32 / RAMP;
+                    from + (1.0 - from) * (i - PREFIX - SEGMENT + 1) as f32 / RAMP
+                };
+                let filtered = oracle.process_frame([input[0] * gain, input[1] * gain]);
+                let local = if i < WIDTH { CLIP } else { [0.0; 2] };
+                for channel in 0..2 {
+                    let expected = filtered[channel] + local[channel];
+                    assert!(
+                        (actual[channel] - expected).abs() < 1e-4,
+                        "dc={dc} bass={bass} partition={partition} frame={i} actual={} expected={expected}",
+                        actual[channel]
+                    );
+                }
+            }
+        }
+    }
+}
