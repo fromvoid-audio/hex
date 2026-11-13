@@ -336,6 +336,39 @@ impl Custody {
             _ => Err("native capture owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn begin_capture_after_parameter(
+        &self,
+        binding: Binding,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.begin_capture_after_parameter(input),
+            Owner::Loaned(owner) => owner.begin_capture_after_parameter(input),
+            _ => Err("native capture owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn poll_capture_after_parameter(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_capture_after_parameter(request),
+            Owner::Loaned(owner) => owner.poll_capture_after_parameter(request),
+            _ => Err("native capture owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn sequenced_capture_is_current(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.sequenced_capture_is_current(fact),
+            Owner::Loaned(owner) => owner.sequenced_capture_is_current(fact),
+            _ => Err("native capture owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn capture_native_source(
         &self,
         binding: Binding,
@@ -662,6 +695,42 @@ impl CandidateRoot {
         let result = self.0.eligible.poll_live_native_capture(binding, request)?;
         // Constructor close precedes eligible-bank close. Recheck this outer
         // gate too; copied result destruction occurs after its lock is gone.
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn begin_capture_after_parameter(
+        &self,
+        binding: Binding,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0
+            .eligible
+            .begin_capture_after_parameter(binding, input)
+    }
+    pub(crate) fn poll_capture_after_parameter(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .poll_capture_after_parameter(binding, request)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn sequenced_capture_is_current(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .sequenced_capture_is_current(binding, fact)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }

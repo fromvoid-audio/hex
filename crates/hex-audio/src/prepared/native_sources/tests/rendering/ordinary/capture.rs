@@ -325,6 +325,58 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
             ),
             (7, 0.75, 1, 8)
         );
+        let sequenced = loop {
+            match f
+                .control
+                .begin_native_capture_after_parameter_on_control(f.binding, &request)
+            {
+                Ok(request) => break request,
+                Err("native preparation is busy" | "native capture mailbox is busy") => {}
+                Err(error) => panic!("sequenced capture admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        let fact = loop {
+            match f
+                .control
+                .poll_native_capture_after_parameter_on_control(f.binding, &sequenced)
+            {
+                Ok(crate::plugin_worker::NativeWorkerSequencedCaptureProgress::Captured(fact)) => {
+                    break fact;
+                }
+                Ok(crate::plugin_worker::NativeWorkerSequencedCaptureProgress::Pending)
+                | Err("native preparation is busy" | "native capture mailbox is busy") => {}
+                _ => panic!("sequenced capture terminal"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert_eq!(fact.parameter(), 7);
+        assert_eq!(fact.normalized_input(), 0.75);
+        assert_eq!(
+            &hex_plugin_state::decode(fact.state())
+                .unwrap()
+                .component
+                .unwrap()[8..12],
+            &3.0_f32.to_le_bytes()
+        );
+        assert!(
+            f.control
+                .native_sequenced_capture_is_current_on_control(f.binding, &fact)
+                .unwrap()
+        );
+        assert!(
+            f.control
+                .native_sequenced_capture_is_current_on_control(
+                    Binding {
+                        epoch: f.binding.epoch + 1,
+                        ..f.binding
+                    },
+                    &fact
+                )
+                .is_err()
+        );
         let capture = begin(&mut f);
         let actual = captured(&mut f, &capture);
         assert_eq!(

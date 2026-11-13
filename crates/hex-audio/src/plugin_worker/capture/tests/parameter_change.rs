@@ -9,6 +9,113 @@ const HELD_PROCESS_FIXTURE: u32 = 140;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn captured_state_follows_only_the_latest_processed_input_on_the_original_worker() {
+    use crate::plugin_worker::NativeWorkerSequencedCaptureProgress as Progress;
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(92, &name) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, _other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let input = begin_change(&mut owner, 0, 0.5);
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    assert!(
+        other
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 2.0, &[]);
+    }
+    assert!(matches!(
+        terminal(&mut owner, &input),
+        NativeWorkerParameterProgress::Processed(_)
+    ));
+    let capture = owner
+        .begin_state_capture_after_parameter_on_control(&input)
+        .unwrap();
+    assert!(owner.poll_state_capture_on_control(&capture).is_err());
+    let until = Instant::now() + Duration::from_secs(3);
+    let fact = loop {
+        match owner.poll_state_capture_after_parameter_on_control(&capture) {
+            Ok(Progress::Pending) | Err("native capture mailbox is busy") => {}
+            Ok(Progress::Captured(fact)) => break fact,
+            _ => panic!("the sequenced capture must complete"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    let decoded = hex_plugin_state::decode(fact.state()).unwrap();
+    assert_eq!(fact.parameter(), 0);
+    assert_eq!(fact.normalized_input(), 0.5);
+    assert_eq!(
+        f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap()),
+        2.0
+    );
+    assert!(
+        owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        !other
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    let stale_capture = owner
+        .begin_state_capture_after_parameter_on_control(&input)
+        .unwrap();
+    let next = begin_change(&mut owner, 0, 0.75);
+    assert!(
+        !owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    loop {
+        match owner.poll_state_capture_after_parameter_on_control(&stale_capture) {
+            Ok(Progress::Pending) | Err("native capture mailbox is busy") => {}
+            Err("native sequenced capture was superseded") => break,
+            _ => panic!("superseded capture must drain and refuse"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let plain = owner.begin_state_capture_on_control().unwrap();
+    let _ = complete(&mut owner, &plain);
+    assert!(owner.withdraw_parameter_change_on_control(&next).unwrap());
+    assert_eq!(
+        terminal(&mut owner, &next),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&next)
+            .is_err()
+    );
+    owner.revoke_on_control();
+    assert!(
+        !owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+    other.revoke_on_control();
+    let retired = other.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn editor_can_change_worker_after_live_capture() {
     let name = std::thread::current().name().unwrap().to_owned();
     if fixture_child(89, &name) {
@@ -801,6 +908,11 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
         assert!(Instant::now() < until, "authored collision terminal");
         sequence += 1;
     }
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&request)
+            .is_err()
+    );
     for n in sequence + 1..sequence + 4 {
         callback(&owner, &mut endpoint, n, 2.0, &[]);
     }

@@ -6,6 +6,7 @@ use hex_audio::{
     plugin_worker::{
         NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
         NativeWorkerParameterChange, NativeWorkerParameterProgress,
+        NativeWorkerSequencedCaptureProgress, NativeWorkerStateAfterParameter,
     },
     prepared::{AppliedAudioSource, PublicationControl},
 };
@@ -50,6 +51,9 @@ pub(super) struct Gesture {
     pending: Option<PendingPoint>,
     live: Option<LiveOverride>,
     capture: Option<NativeWorkerCapture>,
+    capture_sequenced: bool,
+    last_input: Option<NativeWorkerParameterChange>,
+    sequenced_capture: Option<NativeWorkerStateAfterParameter>,
     before: Option<NativeDeviceState>,
     pub(super) commit: Option<(AudioSourceContext, u64)>,
     pub(super) next_program: Option<std::num::NonZeroU64>,
@@ -355,6 +359,9 @@ impl Plugins {
                 pending: None,
                 live,
                 capture: None,
+                capture_sequenced: false,
+                last_input: None,
+                sequenced_capture: None,
                 before: None,
                 commit: None,
                 next_program: None,
@@ -557,7 +564,7 @@ impl Gesture {
                 .before
                 .clone()
                 .ok_or_else(|| refused("vst3 has no original capture"))?;
-            let after = self.capture(control)?;
+            let after = self.capture_after_input(control)?;
             self.commit = Some((context, snapshot.sequence));
             return Ok(Prepared::Captured(Box::new(PluginParameterCapture {
                 before,
@@ -706,8 +713,8 @@ impl Gesture {
         };
         match poll_input(control, self.binding, &pending.token) {
             Ok(
-                NativeWorkerParameterProgress::Processed(_)
-                | NativeWorkerParameterProgress::Flushed,
+                progress @ (NativeWorkerParameterProgress::Processed(_)
+                | NativeWorkerParameterProgress::Flushed),
             ) => {
                 if let Some(pending) = self.pending.take() {
                     self.last = pending.value;
@@ -716,6 +723,10 @@ impl Gesture {
                         && let Some(live) = self.live.as_mut()
                     {
                         live.hold = Some(pending.token);
+                    } else if self.live.is_none() {
+                        self.last_input =
+                            matches!(progress, NativeWorkerParameterProgress::Processed(_))
+                                .then_some(pending.token);
                     }
                 }
                 Ok(true)
@@ -765,10 +776,38 @@ impl Gesture {
     }
 
     fn capture(&mut self, control: &mut PublicationControl) -> Result<NativeDeviceState, Error> {
+        self.capture_inner(control, false)
+    }
+
+    fn capture_after_input(
+        &mut self,
+        control: &mut PublicationControl,
+    ) -> Result<NativeDeviceState, Error> {
+        self.capture_inner(control, true)
+    }
+
+    fn capture_inner(
+        &mut self,
+        control: &mut PublicationControl,
+        after_input: bool,
+    ) -> Result<NativeDeviceState, Error> {
         if self.capture.is_none() {
-            self.capture = Some(admit(control, |control| {
-                control.begin_native_source_state_capture_on_control(self.binding)
-            })?);
+            self.sequenced_capture = None;
+            self.capture_sequenced = after_input
+                && self.last_input.is_some()
+                && control
+                    .native_source_endpoint_status(self.binding)
+                    .is_some_and(|(_, live)| live);
+            self.capture = Some(if self.capture_sequenced {
+                let input = self.last_input.as_ref().ok_or_else(lost)?;
+                admit(control, |control| {
+                    control.begin_native_capture_after_parameter_on_control(self.binding, input)
+                })?
+            } else {
+                admit(control, |control| {
+                    control.begin_native_source_state_capture_on_control(self.binding)
+                })?
+            });
         }
         let request = self
             .capture
@@ -776,9 +815,46 @@ impl Gesture {
             .ok_or_else(|| refused("vst3 capture unavailable"))?;
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            match control.poll_native_source_state_capture_on_control(self.binding, request) {
+            let result = if self.capture_sequenced {
+                control
+                    .poll_native_capture_after_parameter_on_control(self.binding, request)
+                    .map(|progress| match progress {
+                        NativeWorkerSequencedCaptureProgress::Pending => {
+                            NativeWorkerCaptureProgress::Pending
+                        }
+                        NativeWorkerSequencedCaptureProgress::Failed => {
+                            NativeWorkerCaptureProgress::Failed
+                        }
+                        NativeWorkerSequencedCaptureProgress::Refused(reason) => {
+                            NativeWorkerCaptureProgress::Refused(reason)
+                        }
+                        NativeWorkerSequencedCaptureProgress::Captured(fact) => {
+                            let state = fact.state().clone();
+                            self.sequenced_capture = Some(fact);
+                            NativeWorkerCaptureProgress::Captured(state)
+                        }
+                    })
+            } else {
+                control.poll_native_source_state_capture_on_control(self.binding, request)
+            };
+            match result {
                 Ok(NativeWorkerCaptureProgress::Captured(state)) => {
                     self.capture = None;
+                    self.capture_sequenced = false;
+                    if let Some(fact) = self.sequenced_capture.as_ref()
+                        && (fact.parameter() != self.origin.parameter
+                            || fact.normalized_input().to_bits()
+                                != self.sdk_value(self.last).to_bits()
+                            || !admit(control, |control| {
+                                control.native_sequenced_capture_is_current_on_control(
+                                    self.binding,
+                                    fact,
+                                )
+                            })?)
+                    {
+                        self.sequenced_capture = None;
+                        return Err(refused("vst3 input changed during capture"));
+                    }
                     #[cfg(all(test, feature = "allocation-probe"))]
                     if self.before.is_some()
                         && let Some(path) = std::env::var_os("HEX_TEST_LATE_EDITOR_INTERCEPT")
@@ -790,12 +866,19 @@ impl Gesture {
                 Ok(NativeWorkerCaptureProgress::Pending) | Err("native preparation is busy") => {}
                 Ok(NativeWorkerCaptureProgress::Refused(reason)) => {
                     self.capture = None;
+                    self.capture_sequenced = false;
                     return Err(refused(reason.to_string()));
                 }
                 Ok(NativeWorkerCaptureProgress::Failed)
                 | Err("native capture output is closing") => {
                     self.capture = None;
+                    self.capture_sequenced = false;
                     return Err(lost());
+                }
+                Err("native sequenced capture was superseded") => {
+                    self.capture = None;
+                    self.capture_sequenced = false;
+                    return Err(refused("vst3 input changed during capture"));
                 }
                 Err(reason) => return Err(refused(reason)),
             }
@@ -813,6 +896,10 @@ fn late_editor_test_intercept(
     gesture: &Gesture,
     path: &std::ffi::OsStr,
 ) {
+    assert!(
+        gesture.sequenced_capture.is_some(),
+        "the original input and capture must be correlated"
+    );
     std::fs::write(path, b"editor").unwrap();
     let until = Instant::now() + Duration::from_secs(3);
     loop {

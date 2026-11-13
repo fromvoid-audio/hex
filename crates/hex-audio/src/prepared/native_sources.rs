@@ -751,6 +751,51 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Admit a capture ordered after the exact original worker's processed
+    /// parameter input. This fact does not grant graph or canonical authority.
+    pub fn begin_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_parameter(binding, input)
+    }
+    pub fn poll_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_capture_after_parameter(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    pub fn native_sequenced_capture_is_current_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .sequenced_capture_is_current(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]
