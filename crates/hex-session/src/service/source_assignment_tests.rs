@@ -25,6 +25,119 @@ fn assign(
     }
 }
 
+fn create_source(
+    revision: u64,
+    generation: u64,
+    type_id: hex_lattice_contract::DeviceTypeId,
+    name: &str,
+) -> Request {
+    Request::CreateRetainedNativeSource {
+        project_generation: generation,
+        revision,
+        type_id: Box::new(type_id),
+        name: name.into(),
+    }
+}
+
+#[test]
+fn captured_native_source_creation_is_unassigned_and_reversible() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "track".into(),
+        }),
+    );
+    let Created::Track(track) = added.created.unwrap() else {
+        panic!("track")
+    };
+    let instrument = hex_project::default_instrument_state().unwrap().type_id();
+    let revision = added.state.revision;
+    assert!(!create_source(revision, 0, instrument, "new source").finalizes_parameter_gesture());
+    refused(
+        &service,
+        &added,
+        create_source(revision, 1, instrument, "new source"),
+        "project changed",
+    );
+    refused(
+        &service,
+        &added,
+        create_source(revision - 1, 0, instrument, "new source"),
+        "project changed",
+    );
+    refused(
+        &service,
+        &added,
+        create_source(revision, 0, instrument, " "),
+        "name must be nonempty",
+    );
+    for invalid in [
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        hex_lattice_contract::DeviceTypeId::from_static("hex.not-registered"),
+    ] {
+        refused(
+            &service,
+            &added,
+            create_source(revision, 0, invalid, "new source"),
+            "native instrument unavailable",
+        );
+    }
+    let key = GestureKey {
+        generation: 0,
+        token: 7713,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track },
+        }),
+    );
+    let blocked = refused(
+        &service,
+        &begun,
+        create_source(begun.state.revision, 0, instrument, "new source"),
+        "active gesture",
+    );
+    assert!(blocked.active_device_gesture.is_some() && blocked.gesture_ack.is_none());
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let before = cancelled.state.project.clone();
+    let created = run(
+        &service,
+        create_source(cancelled.state.revision, 0, instrument, "new source"),
+    );
+    let Created::NativeSource(source) = created.created.unwrap() else {
+        panic!("source")
+    };
+    let definition = created.state.project.native_source(source).unwrap();
+    assert_eq!(definition.name(), "new source");
+    assert_eq!(definition.instrument().state().type_id(), instrument);
+    assert_eq!(definition.receiver(), None);
+    assert_eq!(created.state.project.source_contributors(source).count(), 0);
+    assert_eq!(
+        created.state.project.track(track).unwrap().source_id(),
+        None
+    );
+    let after = created.state.project.clone();
+    let undone = run(&service, Request::Undo);
+    let mut expected = before.snapshot();
+    let restored = undone.state.project.snapshot();
+    assert!(
+        restored.next_id > expected.next_id,
+        "Undo must not reuse the source identity"
+    );
+    expected.next_id = restored.next_id;
+    assert_eq!(restored, expected);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, after);
+    assert!(redone.state.project.native_source(source).is_some());
+}
+
 fn refused(service: &Service, before: &Event, request: Request, message: &str) -> Event {
     service.submit(request).unwrap();
     let event = next_event(service);

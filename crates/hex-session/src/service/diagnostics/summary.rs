@@ -1344,6 +1344,14 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::CreateRetainedNativeSource {
+            project_generation,
+            revision,
+            type_id,
+            name,
+        } => {
+            describe!("create_retained_native_source"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
         Request::RenameRetainedSource {
             project_generation,
             revision,
@@ -2129,6 +2137,15 @@ mod default_tests {
             name: "private source name".into(),
         });
         assert_eq!(description.name, "rename_retained_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+        let description = request(&Request::CreateRetainedNativeSource {
+            project_generation: 0,
+            revision: 1,
+            type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "create_retained_native_source");
         assert!(description.details.text.contains("name_redacted_bytes=19"));
         assert!(!description.details.text.contains("private source name"));
     }
