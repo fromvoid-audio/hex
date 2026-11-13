@@ -123,7 +123,13 @@ fn adding_an_unused_return_preserves_a_sounding_return() {
 }
 
 #[test]
-fn adding_an_unused_return_preserves_an_existing_reverb_tail() {
+fn changing_an_unused_return_preserves_an_existing_reverb_tail() {
+    for remove in [false, true] {
+        unused_return_reverb_tail_case(remove);
+    }
+}
+
+fn unused_return_reverb_tail_case(remove: bool) {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Command, Created, Editor, Project};
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
@@ -178,6 +184,19 @@ fn adding_an_unused_return_preserves_an_existing_reverb_tail() {
             state,
         })
         .unwrap();
+    let unused = if remove {
+        let Created::ReturnTrack(id) = editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        Some(id)
+    } else {
+        None
+    };
     let mut samples = vec![[0.0; 2]; 12_000];
     samples[..512].fill([0.25, -0.125]);
     let media = std::collections::BTreeMap::from([(asset, Audio::new(48_000, samples).unwrap())]);
@@ -192,11 +211,15 @@ fn adding_an_unused_return_preserves_an_existing_reverb_tail() {
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
         runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
     }
-    editor
-        .execute(Command::AddReturnTrack {
-            name: "unused".into(),
-        })
-        .unwrap();
+    if let Some(id) = unused {
+        editor.execute(Command::RemoveReturnTrack(id)).unwrap();
+    } else {
+        editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap();
+    }
     let mut next = SessionPlayback::new(prepare(editor.project())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut actual = [[0.0; 2]; 512];
@@ -245,7 +268,46 @@ fn adding_a_routed_return_keeps_the_conservative_restart() {
 }
 
 #[test]
-fn removing_an_unused_return_keeps_the_conservative_restart() {
+fn removing_an_unused_return_keeps_compensated_pcm_continuous() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+        let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = vec![[0.0; 2]; 257];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn removing_a_routed_return_keeps_the_conservative_restart() {
     use hex_project::{Command, Created};
     let mut f = fixture(&[&[7]], 1024);
     for audio in f.media.values_mut() {
@@ -254,12 +316,19 @@ fn removing_an_unused_return_keeps_the_conservative_restart() {
     let Created::ReturnTrack(bus) = f
         .editor
         .execute(Command::AddReturnTrack {
-            name: "unused".into(),
+            name: "routed".into(),
         })
         .unwrap()
     else {
         panic!("return")
     };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
     let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     old.render(&mut [[0.0; 2]; 32]).unwrap();
