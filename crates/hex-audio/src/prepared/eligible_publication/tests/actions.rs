@@ -144,6 +144,18 @@ fn current_streamed_audio_continues_while_active_span_is_pending() {
         let (loan, _, _) = pages.test_loan_and_epoch().unwrap();
         assert!(loan.matches_intent(ProtectionRole::Active, pending_stamp, &span));
         assert!(loan.is_protected(ProtectionRole::Candidate, candidate_stamp, &candidate));
+    });
+    control.stop();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| c.begin_block())
+    }));
+    assert!(!control.status.playing.load(Acquire));
+    data.owner_mut().unwrap().run(|c, _| {
+        let pages = c.domain_pages.iter_mut().flatten().next().unwrap();
+        let (loan, _, _) = pages.test_loan_and_epoch().unwrap();
+        // This injected intent is not tracked by the current workspace, so
+        // Stop cannot be credited with retiring it.
+        assert!(loan.matches_intent(ProtectionRole::Active, pending_stamp, &span));
         assert!(loan.cancel(ProtectionRole::Active, pending_stamp.request_epoch));
         assert!(loan.cancel(ProtectionRole::Candidate, candidate_stamp.request_epoch));
     });
