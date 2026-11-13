@@ -478,15 +478,7 @@ pub(super) fn source_utility_gain_available(
     project: &hex_project::Project,
     device: &Device,
 ) -> bool {
-    device.state().type_id().as_str() == Ok("hex.utility")
-        && !device.bypassed()
-        && device.automation().is_empty()
-        && device.modulation().is_empty()
-        && hex_engine::project_device_modulation_target_supported(
-            project,
-            device.id(),
-            utility_panel::GAIN,
-        )
+    hex_engine::project_source_utility_gain_edit_supported(project, device.id())
 }
 
 /// The bound receiver owns these controls. The card reuses the ordinary
@@ -524,6 +516,15 @@ pub(super) fn source_effect_card(
         .flex_col()
         .gap(px(3.0));
     body = body.child(theme::text("source effect"));
+    let gain_row = show_gain
+        .then(|| {
+            metadata
+                .parameters
+                .iter()
+                .find(|row| row.enabled && row.descriptor.id == utility_panel::GAIN)
+                .copied()
+        })
+        .flatten();
     metadata.parameters.retain(|row| {
         row.enabled
             && row
@@ -535,26 +536,26 @@ pub(super) fn source_effect_card(
                 row.descriptor.id,
             )
     });
+    if let Some(row) = gain_row {
+        let identity = DeviceControlIdentity {
+            class: NativeDeviceClass::Effect,
+            type_id: metadata.type_id,
+        };
+        body = body.child(parameter_control_with_presentation(
+            view,
+            cx,
+            id,
+            identity,
+            &row,
+            ControlPresentation::CompactDial,
+            ControlText {
+                label: Some("gain"),
+                codec: None,
+            },
+        ));
+    }
     for row in &metadata.parameters {
-        if show_gain && row.descriptor.id == utility_panel::GAIN {
-            let identity = DeviceControlIdentity {
-                class: NativeDeviceClass::Effect,
-                type_id: metadata.type_id,
-            };
-            let control = parameter_control_with_presentation(
-                view,
-                cx,
-                id,
-                identity,
-                row,
-                ControlPresentation::CompactDial,
-                ControlText {
-                    label: Some("gain"),
-                    codec: None,
-                },
-            );
-            body = body.child(control);
-        } else {
+        if !show_gain || row.descriptor.id != utility_panel::GAIN {
             body = body.child(
                 div()
                     .relative()
