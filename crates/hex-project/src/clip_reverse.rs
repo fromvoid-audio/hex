@@ -152,6 +152,41 @@ mod tests {
     use crate::{AudioDomainClock, Command, Editor, WarpResampler};
 
     #[test]
+    fn long_plain_reverse_keeps_source_and_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: 20_000_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let reversed = editor.project().snapshot();
+        let clip = editor.project().clip(clip).unwrap();
+        assert_eq!(
+            clip.audio_edit().unwrap().plain_reversed_source(clip),
+            Some((0, 20_000_000))
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), reversed);
+    }
+
+    #[test]
     fn plain_reversed_source_reports_exact_extent_and_rejects_processing() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { clip, .. } = editor

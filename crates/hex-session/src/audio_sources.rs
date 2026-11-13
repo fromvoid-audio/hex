@@ -36,8 +36,9 @@ pub enum DocumentAudioMode {
 pub const MAX_STREAMED_FILE_BYTES: u64 = u32::MAX as u64;
 /// Largest source extent a verified streaming binding may reference. Four clip
 /// domains admit 192 kHz originals in a 48 kHz project. Plain placement and playback
-/// stream any admitted extent; domain-bound edits (views, stretch, fades, grouping)
-/// keep their explicit [`hex_project::MAX_AUDIO_DOMAIN_FRAMES`] refusals.
+/// stream any admitted extent, as do exact plain frame reversals. Processed
+/// views, stretch, fades and grouping retain their explicit
+/// [`hex_project::MAX_AUDIO_DOMAIN_FRAMES`] refusals.
 pub const MAX_STREAMED_SOURCE_FRAMES: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES * 4;
 /// Metadata-only preparation bounds, independent of resident duration. An ordinary
 /// document may also reserve these for file-backed clip bindings without changing
