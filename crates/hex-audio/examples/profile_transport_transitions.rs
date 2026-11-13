@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut checksum = 0_u64;
     let mut output = [[0.0_f32; 2]; BLOCK];
     for cycle in 0..WARMUPS + SAMPLES {
-        for transition in 0..5 {
+        for (transition, samples) in timings.iter_mut().enumerate() {
             let ticket = match transition {
                 0 => Some(
                     control
@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Err("non-finite transition output".into());
             }
             if cycle >= WARMUPS {
-                timings[transition].push(elapsed);
+                samples.push(elapsed);
             }
             for _ in 0..SETTLE_BLOCKS {
                 callback.begin_block();
