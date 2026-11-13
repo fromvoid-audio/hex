@@ -52,10 +52,13 @@ pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_eve
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod device_add;
 mod device_picker;
+mod source_manager;
 mod source_picker;
 pub(super) use device_picker::{
     bind_keys as bind_picker_keys, is_open as picker_is_open, overlay as picker_overlay,
 };
+pub(super) use source_manager::Action as SourceManagerAction;
+pub(super) use source_manager::bind_keys as bind_source_manager_keys;
 pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
@@ -134,6 +137,7 @@ pub(super) struct DevicePanelState {
     chain_window: chain_window::ChainWindow,
     source_summary: source_summary::SourceSummaryCache,
     source_picker: source_picker::State,
+    source_manager: source_manager::State,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     modulation_target_drag: modulators::TargetDragState,
@@ -793,13 +797,16 @@ pub(super) fn view(
     }
     match view.device_panel.owner {
         Some(owner) => render_owner(view, window, cx, &state, owner),
-        None => empty_panel("select a track or return to view devices").on_drop(
-            super::sampler_load::track_drop_listener(
-                cx,
-                None,
-                hex_project::InstrumentLoadPlacement::First,
-            ),
-        ),
+        None => {
+            let manager = source_manager::button(view, window, cx);
+            empty_panel("select a track or return to view devices")
+                .children(std::iter::once(manager))
+                .on_drop(super::sampler_load::track_drop_listener(
+                    cx,
+                    None,
+                    hex_project::InstrumentLoadPlacement::First,
+                ))
+        }
     }
 }
 

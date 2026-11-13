@@ -328,10 +328,17 @@ fn open(
                 label: "unlink source".into(),
             }),
         }))
+        .chain(std::iter::once(MenuItem {
+            label: "manage sources",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::SourceManager(super::source_manager::Action::open(
+                generation,
+                state.revision,
+                position,
+            )),
+        }))
         .collect::<Vec<_>>();
-    if items.is_empty() {
-        return;
-    }
     if items.iter().any(|item| match &item.action {
         EditorContextAction::SourcePicker(choice) => !choice.current(view),
         _ => false,

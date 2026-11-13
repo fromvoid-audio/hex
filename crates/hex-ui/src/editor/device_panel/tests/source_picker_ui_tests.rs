@@ -75,7 +75,7 @@ fn source_picker_assigns_only_after_explicit_choice_and_undoes(cx: &mut TestAppC
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let menu = view.context_menu.as_ref().expect("source choices");
-        assert_eq!(menu.items.len(), 3);
+        assert_eq!(menu.items.len(), 4);
         let EditorContextAction::SourcePicker(choice) = &menu.items[0].action else {
             panic!("choice")
         };
@@ -351,7 +351,7 @@ fn source_picker_navigates_to_receiver_and_contributor_without_assigning(cx: &mu
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let menu = view.context_menu.as_ref().unwrap();
-        assert_eq!(menu.items.len(), 3);
+        assert_eq!(menu.items.len(), 4);
         assert!(
             theme::text(crate::editor::context_menu::context_item_label(
                 &menu.items[1]
@@ -761,15 +761,26 @@ fn bound_source_picker_explicitly_changes_receiver_and_undoes(cx: &mut TestAppCo
 
 #[gpui::test]
 fn rebind_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
-    source_edit_cancels_a_published_seek(cx, false);
+    source_edit_cancels_a_published_seek(cx, SourceEdit::Rebind);
 }
 
 #[gpui::test]
 fn receiver_choice_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
-    source_edit_cancels_a_published_seek(cx, true);
+    source_edit_cancels_a_published_seek(cx, SourceEdit::Receiver);
 }
 
-fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, choose_receiver: bool) {
+#[gpui::test]
+fn source_deletion_cancels_a_published_seek_before_callback(cx: &mut TestAppContext) {
+    source_edit_cancels_a_published_seek(cx, SourceEdit::Delete);
+}
+
+enum SourceEdit {
+    Rebind,
+    Receiver,
+    Delete,
+}
+
+fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdit) {
     let _guard =
         crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     use crate::editor::arrangement_seek::{PendingSeek, SeekIntent, SeekStage};
@@ -796,7 +807,19 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, choose_receiver
             source: Some(source),
         }))
         .unwrap();
-    let state = receive_service_event(&service).state;
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unused".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::NativeSource(unused) = event.created.unwrap() else {
+        panic!("source")
+    };
+    let state = event.state;
     let revision = state.revision;
     let prepared = Arc::new(
         hex_engine::PreparedRevision::prepare(
@@ -870,22 +893,26 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, choose_receiver
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.prepared_seek = Some(pending);
-        let request = if choose_receiver {
-            Request::ChooseNativeSourceReceiver {
+        let request = match kind {
+            SourceEdit::Receiver => Request::ChooseNativeSourceReceiver {
                 project_generation: 0,
                 revision,
                 source,
                 expected_receiver: Some(receiver),
                 track,
-            }
-        } else {
-            Request::RebindNativeSource {
+            },
+            SourceEdit::Delete => Request::DeleteRetainedSource {
+                project_generation: 0,
+                revision,
+                source: unused,
+            },
+            SourceEdit::Rebind => Request::RebindNativeSource {
                 project_generation: 0,
                 revision,
                 track,
                 expected_source: Some(source),
                 source: None,
-            }
+            },
         };
         assert!(view.enqueue(request));
         assert!(view.prepared_seek.as_ref().unwrap().cancelled);
@@ -905,6 +932,200 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, choose_receiver
     editor.update(cx, |view, _| view.audio = None);
     backend.close();
     drop(output);
+}
+
+#[gpui::test]
+fn source_manager_lists_and_deletes_without_assigning(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let bound = state.project.track(receiver).unwrap().source_id().unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unused source".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::NativeSource(unused) = event.created.unwrap() else {
+        panic!("source")
+    };
+    let original = event.state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let manager_index = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    == "manage sources"
+            })
+            .unwrap()
+    });
+    for _ in 0..manager_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let unused_index = editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        let menu = view.context_menu.as_ref().unwrap();
+        assert!(menu.items.iter().any(|item| {
+            theme::text(crate::editor::context_menu::context_item_label(item))
+                .contains("1 midi · receiver")
+        }));
+        menu.items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("unused source · 0 midi · receiver none")
+            })
+            .unwrap()
+    });
+    for _ in 0..unused_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let action = editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        let EditorContextAction::SourceManager(action) =
+            &view.context_menu.as_ref().unwrap().items[0].action
+        else {
+            panic!("delete")
+        };
+        action.clone()
+    });
+    editor.update(&mut visual, |view, _| {
+        view.begin_device_gesture(
+            GestureTarget::TrackGain { track: receiver },
+            ParameterValue::Float(1.0),
+        )
+        .unwrap()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            action.clone().perform(view, window, cx);
+            assert!(view.device_gesture.snapshot().is_some());
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+        })
+    });
+    editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.context_menu = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    for _ in 0..manager_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    for _ in 0..unused_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.native_source(unused).is_none())
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.native_source(unused).is_some())
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            action.perform(view, window, cx);
+            assert!(!view.edit_pending());
+        })
+    });
+
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = None;
+        view.track_selection.replace(&[]);
+        view.context_menu = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual
+        .debug_bounds("source-manager-button")
+        .expect("no-track manager");
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            view.device_panel
+                .source_manager
+                .focus
+                .as_ref()
+                .unwrap()
+                .focus(window)
+        })
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| assert!(view.context_menu.is_none()));
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let bound_index = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("1 midi · receiver")
+            })
+            .unwrap()
+    });
+    for _ in 0..bound_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().clone());
+    visual.simulate_keystrokes("enter");
+    settle(&editor, &mut visual, |view| {
+        !view.edit_pending()
+            && view
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("still assigned"))
+    });
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project, before.project);
+        assert_eq!(
+            (state.revision, state.can_undo, state.can_redo),
+            (before.revision, before.can_undo, before.can_redo)
+        );
+        assert!(state.project.native_source(bound).is_some());
+    });
 }
 
 #[gpui::test]
