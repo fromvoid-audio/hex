@@ -11,6 +11,11 @@
 use super::*;
 use crate::{StreamPageExtent, StreamResourceExtent};
 use hex_engine::StreamResourceKey;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Issued on control and never reused within this process, including after
+// domain destruction. Exhaustion fails closed rather than recycling identity.
+static NEXT_READINESS_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
 enum ExtentSlice<'a> {
@@ -109,6 +114,23 @@ pub enum ReadinessProgress {
     Pending,
     InstalledProtected,
 }
+/// Move-only correlation for a current-quantum reservation on one exact loan.
+/// It does not own pages; callers must release it before returning the loan.
+#[must_use]
+pub struct CurrentQuantumReservation {
+    readiness_id: u64,
+    epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurrentQuantumRefusal {
+    Busy,
+    InvalidExtents,
+    NotResident,
+    Capacity,
+    EpochExhausted,
+}
+
 /// Finite caller reservation, bounded further by the actual endpoint cache.
 #[derive(Clone, Copy, Debug)]
 pub struct StreamReadinessReservation {
@@ -125,6 +147,10 @@ struct Role {
 pub(super) struct PreparedReadiness {
     catalog: CatalogLease,
     roles: [Role; 3],
+    current_quantum: Vec<StreamResourceExtent>,
+    current_quantum_epoch: Option<u64>,
+    readiness_id: u64,
+    quantum_epoch: u64,
     limit: usize,
     epoch: u64,
 }
@@ -151,21 +177,39 @@ impl PreparedReadiness {
                 .try_reserve_exact(reservation.extents_per_role)
                 .map_err(|_| AudioStreamStorageError::Capacity)?;
         }
+        let mut current_quantum = Vec::new();
+        current_quantum
+            .try_reserve_exact(reservation.extents_per_role)
+            .map_err(|_| AudioStreamStorageError::Capacity)?;
+        let readiness_id = NEXT_READINESS_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| AudioStreamStorageError::Overflow)?;
         Ok(Self {
             catalog: catalog.clone(),
             roles,
+            current_quantum,
+            current_quantum_epoch: None,
+            readiness_id,
+            quantum_epoch: 0,
             limit: reservation.extents_per_role,
             epoch: 0,
         })
     }
     pub(super) fn backing_bytes(&self) -> Option<usize> {
-        self.roles.iter().try_fold(0usize, |bytes, role| {
+        let bytes = self
+            .current_quantum
+            .capacity()
+            .checked_mul(std::mem::size_of::<StreamResourceExtent>())?;
+        self.roles.iter().try_fold(bytes, |bytes, role| {
             role.wanted
                 .capacity()
                 .checked_add(role.protected.capacity())?
                 .checked_mul(std::mem::size_of::<StreamResourceExtent>())?
                 .checked_add(bytes)
         })
+    }
+    pub(super) fn has_current_quantum(&self) -> bool {
+        self.current_quantum_epoch.is_some()
     }
     fn valid(&self, stamp: ReadinessStamp, extents: ExtentSlice<'_>) -> bool {
         if !stamp.artifact.valid()
@@ -256,9 +300,14 @@ impl PreparedReadiness {
             } else {
                 ExtentSlice::Resources(self.roles[2].wanted.as_slice())
             },
+            if replacement == 3 {
+                ExtentSlice::Resources(&[])
+            } else {
+                ExtentSlice::Resources(&self.current_quantum)
+            },
             extents,
         ];
-        let mut cursors = [0usize; 7];
+        let mut cursors = [0usize; 8];
         let mut count = 0usize;
         while let Some(key) = slices
             .iter()
@@ -531,6 +580,81 @@ impl PreparedRolePromotion<'_> {
     }
 }
 impl ConstructorPageLoan {
+    /// Reserve exactly these already-complete resident extents for a current
+    /// quantum. Refusal preserves all existing roles and the cache. Admission
+    /// counts the distinct union of installed, pending and current pages.
+    /// This does not establish readiness or grant page/callback custody.
+    pub fn reserve_current_quantum(
+        &mut self,
+        extents: &[StreamResourceExtent],
+    ) -> Result<CurrentQuantumReservation, CurrentQuantumRefusal> {
+        if self.readiness.current_quantum_epoch.is_some() {
+            return Err(CurrentQuantumRefusal::Busy);
+        }
+        if extents.len() > self.readiness.limit
+            || extents.windows(2).any(|pair| {
+                (pair[0].source, pair[0].page_index) >= (pair[1].source, pair[1].page_index)
+            })
+            || extents.iter().any(|extent| extent.start >= extent.end)
+        {
+            return Err(CurrentQuantumRefusal::InvalidExtents);
+        }
+        if extents
+            .iter()
+            .any(|extent| !self.pages.endpoint.has_extent(*extent))
+        {
+            return Err(CurrentQuantumRefusal::NotResident);
+        }
+        if !self.readiness.fits_pool(
+            3,
+            ExtentSlice::Resources(extents),
+            self.pages.endpoint.cache_capacity(),
+        ) {
+            return Err(CurrentQuantumRefusal::Capacity);
+        }
+        let epoch = self
+            .readiness
+            .quantum_epoch
+            .checked_add(1)
+            .ok_or(CurrentQuantumRefusal::EpochExhausted)?;
+        self.pages
+            .endpoint
+            .replace_protection(crate::endpoint::CURRENT_QUANTUM_PIN, extents);
+        self.readiness.current_quantum.clear();
+        self.readiness.current_quantum.extend_from_slice(extents);
+        self.readiness.quantum_epoch = epoch;
+        self.readiness.current_quantum_epoch = Some(epoch);
+        Ok(CurrentQuantumReservation {
+            readiness_id: self.readiness.readiness_id,
+            epoch,
+        })
+    }
+
+    /// Release only the exact reservation returned by this loan. A wrong or
+    /// stale token leaves the current reservation and every role unchanged.
+    pub fn release_current_quantum(&mut self, reservation: &CurrentQuantumReservation) -> bool {
+        if reservation.readiness_id != self.readiness.readiness_id
+            || self.readiness.current_quantum_epoch != Some(reservation.epoch)
+        {
+            return false;
+        }
+        self.cancel_current_quantum()
+    }
+
+    /// Cancel this loan's current reservation, for example on priority Stop.
+    /// Any previously issued token becomes stale. No role or page is moved.
+    pub fn cancel_current_quantum(&mut self) -> bool {
+        if self.readiness.current_quantum_epoch.is_none() {
+            return false;
+        }
+        self.pages
+            .endpoint
+            .replace_protection(crate::endpoint::CURRENT_QUANTUM_PIN, &[]);
+        self.readiness.current_quantum.clear();
+        self.readiness.current_quantum_epoch = None;
+        true
+    }
+
     pub fn submit(
         &mut self,
         role: ProtectionRole,

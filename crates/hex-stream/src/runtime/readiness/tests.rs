@@ -341,6 +341,197 @@ fn cancelled_coalesced_prefetch_reclaims_before_real_worker_returns() {
 }
 
 #[test]
+fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacity() {
+    let Some(mut owner) = artifact() else { return };
+    let (_wav, control, pages, key) = pair_with_frames(None, 24000);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    for index in 0..3 {
+        loan.pages.request_page(key, index);
+        while loan.pages.page(key, index).is_none() {
+            loan.pages.pump_ready(4);
+            assert!(std::time::Instant::now() < deadline, "cache warmup stalled");
+            std::thread::yield_now();
+        }
+    }
+    let extent = |page_index| StreamResourceExtent {
+        source: key.into(),
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let current = [extent(0), extent(1)];
+    let original = [
+        loan.pages.page(key, 0).unwrap().frames[0],
+        loan.pages.page(key, 1).unwrap().frames[0],
+    ];
+    #[cfg(feature = "allocation-probe")]
+    let mut reserved = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        reserved = Some(loan.reserve_current_quantum(&current));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    #[cfg(feature = "allocation-probe")]
+    let token = reserved.unwrap().ok().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let token = loan.reserve_current_quantum(&current).ok().unwrap();
+    assert!(matches!(
+        loan.reserve_current_quantum(&current),
+        Err(CurrentQuantumRefusal::Busy)
+    ));
+    let candidate = stamp(&owner, 1);
+    let demand = [extent(3)];
+    loan.submit_resources(ProtectionRole::Candidate, candidate, &demand)
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Candidate, candidate, 4, 1),
+        Ok(ReadinessProgress::Pending)
+    );
+    let transition = stamp(&owner, 2);
+    assert_eq!(
+        loan.submit_resources(ProtectionRole::Transition, transition, &[extent(2)]),
+        Err(ReadinessRefusal::Capacity)
+    );
+    while loan
+        .service(ProtectionRole::Candidate, candidate, 4, 1)
+        .unwrap()
+        != ReadinessProgress::InstalledProtected
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "candidate did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge_resources(ProtectionRole::Candidate, candidate, &demand));
+    assert_eq!(loan.pages.page(key, 0).unwrap().frames[0], original[0]);
+    assert_eq!(loan.pages.page(key, 1).unwrap().frames[0], original[1]);
+    let mut owned = Some(loan);
+    assert!(matches!(
+        domain.return_pages_on_control(&mut owned),
+        Err(AudioStreamStorageError::UnresolvedObligations)
+    ));
+    let mut loan = owned.take().unwrap();
+    #[cfg(feature = "allocation-probe")]
+    let mut released = false;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        released = loan.release_current_quantum(&token);
+    });
+    #[cfg(not(feature = "allocation-probe"))]
+    let released = loan.release_current_quantum(&token);
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(released);
+    assert!(!loan.release_current_quantum(&token));
+    let second = loan.reserve_current_quantum(&[extent(0)]).ok().unwrap();
+    assert!(
+        !loan.release_current_quantum(&token),
+        "stale token must not clear a new reservation"
+    );
+    assert!(loan.cancel_current_quantum());
+    assert!(!loan.release_current_quantum(&second));
+    assert!(!loan.cancel_current_quantum());
+    assert!(matches!(
+        loan.reserve_current_quantum(&[extent(4)]),
+        Err(CurrentQuantumRefusal::NotResident)
+    ));
+    assert_eq!(
+        loan.submit_resources(ProtectionRole::Transition, transition, &[extent(2)]),
+        Ok(())
+    );
+    while loan
+        .service(ProtectionRole::Transition, transition, 4, 1)
+        .unwrap()
+        != ReadinessProgress::InstalledProtected
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker turnover stalled"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge_resources(ProtectionRole::Transition, transition, &[extent(2)]));
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
+}
+
+#[test]
+fn current_quantum_tokens_cannot_release_another_domain() {
+    let (_wav_a, control_a, pages_a, _) = pair();
+    let (_wav_b, control_b, pages_b, _) = pair();
+    let build = |control, pages| {
+        ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+            control,
+            pages,
+            usize::MAX,
+            usize::MAX,
+            usize::MAX,
+            Some(StreamReadinessReservation {
+                extents_per_role: 3,
+            }),
+        )
+        .ok()
+        .unwrap()
+    };
+    let mut a = build(control_a, pages_a);
+    let mut b = build(control_b, pages_b);
+    let mut loan_a = a.loan_pages_on_control().unwrap();
+    let mut loan_b = b.loan_pages_on_control().unwrap();
+    let token_a = loan_a.reserve_current_quantum(&[]).ok().unwrap();
+    let token_b = loan_b.reserve_current_quantum(&[]).ok().unwrap();
+    assert!(!loan_a.release_current_quantum(&token_b));
+    assert!(!loan_b.release_current_quantum(&token_a));
+    assert!(matches!(
+        loan_a.reserve_current_quantum(&[]),
+        Err(CurrentQuantumRefusal::Busy)
+    ));
+    assert!(matches!(
+        loan_b.reserve_current_quantum(&[]),
+        Err(CurrentQuantumRefusal::Busy)
+    ));
+    assert!(loan_a.release_current_quantum(&token_a));
+    assert!(loan_b.release_current_quantum(&token_b));
+    a.return_pages_on_control(&mut Some(loan_a)).unwrap();
+    b.return_pages_on_control(&mut Some(loan_b)).unwrap();
+    assert!(finish(&mut a).accounting_complete);
+    assert!(finish(&mut b).accounting_complete);
+}
+
+#[test]
 fn pending_arrivals_survive_unrelated_cache_turnover_until_receipt_or_cancel() {
     let Some(mut owner) = artifact() else { return };
     let (_wav, control, pages, key) = pair_with_frames(None, 24000);
