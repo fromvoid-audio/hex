@@ -777,6 +777,12 @@ fn session_loop_repeats_sdk_instrument_gates() {
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
+fn session_seek_releases_old_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::SessionSeek);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
 fn session_pause_releases_sdk_gate_without_rechasing_on_resume() {
     instrument_entrypoint(InstrumentWorkflow::SessionPause);
 }
@@ -1018,6 +1024,7 @@ enum InstrumentWorkflow {
     SessionRestart,
     SessionLoop,
     SessionPause,
+    SessionSeek,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
@@ -1033,6 +1040,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             | InstrumentWorkflow::SessionRestart
             | InstrumentWorkflow::SessionLoop
             | InstrumentWorkflow::SessionPause
+            | InstrumentWorkflow::SessionSeek
     );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
@@ -1382,6 +1390,70 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     let console = console.unwrap();
+    if matches!(workflow, InstrumentWorkflow::SessionSeek) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        let settle = |harness: &ResidentHarness| {
+            for _ in 0..4 {
+                render_completed_block(harness);
+            }
+        };
+        let sounding = |harness: &ResidentHarness, stage: &str| {
+            for frame in render_completed_block(harness) {
+                assert!(
+                    (frame[0] - 88.0 / 127.0).abs() < 1e-5,
+                    "expected one SDK gate at {stage}: {frame:?}"
+                );
+                assert!((frame[0] - frame[1]).abs() < 1e-6);
+            }
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        settle(&harness);
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        settle(&harness);
+        sounding(&harness, "before seek");
+
+        send(&mut harness, SessionPlaybackCommand::Seek(12_000));
+        settle(&harness);
+        sounding(&harness, "after seek");
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        settle(&harness);
+        assert_eq!(
+            render_completed_block(&harness),
+            [[0.0; 2]; 256],
+            "seek left a prior gate"
+        );
+
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.position.load(Acquire) >= 12_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
     if matches!(workflow, InstrumentWorkflow::SessionPause) {
         assert!(
             controlled_fixture,
