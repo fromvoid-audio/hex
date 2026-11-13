@@ -456,11 +456,18 @@ pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 600;
 pub struct SessionHandoffReport {
     cancelled_pending: [Option<TrackId>; MAX_TRACKS],
     cancelled_pending_len: usize,
+    running_audio_restart: bool,
 }
 
 impl SessionHandoffReport {
     pub fn cancelled_pending_tracks(&self) -> &[Option<TrackId>] {
         &self.cancelled_pending[..self.cancelled_pending_len]
+    }
+
+    /// Whether this plan resets or relocates audio while the predecessor plays.
+    /// A preview observes one predecessor and does not authorize a later commit.
+    pub fn running_audio_restart(&self) -> bool {
+        self.running_audio_restart
     }
 }
 
