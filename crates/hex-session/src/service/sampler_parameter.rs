@@ -22,6 +22,30 @@ fn parameter_device<'a>(
     };
     (device.id() == edit.device && (allow_bypassed || !device.bypassed())).then_some(device)
 }
+
+fn replacement_device<'a>(
+    project: &'a hex_project::Project,
+    edit: &SamplerReplacementEdit,
+    allow_bypassed: bool,
+) -> Option<&'a hex_project::Device> {
+    let instrument = match edit.owner {
+        hex_project::InstrumentAssetOwner::Track(track) => project.track(track)?.instrument()?,
+        hex_project::InstrumentAssetOwner::Source(source) => {
+            if project
+                .tracks()
+                .iter()
+                .any(|track| track.source_id() == Some(source))
+            {
+                return None;
+            }
+            project.native_source(source)?.instrument()
+        }
+    };
+    (instrument.id() == edit.device
+        && instrument.state() == &edit.expected_state
+        && (allow_bypassed || !instrument.bypassed()))
+    .then_some(instrument)
+}
 pub(super) fn validate(
     session: &Session,
     generation: u64,
@@ -114,15 +138,7 @@ impl SamplerEdit {
                 {
                     return Err("sampler replacement target changed or was cancelled".into());
                 }
-                let target = session
-                    .project()
-                    .track(edit.track)
-                    .and_then(|track| track.instrument())
-                    .filter(|device| {
-                        device.id() == edit.device
-                            && !device.bypassed()
-                            && device.state() == &edit.expected_state
-                    })
+                let target = replacement_device(session.project(), edit, false)
                     .ok_or("sampler replacement target changed")?;
                 hex_engine::validate_sampler_replacement_on_control(target.state())
                     .map_err(|e| e.to_string())?;
@@ -185,13 +201,7 @@ impl SamplerEdit {
                 Ok(patched != *device.state())
             }
             Self::Replacement(edit) => {
-                let device = session
-                    .project()
-                    .track(edit.track)
-                    .and_then(|track| track.instrument())
-                    .filter(|device| {
-                        device.id() == edit.device && device.state() == &edit.expected_state
-                    })
+                let device = replacement_device(session.project(), edit, true)
                     .ok_or("sampler replacement target changed")?;
                 hex_engine::validate_sampler_replacement_on_control(device.state())
                     .map_err(|error| error.to_string())?;

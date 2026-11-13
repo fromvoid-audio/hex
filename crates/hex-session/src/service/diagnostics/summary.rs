@@ -1818,7 +1818,14 @@ pub(super) fn request(value: &Request) -> Description {
                 }
                 crate::service::SamplerEdit::Replacement(e) => {
                     description.operation = Some("replacement");
-                    description.field("track", format_args!("{}", e.track.value()));
+                    match e.owner {
+                        hex_project::InstrumentAssetOwner::Track(track) => {
+                            description.field("track", format_args!("{}", track.value()))
+                        }
+                        hex_project::InstrumentAssetOwner::Source(source) => {
+                            description.field("source", format_args!("{}", source.value()))
+                        }
+                    }
                     description.field("device", format_args!("{}", e.device.value()));
                     description.field(
                         "path_redacted_bytes",

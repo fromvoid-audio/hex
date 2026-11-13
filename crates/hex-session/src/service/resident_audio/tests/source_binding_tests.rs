@@ -825,3 +825,202 @@ fn resident_worker_edits_unassigned_sampler_without_binding_a_track() {
     assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(redone.state.project, edited.state.project);
 }
+
+#[test]
+fn resident_worker_loads_and_replaces_unassigned_sampler_originals() {
+    let observed = Arc::new(Observed::default());
+    let bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+    let service = Service::with_audio_sink_and_native_reservation(
+        16,
+        1024,
+        None,
+        Box::new(OfflineSink {
+            observed,
+            pending: None,
+        }),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: bytes * 2,
+                max_construction_peak_bytes: bytes * 3,
+            },
+            max_scan_frames: 1024,
+        },
+    )
+    .unwrap();
+    let receive = || {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
+    };
+    receive();
+    let empty = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unassigned".into(),
+            devices: vec![empty],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let created = receive();
+    assert!(created.error.is_none(), "{:?}", created.error);
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "other".into(),
+            devices: vec![
+                created
+                    .state
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state()
+                    .clone(),
+            ],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let other_event = receive();
+    let Some(Created::NativeSource(other)) = other_event.created else {
+        panic!("other source")
+    };
+    let other_device = other_event
+        .state
+        .project
+        .native_source(other)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::RemoveNativeSource(other)))
+        .unwrap();
+    let created = receive();
+    assert!(created.error.is_none(), "{:?}", created.error);
+    let files = sampler_export::tests::Files::new(false);
+    let request = |state: &ViewState, id, cancel| {
+        Request::SamplerEdit(SamplerEdit::Replacement(SamplerReplacementEdit {
+            request_id: id,
+            project_generation: 0,
+            revision: state.revision,
+            owner: hex_project::InstrumentAssetOwner::Source(source),
+            device,
+            expected_state: state.project.device(device).unwrap().state().clone(),
+            path: files.source().to_owned(),
+            cancel: Arc::new(AtomicBool::new(cancel)),
+        }))
+    };
+    service.submit(request(&created.state, 1, true)).unwrap();
+    let cancelled = receive();
+    assert!(cancelled.error.is_some());
+    assert_eq!(cancelled.sampler_edit_complete, Some(1));
+    assert_eq!(cancelled.state.project, created.state.project);
+    for case in 0..5 {
+        let mut bad = request(&created.state, 10 + case, false);
+        if let Request::SamplerEdit(SamplerEdit::Replacement(edit)) = &mut bad {
+            match case {
+                0 => edit.revision = edit.revision.saturating_add(1),
+                1 => {
+                    edit.expected_state = edit
+                        .expected_state
+                        .clone()
+                        .with_input_gain_millidb(1000)
+                        .unwrap()
+                }
+                2 => edit.path = files.source().with_extension("missing"),
+                3 => edit.device = other_device,
+                _ => edit.owner = hex_project::InstrumentAssetOwner::Source(other),
+            }
+        }
+        service.submit(bad).unwrap();
+        let refused = receive();
+        assert!(refused.error.is_some(), "case {case}");
+        assert_eq!(refused.sampler_edit_complete, Some(10 + case));
+        assert_eq!(refused.state.project, created.state.project);
+    }
+    service.submit(request(&created.state, 2, false)).unwrap();
+    let first = receive();
+    assert!(first.error.is_none(), "{:?}", first.error);
+    assert_eq!(first.sampler_edit_complete, Some(2));
+    assert_eq!(first.state.project.source_contributors(source).count(), 0);
+    assert_eq!(
+        first
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id(),
+        device
+    );
+    assert_eq!(first.state.project.assets().count(), 1);
+    service.submit(request(&first.state, 3, false)).unwrap();
+    let second = receive();
+    assert!(second.error.is_none(), "{:?}", second.error);
+    assert_eq!(second.sampler_edit_complete, Some(3));
+    assert_eq!(second.state.project.assets().count(), 2);
+    service.submit(Request::Undo).unwrap();
+    let undone = receive();
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(
+        undone.state.project.device(device).unwrap().state(),
+        first.state.project.device(device).unwrap().state()
+    );
+    service.submit(Request::Undo).unwrap();
+    let empty_again = receive();
+    assert!(empty_again.error.is_none(), "{:?}", empty_again.error);
+    assert!(hex_engine::is_empty_sampler_state_on_control(
+        empty_again.state.project.device(device).unwrap().state()
+    ));
+    service.submit(Request::Redo).unwrap();
+    let first_again = receive();
+    assert!(first_again.error.is_none(), "{:?}", first_again.error);
+    assert_eq!(
+        first_again.state.project.device(device).unwrap().state(),
+        first.state.project.device(device).unwrap().state()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redone = receive();
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(
+        redone.state.project.device(device).unwrap().state(),
+        second.state.project.device(device).unwrap().state()
+    );
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "assigned".into(),
+        }))
+        .unwrap();
+    let track_event = receive();
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("track")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        }))
+        .unwrap();
+    let assigned = receive();
+    assert!(assigned.error.is_none(), "{:?}", assigned.error);
+    service.submit(request(&assigned.state, 20, false)).unwrap();
+    let refused = receive();
+    assert!(refused.error.is_some());
+    assert_eq!(refused.sampler_edit_complete, Some(20));
+    assert_eq!(refused.state.project, assigned.state.project);
+}
