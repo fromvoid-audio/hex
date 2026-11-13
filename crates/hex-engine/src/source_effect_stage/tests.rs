@@ -3176,3 +3176,86 @@ fn live_source_utility_mono_switch_preserves_asymmetric_filter_history_and_local
         }
     }
 }
+
+#[test]
+fn authored_first_source_utility_attachment_preserves_shared_voices_and_local_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    for partition in [1, 7, 64, 128, 257] {
+        let (mut editor, asset) = authored_fixture(0, false);
+        let receiver = editor.project().tracks()[0].id();
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+        let table = Arc::new(crate::SineTable::new());
+        let prepare = |editor: &Editor| {
+            Arc::new(
+                PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                    .unwrap(),
+            )
+        };
+        let original = prepare(&editor);
+        let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut reference = SessionPlayback::new(original).unwrap();
+        for playback in [&mut donor, &mut reference] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::GAIN,
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+        candidate.try_inherit_state_live_from(&mut donor).unwrap();
+        let mut actual = [[0.0; 2]; 128];
+        let mut baseline = actual;
+        for chunk in actual.chunks_mut(partition) {
+            candidate.render(chunk).unwrap();
+        }
+        for chunk in baseline.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            baseline
+                .iter()
+                .any(|frame| (frame[0] - CLIP[0]).abs() > 1e-5)
+        );
+        for (i, (actual, dry)) in actual.iter().zip(baseline).enumerate() {
+            for channel in 0..2 {
+                let expected = 2.0 * (dry[channel] - CLIP[channel]) + CLIP[channel];
+                assert!(
+                    (actual[channel] - expected).abs() < 1e-4,
+                    "partition={partition} frame={i} channel={channel} actual={} expected={expected}",
+                    actual[channel]
+                );
+            }
+        }
+        assert!(editor.undo());
+        let mut removed = SessionPlayback::new(prepare(&editor)).unwrap();
+        let before = candidate.performance_frame();
+        assert!(removed.try_inherit_state_live_from(&mut candidate).is_err());
+        assert_eq!(candidate.performance_frame(), before);
+        candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+        removed.try_inherit_state_live_from(&mut candidate).unwrap();
+    }
+}
