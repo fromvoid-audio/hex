@@ -8,7 +8,8 @@ use shared_sources::SharedSourceHandoff;
 /// The plan retains both revisions. Its owner must account for those handles
 /// and reclaim the plan on control; borrowing it for a handoff transfers no
 /// ownership. It does not authorize publication or validate host commands,
-/// routes, output faults, or cancellation. Active loops are not supported.
+/// routes, output faults, or cancellation. Enabled Arrangement loops are not
+/// supported, including a cursor that has already passed the loop end.
 pub struct PreparedTempoAnchor {
     previous: Arc<PreparedRevision>,
     candidate: Arc<PreparedRevision>,
