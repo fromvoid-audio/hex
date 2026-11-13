@@ -81,7 +81,12 @@ pub(super) fn close_button(
         }))
 }
 
-fn close_view(view: &mut EditorView, cx: &mut Context<EditorView>) {
+pub(super) fn close_view(view: &mut EditorView, cx: &mut Context<EditorView>) {
+    if view.sampler_parameter_pending() || view.sampler_parameter.numeric_draft_active() {
+        view.error = Some("finish the sampler edit before closing the source".into());
+        cx.notify();
+        return;
+    }
     if super::finalize_controls(view, cx) {
         view.device_panel.source_manager.source_view = None;
     }
@@ -210,6 +215,7 @@ impl Action {
             Operation::Rename(source) => begin_name(view, source, window, cx),
             Operation::Edit(source) => {
                 if view.edit_pending()
+                    || view.sampler_parameter.numeric_draft_active()
                     || view.tuning.client.snapshot().is_some()
                     || view.tuning.client.has_pending_requests()
                 {
@@ -241,6 +247,7 @@ impl Action {
             }
             Operation::Navigate(_, track) => {
                 if view.edit_pending()
+                    || view.sampler_parameter.numeric_draft_active()
                     || view.tuning.client.snapshot().is_some()
                     || view.tuning.client.has_pending_requests()
                 {

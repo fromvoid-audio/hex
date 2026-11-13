@@ -3984,3 +3984,170 @@ fn unassigned_sampler_parameter_target_refuses_stale_source_context(cx: &mut Tes
     });
     drop(state);
 }
+
+#[gpui::test]
+fn source_sampler_numeric_retains_draft_and_pending_value_until_terminal(cx: &mut TestAppContext) {
+    let (service, initial, selected, _, _, _) = actor_utility_fixture();
+    let mut model = Editor::new((*initial.project).clone(), 16).unwrap();
+    let Created::Asset(asset) = model
+        .execute(Command::AddAsset {
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let sampler =
+        hex_engine::native_device_resources::current_sampler_fixture::one_shot_state(4, asset)
+            .unwrap();
+    let Created::NativeSource(source) = model
+        .execute(Command::CreateNativeSource {
+            name: "sampler".into(),
+            devices: vec![sampler],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let device = model
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let mut event = crate::editor::arrangement_main_track_ui_test::completed_event(&initial);
+    Arc::get_mut(&mut event.state).unwrap().project = Arc::new(model.project().clone());
+    let (handle, editor) = actor_editor_window(cx, service, event.state, selected);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let owner = hex_session::service::SamplerParameterOwner::Source(source);
+    let parameter = hex_engine::SamplerParameter::Gain;
+    let control = editor.update(&mut visual, |view, cx| {
+        view.device_panel.owner = Some(DevicePanelOwner::Source(source));
+        view.device_panel.source_manager.source_view = Some((
+            view.project_generation,
+            source,
+            Some(DevicePanelOwner::Track(selected)),
+        ));
+        view.clip_view_open = true;
+        view.device_panel_active = true;
+        let device = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .clone();
+        let _ = view.sampler_parameter_control(owner, &device, parameter, cx);
+        crate::editor::sampler_parameter::tests::control_entity(view, parameter).unwrap()
+    });
+    control.update(&mut visual, |control, cx| {
+        control.set_external_value(0.5, cx).unwrap();
+        cx.emit(NumericControlEvent {
+            phase: NumericEventPhase::Begin,
+            value: 0.5,
+            gesture: None,
+        });
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(selected);
+        view.device_panel.owner = Some(DevicePanelOwner::Source(source));
+        view.device_panel.source_manager.source_view = Some((
+            view.project_generation,
+            source,
+            Some(DevicePanelOwner::Track(selected)),
+        ));
+        super::super::source_manager::close_view(view, cx);
+        assert!(
+            view.device_panel.source_manager.source_view.is_some(),
+            "active draft must keep the owner"
+        );
+    });
+    visual.update(|_, cx| {
+        control.update(cx, |_, cx| {
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value: 0.5,
+                gesture: None,
+            });
+        });
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(selected);
+        view.device_panel.owner = Some(DevicePanelOwner::Source(source));
+        view.device_panel.source_manager.source_view = Some((
+            view.project_generation,
+            source,
+            Some(DevicePanelOwner::Track(selected)),
+        ));
+        let pending = crate::editor::sampler_parameter::tests::pending_request(view)
+            .unwrap_or_else(|| {
+                panic!(
+                    "source receipt: error={:?} worker_pending={}",
+                    view.error, view.worker_requests_pending
+                )
+            });
+        assert_eq!(pending.owner, owner);
+        assert_eq!(pending.device, device);
+        assert_eq!(pending.value, 0.5);
+        for _ in 0..3 {
+            let device_state = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .clone();
+            assert_eq!(
+                view.sampler_display_value(owner, &device_state, parameter, cx)
+                    .unwrap(),
+                0.5
+            );
+            let _ = view.sampler_parameter_control(owner, &device_state, parameter, cx);
+            assert_eq!(
+                crate::editor::sampler_parameter::tests::rendered_control_value(
+                    view, parameter, cx
+                ),
+                Some(0.5)
+            );
+        }
+        super::super::source_manager::close_view(view, cx);
+        assert!(
+            view.device_panel.source_manager.source_view.is_some(),
+            "pending receipt must keep the owner"
+        );
+        view.finish_sampler_parameter(Some(pending.request_id + 1));
+        assert!(view.sampler_parameter_pending());
+        let old = view.state.as_ref().unwrap();
+        let mut event = crate::editor::arrangement_main_track_ui_test::completed_event(old);
+        let installed = Arc::get_mut(&mut event.state).unwrap();
+        let state = installed.project.device(device).unwrap().state();
+        let patched =
+            hex_engine::patch_sampler_parameter_on_control(parameter, state, 0.5).unwrap();
+        let mut model = Editor::new((*installed.project).clone(), 16).unwrap();
+        model
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: patched,
+            })
+            .unwrap();
+        installed.project = Arc::new(model.project().clone());
+        event.sampler_edit_complete = Some(pending.request_id);
+        view.receive(event);
+        assert!(!view.sampler_parameter_pending());
+        let canonical = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert_eq!(
+            hex_engine::sampler_parameter_value_on_control(parameter, canonical.state()).unwrap(),
+            0.5
+        );
+        super::super::source_manager::close_view(view, cx);
+        assert!(view.device_panel.source_manager.source_view.is_none());
+    });
+}

@@ -128,7 +128,15 @@ pub(super) fn render(
     if frames == 0 {
         return shell.child(theme::text("source overview extent unavailable"));
     }
-    let parameter = |p| view.sampler_display_value(track, device, p, cx).ok();
+    let parameter = |p| {
+        view.sampler_display_value(
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            p,
+            cx,
+        )
+        .ok()
+    };
     let Some(start) = parameter(hex_engine::SamplerParameter::StartFrame) else {
         return shell.child(theme::text("source region unavailable"));
     };

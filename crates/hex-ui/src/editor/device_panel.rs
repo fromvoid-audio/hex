@@ -3076,8 +3076,12 @@ fn render_instrument(
         } else {
             "audio not ready · offline export supported"
         };
-        let gain =
-            view.sampler_parameter_control(track, device, hex_engine::SamplerParameter::Gain, cx);
+        let gain = view.sampler_parameter_control(
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            hex_engine::SamplerParameter::Gain,
+            cx,
+        );
         let modulation_view = device_view.as_ref().ok().filter(|_| {
             view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                 && device.state().asset_references().len() == 1
@@ -3101,19 +3105,19 @@ fn render_instrument(
             .children(gain_overlay)
             .into_any_element();
         let pitch = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::Transpose,
             cx,
         );
         let start = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::StartFrame,
             cx,
         );
         let end = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::EndFrame,
             cx,
@@ -3130,7 +3134,12 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEndFrame,
                     hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
-                    fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+                    fields.push(view.sampler_parameter_control(
+                        hex_session::service::SamplerParameterOwner::Track(track),
+                        device,
+                        parameter,
+                        cx,
+                    ));
                 }
                 None
             }
@@ -3142,7 +3151,12 @@ fn render_instrument(
             hex_engine::SamplerParameter::SustainPercent,
             hex_engine::SamplerParameter::ReleaseMs,
         ] {
-            fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+            fields.push(view.sampler_parameter_control(
+                hex_session::service::SamplerParameterOwner::Track(track),
+                device,
+                parameter,
+                cx,
+            ));
         }
         let controls = div()
             .grid()
