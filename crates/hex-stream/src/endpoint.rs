@@ -247,6 +247,11 @@ impl Endpoint {
         })
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_ready_page(&self, key: ResourcePageKey) -> bool {
+        self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
+    }
+
     pub fn pump_ready(&mut self, limit: usize) -> usize {
         self.pump_ready_for_pending(limit, &[])
     }
