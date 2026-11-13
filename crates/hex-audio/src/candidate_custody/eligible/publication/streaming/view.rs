@@ -19,7 +19,108 @@ pub(super) struct StateView<'a> {
 pub(crate) struct ActiveView<'a> {
     pub(super) state: StateView<'a>,
 }
+pub(crate) struct QuantumPins {
+    entries: [Option<(
+        AudioCandidateDomainToken,
+        hex_stream::CurrentQuantumReservation,
+    )>; 2],
+}
+impl QuantumPins {
+    pub(crate) fn release(self, domains: &mut [Option<DomainEnvelope>; 2]) {
+        for (token, reservation) in self.entries.into_iter().flatten() {
+            if let Ok(pages) = super::demand::envelope(domains, token)
+                && let Some(loan) = pages.inner.loan.as_mut()
+            {
+                let _ = loan.release_current_quantum(&reservation);
+            }
+        }
+    }
+}
 impl ActiveView<'_> {
+    /// Protect the exact already-resident demand for the complete output buffer.
+    pub(crate) fn reserve_current_quantum(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        frames: usize,
+        pending_play: bool,
+    ) -> Result<QuantumPins, hex_engine::Invalid> {
+        let refs = self.state.domain_refs;
+        let workspace = self
+            .state
+            .streaming
+            .as_mut()
+            .filter(|workspace| workspace.valid())
+            .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
+        if workspace.pending_action.is_some() {
+            return Err(hex_engine::Invalid("stream action is pending"));
+        }
+        for rows in &mut workspace.quantum_extents {
+            rows.clear();
+        }
+        let runtime = self
+            .state
+            .runtime
+            .as_mut()
+            .ok_or(hex_engine::Invalid("stream runtime unavailable"))?;
+        let mut offset = 0usize;
+        while offset < frames {
+            let rows = &mut workspace.quantum_extents;
+            let covered = runtime.visit_current_stream_quantum_at(
+                u64::try_from(offset).map_err(|_| hex_engine::Invalid("stream offset overflow"))?,
+                frames - offset,
+                pending_play.then_some(true),
+                &mut |extent| {
+                    let index = refs
+                        .iter()
+                        .flatten()
+                        .find_map(|token| {
+                            domains
+                                .get(token.slot)
+                                .and_then(Option::as_ref)
+                                .filter(|pages| pages.inner.token == *token)
+                                .and_then(|pages| pages.inner.loan.as_ref())
+                                .is_some_and(|loan| loan.covers_resource_key(extent.source))
+                                .then_some(token.slot)
+                        })
+                        .ok_or(hex_engine::Invalid(
+                            "stream demand source lacks actual domain",
+                        ))?;
+                    Workspace::insert(rows, workspace.limit, index, extent)
+                },
+            )?;
+            if covered == 0 {
+                break;
+            }
+            offset = offset
+                .checked_add(covered)
+                .ok_or(hex_engine::Invalid("stream offset overflow"))?;
+        }
+        let mut pins = QuantumPins {
+            entries: std::array::from_fn(|_| None),
+        };
+        for token in refs.into_iter().flatten() {
+            let result = super::demand::envelope(domains, token)
+                .and_then(|pages| {
+                    pages
+                        .inner
+                        .loan
+                        .as_mut()
+                        .ok_or(hex_engine::Invalid("stream loan unavailable"))
+                })
+                .and_then(|loan| {
+                    loan.reserve_current_quantum(&workspace.quantum_extents[token.slot])
+                        .map_err(|_| hex_engine::Invalid("current stream reservation refused"))
+                });
+            match result {
+                Ok(reservation) => pins.entries[token.slot] = Some((token, reservation)),
+                Err(error) => {
+                    pins.release(domains);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(pins)
+    }
     pub(crate) fn capacity_conflict(&self) -> bool {
         self.state
             .streaming

@@ -107,6 +107,14 @@ impl Queued {
                     return InstallDecision::Retry;
                 }
                 Err(_) => {
+                    if next
+                        .streaming
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.capacity_conflict)
+                    {
+                        next.cancel_stream_pending(request.domains);
+                        return InstallDecision::Retry;
+                    }
                     let source_changed = next
                         .streaming
                         .as_mut()

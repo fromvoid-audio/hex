@@ -28,7 +28,7 @@ impl OrdinaryReservation {
         }
         if self
             .extents
-            .checked_mul(2)
+            .checked_mul(4)
             .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<OrdinaryStreams>()))
             .is_none_or(|n| n > self.metadata_bytes)
@@ -77,6 +77,11 @@ impl OrdinaryStreams {
             workspace.role == Some(hex_stream::ProtectionRole::Candidate)
                 && workspace.stamps.iter().any(Option::is_some)
         })
+    }
+    pub(crate) fn capacity_conflict(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.capacity_conflict)
     }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_coalesced_prefetch(

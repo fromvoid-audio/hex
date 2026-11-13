@@ -3542,6 +3542,17 @@ impl Callback {
                         return;
                     }
                     refused => {
+                        if next
+                            .streams
+                            .as_ref()
+                            .is_some_and(|streams| streams.capacity_conflict())
+                        {
+                            if let Some(streams) = next.streams.as_mut() {
+                                streams.cancel_install(&mut self.domain_pages);
+                            }
+                            self.deferred = Some(next);
+                            return;
+                        }
                         let source_changed = next
                             .streams
                             .as_mut()
@@ -4367,7 +4378,54 @@ impl Callback {
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
-        let result = self.render_inner(output);
+        let old_revision = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .map(|active| (active.revision, active.control_context_generation));
+        let successor = !output.is_empty()
+            && (self
+                .deferred
+                .as_ref()
+                .is_some_and(|next| next.streams.is_some())
+                || self
+                    .deferred_eligible
+                    .as_ref()
+                    .is_some_and(|next| next.streaming_enabled()));
+        let mut pins = None;
+        let mut allow_successor = true;
+        if successor
+            && self
+                .active
+                .as_ref()
+                .is_some_and(ActivePublication::streaming_enabled)
+        {
+            let reserve = |this: &mut Self| {
+                this.active
+                    .as_mut()
+                    .and_then(ActivePublication::stream_view)
+                    .ok_or(Invalid("active stream view unavailable"))?
+                    .reserve_current_quantum(
+                        &mut this.domain_pages,
+                        output.len(),
+                        this.stream_pending_play.is_some(),
+                    )
+            };
+            match reserve(self) {
+                Ok(reservation) => pins = Some(reservation),
+                Err(_) => {
+                    self.yield_pending_stream_successor();
+                    match reserve(self) {
+                        Ok(reservation) => pins = Some(reservation),
+                        Err(_) => allow_successor = false,
+                    }
+                }
+            }
+        }
+        let result = self.render_inner(output, allow_successor, old_revision, &mut pins);
+        if let Some(reservation) = pins {
+            reservation.release(&mut self.domain_pages);
+        }
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if result.is_ok()
@@ -4430,7 +4488,13 @@ impl Callback {
             );
         }
     }
-    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    fn render_inner(
+        &mut self,
+        output: &mut [Frame],
+        allow_successor: bool,
+        old_revision: Option<(u64, u64)>,
+        pins: &mut Option<crate::candidate_custody::QuantumPins>,
+    ) -> Result<(), Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
@@ -4442,7 +4506,8 @@ impl Callback {
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
         }
-        if !yield_successor
+        if allow_successor
+            && !yield_successor
             && !self.status.closing.load(Acquire)
             && self
                 .deferred
@@ -4452,7 +4517,8 @@ impl Callback {
             self.advance_legacy_publication(Some(output.len()));
         }
 
-        if !yield_successor
+        if allow_successor
+            && !yield_successor
             && !self.status.closing.load(Acquire)
             && self
                 .deferred_eligible
@@ -4460,6 +4526,16 @@ impl Callback {
                 .is_some_and(|next| next.streaming_enabled())
         {
             self.advance_eligible_publication(Some(output.len()));
+        }
+        if old_revision
+            != self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .map(|active| (active.revision, active.control_context_generation))
+            && let Some(reservation) = pins.take()
+        {
+            reservation.release(&mut self.domain_pages);
         }
         if !output.is_empty() {
             self.prepare_midi_recording_quantum(output.len());
