@@ -834,6 +834,23 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    /// Observation for headless profiling only. The first value is the existing
+    /// runtime ledger charge; the second is the charge for detached track-tail
+    /// chains already included in that total. Shared revision and source owners,
+    /// native resources, allocator overhead and process memory are not included.
+    #[cfg(feature = "instrument-test-support")]
+    pub fn profile_runtime_storage_bytes(&self) -> Option<(usize, usize)> {
+        let total = self.accounted_runtime_storage_bytes()?;
+        let tails = self
+            .tail_groups
+            .iter()
+            .flatten()
+            .try_fold(0_usize, |sum, chain| {
+                sum.checked_add(chain.accounted_storage_bytes()?)
+            })?;
+        Some((total, tails))
+    }
+
     #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_track_boxes(
         &self,
