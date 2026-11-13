@@ -57,7 +57,16 @@ pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Wi
     }
     let visible = match view.device_panel.owner {
         None => true,
-        Some(DevicePanelOwner::Track(track)) => !view.track_selection.only_or_empty(track),
+        Some(DevicePanelOwner::Track(track)) => {
+            !view.track_selection.only_or_empty(track)
+                || (view.selected_track() == Some(track)
+                    && view.state.as_ref().is_some_and(|state| {
+                        state
+                            .project
+                            .track(track)
+                            .is_some_and(|track| track.is_group())
+                    }))
+        }
         _ => false,
     };
     let Some(focus) = view

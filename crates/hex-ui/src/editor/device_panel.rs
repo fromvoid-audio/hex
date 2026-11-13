@@ -1397,7 +1397,7 @@ fn render_track(
         let card = source_picker::button(view, window, cx, track_id, None);
         header = header.child(card);
     }
-    if !view.track_selection.only_or_empty(track_id) {
+    if track.is_group() || !view.track_selection.only_or_empty(track_id) {
         header = header.children(std::iter::once(source_manager::button(view, window, cx)));
     }
     header = header.child(track_name_view);
