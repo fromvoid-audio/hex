@@ -147,7 +147,7 @@ impl Project {
                 && (edit.plain_frame_event_root() || edit.is_plain_reversed_capture(clip))
             {
                 return Err(Invalid(
-                    "long frame event timelines cannot be nested as retained audio sources",
+                    "long frame event timelines and plain reversals cannot be nested as retained audio sources",
                 ));
             }
             edit.validate(clip, &root.tempo, asset.playback_frames())?;
