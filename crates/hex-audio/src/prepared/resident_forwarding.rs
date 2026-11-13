@@ -21,6 +21,7 @@ struct Slot {
     busy: bool,
     suspended: bool,
     worker_owned: bool,
+    combined_configuration: bool,
     pcm_frames: u64,
     ever_used: bool,
     request: Option<Request>,
@@ -43,6 +44,33 @@ pub(super) struct ResidentForwarding {
     slot: Mutex<Slot>,
 }
 impl ResidentForwarding {
+    /// Exclude client exposure while the two pre-exposure reservations are
+    /// installed. The lock is held only for this state change, never across
+    /// allocation or native root configuration.
+    pub(super) fn begin_combined_configuration(&self, status: &Status) -> Result<(), &'static str> {
+        let mut slot = self
+            .slot
+            .try_lock()
+            .map_err(|_| "resident forwarding admission is busy")?;
+        if slot.combined_configuration
+            || !slot.virgin()
+            || status.client_exposed.load(Acquire)
+            || status.closing.load(Acquire)
+        {
+            return Err("combined reservation requires unexposed virgin endpoints");
+        }
+        slot.combined_configuration = true;
+        Ok(())
+    }
+
+    pub(super) fn finish_combined_configuration(&self) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.combined_configuration = false;
+    }
+
     pub(super) fn claim_worker_publication_on_control(
         &self,
         status: &Status,
@@ -57,13 +85,16 @@ impl ResidentForwarding {
         slot.worker_owned = true;
         Ok(())
     }
-    pub(super) fn expose_client_on_control(&self, status: &Status) -> bool {
+    pub(super) fn expose_client_on_control(&self, status: &Status) -> Option<bool> {
         let slot = self
             .slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.combined_configuration || status.closing.load(Acquire) {
+            return None;
+        }
         status.client_exposed.store(true, Release);
-        slot.worker_owned
+        Some(slot.worker_owned)
     }
     pub(super) fn new() -> Arc<Self> {
         let shared = Arc::new(Self {

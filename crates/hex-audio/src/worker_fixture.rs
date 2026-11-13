@@ -295,6 +295,71 @@ pub fn open_after_retirement(
 mod tests {
     use super::*;
     #[test]
+    fn failed_combined_reservation_cannot_expose_a_client() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let verified = crate::AudioCandidatePublicationReservation {
+            runtime_slots: 3,
+            archive_slots: 3,
+            member_rows: 256,
+            transfer_rows: 256,
+            receipt_rows: 3,
+            data_rows: 4096,
+            handle_rows: 2048,
+            max_retained_data_bytes: 96 * 1024 * 1024,
+            max_construction_peak_data_bytes: 96 * 1024 * 1024,
+        };
+        let empty = hex_engine::AudioStorageLedgerReservation {
+            data_rows: 0,
+            handle_rows: 0,
+            root_rows: 0,
+            max_retained_bytes: 0,
+            max_construction_peak_bytes: 0,
+        };
+        let ordinary = hex_engine::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 256,
+            root_rows: 128,
+            max_retained_bytes: 20_000_000,
+            max_construction_peak_bytes: 20_000_000,
+        };
+        for (ordinary, extents) in [(empty, 3), (ordinary, 0)] {
+            let (mut output, mut backend) = open_after_retirement(48_000, false).unwrap();
+            let total = hex_engine::AudioStorageLedgerReservation {
+                data_rows: verified.data_rows + ordinary.data_rows + 1024,
+                handle_rows: verified.handle_rows + ordinary.handle_rows,
+                root_rows: 1 + ordinary.root_rows,
+                max_retained_bytes: verified.max_retained_data_bytes
+                    + ordinary.max_retained_bytes
+                    + 1024 * 1024,
+                max_construction_peak_bytes: verified.max_construction_peak_data_bytes
+                    + ordinary.max_construction_peak_bytes
+                    + 1024 * 1024,
+            };
+            assert!(
+                output
+                    .publication
+                    .control()
+                    .unwrap()
+                    .configure_combined_publication_on_control(
+                        verified, ordinary, extents, 4096, total
+                    )
+                    .is_err()
+            );
+            assert!(output.take_client().is_none());
+            backend.close();
+            drop(output);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                if let Ok(lease) = crate::lifecycle::Lease::acquire() {
+                    drop(lease);
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        }
+    }
+    #[test]
     fn reliable_headless_worker_retains_reader_through_exact_retirement() {
         use crate::prepared::{ActionOutcome, ActionOutcomeReceipt};
         use hex_engine::{Audio, Clip, PlaybackCommand, Project, Track, playback::Playback};
