@@ -768,15 +768,20 @@ fn create_parameter_control(
                     return;
                 }
                 view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                let source_matrix_switch = matches!(key.parameter, super::utility_panel::MID_SIDE_ENABLED | super::utility_panel::MONO)
+                let source_matrix_switch = matches!(key.parameter, super::utility_panel::MID_SIDE_ENABLED | super::utility_panel::MONO | super::utility_panel::MUTE)
                     && view.state.as_ref().is_some_and(|state| {
                         state.project.device_location(key.device).is_some_and(|location|
                             matches!(location.owner, hex_project::DeviceOwner::Source(_))
                                 && location.device.state().type_id().as_str() == Ok("hex.utility"))
                     });
                 if source_matrix_switch {
-                    let eligible = view.state.as_ref().is_some_and(|state|
-                        hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter));
+                    let eligible = view.state.as_ref().is_some_and(|state| {
+                        if key.parameter == super::utility_panel::MUTE {
+                            hex_engine::project_source_utility_mute_edit_supported(&state.project, key.device)
+                        } else {
+                            hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter)
+                        }
+                    });
                     let value = ParameterValue::Bool(event.checked);
                     let target = GestureTarget::DeviceParameter { device: key.device, parameter: key.parameter };
                     let result = if eligible {

@@ -2005,12 +2005,18 @@ fn native_source_effect_recording_target_follows_the_exact_receiver() {
 
 #[test]
 fn live_source_utility_gain_and_mute_retarget_without_touching_local_audio() {
-    for (mute, settled) in [(false, false), (true, false), (true, true)] {
-        source_utility_matrix_retarget(mute, settled);
+    for (mute, settled, prefix) in [
+        (false, false, None),
+        (true, false, None),
+        (true, true, None),
+        (true, false, Some(11)),
+        (true, true, Some(12)),
+    ] {
+        source_utility_matrix_retarget(mute, settled, prefix);
     }
 }
 
-fn source_utility_matrix_retarget(mute: bool, settled: bool) {
+fn source_utility_matrix_retarget(mute: bool, settled: bool, prefix: Option<u32>) {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -2022,6 +2028,21 @@ fn source_utility_matrix_retarget(mute: bool, settled: bool) {
     for partition in [1, 7, 64, 128, 257] {
         let (mut editor, asset) = authored_fixture(0, false);
         let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+        if let Some(prefix) = prefix {
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    &UTILITY_DEFINITION.default_state().unwrap(),
+                    hex_lattice_contract::ParameterId::from_static(prefix),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state,
+                })
+                .unwrap();
+        }
         let Created::Device(effect) = editor
             .execute(Command::InsertNestedDevice {
                 parent: instrument,
