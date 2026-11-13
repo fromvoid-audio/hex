@@ -72,6 +72,28 @@ impl Playback {
         })
     }
 
+    /// Render resident timed transport with speculative node, project and
+    /// project-clock observations. All offsets are relative to the complete
+    /// output buffer, including nested declick render parts. Tap state is
+    /// restored for reuse. Invalid schedules make no observations or changes;
+    /// later failures retain the existing partial-progress semantics.
+    pub fn render_with_timed_transport_and_signal_observers(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), TimedTransportError> {
+        validate(output.len(), commands)?;
+        self.render_timed_validated(output, commands, |playback, part, offset| {
+            super::with_part_offset(project.as_deref_mut(), offset, |project| {
+                super::with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                    playback.render_with_signal_observers(part, observer, project)
+                })
+            })
+        })
+    }
+
     /// Render with borrowed stream pages and immediate timed transport actions.
     /// The page provider is borrowed only for this call. Page misses use the
     /// existing renderer's silence/request behavior; this does not perform
@@ -89,6 +111,26 @@ impl Playback {
         })
     }
 
+    /// Timed streamed rendering with speculative node, project and clock taps.
+    /// Offsets refer to the complete output; page readiness remains caller-owned.
+    pub fn render_with_timed_transport_pages_and_signal_observers<P: MediaPages>(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        pages: &mut P,
+        mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), TimedTransportError> {
+        validate(output.len(), commands)?;
+        self.render_timed_validated(output, commands, |playback, part, offset| {
+            super::with_part_offset(project.as_deref_mut(), offset, |project| {
+                super::with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                    playback.render_with_pages_and_signal_observers(part, pages, observer, project)
+                })
+            })
+        })
+    }
+
     /// Render one resident foreign-processor callback with timed transport.
     /// Processor offsets remain relative to the complete output buffer, even
     /// when commands split it. Endpoint ownership and commit remain with the
@@ -102,7 +144,7 @@ impl Playback {
         commands: &[TimedTransportCommand],
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), TimedTransportError> {
-        self.render_timed_foreign(output, commands, None, foreign)
+        self.render_timed_foreign(output, commands, None, None, None, foreign)
     }
 
     /// Render one timed foreign callback while borrowing streamed pages.
@@ -117,7 +159,24 @@ impl Playback {
         pages: &mut dyn MediaPages,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), TimedTransportError> {
-        self.render_timed_foreign(output, commands, Some(pages), foreign)
+        self.render_timed_foreign(output, commands, Some(pages), None, None, foreign)
+    }
+
+    /// Timed foreign rendering with optional borrowed pages and speculative
+    /// node, project and clock observations. Offsets refer to the complete
+    /// callback. An invalid schedule leaves output and endpoints untouched.
+    /// A later failure rejects the foreign callback and clears output;
+    /// observations must be discarded by the caller.
+    pub fn render_with_timed_transport_foreign_and_signal_observers(
+        &mut self,
+        output: &mut [Frame],
+        commands: &[TimedTransportCommand],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), TimedTransportError> {
+        self.render_timed_foreign(output, commands, pages, observer, project, foreign)
     }
 
     fn render_timed_foreign(
@@ -125,6 +184,8 @@ impl Playback {
         output: &mut [Frame],
         commands: &[TimedTransportCommand],
         mut pages: Option<&mut dyn MediaPages>,
+        mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), TimedTransportError> {
         validate(output.len(), commands)?;
@@ -133,15 +194,19 @@ impl Playback {
                 inner: foreign,
                 offset,
             };
-            playback.render_with_foreign_processors(
-                part,
-                pages
-                    .as_mut()
-                    .map(|pages| &mut **pages as &mut dyn MediaPages),
-                None,
-                None,
-                &mut shifted,
-            )
+            super::with_part_offset(project.as_deref_mut(), offset, |project| {
+                super::with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                    playback.render_with_foreign_processors(
+                        part,
+                        pages
+                            .as_mut()
+                            .map(|pages| &mut **pages as &mut dyn MediaPages),
+                        observer,
+                        project,
+                        &mut shifted,
+                    )
+                })
+            })
         });
         if result.is_err() {
             // Revocation is idempotent; the inner renderer may already have
