@@ -580,7 +580,13 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
             id,
             parameter::BALANCE,
         );
+        let mono = crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            id,
+            parameter::MONO,
+        );
         assert_eq!(gain, balance);
+        assert_eq!(gain, mono);
         gain
     };
     assert!(!eligible(&editor, local));
