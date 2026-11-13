@@ -4280,8 +4280,9 @@ impl SessionPlayback {
         // Flat tails enter Main directly, so their old suffix must already be
         // aligned there. Grouped tails enter the old track's fader output and
         // traverse its group path. They can use that path only when its whole
-        // signal graph and the copied compensation history are unchanged.
-        // Group-path and ancestor runtime custody were checked above.
+        // signal graph and the copied compensation history are unchanged and
+        // the detached track has no sends or feeds, which are upstream of the
+        // tail injection. Group-path and ancestor custody were checked above.
         let has_new_track_tail = old_track_tail_slots.iter().any(Option::is_some);
         let detached_tails_aligned = !has_new_track_tail
             || match (
@@ -4297,6 +4298,16 @@ impl SessionPlayback {
                                 && clock_transfer == 1
                                 && self.compensation.is_some()
                                 && previous.compensation.is_some()
+                                && old_track_tail_slots
+                                    .iter()
+                                    .enumerate()
+                                    .all(|(index, slot)| {
+                                        slot.is_none()
+                                            || old.tracks.get(index).is_some_and(|track| {
+                                                track.sends.is_empty()
+                                                    && track.audio_feeds.is_empty()
+                                            })
+                                    })
                         } else {
                             old_track_tail_slots
                                 .iter()

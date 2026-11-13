@@ -252,7 +252,7 @@ fn prepared_with_latency(
                 ProcessorChainOwner::Track(track.value()),
             )
         }
-        4..=6 | 8 | 9 => {
+        4..=6 | 8..=11 => {
             let track = f.tracks[0];
             f.editor
                 .execute(Command::InsertInstrument {
@@ -305,7 +305,7 @@ fn prepared_with_latency(
                         .unwrap();
                 }
             }
-            if location >= 8 {
+            if (8..=10).contains(&location) {
                 let Created::ReturnTrack(bus) = f
                     .editor
                     .execute(Command::AddReturnTrack {
@@ -317,9 +317,27 @@ fn prepared_with_latency(
                 };
                 f.editor
                     .execute(Command::SetReturnSend {
-                        track: group,
+                        track: if location == 10 { track } else { group },
                         return_track: bus,
                         gain: if location == 8 { 0.5 } else { 0.75 },
+                    })
+                    .unwrap();
+            }
+            if location == 11 {
+                let Created::Track(target) = f
+                    .editor
+                    .execute(Command::AddTrack {
+                        name: "feed target".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                f.editor
+                    .execute(Command::SetAudioFeed {
+                        source: hex_project::RoutingOwner::Track(track),
+                        destination: target,
+                        gain: 0.5,
                     })
                     .unwrap();
             }
@@ -801,7 +819,7 @@ fn active_foreign_tail_keeps_unchanged_compensated_group_pcm() {
         }
         fn reject_callback(&mut self) {}
     }
-    for location in [4, 5, 6] {
+    for location in [4, 5, 6, 8] {
         for partition in [1, 8, 64] {
             let mut old =
                 SessionPlayback::new(prepared_with_latency(location, false, 0, Some(1)).0).unwrap();
@@ -853,7 +871,7 @@ fn active_foreign_tail_keeps_unchanged_compensated_group_pcm() {
 }
 
 #[test]
-fn changed_group_graph_does_not_admit_an_unproven_active_tail() {
+fn unsafe_grouped_tail_preserves_the_previous_playback() {
     struct NonQuiet;
     impl ForeignProcessors for NonQuiet {
         fn process_segment(
@@ -871,39 +889,43 @@ fn changed_group_graph_does_not_admit_an_unproven_active_tail() {
         }
         fn reject_callback(&mut self) {}
     }
-    let mut old = SessionPlayback::new(prepared_with_latency(8, false, 0, Some(1)).0).unwrap();
-    let mut reference =
-        SessionPlayback::new(prepared_with_latency(8, false, 0, Some(1)).0).unwrap();
-    let mut next = SessionPlayback::new(prepared_with_latency(9, false, 0, Some(2)).0).unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    reference.apply(SessionPlaybackCommand::Play).unwrap();
-    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
-        .unwrap();
-    reference
-        .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
-        .unwrap();
-    let old_position = old.performance_frame;
-    assert_ne!(
-        old.revision.arrangement().signal_graph,
-        next.revision.arrangement().signal_graph
-    );
-    assert!(matches!(
-        next.try_inherit_state_from(&mut old),
-        Err(SessionPlaybackError::Arrangement(
-            super::handoff::COMPENSATED_TAILS_CHANGED
-        ))
-    ));
-    assert!(old.playing);
-    assert_eq!(old.performance_frame, old_position);
-    let mut actual = [[0.0; 2]; 24];
-    let mut expected = [[0.0; 2]; 24];
-    old.render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
-        .unwrap();
-    reference
-        .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
-        .unwrap();
-    assert_eq!(actual, expected);
-    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    for (old_location, new_location) in [(8, 9), (10, 10), (11, 11)] {
+        let mut old =
+            SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
+        let mut reference =
+            SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
+        let mut next =
+            SessionPlayback::new(prepared_with_latency(new_location, false, 0, Some(2)).0).unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        let old_position = old.performance_frame;
+        assert_eq!(
+            old.revision.arrangement().signal_graph == next.revision.arrangement().signal_graph,
+            old_location == new_location
+        );
+        assert!(matches!(
+            next.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::Arrangement(
+                super::handoff::COMPENSATED_TAILS_CHANGED
+            ))
+        ));
+        assert!(old.playing);
+        assert_eq!(old.performance_frame, old_position);
+        let mut actual = [[0.0; 2]; 24];
+        let mut expected = [[0.0; 2]; 24];
+        old.render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    }
 }
 
 #[test]
