@@ -8,13 +8,14 @@ use shared_sources::SharedSourceHandoff;
 /// The plan retains both revisions. Its owner must account for those handles
 /// and reclaim the plan on control; borrowing it for a handoff transfers no
 /// ownership. It does not authorize publication or validate host commands,
-/// routes, output faults, or cancellation. Enabled Arrangement loops are not
-/// supported, including a cursor that has already passed the loop end.
+/// routes, output faults, or cancellation. The loop-aware constructor binds a
+/// canonical loop state; transient section loops remain unsupported.
 pub struct PreparedTempoAnchor {
     previous: Arc<PreparedRevision>,
     candidate: Arc<PreparedRevision>,
     arrangement_frame: u64,
     performance_frame: u64,
+    loop_state: Option<ArrangementLoopState>,
     mapped_frame: u64,
     mapped_beat: hex_project::BeatTime,
 }
@@ -33,15 +34,57 @@ impl PreparedTempoAnchor {
         arrangement_frame: u64,
         performance_frame: u64,
     ) -> Result<Self, SessionPlaybackError> {
-        if previous.arrangement().sample_rate() != candidate.arrangement().sample_rate()
-            || previous
-                .arrangement()
-                .loop_region()
-                .is_some_and(|r| r.enabled())
+        if previous
+            .arrangement()
+            .loop_region()
+            .is_some_and(|r| r.enabled())
             || candidate
                 .arrangement()
                 .loop_region()
                 .is_some_and(|r| r.enabled())
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        Self::prepare_inner(
+            previous,
+            candidate,
+            arrangement_frame,
+            performance_frame,
+            None,
+        )
+    }
+
+    /// Prepare against the donor's observed canonical loop pass and active
+    /// region. The handoff rechecks both; this observation is not a host fence.
+    pub fn prepare_with_loop_state(
+        previous: Arc<PreparedRevision>,
+        candidate: Arc<PreparedRevision>,
+        arrangement_frame: u64,
+        performance_frame: u64,
+        loop_state: ArrangementLoopState,
+    ) -> Result<Self, SessionPlaybackError> {
+        let active =
+            canonical_active_loop(&previous, arrangement_frame).map(|r| (r.start(), r.end()));
+        if loop_state.active_region != active {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        Self::prepare_inner(
+            previous,
+            candidate,
+            arrangement_frame,
+            performance_frame,
+            Some(loop_state),
+        )
+    }
+
+    fn prepare_inner(
+        previous: Arc<PreparedRevision>,
+        candidate: Arc<PreparedRevision>,
+        arrangement_frame: u64,
+        performance_frame: u64,
+        loop_state: Option<ArrangementLoopState>,
+    ) -> Result<Self, SessionPlaybackError> {
+        if previous.arrangement().sample_rate() != candidate.arrangement().sample_rate()
             || previous
                 .session()
                 .timing()
@@ -49,30 +92,51 @@ impl PreparedTempoAnchor {
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
-        let beat = previous
-            .session()
-            .timing()
-            .frame_to_beat(arrangement_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let mapped_frame = candidate
-            .session()
-            .timing()
-            .beat_to_frame(beat)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let mapped_beat = candidate
-            .session()
-            .timing()
-            .frame_to_beat(mapped_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let beat = base_timing_for(
+            previous.session(),
+            canonical_periodic_tempo(&previous, arrangement_frame),
+        )
+        .frame_to_beat(arrangement_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let mapped_frame = base_timing_for(
+            candidate.session(),
+            canonical_periodic_tempo(&candidate, arrangement_frame),
+        )
+        .beat_to_frame(beat)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let mapped_beat = base_timing_for(
+            candidate.session(),
+            canonical_periodic_tempo(&candidate, mapped_frame),
+        )
+        .frame_to_beat(mapped_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
         Ok(Self {
             previous,
             candidate,
             arrangement_frame,
             performance_frame,
+            loop_state,
             mapped_frame,
             mapped_beat,
         })
     }
+}
+
+fn canonical_active_loop(
+    revision: &PreparedRevision,
+    frame: u64,
+) -> Option<hex_project::LoopRegion> {
+    revision
+        .arrangement()
+        .loop_region()
+        .filter(|r| r.enabled() && frame < r.end())
+}
+
+fn canonical_periodic_tempo(
+    revision: &PreparedRevision,
+    frame: u64,
+) -> Option<PreparedPeriodicSessionTempo> {
+    canonical_active_loop(revision, frame).and(revision.session().periodic_tempo())
 }
 
 /// Retained-path creation/removal needs the stopped bounce fence and a fresh
@@ -347,8 +411,12 @@ impl SessionPlayback {
             || !previous.playing
             || previous.arrangement_frame != anchor.arrangement_frame
             || previous.performance_frame != anchor.performance_frame
-            || previous.loop_region().is_some()
-            || self.loop_region().is_some()
+            || previous.transient_loop.is_some()
+            || self.transient_loop.is_some()
+            || match anchor.loop_state {
+                Some(state) => previous.arrangement_loop_state() != state,
+                None => previous.loop_region().is_some() || self.loop_region().is_some(),
+            }
             || (previous.compensation.is_none() && self.compensation.is_none())
             || self.midi_capture_active()
             || previous.midi_capture_active()

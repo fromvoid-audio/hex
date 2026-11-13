@@ -6,7 +6,13 @@ use std::collections::BTreeMap;
 
 #[test]
 fn compensated_tempo_restart_publishes_without_callback_allocations() {
-    for (partition, compensated) in [(1, true), (257, true), (257, false)] {
+    for (partition, compensated, looped) in [
+        (1, true, false),
+        (257, true, false),
+        (257, false, false),
+        (1, true, true),
+        (257, true, true),
+    ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { track, asset, .. } = editor
             .execute(Command::ImportAudioTrack {
@@ -19,6 +25,15 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
         else {
             panic!("audio import");
         };
+        if looped {
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 400,
+                    end: 2400,
+                    enabled: true,
+                })
+                .unwrap();
+        }
         if compensated {
             let limiter = hex_engine::default_native_device_state_for_class(
                 hex_engine::NativeDeviceClass::Effect,
@@ -58,7 +73,8 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
             .publish(Playback::try_from_prepared_with_session(old).unwrap())
             .unwrap();
         control.command(PlaybackCommand::Play).unwrap();
-        for chunk in [[0.0; 2]; 600].chunks_mut(partition) {
+        let cut_frames = if looped { 4600 } else { 600 };
+        for chunk in vec![[0.0; 2]; cut_frames].chunks_mut(partition) {
             callback.begin_block();
             callback.render(chunk).unwrap();
         }
@@ -75,16 +91,29 @@ fn compensated_tempo_restart_publishes_without_callback_allocations() {
             compensated
         );
         if compensated {
-            let anchor = hex_engine::session_playback::PreparedTempoAnchor::prepare(
-                Arc::clone(&old_for_anchor),
-                Arc::clone(&candidate),
-                600,
-                600,
-            )
-            .unwrap();
-            let mut donor = Playback::try_from_prepared_with_session(old_for_anchor).unwrap();
+            let mut donor =
+                Playback::try_from_prepared_with_session(Arc::clone(&old_for_anchor)).unwrap();
             donor.apply(PlaybackCommand::Play);
-            donor.render(&mut [[0.0; 2]; 600]).unwrap();
+            donor.render(&mut vec![[0.0; 2]; cut_frames]).unwrap();
+            let anchor = if looped {
+                let state = donor.arrangement_loop_state().unwrap();
+                assert_eq!(state.pass, 2);
+                hex_engine::session_playback::PreparedTempoAnchor::prepare_with_loop_state(
+                    old_for_anchor,
+                    Arc::clone(&candidate),
+                    600,
+                    cut_frames as u64,
+                    state,
+                )
+            } else {
+                hex_engine::session_playback::PreparedTempoAnchor::prepare(
+                    old_for_anchor,
+                    Arc::clone(&candidate),
+                    600,
+                    cut_frames as u64,
+                )
+            }
+            .unwrap();
             let mut planned =
                 Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
             let measured = allocation_counter::measure(|| {
