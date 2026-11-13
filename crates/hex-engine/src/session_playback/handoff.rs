@@ -4816,6 +4816,7 @@ impl SessionPlayback {
         // All refusal checks precede these scalar ledger cuts. Keep each old
         // runtime/DSP owner, including tails from earlier publications; release
         // only proofs whose exact clip has become inactive in the candidate.
+        let mute_changes = shared_sources::contributor_mute_changes(previous, self);
         let revision = &self.revision;
         let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
         // Ordinary onset suppressions cannot shorten a held gate. Check for
@@ -4843,9 +4844,36 @@ impl SessionPlayback {
             if let Some(input) = release_live_input {
                 runtime.request_live_input_release(input);
             }
+            let mut retained = [None; MAX_TRACKS];
+            let mut retained_live = [None; MAX_TRACKS];
+            for (index, change) in mute_changes.iter().enumerate() {
+                if let Some((track, muted)) = change
+                    && runtime.retarget_authored_contributor(
+                        *track,
+                        *muted,
+                        revision.arrangement().sample_rate(),
+                    )
+                    && *muted
+                {
+                    retained[index] = Some(*track);
+                }
+                if let Some((track, muted)) = change
+                    && release_live_input.is_none()
+                    && runtime.retarget_live_contributor(
+                        *track,
+                        *muted,
+                        revision.arrangement().sample_rate(),
+                    )
+                    && *muted
+                {
+                    retained_live[index] = Some(*track);
+                }
+            }
             shared_sources::release_disconnected_contributors(
                 runtime,
                 &disconnected,
+                &retained,
+                &retained_live,
                 previous.performance_frame,
             );
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {

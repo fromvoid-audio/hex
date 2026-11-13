@@ -1983,3 +1983,115 @@ fn native_source_effect_recording_target_follows_the_exact_receiver() {
         .unwrap();
     assert!(crate::native_parameter_input_target(editor.project(), device, kind).is_err());
 }
+
+#[test]
+fn live_source_utility_gain_edit_preserves_shared_signal_and_local_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    const PREFIX: usize = 64;
+    const SEGMENT: usize = 128;
+    const RAMP: f32 = 240.0; // Existing 5 ms matrix law at 48 kHz.
+    for partition in [1, 7, 64, 128, 257] {
+        let (mut editor, asset) = authored_fixture(0, false);
+        let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+        let Created::Device(effect) = editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: UTILITY_DEFINITION.default_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("source effect")
+        };
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+        let table = Arc::new(crate::SineTable::new());
+        let prepare = |editor: &Editor| {
+            Arc::new(
+                PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                    .unwrap(),
+            )
+        };
+        let original = prepare(&editor);
+        let mut previous = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut reference = SessionPlayback::new(original).unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; PREFIX];
+        previous.render(&mut prefix).unwrap();
+        reference.render(&mut prefix).unwrap();
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                editor.project().device(effect).unwrap().state(),
+                parameter::GAIN,
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: effect,
+                state,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+        candidate
+            .try_inherit_state_live_from(&mut previous)
+            .unwrap();
+        let mut forward = [[0.0; 2]; SEGMENT];
+        let mut baseline = [[0.0; 2]; SEGMENT];
+        for chunk in forward.chunks_mut(partition) {
+            candidate.render(chunk).unwrap();
+        }
+        for chunk in baseline.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            baseline
+                .iter()
+                .any(|frame| (frame[0] - CLIP[0]).abs() > 1e-5),
+            "source oracle is silent"
+        );
+        for (index, (actual, old)) in forward.iter().zip(baseline).enumerate() {
+            let gain = 1.0 + (index + 1) as f32 / RAMP;
+            for channel in 0..2 {
+                let expected = CLIP[channel] + gain * (old[channel] - CLIP[channel]);
+                assert!(
+                    (actual[channel] - expected).abs() < 1e-4,
+                    "forward partition {partition} frame {index}: {} vs {expected}",
+                    actual[channel]
+                );
+            }
+        }
+        assert!(editor.undo());
+        let mut restored = SessionPlayback::new(prepare(&editor)).unwrap();
+        restored
+            .try_inherit_state_live_from(&mut candidate)
+            .unwrap();
+        let mut reverse = [[0.0; 2]; SEGMENT];
+        let mut baseline = [[0.0; 2]; SEGMENT];
+        for chunk in reverse.chunks_mut(partition) {
+            restored.render(chunk).unwrap();
+        }
+        for chunk in baseline.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        let start_gain = 1.0 + SEGMENT as f32 / RAMP;
+        for (index, (actual, old)) in reverse.iter().zip(baseline).enumerate() {
+            let gain = start_gain + (1.0 - start_gain) * (index + 1) as f32 / RAMP;
+            let local = if PREFIX + SEGMENT + index < WIDTH {
+                CLIP
+            } else {
+                [0.0; 2]
+            };
+            for channel in 0..2 {
+                let expected = local[channel] + gain * (old[channel] - local[channel]);
+                assert!(
+                    (actual[channel] - expected).abs() < 1e-4,
+                    "reverse partition {partition} frame {index}: {} vs {expected}",
+                    actual[channel]
+                );
+            }
+        }
+    }
+}

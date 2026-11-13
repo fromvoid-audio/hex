@@ -17,6 +17,144 @@ fn explicit_native_history_matches_linear_pcm_and_keeps_refused_old_owner() {
         .unwrap();
 }
 
+#[test]
+fn streamed_pending_fresh_seek_preserves_undo_and_redo() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| streamed_pending_history_case(false))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn streamed_pending_section_preserves_undo_and_redo() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| streamed_pending_history_case(true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn streamed_pending_history_case(section: bool) {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(4);
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let imported = h.run(Request::ImportToNewTrack {
+        path: files.wav(48_000, 32_768),
+        before_track: None,
+        start: 0,
+    });
+    applied = h.applied(applied).0;
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+    let track = imported.state.project.tracks()[0].id();
+    let before = if section {
+        let configured = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 129,
+            end: 513,
+            enabled: true,
+        }));
+        applied = h.applied(applied).0;
+        configured.state.project.snapshot()
+    } else {
+        imported.state.project.snapshot()
+    };
+    let renamed = h.run(Request::Edit(Command::RenameTrack {
+        track,
+        name: "history target".into(),
+    }));
+    applied = h.applied(applied).0;
+    let after = renamed.state.project.snapshot();
+    assert_ne!(before, after);
+    let mut revision = renamed.state.revision;
+    let mut history = (renamed.state.can_undo, renamed.state.can_redo);
+
+    for (request_id, action, expected, retry_expected) in [
+        (1, Request::Undo, &after, &before),
+        (2, Request::Redo, &before, &after),
+    ] {
+        let mut intent = h.seek_intent(request_id, revision, None, None);
+        intent.destination_frame = 129;
+        if section {
+            intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+                region: hex_project::LoopRegion::new(129, 513, true).unwrap(),
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            });
+        }
+        h.service.submit_resident_arrangement_seek(intent).unwrap();
+        let submitted = h.next();
+        assert!(submitted.error.is_none(), "{:?}", submitted.error);
+        let accepted = h.seek_result().result.unwrap();
+        let hex_session::service::ResidentPublicationAcceptance::Submitted {
+            audio_revision, ..
+        } = accepted
+        else {
+            panic!("seek must be submitted before callback installation")
+        };
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+
+        h.service.submit(action).unwrap();
+        let refused = h.next();
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("publication already pending")),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(refused.state.revision, revision);
+        assert_eq!(&refused.state.project.snapshot(), expected);
+        assert_eq!((refused.state.can_undo, refused.state.can_redo), history);
+        if request_id == 1 {
+            assert!(refused.state.can_undo);
+        } else {
+            assert!(refused.state.can_redo);
+        }
+
+        let (installed, metadata) = h.applied(applied);
+        assert_eq!(installed, audio_revision);
+        assert_eq!(metadata.seek_request, Some(request_id));
+        if section {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert!((129..513).contains(&status.position.load(Acquire)));
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+        }
+        applied = installed;
+        let retried = h.run(if request_id == 1 {
+            Request::Undo
+        } else {
+            Request::Redo
+        });
+        assert_eq!(&retried.state.project.snapshot(), retry_expected);
+        revision = retried.state.revision;
+        history = (retried.state.can_undo, retried.state.can_redo);
+        applied = h.applied(applied).0;
+    }
+}
+
 fn edit(h: &mut ResidentHarness, applied: &mut u64, command: Command) -> Event {
     let event = h.run(Request::Edit(command));
     assert!(event.error.is_none(), "{:?}", event.error);

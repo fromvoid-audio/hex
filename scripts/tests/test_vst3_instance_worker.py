@@ -18,7 +18,7 @@ CID = bytes([0x48, 0x45, 0x58, 0x50, *range(1, 13)])
 
 class Session:
     def __init__(self, binary, bundle, trace, *, variant=0, channels=(2, 2), maximum=256,
-                 rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None):
+                 rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None, note_trace_dir=None):
         self.socket, peer = socket.socketpair()
         # Fresh copied macOS modules can spend over10s in dyld's code-signature
         # validation before their first reply (see native test failure samples).
@@ -26,6 +26,8 @@ class Session:
         self.socket.settimeout(60)
         env = {**os.environ, "HEX_ORIGINAL_INSTANCE_VARIANT": str(variant),
                "HEX_ORIGINAL_INSTANCE_TRACE": str(trace)}
+        if note_trace_dir is not None:
+            env["HEX_ORIGINAL_NOTE_TRACE_DIR"] = str(note_trace_dir)
         self.tail_frames = tail_frames if tail_frames is not None else 0
         if tail_frames is not None:
             env["HEX_ORIGINAL_TAIL_FRAMES"] = str(tail_frames)
@@ -481,6 +483,38 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(reply[8:10], bytes(2))
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
+    def test_note_teardown_trace_distinguishes_held_from_released_identity(self):
+        for release in (False, True):
+            with self.subTest(release=release):
+                session = self.session(variant=115, channels=(0, 2), note_trace_dir=self.root)
+                self.assertEqual(session.message()[0], b"HXVIRD05")
+                notes = [(0, 0x92, 100, 41)]
+                if release:
+                    notes.append((4, 0x82, 0, 41))
+                header = bytearray(session.packet(8))
+                struct.pack_into("<HHH", header, 4, 3, 8, len(notes))
+                events = b"".join(struct.pack("<HBBBB2xI", offset, 3, status, 60, velocity, identity)
+                                  for offset, status, velocity, identity in notes)
+                session.socket.sendall(header + bytes(64) + events)
+                self.assertEqual(session.message()[0], b"HXVB")
+                session.sequence += 1
+                session.frames += 8
+                self.terminal(session, 0, message=session.stop())
+                path = self.root / f"{session.process.pid}.bin"
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        stage, ons, offs, last_on, last_off = struct.unpack("=5i", path.read_bytes())
+                        if stage in (5, 6):
+                            break
+                    except (OSError, struct.error):
+                        pass
+                    time.sleep(.001)
+                else:
+                    self.fail("original endpoint teardown trace was not published")
+                self.assertEqual((ons, offs, last_on, last_off),
+                                 (1, int(release), 41, 41 if release else -1))
 
     def test_instrument_rejects_invalid_extra_output_layout_and_mutated_pointers(self):
         malformed = self.session(variant=130, channels=(0, 2))

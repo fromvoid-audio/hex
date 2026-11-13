@@ -12,8 +12,12 @@ mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
 pub(crate) use transport_fade::fade_frames;
+mod timed_transport;
 mod tuning_audition;
 use metronome::Metronome;
+pub use timed_transport::{
+    MAX_TIMED_TRANSPORT_COMMANDS, TimedTransportCommand, TimedTransportError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {

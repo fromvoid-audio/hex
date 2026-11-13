@@ -293,6 +293,7 @@ impl EditorView {
             return;
         }
         if self.update_blocks_close()
+            || super::device_panel::source_naming(self)
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
             || self.native_automation_recorder.busy()

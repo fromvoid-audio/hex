@@ -160,6 +160,25 @@ pub(crate) struct MutableOccurrence {
     /// Fixed left-limit gain survives source/graph retirement without a curve owner.
     pub(crate) gain_at_end_bits: u64,
     pub(crate) gain_frozen: bool,
+    pub(crate) contributor_fade: Option<ContributorFade>,
+}
+
+/// Source-age attenuation for an already sounding authored contributor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContributorFade {
+    start_age: u64,
+    frames: u64,
+    start_bits: u64,
+    muted: bool,
+}
+
+impl ContributorFade {
+    fn value(self, age: u64) -> f64 {
+        let elapsed = age.saturating_sub(self.start_age).min(self.frames);
+        let start = f64::from_bits(self.start_bits);
+        let target = if self.muted { 0.0 } else { 1.0 };
+        start + (target - start) * elapsed as f64 / self.frames as f64
+    }
 }
 
 /// One source query's maximum admitted sounding intervals. This is shared by
@@ -817,6 +836,72 @@ impl MutableInstrumentTrackRuntime {
         self.primary.iter().copied()
     }
 
+    /// Retarget held authored occurrences without creating a second source.
+    /// The source-owned age advances even while stopped monitoring renders.
+    pub(crate) fn retarget_authored_contributor(
+        &mut self,
+        track: TrackId,
+        muted: bool,
+        sample_rate: u32,
+    ) -> bool {
+        let Some(age) = self.live.as_ref().map(|live| live.age) else {
+            return false;
+        };
+        if !self.pair.supports_occurrence_gain() || sample_rate == 0 {
+            return false;
+        }
+        let frames = u64::from(sample_rate.div_ceil(200).max(1));
+        for occurrence in &mut self.primary {
+            if occurrence.signature.key().track != track || (!muted && occurrence.note_off_sent) {
+                continue;
+            }
+            let current = occurrence
+                .contributor_fade
+                .map_or(1.0, |fade| fade.value(age));
+            occurrence.contributor_fade = Some(ContributorFade {
+                start_age: age,
+                frames,
+                start_bits: current.to_bits(),
+                muted,
+            });
+            if !muted {
+                occurrence.gain_frozen = false;
+            }
+        }
+        true
+    }
+
+    /// Retain held live IDs through the same source-age contributor ramp.
+    pub(crate) fn retarget_live_contributor(
+        &mut self,
+        track: TrackId,
+        muted: bool,
+        sample_rate: u32,
+    ) -> bool {
+        if !self.pair.supports_occurrence_gain() || sample_rate == 0 {
+            return false;
+        }
+        let Some(live) = &mut self.live else {
+            return false;
+        };
+        let frames = u64::from(sample_rate.div_ceil(200).max(1));
+        for voice in live.primary.iter_mut().flatten() {
+            if voice.input.track != track || voice.quiet_age.is_some() || voice.release_requested {
+                continue;
+            }
+            let current = voice
+                .contributor_fade
+                .map_or(1.0, |fade| fade.value(live.age));
+            voice.contributor_fade = Some(ContributorFade {
+                start_age: live.age,
+                frames,
+                start_bits: current.to_bits(),
+                muted,
+            });
+        }
+        true
+    }
+
     /// Cut still-gated occurrences at a publication boundary when the
     /// candidate has no enabled instrument. The runtime receives the matching
     /// frame-zero NoteOff in its next segment; feedback and release state stay
@@ -913,6 +998,31 @@ impl MutableInstrumentTrackRuntime {
         resources: &dyn hex_lattice::DeviceResources,
         automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        if self
+            .scratch
+            .iter()
+            .any(|proof| proof.contributor_fade.is_some())
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
+        {
+            return self.process_volume_scope(
+                Some(track),
+                performance_start,
+                source_start,
+                frames,
+                onsets,
+                suppressions,
+                events,
+                clock,
+                resources,
+                None,
+                automation,
+            );
+        }
         self.process_segment_inner(
             Some(track),
             performance_start,
@@ -943,6 +1053,31 @@ impl MutableInstrumentTrackRuntime {
         volume: Option<&mut VolumeLookup<'_>>,
         automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        if self
+            .scratch
+            .iter()
+            .any(|proof| proof.contributor_fade.is_some())
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
+        {
+            return self.process_volume_scope(
+                None,
+                performance_start,
+                performance_start,
+                frames,
+                onsets,
+                suppressions,
+                events,
+                clock,
+                resources,
+                volume,
+                automation,
+            );
+        }
         self.process_segment_inner(
             None,
             performance_start,
@@ -1027,11 +1162,12 @@ impl MutableInstrumentTrackRuntime {
             &self.pair,
             &mut self.scratch,
             self.live
-                .as_ref()
-                .map(|live| &live.scratch[..])
-                .unwrap_or(&[]),
+                .as_mut()
+                .map(|live| &mut live.scratch[..])
+                .unwrap_or(&mut []),
             events,
             performance_start,
+            source_age,
             frames.len(),
             volume,
         )?;

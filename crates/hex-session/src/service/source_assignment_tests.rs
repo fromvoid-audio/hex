@@ -25,6 +25,119 @@ fn assign(
     }
 }
 
+fn create_source(
+    revision: u64,
+    generation: u64,
+    type_id: hex_lattice_contract::DeviceTypeId,
+    name: &str,
+) -> Request {
+    Request::CreateRetainedNativeSource {
+        project_generation: generation,
+        revision,
+        type_id: Box::new(type_id),
+        name: name.into(),
+    }
+}
+
+#[test]
+fn captured_native_source_creation_is_unassigned_and_reversible() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "track".into(),
+        }),
+    );
+    let Created::Track(track) = added.created.unwrap() else {
+        panic!("track")
+    };
+    let instrument = hex_project::default_instrument_state().unwrap().type_id();
+    let revision = added.state.revision;
+    assert!(!create_source(revision, 0, instrument, "new source").finalizes_parameter_gesture());
+    refused(
+        &service,
+        &added,
+        create_source(revision, 1, instrument, "new source"),
+        "project changed",
+    );
+    refused(
+        &service,
+        &added,
+        create_source(revision - 1, 0, instrument, "new source"),
+        "project changed",
+    );
+    refused(
+        &service,
+        &added,
+        create_source(revision, 0, instrument, " "),
+        "name must be nonempty",
+    );
+    for invalid in [
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        hex_lattice_contract::DeviceTypeId::from_static("hex.not-registered"),
+    ] {
+        refused(
+            &service,
+            &added,
+            create_source(revision, 0, invalid, "new source"),
+            "native instrument unavailable",
+        );
+    }
+    let key = GestureKey {
+        generation: 0,
+        token: 7713,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track },
+        }),
+    );
+    let blocked = refused(
+        &service,
+        &begun,
+        create_source(begun.state.revision, 0, instrument, "new source"),
+        "active gesture",
+    );
+    assert!(blocked.active_device_gesture.is_some() && blocked.gesture_ack.is_none());
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let before = cancelled.state.project.clone();
+    let created = run(
+        &service,
+        create_source(cancelled.state.revision, 0, instrument, "new source"),
+    );
+    let Created::NativeSource(source) = created.created.unwrap() else {
+        panic!("source")
+    };
+    let definition = created.state.project.native_source(source).unwrap();
+    assert_eq!(definition.name(), "new source");
+    assert_eq!(definition.instrument().state().type_id(), instrument);
+    assert_eq!(definition.receiver(), None);
+    assert_eq!(created.state.project.source_contributors(source).count(), 0);
+    assert_eq!(
+        created.state.project.track(track).unwrap().source_id(),
+        None
+    );
+    let after = created.state.project.clone();
+    let undone = run(&service, Request::Undo);
+    let mut expected = before.snapshot();
+    let restored = undone.state.project.snapshot();
+    assert!(
+        restored.next_id > expected.next_id,
+        "Undo must not reuse the source identity"
+    );
+    expected.next_id = restored.next_id;
+    assert_eq!(restored, expected);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, after);
+    assert!(redone.state.project.native_source(source).is_some());
+}
+
 fn refused(service: &Service, before: &Event, request: Request, message: &str) -> Event {
     service.submit(request).unwrap();
     let event = next_event(service);
@@ -57,6 +170,364 @@ fn rebind(
         expected_source,
         source,
     }
+}
+
+fn choose_receiver(
+    revision: u64,
+    generation: u64,
+    source: hex_project::SourceId,
+    expected_receiver: Option<hex_project::TrackId>,
+    track: hex_project::TrackId,
+) -> Request {
+    Request::ChooseNativeSourceReceiver {
+        project_generation: generation,
+        revision,
+        source,
+        expected_receiver,
+        track,
+    }
+}
+
+fn rename_source(
+    revision: u64,
+    generation: u64,
+    source: hex_project::SourceId,
+    name: &str,
+) -> Request {
+    Request::RenameRetainedSource {
+        project_generation: generation,
+        revision,
+        source,
+        name: name.into(),
+    }
+}
+
+fn delete_source(revision: u64, generation: u64, source: hex_project::SourceId) -> Request {
+    Request::DeleteRetainedSource {
+        project_generation: generation,
+        revision,
+        source,
+    }
+}
+
+#[test]
+fn captured_source_rename_and_delete_preserve_identity_and_history() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let bound = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(track) = bound.created.unwrap() else {
+        panic!("track")
+    };
+    let bound_source = bound
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let created = run(
+        &service,
+        Request::Edit(Command::CreateNativeSource {
+            name: "unused".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }),
+    );
+    let Created::NativeSource(source) = created.created.unwrap() else {
+        panic!("source")
+    };
+    let revision = created.state.revision;
+    assert!(!rename_source(revision, 0, source, "renamed").finalizes_parameter_gesture());
+    assert!(!delete_source(revision, 0, source).finalizes_parameter_gesture());
+    refused(
+        &service,
+        &created,
+        rename_source(revision, 1, source, "renamed"),
+        "project changed",
+    );
+    refused(
+        &service,
+        &created,
+        delete_source(revision - 1, 0, source),
+        "project changed",
+    );
+    refused(
+        &service,
+        &created,
+        rename_source(revision, 0, source, "  "),
+        "name must be nonempty",
+    );
+    refused(
+        &service,
+        &created,
+        delete_source(revision, 0, bound_source),
+        "still assigned",
+    );
+
+    let key = GestureKey {
+        generation: 0,
+        token: 7712,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track },
+        }),
+    );
+    let blocked = refused(
+        &service,
+        &begun,
+        rename_source(begun.state.revision, 0, source, "renamed"),
+        "active gesture",
+    );
+    assert!(blocked.active_device_gesture.is_some() && blocked.gesture_ack.is_none());
+    refused(
+        &service,
+        &begun,
+        delete_source(begun.state.revision, 0, source),
+        "active gesture",
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let before = cancelled.state.project.clone();
+    let renamed = run(
+        &service,
+        rename_source(cancelled.state.revision, 0, source, "renamed"),
+    );
+    assert_eq!(
+        renamed.state.project.native_source(source).unwrap().name(),
+        "renamed"
+    );
+    let after_rename = renamed.state.project.clone();
+    assert_eq!(run(&service, Request::Undo).state.project, before);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, after_rename);
+    let deleted = run(&service, delete_source(redone.state.revision, 0, source));
+    assert!(deleted.state.project.native_source(source).is_none());
+    assert_eq!(
+        deleted.state.project.track(track).unwrap().source_id(),
+        Some(bound_source)
+    );
+    refused(
+        &service,
+        &deleted,
+        rename_source(deleted.state.revision, 0, source, "missing"),
+        "source no longer exists",
+    );
+    refused(
+        &service,
+        &deleted,
+        delete_source(deleted.state.revision, 0, source),
+        "source no longer exists",
+    );
+    assert_eq!(run(&service, Request::Undo).state.project, after_rename);
+    assert!(
+        run(&service, Request::Redo)
+            .state
+            .project
+            .native_source(source)
+            .is_none()
+    );
+}
+
+#[test]
+fn captured_receiver_choice_refuses_stale_and_preserves_history() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let first = run(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let Created::Track(receiver) = first.created.unwrap() else {
+        panic!("receiver")
+    };
+    let source = first
+        .state
+        .project
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let added = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }),
+    );
+    let Created::Track(contributor) = added.created.unwrap() else {
+        panic!("contributor")
+    };
+    let assigned = run(
+        &service,
+        Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }),
+    );
+    let revision = assigned.state.revision;
+    assert!(
+        !choose_receiver(revision, 0, source, Some(receiver), contributor)
+            .finalizes_parameter_gesture()
+    );
+    refused(
+        &service,
+        &assigned,
+        choose_receiver(revision, 1, source, Some(receiver), contributor),
+        "project changed",
+    );
+    refused(
+        &service,
+        &assigned,
+        choose_receiver(revision - 1, 0, source, Some(receiver), contributor),
+        "project changed",
+    );
+    refused(
+        &service,
+        &assigned,
+        choose_receiver(revision, 0, source, None, contributor),
+        "receiver changed",
+    );
+    refused(
+        &service,
+        &assigned,
+        choose_receiver(revision, 0, source, Some(receiver), receiver),
+        "unchanged",
+    );
+
+    let unlinked = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "unlinked".into(),
+        }),
+    );
+    let Created::Track(unlinked_track) = unlinked.created.unwrap() else {
+        panic!("track")
+    };
+    refused(
+        &service,
+        &unlinked,
+        choose_receiver(
+            unlinked.state.revision,
+            0,
+            source,
+            Some(receiver),
+            unlinked_track,
+        ),
+        "not linked",
+    );
+    let removed = run(
+        &service,
+        Request::Edit(Command::RemoveTrack(unlinked_track)),
+    );
+    refused(
+        &service,
+        &removed,
+        choose_receiver(
+            removed.state.revision,
+            0,
+            source,
+            Some(receiver),
+            unlinked_track,
+        ),
+        "track no longer exists",
+    );
+    let temporary = run(
+        &service,
+        Request::Edit(Command::CreateNativeSource {
+            name: "temporary".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        }),
+    );
+    let Created::NativeSource(missing) = temporary.created.unwrap() else {
+        panic!("source")
+    };
+    let removed = run(
+        &service,
+        Request::Edit(Command::RemoveNativeSource(missing)),
+    );
+    refused(
+        &service,
+        &removed,
+        choose_receiver(removed.state.revision, 0, missing, None, contributor),
+        "source no longer exists",
+    );
+
+    let key = GestureKey {
+        generation: 0,
+        token: 7710,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track: contributor },
+        }),
+    );
+    let blocked = refused(
+        &service,
+        &begun,
+        choose_receiver(begun.state.revision, 0, source, Some(receiver), contributor),
+        "active gesture",
+    );
+    assert!(blocked.active_device_gesture.is_some());
+    assert!(blocked.gesture_ack.is_none());
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let before = cancelled.state.project.clone();
+    let changed = run(
+        &service,
+        choose_receiver(
+            cancelled.state.revision,
+            0,
+            source,
+            Some(receiver),
+            contributor,
+        ),
+    );
+    assert_eq!(
+        changed
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .receiver(),
+        Some(contributor)
+    );
+    assert_eq!(
+        changed.state.project.track(receiver).unwrap().source_id(),
+        Some(source)
+    );
+    assert_eq!(
+        changed
+            .state
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id(),
+        Some(source)
+    );
+    let after = changed.state.project.clone();
+    assert_eq!(run(&service, Request::Undo).state.project, before);
+    assert_eq!(run(&service, Request::Redo).state.project, after);
 }
 
 #[test]

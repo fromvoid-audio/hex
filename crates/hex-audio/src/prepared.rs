@@ -109,6 +109,8 @@ mod spectrum_multi_tests;
 #[cfg(test)]
 mod spectrum_profile;
 mod spectrum_stages;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod tempo_tests;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod ordinary_streaming;

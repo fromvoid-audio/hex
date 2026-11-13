@@ -473,6 +473,22 @@ impl HostGainStages {
 
 pub(super) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
+/// Only the static Utility gain has a verified source-edit handoff today.
+pub(super) fn source_utility_gain_available(
+    project: &hex_project::Project,
+    device: &Device,
+) -> bool {
+    device.state().type_id().as_str() == Ok("hex.utility")
+        && !device.bypassed()
+        && device.automation().is_empty()
+        && device.modulation().is_empty()
+        && hex_engine::project_device_modulation_target_supported(
+            project,
+            device.id(),
+            utility_panel::GAIN,
+        )
+}
+
 /// The bound receiver owns these controls. The card reuses the ordinary
 /// modulator housing and deliberately has no track-chain drop geometry.
 pub(super) fn source_effect_card(
@@ -502,6 +518,7 @@ pub(super) fn source_effect_card(
     else {
         return outer.child(theme::text("source effect unavailable"));
     };
+    let show_gain = source_utility_gain_available(&state.project, device);
     let mut body = crate::device_composition::body()
         .flex()
         .flex_col()
@@ -519,14 +536,34 @@ pub(super) fn source_effect_card(
             )
     });
     for row in &metadata.parameters {
-        body = body.child(
-            div()
-                .relative()
-                .px(px(4.0))
-                .h(px(15.0))
-                .child(theme::text(row.descriptor.label))
-                .children(target_overlay(view, cx, id, row)),
-        );
+        if show_gain && row.descriptor.id == utility_panel::GAIN {
+            let identity = DeviceControlIdentity {
+                class: NativeDeviceClass::Effect,
+                type_id: metadata.type_id,
+            };
+            let control = parameter_control_with_presentation(
+                view,
+                cx,
+                id,
+                identity,
+                row,
+                ControlPresentation::CompactDial,
+                ControlText {
+                    label: Some("gain"),
+                    codec: None,
+                },
+            );
+            body = body.child(control);
+        } else {
+            body = body.child(
+                div()
+                    .relative()
+                    .px(px(4.0))
+                    .h(px(15.0))
+                    .child(theme::text(row.descriptor.label))
+                    .children(target_overlay(view, cx, id, row)),
+            );
+        }
     }
     let modulation = panel(view, cx, device, &metadata, true);
     let rendered = hex_widgets::device_frame_with_modulators(

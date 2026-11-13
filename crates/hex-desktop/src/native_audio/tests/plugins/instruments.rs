@@ -763,6 +763,36 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     instrument_entrypoint(InstrumentWorkflow::Playback);
 }
 
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_play_from_releases_old_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::SessionRestart);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_loop_repeats_sdk_instrument_gates() {
+    instrument_entrypoint(InstrumentWorkflow::SessionLoop);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_seek_releases_old_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::SessionSeek);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_priority_stop_releases_gate_on_original_sdk_endpoint() {
+    instrument_entrypoint(InstrumentWorkflow::SessionStopTrace);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_pause_releases_sdk_gate_without_rechasing_on_resume() {
+    instrument_entrypoint(InstrumentWorkflow::SessionPause);
+}
+
 /// An opt-in wall-clock driver for the actual native worker, not a physical
 /// audio deadline or a reproduction of any particular user project.
 #[test]
@@ -997,6 +1027,11 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
+    SessionRestart,
+    SessionLoop,
+    SessionPause,
+    SessionSeek,
+    SessionStopTrace,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
@@ -1006,7 +1041,15 @@ enum InstrumentWorkflow {
 }
 
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
-    let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
+    let shared_authoring = !matches!(
+        workflow,
+        InstrumentWorkflow::Playback
+            | InstrumentWorkflow::SessionRestart
+            | InstrumentWorkflow::SessionLoop
+            | InstrumentWorkflow::SessionPause
+            | InstrumentWorkflow::SessionSeek
+            | InstrumentWorkflow::SessionStopTrace
+    );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
         workflow,
@@ -1026,6 +1069,11 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         child
             .args(["--exact", &name, "--ignored", "--nocapture"])
             .env(CHILD, "1");
+        let trace_directory =
+            matches!(workflow, InstrumentWorkflow::SessionStopTrace).then(Files::new);
+        if let Some(directory) = &trace_directory {
+            child.env("HEX_ORIGINAL_NOTE_TRACE_DIR", &directory.0);
+        }
         if installed.is_none() {
             child.env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
@@ -1179,16 +1227,35 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             track,
             scene,
             name: "console notes".into(),
-            source_length: BeatTime::from_quarters(1).unwrap(),
+            source_length: if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+                BeatTime::from_ratio(1, 32).unwrap()
+            } else {
+                BeatTime::from_quarters(1).unwrap()
+            },
         }));
         let Some(Created::SessionClip(console)) = console.created else {
             panic!("console clip")
         };
         (applied, _) = harness.applied(applied);
+        if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+            harness.run(Request::Edit(Command::SetSessionMidiClipSource {
+                clip: console,
+                source_length: BeatTime::from_ratio(1, 32).unwrap(),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: BeatTime::from_ratio(1, 32).unwrap(),
+                looping: true,
+            }));
+            (applied, _) = harness.applied(applied);
+        }
         note = harness.run(Request::Edit(Command::AddMidiNote {
             clip: console,
             start: BeatTime::ZERO,
-            duration: BeatTime::from_quarters(1).unwrap(),
+            duration: if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+                BeatTime::from_ratio(1, 64).unwrap()
+            } else {
+                BeatTime::from_quarters(1).unwrap()
+            },
             pitch: installed_pitch.unwrap_or(if controlled_fixture { 60 } else { 64 }),
             channel,
             velocity: 88,
@@ -1336,6 +1403,373 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     let console = console.unwrap();
+    if matches!(workflow, InstrumentWorkflow::SessionSeek) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        let settle = |harness: &ResidentHarness| {
+            for _ in 0..4 {
+                render_completed_block(harness);
+            }
+        };
+        let sounding = |harness: &ResidentHarness, stage: &str| {
+            for frame in render_completed_block(harness) {
+                assert!(
+                    (frame[0] - 88.0 / 127.0).abs() < 1e-5,
+                    "expected one SDK gate at {stage}: {frame:?}"
+                );
+                assert!((frame[0] - frame[1]).abs() < 1e-6);
+            }
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        settle(&harness);
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        settle(&harness);
+        sounding(&harness, "before seek");
+
+        send(&mut harness, SessionPlaybackCommand::Seek(12_000));
+        settle(&harness);
+        sounding(&harness, "after seek");
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        settle(&harness);
+        assert_eq!(
+            render_completed_block(&harness),
+            [[0.0; 2]; 256],
+            "seek left a prior gate"
+        );
+
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.position.load(Acquire) >= 12_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionStopTrace) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let sounding = render_completed_block(&harness);
+        assert!(
+            sounding
+                .iter()
+                .all(|frame| (frame[0] - 88.0 / 127.0).abs() < 1e-5)
+        );
+        let directory = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+        let paths: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+            .collect();
+        assert_eq!(
+            paths.len(),
+            1,
+            "expected the one sounding SDK helper: {paths:?}"
+        );
+        let original = &paths[0];
+        use std::os::unix::fs::MetadataExt as _;
+        let before_inode = std::fs::metadata(original).unwrap().ino();
+        harness.audio.as_ref().unwrap().control.stop();
+        assert_eq!(harness.render_plugin_block(), [[0.0; 2]; 256]);
+        let mut restored = harness.run(Request::RestoreStoppedPlayback);
+        if !restored.stopped_playback_restore_complete {
+            restored = restored_terminal(&mut harness);
+        }
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        let (_, metadata) = harness.applied(applied);
+        assert!(metadata.stopped_restore);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let notes = loop {
+            harness.pump();
+            let updated =
+                std::fs::metadata(original).is_ok_and(|metadata| metadata.ino() != before_inode);
+            let words = updated
+                .then(|| std::fs::read(original).ok())
+                .flatten()
+                .filter(|bytes| bytes.len() == 20)
+                .map(|bytes| {
+                    bytes
+                        .chunks_exact(4)
+                        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+                        .collect::<Vec<_>>()
+                });
+            if let Some(words) = words.filter(|words| words[1] >= 2) {
+                break words;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original SDK helper trace did not update"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            notes[1], notes[2],
+            "original SDK endpoint retained a note: {notes:?}"
+        );
+        assert!(
+            notes[3] > 0,
+            "the held gate needs a real occurrence identity: {notes:?}"
+        );
+        assert_eq!(
+            notes[3], notes[4],
+            "the released identity differs: {notes:?}"
+        );
+        println!("original SDK helper {original:?} note trace={notes:?}");
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionPause) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let sounding = render_completed_block(&harness);
+        for frame in sounding {
+            assert!(
+                (frame[0] - 88.0 / 127.0).abs() < 1e-5,
+                "Session gate was not sounding: {frame:?}"
+            );
+            assert!((frame[0] - frame[1]).abs() < 1e-6);
+        }
+        send(&mut harness, SessionPlaybackCommand::Pause);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(!status.playing.load(Acquire));
+        let paused_at = status.position.load(Acquire);
+        assert!(
+            paused_at < 24_000,
+            "held note must not have reached its authored end"
+        );
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.position.load(Acquire) > paused_at);
+        assert!(status.position.load(Acquire) < 24_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        let pcm: Vec<_> = (0..12)
+            .flat_map(|_| render_completed_block(&harness))
+            .collect();
+        let expected = 88.0 / 127.0;
+        assert!(
+            (pcm.last().unwrap()[0] - expected).abs() < 1e-5,
+            "the final SDK gate must be sounding before StopTrack"
+        );
+        let mut runs = Vec::new();
+        for frame in pcm {
+            assert!((frame[0] - frame[1]).abs() < 1e-6);
+            let on = if frame[0].abs() < 1e-6 {
+                false
+            } else {
+                assert!(
+                    (frame[0] - expected).abs() < 1e-5,
+                    "unexpected sample {frame:?}"
+                );
+                true
+            };
+            if let Some((last, count)) = runs.last_mut()
+                && *last == on
+            {
+                *count += 1;
+            } else {
+                runs.push((on, 1_usize));
+            }
+        }
+        assert!(runs.len() >= 8, "expected several loop cycles: {runs:?}");
+        for &(on, count) in &runs[1..runs.len() - 1] {
+            assert_eq!(count, 375, "unexpected {on} gate length: {runs:?}");
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionRestart) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        let peak = |frames: [hex_engine::Frame; 256]| {
+            frames
+                .into_iter()
+                .flatten()
+                .map(f32::abs)
+                .fold(0.0, f32::max)
+        };
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let before = peak(render_completed_block(&harness));
+        assert!(
+            (before - 88.0 / 127.0).abs() < 0.0001,
+            "Session note must sound before restart, got {before}"
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(12_000))
+            .unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let after = peak(render_completed_block(&harness));
+        assert!(
+            (before - after).abs() < 0.0001,
+            "Session restart must leave exactly one SDK gate: before={before}, after={after}"
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.position.load(Acquire) >= 12_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        return;
+    }
     // Exercise the resident keyboard request on a newly inserted worker
     // before the authored transport has ever started.
     let keys = Arc::new(

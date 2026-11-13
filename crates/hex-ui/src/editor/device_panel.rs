@@ -52,10 +52,15 @@ pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_eve
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod device_add;
 mod device_picker;
+mod source_manager;
 mod source_picker;
 pub(super) use device_picker::{
     bind_keys as bind_picker_keys, is_open as picker_is_open, overlay as picker_overlay,
 };
+pub(super) use source_manager::Action as SourceManagerAction;
+pub(super) use source_manager::bind_keys as bind_source_manager_keys;
+pub(super) use source_manager::focus_from_workspace as focus_source_manager_from_workspace;
+pub(super) use source_manager::{name_overlay as source_name_overlay, naming as source_naming};
 pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
@@ -134,6 +139,7 @@ pub(super) struct DevicePanelState {
     chain_window: chain_window::ChainWindow,
     source_summary: source_summary::SourceSummaryCache,
     source_picker: source_picker::State,
+    source_manager: source_manager::State,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     modulation_target_drag: modulators::TargetDragState,
@@ -474,6 +480,11 @@ pub(super) fn device_layout_style() -> ControlStyle {
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
 /// A bad typed value stays in its field and blocks the caller.
 pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
+    if source_manager::naming(view) {
+        view.error = Some("finish or cancel the source name before continuing".into());
+        cx.notify();
+        return false;
+    }
     finalize_controls_except(view, cx, &[])
 }
 
@@ -793,13 +804,16 @@ pub(super) fn view(
     }
     match view.device_panel.owner {
         Some(owner) => render_owner(view, window, cx, &state, owner),
-        None => empty_panel("select a track or return to view devices").on_drop(
-            super::sampler_load::track_drop_listener(
-                cx,
-                None,
-                hex_project::InstrumentLoadPlacement::First,
-            ),
-        ),
+        None => {
+            let manager = source_manager::button(view, window, cx);
+            empty_panel("select a track or return to view devices")
+                .children(std::iter::once(manager))
+                .on_drop(super::sampler_load::track_drop_listener(
+                    cx,
+                    None,
+                    hex_project::InstrumentLoadPlacement::First,
+                ))
+        }
     }
 }
 
@@ -939,7 +953,6 @@ fn render_track(
     };
     let source_effects = track
         .source_id()
-        .filter(|_| track.receives_source_audio())
         .and_then(|source| state.project.native_source(source))
         .map_or(&[][..], hex_project::NativeSource::post_instrument_effects);
     let is_source_effect = |id| source_effects.iter().any(|effect| effect.id() == id);
@@ -972,6 +985,20 @@ fn render_track(
                 },
             ),
         })
+        .chain(
+            source_effects
+                .iter()
+                .filter(|device| modulators::source_utility_gain_available(&state.project, device))
+                .map(|device| {
+                    (
+                        device.id(),
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Effect,
+                            type_id: device.state().type_id(),
+                        },
+                    )
+                }),
+        )
         .collect();
     let alive: HashSet<_> = identities
         .keys()
@@ -1250,6 +1277,7 @@ fn render_track(
             .is_ok()
     });
     let mut local_index = 0;
+    let mut source_housing: Option<Div> = None;
     for node in nodes {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
@@ -1266,15 +1294,29 @@ fn render_track(
                 chain_window::spacer(device.id(), width)
             };
             let card = card.mr(px(DEVICE_CHAIN_PADDING));
-            chain = chain.child(card);
+            if let Some(group) = source_housing.take() {
+                source_housing = Some(group.child(card));
+            } else {
+                chain = chain.child(card);
+            }
             continue;
+        }
+        if class != NativeDeviceClass::Instrument
+            && let Some(group) = source_housing.take()
+        {
+            let group = finish_source_housing(group);
+            chain = chain.child(group);
         }
         let index = local_index;
         local_index += 1;
         if !mounted {
             let card = chain_window::spacer(device.id(), device_card_width(view, class, device))
                 .mr(px(DEVICE_CHAIN_PADDING));
-            chain = chain.child(card);
+            if class == NativeDeviceClass::Instrument && track.source_id().is_some() {
+                source_housing = Some(source_housing_element().child(card));
+            } else {
+                chain = chain.child(card);
+            }
             continue;
         }
         let rendered = match class {
@@ -1307,7 +1349,15 @@ fn render_track(
             let line = sample_insertion_marker();
             card = card.child(line);
         }
-        chain = chain.child(card);
+        if class == NativeDeviceClass::Instrument && track.source_id().is_some() {
+            source_housing = Some(source_housing_element().child(card));
+        } else {
+            chain = chain.child(card);
+        }
+    }
+    if let Some(group) = source_housing {
+        let group = finish_source_housing(group);
+        chain = chain.child(group);
     }
     let mut panel = render_device_end_target(
         view,
@@ -1376,11 +1426,15 @@ fn render_track(
         .source_summary
         .get(&state.project, track_id)
     {
-        let card = source_summary_card(summary);
+        let summary = source_summary_card(summary);
+        let card = source_picker::button(view, window, cx, track_id, Some(summary));
         header = header.child(card);
     } else if !track.is_group() && track.source_id().is_none() {
-        let card = source_picker::button(view, window, cx, track_id);
+        let card = source_picker::button(view, window, cx, track_id, None);
         header = header.child(card);
+    }
+    if track.is_group() || !view.track_selection.only_or_empty(track_id) {
+        header = header.children(std::iter::once(source_manager::button(view, window, cx)));
     }
     header = header.child(track_name_view);
     if let Some(label) = retained_source_path_label(track) {
@@ -1393,6 +1447,26 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     root
+}
+
+fn source_housing_element() -> Div {
+    div()
+        .debug_selector(|| "source-chain-housing".into())
+        .relative()
+        .flex()
+        .flex_shrink_0()
+}
+
+fn finish_source_housing(group: Div) -> Div {
+    // The outline is an overlay so it does not change card offsets used by
+    // chain-window virtualization, scrolling, focus or drag geometry.
+    group.child(
+        div()
+            .absolute()
+            .inset_0()
+            .border_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border))),
+    )
 }
 
 fn source_summary_card(summary: &source_summary::SourceSummary) -> Stateful<Div> {
