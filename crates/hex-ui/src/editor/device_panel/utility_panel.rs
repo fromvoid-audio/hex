@@ -14,7 +14,7 @@ use hex_project::DeviceId;
 pub(super) const GAIN: ParameterId = ParameterId::from_static(1);
 pub(super) const BALANCE: ParameterId = ParameterId::from_static(2);
 pub(super) const WIDTH: ParameterId = ParameterId::from_static(3);
-const CHANNEL: ParameterId = ParameterId::from_static(4);
+pub(super) const CHANNEL: ParameterId = ParameterId::from_static(4);
 pub(super) const INVERT_LEFT: ParameterId = ParameterId::from_static(5);
 pub(super) const INVERT_RIGHT: ParameterId = ParameterId::from_static(6);
 pub(super) const MONO: ParameterId = ParameterId::from_static(7);

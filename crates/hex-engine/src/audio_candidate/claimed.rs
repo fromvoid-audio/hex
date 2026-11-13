@@ -426,6 +426,23 @@ impl ClaimedAudioCandidateRuntime {
             .playback
             .visit_next_stream_chunk(maximum_frames, playing, visit)
     }
+    /// Visit bounded callback demand without changing committed playback state.
+    pub fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<usize, crate::Invalid> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::Invalid("candidate runtime is not current"));
+        }
+        self.inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?
+            .playback
+            .visit_current_stream_quantum(maximum_frames, playing, false, visit)
+    }
     /// Runs the real handoff's pure preflight against the actual predecessor.
     /// Scratch planning may change; committed owners/history/routes do not.
     pub fn preview_stream_handoff(

@@ -591,18 +591,21 @@ fn source_utility_matrix_callback_retarget(
 fn shared_source_utility_matrix_handoff_preserves_pcm_without_allocations() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::BeatTime;
-    for (dc, bass, equivalent, polarity) in [
-        (true, false, false, None),
-        (false, true, false, None),
-        (false, false, true, None),
-        (true, false, true, None),
-        (false, true, true, None),
-        (false, false, false, Some(5)),
-        (false, false, false, Some(6)),
-        (true, false, false, Some(5)),
-        (true, false, false, Some(6)),
-        (false, true, false, Some(5)),
-        (false, true, false, Some(6)),
+    for (dc, bass, equivalent, polarity, channel_choice) in [
+        (true, false, false, None, None),
+        (false, true, false, None, None),
+        (false, false, true, None, None),
+        (true, false, true, None, None),
+        (false, true, true, None, None),
+        (false, false, false, Some(5), None),
+        (false, false, false, Some(6), None),
+        (true, false, false, Some(5), None),
+        (true, false, false, Some(6), None),
+        (false, true, false, Some(5), None),
+        (false, true, false, Some(6), None),
+        (false, false, false, None, Some(1)),
+        (true, false, false, None, Some(2)),
+        (false, true, false, None, Some(3)),
     ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(receiver) = editor
@@ -723,14 +726,18 @@ fn shared_source_utility_matrix_handoff_preserves_pcm_without_allocations() {
         let state = hex_devices::utility::UTILITY_DEFINITION
             .patch_parameter(
                 editor.project().device(effect).unwrap().state(),
-                if let Some(polarity) = polarity {
+                if channel_choice.is_some() {
+                    hex_devices::utility::parameter::CHANNEL
+                } else if let Some(polarity) = polarity {
                     hex_lattice_contract::ParameterId::from_static(polarity)
                 } else if equivalent {
                     hex_devices::utility::parameter::MID_SIDE_ENABLED
                 } else {
                     hex_devices::utility::parameter::GAIN
                 },
-                if equivalent || polarity.is_some() {
+                if let Some(channel) = channel_choice {
+                    ParameterValue::Choice(channel)
+                } else if equivalent || polarity.is_some() {
                     ParameterValue::Bool(true)
                 } else {
                     ParameterValue::Float(2.0)
