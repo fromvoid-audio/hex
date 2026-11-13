@@ -6,13 +6,16 @@ use std::collections::BTreeMap;
 
 #[test]
 fn compensated_tempo_restart_publishes_without_callback_allocations() {
-    for (partition, compensated, looped) in [
-        (1, true, false),
-        (257, true, false),
-        (257, false, false),
-        (1, true, true),
-        (257, true, true),
-    ] {
+    run_tempo_cases(&[(1, true, false), (257, true, false), (257, false, false)]);
+}
+
+#[test]
+fn looped_compensated_tempo_restart_publishes_without_callback_allocations() {
+    run_tempo_cases(&[(1, true, true), (257, true, true)]);
+}
+
+fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
+    for &(partition, compensated, looped) in cases {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { track, asset, .. } = editor
             .execute(Command::ImportAudioTrack {
