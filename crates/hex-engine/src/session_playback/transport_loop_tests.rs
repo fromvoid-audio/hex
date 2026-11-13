@@ -5,6 +5,15 @@ const Q: u64 = 1_u64 << 32;
 
 #[test]
 fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(audio_loop_change_with_limiter_preserves_samples_and_clock_inner)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn audio_loop_change_with_limiter_preserves_samples_and_clock_inner() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     for asset in &mut snapshot.assets {
@@ -119,14 +128,100 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
     let new_revision = prepare(&tempo_changed);
     assert!(old_revision.arrangement().main_latency_frames() > 0);
     assert!(new_revision.arrangement().main_latency_frames() > 0);
+    let mut no_pdc_old = linear.snapshot();
+    no_pdc_old.tracks[0].devices.clear();
+    let no_pdc_old = legacy_project_from_snapshot(no_pdc_old).unwrap();
+    let mut no_pdc_new = tempo_changed.snapshot();
+    no_pdc_new.tracks[0].devices.clear();
+    let no_pdc_new = legacy_project_from_snapshot(no_pdc_new).unwrap();
+    let mut unplanned_old = SessionPlayback::new(prepare(&no_pdc_old)).unwrap();
+    unplanned_old.apply(SessionPlaybackCommand::Play).unwrap();
+    unplanned_old.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut unplanned_next = SessionPlayback::new(prepare(&no_pdc_new)).unwrap();
+    unplanned_next
+        .try_inherit_state_live_from(&mut unplanned_old)
+        .unwrap();
+    assert_eq!(unplanned_next.arrangement_frame(), 800);
+    assert!(
+        PreparedTempoAnchor::prepare(
+            Arc::clone(&old_revision),
+            Arc::clone(&old_revision),
+            600,
+            600
+        )
+        .is_err()
+    );
+    assert!(
+        PreparedTempoAnchor::prepare(
+            Arc::clone(&loop_revision),
+            Arc::clone(&new_revision),
+            600,
+            600
+        )
+        .is_err()
+    );
     for block in [1, 257] {
         let mut running = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
         running.apply(SessionPlaybackCommand::Play).unwrap();
-        for chunk in [[0.0; 2]; 600].chunks_mut(block) {
+        let anchor = PreparedTempoAnchor::prepare(
+            Arc::clone(&old_revision),
+            Arc::clone(&new_revision),
+            600,
+            600,
+        )
+        .unwrap();
+        let retained = anchor.retained_revisions();
+        assert!(std::ptr::eq(retained[0], old_revision.as_ref()));
+        assert!(std::ptr::eq(retained[1], new_revision.as_ref()));
+        for chunk in [[0.0; 2]; 599].chunks_mut(block) {
             running.render(chunk).unwrap();
         }
         let mut relocated = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
-        relocated.try_inherit_state_live_from(&mut running).unwrap();
+        assert_eq!(
+            relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        assert_eq!(running.arrangement_frame(), 599);
+        running.render(&mut [[0.0; 2]; 1]).unwrap();
+        let mut wrong_candidate = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+        assert_eq!(
+            wrong_candidate.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        let mut wrong_donor = SessionPlayback::new(prepare(&linear)).unwrap();
+        wrong_donor.apply(SessionPlaybackCommand::Play).unwrap();
+        wrong_donor.render(&mut [[0.0; 2]; 600]).unwrap();
+        assert_eq!(
+            relocated.try_inherit_state_with_tempo_anchor(&mut wrong_donor, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        running.performance_frame += 1;
+        assert_eq!(
+            relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        running.performance_frame -= 1;
+        running.transient_loop = Some(LoopRegion::new(0, 1000, true).unwrap());
+        assert_eq!(
+            relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        running.transient_loop = None;
+        relocated.transient_loop = Some(LoopRegion::new(0, 1000, true).unwrap());
+        assert_eq!(
+            relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        relocated.transient_loop = None;
+        running.playing = false;
+        assert_eq!(
+            relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        running.playing = true;
+        relocated
+            .try_inherit_state_with_tempo_anchor(&mut running, &anchor)
+            .unwrap();
         assert!(relocated.playing());
         // 120 -> 90 bpm: frame 600 (1/40 beat) lands at frame 800 under 90 bpm.
         assert_eq!(relocated.arrangement_frame(), 800);
@@ -146,6 +241,21 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
                 .any(|sample| *sample != 0.0)
         );
         assert_eq!(relocated.arrangement_frame(), 2848);
+        let mut ordinary_old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        ordinary_old.apply(SessionPlaybackCommand::Play).unwrap();
+        ordinary_old.render(&mut [[0.0; 2]; 600]).unwrap();
+        let mut ordinary = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        ordinary
+            .try_inherit_state_live_from(&mut ordinary_old)
+            .unwrap();
+        let mut ordinary_output = vec![[0.0; 2]; 2048];
+        for chunk in ordinary_output.chunks_mut(block) {
+            ordinary.render(chunk).unwrap();
+        }
+        assert_eq!(
+            ordinary_output, relocated_expected,
+            "unplanned block={block}"
+        );
     }
     let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
     let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
