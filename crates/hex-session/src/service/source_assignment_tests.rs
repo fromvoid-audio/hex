@@ -2337,3 +2337,369 @@ fn unassigned_source_gesture_retires_with_source_deletion() {
     );
     assert_eq!(stale.state.project, deleted.state.project);
 }
+
+fn unassigned_operator_gesture_fixture() -> (
+    Service,
+    Event,
+    hex_project::SourceId,
+    hex_project::DeviceId,
+    hex_project::SourceId,
+    hex_project::TrackId,
+) {
+    use hex_lattice_contract::DeviceTypeId;
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let track_event = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "unassigned track".into(),
+        }),
+    );
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("track")
+    };
+    let kind = DeviceTypeId::from_static("hex.instrument.operator");
+    let created = run(
+        &service,
+        create_source(track_event.state.revision, 0, kind, "operator"),
+    );
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let other_event = run(
+        &service,
+        create_source(created.state.revision, 0, kind, "other"),
+    );
+    let Some(Created::NativeSource(other)) = other_event.created else {
+        panic!("other source")
+    };
+    (service, other_event, source, device, other, track)
+}
+
+fn operator_source_value(
+    project: &hex_project::Project,
+    device: hex_project::DeviceId,
+    parameter: hex_lattice_contract::ParameterId,
+) -> hex_lattice_contract::ParameterValue {
+    hex_engine::native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        project.device(device).unwrap().state(),
+        parameter,
+    )
+    .unwrap()
+}
+
+#[test]
+fn unassigned_operator_pair_preview_commit_cancel_and_history() {
+    use crate::device_gesture::{GesturePhase, ParameterPairValue};
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    let (service, initial, source, device, other, track) = unassigned_operator_gesture_fixture();
+    let first = ParameterId::from_static(34);
+    let second = ParameterId::from_static(36);
+    let original = initial.state.project.clone();
+    let original_other = original.native_source(other).unwrap().clone();
+    let initial_pair = (
+        operator_source_value(&original, device, first),
+        operator_source_value(&original, device, second),
+    );
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let target = GestureTarget::DeviceParameterPair {
+        device,
+        first,
+        second,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin { key, target }),
+    );
+    assert!(
+        begun
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Begin)
+    );
+    let value = ParameterPairValue {
+        first: ParameterValue::Float(0.5),
+        second: ParameterValue::Float(0.25),
+    };
+    let preview = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::ChangePair {
+            key,
+            sequence: 1,
+            value,
+        }),
+    );
+    assert_eq!(preview.state.project, original);
+    let overlay = preview.device_preview.as_ref().unwrap();
+    assert_eq!(overlay.identity.key, key);
+    assert_eq!(
+        operator_source_value(&overlay.state.project, device, first),
+        value.first
+    );
+    assert_eq!(
+        operator_source_value(&overlay.state.project, device, second),
+        value.second
+    );
+    let committed = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::CommitPair {
+            key,
+            sequence: 2,
+            manual_edit: false,
+            value,
+        }),
+    );
+    assert!(
+        committed
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Commit)
+    );
+    assert_eq!(
+        operator_source_value(&committed.state.project, device, first),
+        value.first
+    );
+    assert_eq!(
+        operator_source_value(&committed.state.project, device, second),
+        value.second
+    );
+    assert_eq!(
+        committed.state.project.native_source(other).unwrap(),
+        &original_other
+    );
+    assert_eq!(
+        committed
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id(),
+        device
+    );
+    assert_eq!(
+        committed.state.project.track(track).unwrap().source_id(),
+        None
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        (
+            operator_source_value(&undone.state.project, device, first),
+            operator_source_value(&undone.state.project, device, second)
+        ),
+        initial_pair
+    );
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, committed.state.project);
+    let cancel_key = GestureKey {
+        generation: 0,
+        token: 2,
+    };
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key: cancel_key,
+            target,
+        }),
+    );
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::ChangePair {
+            key: cancel_key,
+            sequence: 1,
+            value: ParameterPairValue {
+                first: ParameterValue::Float(0.75),
+                second: ParameterValue::Float(0.5),
+            },
+        }),
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key: cancel_key }),
+    );
+    assert!(
+        cancelled
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Cancel)
+    );
+    assert_eq!(cancelled.state.project, committed.state.project);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::CommitPair {
+            key: cancel_key,
+            sequence: 2,
+            manual_edit: false,
+            value,
+        }))
+        .unwrap();
+    let stale = next_event(&service);
+    assert!(
+        stale
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| !ack.accepted && ack.key == cancel_key)
+    );
+    assert_eq!(stale.state.project, committed.state.project);
+}
+
+#[test]
+fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
+    use crate::device_gesture::{GesturePhase, TouchedParameters};
+    use hex_lattice_contract::{DeviceParameterSnapshot, ParameterId, ParameterValue};
+    let (service, initial, source, device, other, track) = unassigned_operator_gesture_fixture();
+    let original = initial.state.project.clone();
+    let original_other = original.native_source(other).unwrap().clone();
+    let entries: [(ParameterId, ParameterValue); 64] = std::array::from_fn(|index| {
+        let id = ParameterId::from_static(93 + index as u32);
+        (id, operator_source_value(&original, device, id))
+    });
+    let begin = DeviceParameterSnapshot::new(&entries).unwrap();
+    let mut edited = entries;
+    edited[1].1 = ParameterValue::Float(0.5);
+    edited[2].1 = ParameterValue::Float(0.25);
+    let value = DeviceParameterSnapshot::new(&edited).unwrap();
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::BeginSnapshot {
+            key,
+            device,
+            snapshot: begin,
+        }),
+    );
+    assert!(
+        begun
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Begin)
+    );
+    let preview = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+            touched_parameters: TouchedParameters::default(),
+            key,
+            sequence: 1,
+            snapshot: value,
+        }),
+    );
+    assert_eq!(preview.state.project, original);
+    let overlay = preview.device_preview.as_ref().unwrap();
+    assert_eq!(overlay.identity.key, key);
+    assert_eq!(
+        operator_source_value(&overlay.state.project, device, edited[1].0),
+        edited[1].1
+    );
+    assert_eq!(
+        operator_source_value(&overlay.state.project, device, edited[2].0),
+        edited[2].1
+    );
+    let committed = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::CommitSnapshot {
+            touched_parameters: TouchedParameters::default(),
+            key,
+            sequence: 2,
+            snapshot: value,
+        }),
+    );
+    assert!(
+        committed
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Commit)
+    );
+    assert_eq!(
+        operator_source_value(&committed.state.project, device, edited[1].0),
+        edited[1].1
+    );
+    assert_eq!(
+        operator_source_value(&committed.state.project, device, edited[2].0),
+        edited[2].1
+    );
+    assert_eq!(
+        committed.state.project.native_source(other).unwrap(),
+        &original_other
+    );
+    assert_eq!(
+        committed
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id(),
+        device
+    );
+    assert_eq!(
+        committed.state.project.track(track).unwrap().source_id(),
+        None
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(undone.state.project, original);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, committed.state.project);
+    let cancel_key = GestureKey {
+        generation: 0,
+        token: 2,
+    };
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::BeginSnapshot {
+            key: cancel_key,
+            device,
+            snapshot: value,
+        }),
+    );
+    edited[3].1 = ParameterValue::Float(0.75);
+    let changed = DeviceParameterSnapshot::new(&edited).unwrap();
+    run(
+        &service,
+        Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+            touched_parameters: TouchedParameters::default(),
+            key: cancel_key,
+            sequence: 1,
+            snapshot: changed,
+        }),
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key: cancel_key }),
+    );
+    assert!(
+        cancelled
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted && ack.phase == GesturePhase::Cancel)
+    );
+    assert_eq!(cancelled.state.project, committed.state.project);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::CommitSnapshot {
+            touched_parameters: TouchedParameters::default(),
+            key: cancel_key,
+            sequence: 2,
+            snapshot: changed,
+        }))
+        .unwrap();
+    let stale = next_event(&service);
+    assert!(
+        stale
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| !ack.accepted && ack.key == cancel_key)
+    );
+    assert_eq!(stale.state.project, committed.state.project);
+}
