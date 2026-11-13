@@ -1187,7 +1187,7 @@ fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
                 request_id: 3,
                 project_generation: 0,
                 revision: reset.state.revision,
-                track: sampler_track_id,
+                owner: hex_project::InstrumentAssetOwner::Track(sampler_track_id),
                 device,
                 expected_state: reset.state.project.device(device).unwrap().state().clone(),
                 path: files.source().to_owned(),

@@ -456,7 +456,7 @@ impl EditorView {
             request_id: id,
             project_generation: generation,
             revision,
-            track,
+            owner: hex_project::InstrumentAssetOwner::Track(track),
             device,
             expected_state,
             path,
