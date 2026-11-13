@@ -6110,24 +6110,22 @@ fn muted_isolated_latency_addition(
         || previous.loop_region().is_some()
         || !candidate.source_effects.is_empty()
         || !previous.source_effects.is_empty()
+        || !previous.browser_audition.is_idle()
+        || [candidate, previous].iter().any(|runtime| {
+            runtime.revision.gain_recording_track().is_some()
+                || runtime.revision.native_parameter_input_target().is_some()
+        })
         || previous.computer_keyboard.is_some()
         || !previous.current_sampler_keyboards.is_empty()
         || previous.monitor_source_releases
         || !previous.releases.is_empty()
         || !previous.foreign_arrangement.is_empty()
-        || [candidate, previous].iter().any(|runtime| {
-            runtime
-                .revision
-                .arrangement()
-                .main_device_chain
-                .iter()
-                .any(|device| {
-                    matches!(
-                        device.definition,
-                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                    )
-                })
-        })
+        || !candidate
+            .revision
+            .arrangement()
+            .main_device_chain
+            .is_empty()
+        || !previous.revision.arrangement().main_device_chain.is_empty()
         || previous.tail_groups.iter().any(Option::is_some)
         || previous.tail_output_active.iter().any(|active| *active)
         || previous
@@ -6149,10 +6147,17 @@ fn muted_isolated_latency_addition(
     if old.len() != new.len() {
         return None;
     }
+    // Bound state comparisons on the callback even for many native devices.
+    const MAX_STATE_COMPARE_BYTES: usize = 4096;
+    let mut compared_bytes = 0_usize;
     let mut changed = None;
     for (before, after) in old.iter().zip(new) {
         let id = before.canonical_track_id()?;
         if after.canonical_track_id() != Some(id)
+            || before.mix != after.mix
+            || before.source_mix != after.source_mix
+            || before.gain_envelope.is_some()
+            || after.gain_envelope.is_some()
             || [before, after].iter().any(|track| {
                 track.instrument_id.is_some()
                     || track.source_id.is_some()
@@ -6177,8 +6182,29 @@ fn muted_isolated_latency_addition(
                         && a.device_type == b.device_type
                         && a.bypassed == b.bypassed
                         && a.matrix == b.matrix
-                        && a.configuration == b.configuration
-                        && a.automation == b.automation
+                        && match (&a.configuration, &b.configuration) {
+                            (Some(a), Some(b)) => {
+                                if !a.asset_references().is_empty()
+                                    || !b.asset_references().is_empty()
+                                {
+                                    return false;
+                                }
+                                let bytes = if a.shares_payload_storage_with(b) {
+                                    0
+                                } else {
+                                    a.payload().len().max(b.payload().len())
+                                };
+                                let Some(next) = compared_bytes.checked_add(bytes) else {
+                                    return false;
+                                };
+                                compared_bytes = next;
+                                compared_bytes <= MAX_STATE_COMPARE_BYTES && a == b
+                            }
+                            (None, None) => true,
+                            _ => false,
+                        }
+                        && a.automation.is_empty()
+                        && b.automation.is_empty()
                         && a.modulation.is_none()
                         && b.modulation.is_none()
                 })
@@ -6193,6 +6219,12 @@ fn muted_isolated_latency_addition(
             || !before.mix.muted()
             || !after.mix.muted()
             || device.bypassed
+            || !device.automation.is_empty()
+            || device.modulation.is_some()
+            || device
+                .configuration
+                .as_ref()
+                .is_some_and(|state| !state.asset_references().is_empty())
             || device
                 .algorithmic_latency_frames()
                 .is_none_or(|frames| frames == 0)
