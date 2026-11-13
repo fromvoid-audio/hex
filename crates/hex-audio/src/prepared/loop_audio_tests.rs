@@ -1078,3 +1078,245 @@ fn appending_neutral_source_utility_preserves_audio_without_callback_allocations
         }
     }
 }
+
+#[test]
+fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocations() {
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    use hex_project::BeatTime;
+    for remove_first in [true, false] {
+        for partition in [1, 7, 64, 128, 257] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(receiver) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            let source = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .source_id()
+                .unwrap();
+            let instrument = editor
+                .project()
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .id();
+            let Created::Track(contributor) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "contributor".into(),
+                })
+                .unwrap()
+            else {
+                panic!("contributor")
+            };
+            editor
+                .execute(Command::BindTrackSource {
+                    track: contributor,
+                    source: Some(source),
+                })
+                .unwrap();
+            for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+                let Created::Clip(clip) = editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::ONE,
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .unwrap();
+            }
+            const LOCAL: [f32; 2] = [0.125, -0.25];
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: "local.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 512,
+                })
+                .unwrap()
+            else {
+                panic!("asset")
+            };
+            editor
+                .execute(Command::PlaceClip {
+                    track: receiver,
+                    asset,
+                    start: 0,
+                    duration: 512,
+                    source_offset: 0,
+                    source_length: 512,
+                    looping: false,
+                })
+                .unwrap();
+            let default = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap();
+            let filter = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                &default,
+                ParameterId::from_static(12),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+            let filter = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                &filter,
+                ParameterId::from_static(2),
+                ParameterValue::Float(1.0),
+            )
+            .unwrap();
+            let Created::Device(first) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: filter,
+                })
+                .unwrap()
+            else {
+                panic!("first")
+            };
+            let Created::Device(last) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: default,
+                })
+                .unwrap()
+            else {
+                panic!("last")
+            };
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![LOCAL; 512]).unwrap())]);
+            let table = Arc::new(SineTable::new());
+            let prepare = |editor: &Editor| {
+                Arc::new(
+                    PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                        .unwrap(),
+                )
+            };
+            let original = prepare(&editor);
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let (mut reference_control, mut reference) = channel(48_000).unwrap();
+            let mut active = 0;
+            for ctl in [&mut control, &mut reference_control] {
+                active = ctl
+                    .publish(
+                        Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap(),
+                    )
+                    .unwrap();
+                ctl.command(PlaybackCommand::Play).unwrap();
+            }
+            for cb in [&mut callback, &mut reference] {
+                cb.begin_block();
+                cb.render(&mut [[0.0; 2]; 64]).unwrap();
+            }
+            editor
+                .execute(Command::RemoveDevice(if remove_first {
+                    first
+                } else {
+                    last
+                }))
+                .unwrap();
+            let removed = control
+                .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+                .unwrap();
+            let mut actual = [[0.0; 2]; 128];
+            let counts = allocation_counter::measure(|| {
+                for chunk in actual.chunks_mut(partition) {
+                    callback.begin_block();
+                    callback.render(chunk).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), active);
+            assert_eq!(
+                control
+                    .status
+                    .rejected_revision()
+                    .map(|rejected| rejected.0),
+                Some(removed)
+            );
+            let mut expected = [[0.0; 2]; 128];
+            for chunk in expected.chunks_mut(partition) {
+                reference.begin_block();
+                reference.render(chunk).unwrap();
+            }
+            assert!(
+                expected
+                    .iter()
+                    .any(|frame| (frame[0] - LOCAL[0]).abs() > 1e-5)
+            );
+            assert_eq!(
+                actual, expected,
+                "first={remove_first} partition={partition}"
+            );
+            control.command(PlaybackCommand::Stop).unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut [[0.0; 2]; 256]).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(!control.status.playing.load(Acquire));
+            control.reclaim();
+            let stopped = control
+                .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+                .unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut [[0.0; 2]; 1]).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), stopped);
+            for (ctl, cb) in [
+                (&mut control, &mut callback),
+                (&mut reference_control, &mut reference),
+            ] {
+                ctl.request_shutdown();
+                cb.begin_block();
+                ctl.reclaim();
+            }
+        }
+    }
+}
