@@ -531,6 +531,11 @@ pub(super) fn source_effect_card(
             "width",
             Some(numeric_display::NumericDisplayCodec::Percent),
         ),
+        (
+            utility_panel::MID_SIDE_BALANCE,
+            "mid/side",
+            Some(numeric_display::NumericDisplayCodec::MidSide),
+        ),
     ]
     .map(|(parameter, label, codec)| {
         if !hex_engine::project_source_utility_matrix_edit_supported(&state.project, id, parameter)

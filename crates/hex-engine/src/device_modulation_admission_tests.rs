@@ -599,7 +599,15 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
             parameter::WIDTH,
         )
     };
+    let mid_side = |editor: &Editor| {
+        crate::project_source_utility_matrix_edit_supported(
+            editor.project(),
+            device,
+            parameter::MID_SIDE_BALANCE,
+        )
+    };
     assert!(width(&editor));
+    assert!(!mid_side(&editor));
     for (id, value) in [
         (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(true)),
         (parameter::CHANNEL, ParameterValue::Choice(1)),
@@ -611,6 +619,7 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
             .execute(Command::ReplaceDeviceState { device, state })
             .unwrap();
         assert!(!width(&editor));
+        assert_eq!(mid_side(&editor), id == parameter::MID_SIDE_ENABLED);
         assert!(eligible(&editor, device));
         assert!(editor.undo());
     }
@@ -636,4 +645,5 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
         })
         .unwrap();
     assert!(!eligible(&editor, device));
+    assert!(!mid_side(&editor));
 }
