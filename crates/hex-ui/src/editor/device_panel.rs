@@ -1376,10 +1376,11 @@ fn render_track(
         .source_summary
         .get(&state.project, track_id)
     {
-        let card = source_summary_card(summary);
+        let summary = source_summary_card(summary);
+        let card = source_picker::button(view, window, cx, track_id, Some(summary));
         header = header.child(card);
     } else if !track.is_group() && track.source_id().is_none() {
-        let card = source_picker::button(view, window, cx, track_id);
+        let card = source_picker::button(view, window, cx, track_id, None);
         header = header.child(card);
     }
     header = header.child(track_name_view);
