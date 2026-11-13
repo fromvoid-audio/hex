@@ -587,6 +587,20 @@ fn source_utility_static_matrix_eligibility_tracks_owner_and_filters() {
         );
         assert_eq!(gain, balance);
         assert_eq!(gain, mono);
+        for parameter in [
+            parameter::INVERT_LEFT,
+            parameter::INVERT_RIGHT,
+            parameter::CHANNEL,
+        ] {
+            assert_eq!(
+                gain,
+                crate::project_source_utility_matrix_edit_supported(
+                    editor.project(),
+                    id,
+                    parameter
+                )
+            );
+        }
         gain
     };
     assert!(!eligible(&editor, local));

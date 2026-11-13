@@ -3601,3 +3601,263 @@ fn removing_shared_source_utility_refuses_live_and_restarts_quiet_chain_after_st
         }
     }
 }
+
+#[test]
+fn live_source_utility_polarity_preserves_filter_history_and_local_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_devices::utility_filters::{PreparedUtilityFilters, UtilityFilterProcessor};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    const PREFIX: usize = 64;
+    const SEGMENT: usize = 128;
+    const TOTAL: usize = PREFIX + 2 * SEGMENT;
+    for (dc, bass) in [(false, false), (true, false), (false, true)] {
+        for channel in 0..2 {
+            for partition in [1, 7, 64, 128, 257] {
+                let (mut editor, asset) = authored_fixture(0, false);
+                let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+                let mut state = UTILITY_DEFINITION.default_state().unwrap();
+                for (id, enabled) in [(parameter::DC_REMOVE, dc), (parameter::BASS_MONO, bass)] {
+                    state = UTILITY_DEFINITION
+                        .patch_parameter(&state, id, ParameterValue::Bool(enabled))
+                        .unwrap();
+                }
+                let Created::Device(effect) = editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state,
+                    })
+                    .unwrap()
+                else {
+                    panic!("source effect")
+                };
+                let media =
+                    BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+                let table = Arc::new(crate::SineTable::new());
+                let prepare = |editor: &Editor| {
+                    Arc::new(
+                        PreparedRevision::prepare(
+                            editor.project(),
+                            &media,
+                            Arc::clone(&table),
+                            None,
+                        )
+                        .unwrap(),
+                    )
+                };
+                let original = prepare(&editor);
+                let mut dry = [[0.0; 2]; TOTAL];
+                crate::render_source_generators(
+                    original.arrangement(),
+                    0,
+                    0,
+                    TOTAL as u64,
+                    &mut dry,
+                    None,
+                )
+                .unwrap();
+                assert!(dry.iter().flatten().any(|sample| sample.abs() > 1e-5));
+                let mut oracle = UtilityFilterProcessor::new(
+                    PreparedUtilityFilters::new(48_000, dc, bass, 200.0, false).unwrap(),
+                );
+                let mut previous = SessionPlayback::new(original).unwrap();
+                previous.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut actual = [[0.0; 2]; TOTAL];
+                previous.render(&mut actual[..PREFIX]).unwrap();
+                let polarity = if channel == 0 {
+                    parameter::INVERT_LEFT
+                } else {
+                    parameter::INVERT_RIGHT
+                };
+                let state = UTILITY_DEFINITION
+                    .patch_parameter(
+                        editor.project().device(effect).unwrap().state(),
+                        polarity,
+                        ParameterValue::Bool(true),
+                    )
+                    .unwrap();
+                editor
+                    .execute(Command::ReplaceDeviceState {
+                        device: effect,
+                        state,
+                    })
+                    .unwrap();
+                let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+                candidate
+                    .try_inherit_state_live_from(&mut previous)
+                    .unwrap();
+                for chunk in actual[PREFIX..PREFIX + SEGMENT].chunks_mut(partition) {
+                    candidate.render(chunk).unwrap();
+                }
+                assert!(editor.undo());
+                let mut restored = SessionPlayback::new(prepare(&editor)).unwrap();
+                restored
+                    .try_inherit_state_live_from(&mut candidate)
+                    .unwrap();
+                for chunk in actual[PREFIX + SEGMENT..].chunks_mut(partition) {
+                    restored.render(chunk).unwrap();
+                }
+                for (i, (actual, mut input)) in actual.iter().zip(dry).enumerate() {
+                    let factor = if i < PREFIX {
+                        1.0
+                    } else if i < PREFIX + SEGMENT {
+                        1.0 - 2.0 * (i - PREFIX + 1) as f32 / 240.0
+                    } else {
+                        let start = 1.0 - 2.0 * SEGMENT as f32 / 240.0;
+                        start + (1.0 - start) * (i - PREFIX - SEGMENT + 1) as f32 / 240.0
+                    };
+                    input[channel] *= factor;
+                    let filtered = oracle.process_frame(input);
+                    let local = if i < WIDTH { CLIP } else { [0.0; 2] };
+                    for output in 0..2 {
+                        let expected = filtered[output] + local[output];
+                        assert!(
+                            (actual[output] - expected).abs() < 1e-4,
+                            "dc={dc} bass={bass} channel={channel} partition={partition} frame={i} actual={} expected={expected}",
+                            actual[output]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn live_source_utility_channel_selection_preserves_filter_history_and_local_audio() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_devices::utility_filters::{PreparedUtilityFilters, UtilityFilterProcessor};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    const PREFIX: usize = 64;
+    const SEGMENT: usize = 128;
+    const TOTAL: usize = PREFIX + 2 * SEGMENT;
+    for (dc, bass) in [(false, false), (true, false), (false, true)] {
+        for mode in 1..=3 {
+            for partition in [1, 7, 64, 128, 257] {
+                let (mut editor, asset) = authored_fixture(0, false);
+                let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+                let asymmetric = UTILITY_DEFINITION
+                    .patch_parameter(
+                        &UTILITY_DEFINITION.default_state().unwrap(),
+                        parameter::INVERT_RIGHT,
+                        ParameterValue::Bool(true),
+                    )
+                    .unwrap();
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state: asymmetric,
+                    })
+                    .unwrap();
+                let mut state = UTILITY_DEFINITION.default_state().unwrap();
+                for (id, enabled) in [(parameter::DC_REMOVE, dc), (parameter::BASS_MONO, bass)] {
+                    state = UTILITY_DEFINITION
+                        .patch_parameter(&state, id, ParameterValue::Bool(enabled))
+                        .unwrap();
+                }
+                let Created::Device(effect) = editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state,
+                    })
+                    .unwrap()
+                else {
+                    panic!("source effect")
+                };
+                let media =
+                    BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+                let table = Arc::new(crate::SineTable::new());
+                let prepare = |editor: &Editor| {
+                    Arc::new(
+                        PreparedRevision::prepare(
+                            editor.project(),
+                            &media,
+                            Arc::clone(&table),
+                            None,
+                        )
+                        .unwrap(),
+                    )
+                };
+                let original = prepare(&editor);
+                let mut dry = [[0.0; 2]; TOTAL];
+                crate::render_source_generators(
+                    original.arrangement(),
+                    0,
+                    0,
+                    TOTAL as u64,
+                    &mut dry,
+                    None,
+                )
+                .unwrap();
+                assert!(dry.iter().flatten().any(|sample| sample.abs() > 1e-5));
+                let mut oracle = UtilityFilterProcessor::new(
+                    PreparedUtilityFilters::new(48_000, dc, bass, 200.0, false).unwrap(),
+                );
+                let mut previous = SessionPlayback::new(original).unwrap();
+                previous.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut actual = [[0.0; 2]; TOTAL];
+                previous.render(&mut actual[..PREFIX]).unwrap();
+                let state = UTILITY_DEFINITION
+                    .patch_parameter(
+                        editor.project().device(effect).unwrap().state(),
+                        parameter::CHANNEL,
+                        ParameterValue::Choice(mode),
+                    )
+                    .unwrap();
+                editor
+                    .execute(Command::ReplaceDeviceState {
+                        device: effect,
+                        state,
+                    })
+                    .unwrap();
+                let mut candidate = SessionPlayback::new(prepare(&editor)).unwrap();
+                candidate
+                    .try_inherit_state_live_from(&mut previous)
+                    .unwrap();
+                for chunk in actual[PREFIX..PREFIX + SEGMENT].chunks_mut(partition) {
+                    candidate.render(chunk).unwrap();
+                }
+                assert!(editor.undo());
+                let mut restored = SessionPlayback::new(prepare(&editor)).unwrap();
+                restored
+                    .try_inherit_state_live_from(&mut candidate)
+                    .unwrap();
+                for chunk in actual[PREFIX + SEGMENT..].chunks_mut(partition) {
+                    restored.render(chunk).unwrap();
+                }
+                for (i, (actual, raw)) in actual.iter().zip(dry).enumerate() {
+                    let input = [raw[0], -raw[1]];
+                    let selected = match mode {
+                        1 => [input[0], input[0]],
+                        2 => [input[1], input[1]],
+                        3 => [input[1], input[0]],
+                        _ => unreachable!(),
+                    };
+                    let mix = if i < PREFIX {
+                        0.0
+                    } else if i < PREFIX + SEGMENT {
+                        (i - PREFIX + 1) as f32 / 240.0
+                    } else {
+                        let start = SEGMENT as f32 / 240.0;
+                        start * (1.0 - (i - PREFIX - SEGMENT + 1) as f32 / 240.0)
+                    };
+                    let input = [
+                        input[0] + (selected[0] - input[0]) * mix,
+                        input[1] + (selected[1] - input[1]) * mix,
+                    ];
+                    let filtered = oracle.process_frame(input);
+                    let local = if i < WIDTH { CLIP } else { [0.0; 2] };
+                    for output in 0..2 {
+                        let expected = filtered[output] + local[output];
+                        assert!(
+                            (actual[output] - expected).abs() < 1e-4,
+                            "dc={dc} bass={bass} mode={mode} partition={partition} frame={i} actual={} expected={expected}",
+                            actual[output]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

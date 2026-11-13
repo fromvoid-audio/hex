@@ -348,6 +348,16 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
+    retained_foreign_track_tail(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retained_foreign_track_tail_routes_through_unchanged_compensated_group() {
+    retained_foreign_track_tail(true);
+}
+
+fn retained_foreign_track_tail(grouped: bool) {
     let _serial = serial();
     let mut f = fixture_at("processing", 0);
     let old = f.binding;
@@ -359,6 +369,24 @@ fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
             state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap();
+    if grouped {
+        let Created::Track(group) = f
+            .editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        f.editor
+            .execute(Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
     let first = compile(&f, true);
     publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
     f.control.command(PlaybackCommand::Play).unwrap();
@@ -406,9 +434,10 @@ fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
     }
     assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
     assert_eq!(&output[..8], &[[0.0; 2]; 8]);
-    assert_eq!(&output[8..16], &[[0.125, -0.25]; 8]);
-    assert_eq!(&output[16..24], &[[0.09375, -0.1875]; 8]);
-    assert_eq!(&output[24..], &[[0.1171875, -0.234375]; 8]);
+    let gain = if grouped { 0.5 } else { 1.0 };
+    assert_eq!(&output[8..16], &[[0.125 * gain, -0.25 * gain]; 8]);
+    assert_eq!(&output[16..24], &[[0.09375 * gain, -0.1875 * gain]; 8]);
+    assert_eq!(&output[24..], &[[0.1171875 * gain, -0.234375 * gain]; 8]);
     let OrdinaryFixture {
         mut control,
         data,

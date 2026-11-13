@@ -244,19 +244,37 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
         oracle.render(&mut expected).unwrap();
         let mut observed = vec![[0.0; 2]; count];
         let mut offset = 0;
+        let mut projected_end = 0;
+        let mut predicted = Vec::new();
+        let mut committed = Vec::new();
         while offset < count {
+            if offset == projected_end {
+                predicted.clear();
+                committed.clear();
+                let before = (actual.position(), actual.performance_frame());
+                let projected = actual
+                    .stream_playback(context)
+                    .visit_current_stream_quantum(count - offset, None, &mut |extent| {
+                        predicted.push(extent);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(projected, (count - offset).min(256));
+                assert_eq!((actual.position(), actual.performance_frame()), before);
+                projected_end = offset + projected;
+            }
             let position = actual.position();
             let mut extents = Vec::new();
             let window = actual
                 .stream_playback(context)
-                .visit_next_stream_chunk(count - offset, None, &mut |extent| {
+                .visit_next_stream_chunk(projected_end - offset, None, &mut |extent| {
                     extents.push(extent);
                     Ok(())
                 })
                 .unwrap();
             assert_eq!(
                 window.frames,
-                (count - offset).min(256).min(127 - position as usize)
+                (projected_end - offset).min(127 - position as usize)
             );
             assert_eq!(
                 extents,
@@ -267,6 +285,7 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
                     end: position as usize + window.frames,
                 }]
             );
+            committed.extend_from_slice(&extents);
             actual
                 .stream_playback(context)
                 .render_with_pages_and_signal_observers(
@@ -281,6 +300,12 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
                 )
                 .unwrap();
             offset += window.frames;
+            if offset == projected_end {
+                assert_eq!(
+                    predicted, committed,
+                    "callback projection differs from committed chunks"
+                );
+            }
         }
         assert_eq!(observed, expected);
         assert_eq!(
