@@ -9,13 +9,20 @@ use std::{cell::Cell, rc::Rc};
 
 gpui::actions!(
     hex_source_manager,
-    [OpenSourceManager, CommitSourceName, CancelSourceName]
+    [
+        OpenSourceManager,
+        CommitSourceName,
+        CancelSourceName,
+        CloseSourceView
+    ]
 );
 
 pub(in crate::editor) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("enter", OpenSourceManager, Some("hex_source_manager")),
         gpui::KeyBinding::new("space", OpenSourceManager, Some("hex_source_manager")),
+        gpui::KeyBinding::new("enter", CloseSourceView, Some("hex_source_view_close")),
+        gpui::KeyBinding::new("space", CloseSourceView, Some("hex_source_view_close")),
         gpui::KeyBinding::new("enter", CommitSourceName, Some("hex_source_name")),
         gpui::KeyBinding::new("escape", CancelSourceName, Some("hex_source_name")),
     ]);
@@ -37,6 +44,48 @@ pub(super) struct State {
     pub(super) focus: Option<FocusHandle>,
     bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     name: Option<NameEdit>,
+    pub(super) source_view: Option<(u64, SourceId, Option<DevicePanelOwner>)>,
+    pub(super) close_focus: Option<FocusHandle>,
+}
+
+pub(super) fn close_button(
+    view: &mut EditorView,
+    window: Option<&Window>,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let focus = view
+        .device_panel
+        .source_manager
+        .close_focus
+        .get_or_insert_with(|| cx.focus_handle().tab_index(0))
+        .clone()
+        .tab_stop(true);
+    let focused = window.is_some_and(|window| focus.is_focused(window));
+    div()
+        .id("close-source-view")
+        .debug_selector(|| "close-source-view".into())
+        .track_focus(&focus)
+        .key_context("hex_source_view_close")
+        .cursor_pointer()
+        .px(px(4.0))
+        .text_xs()
+        .when(focused, |style| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
+        })
+        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+        .child(theme::text("close"))
+        .on_click(cx.listener(|view, _, _, cx| close_view(view, cx)))
+        .on_action(cx.listener(|view, _: &CloseSourceView, _, cx| {
+            close_view(view, cx);
+            cx.stop_propagation();
+        }))
+}
+
+fn close_view(view: &mut EditorView, cx: &mut Context<EditorView>) {
+    if super::finalize_controls(view, cx) {
+        view.device_panel.source_manager.source_view = None;
+    }
+    cx.notify();
 }
 
 struct NameEdit {
@@ -67,7 +116,11 @@ pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Wi
                             .is_some_and(|track| track.is_group())
                     }))
         }
-        Some(owner @ (DevicePanelOwner::Main | DevicePanelOwner::Return(_))) => view
+        Some(
+            owner @ (DevicePanelOwner::Main
+            | DevicePanelOwner::Return(_)
+            | DevicePanelOwner::Source(_)),
+        ) => view
             .state
             .as_ref()
             .is_some_and(|state| selected_owner(view, state) == Some(owner)),
@@ -94,6 +147,7 @@ enum Operation {
     Create(hex_engine::DeviceTypeId),
     Rename(SourceId),
     Navigate(SourceId, TrackId),
+    Edit(SourceId),
 }
 
 #[derive(Clone)]
@@ -126,9 +180,8 @@ impl Action {
                         }
                         Operation::Details(source)
                         | Operation::Delete(source)
-                        | Operation::Rename(source) => {
-                            state.project.native_source(source).is_some()
-                        }
+                        | Operation::Rename(source)
+                        | Operation::Edit(source) => state.project.native_source(source).is_some(),
                         Operation::Navigate(source, track) => {
                             state.project.native_source(source).is_some()
                                 && state
@@ -155,6 +208,32 @@ impl Action {
             Operation::Open => open(view, self.position, window, cx),
             Operation::Details(source) => details(view, source, self.position, window, cx),
             Operation::Rename(source) => begin_name(view, source, window, cx),
+            Operation::Edit(source) => {
+                if view.edit_pending() || view.device_gesture.snapshot().is_some() {
+                    view.error = Some("finish the current edit before viewing a source".into());
+                } else if let Some(state) = view.state.as_ref() {
+                    let eligible = state
+                        .project
+                        .native_source(source)
+                        .is_some_and(|definition| {
+                            definition.instrument().state().type_id().as_str()
+                                == Ok("hex.instrument.fm4")
+                        })
+                        && !state
+                            .project
+                            .tracks()
+                            .iter()
+                            .any(|track| track.source_id() == Some(source));
+                    if eligible {
+                        let anchor = super::effect_bus::selected_track_owner(view, state);
+                        view.device_panel.source_manager.source_view =
+                            Some((view.project_generation, source, anchor));
+                    } else {
+                        view.error = Some("source is no longer available for editing".into());
+                    }
+                }
+                cx.notify();
+            }
             Operation::Navigate(_, track) => {
                 if view.edit_pending()
                     || view.tuning.client.snapshot().is_some()
@@ -378,6 +457,26 @@ fn details(
             }),
         },
     ];
+    if definition.instrument().state().type_id().as_str() == Ok("hex.instrument.fm4")
+        && !state
+            .project
+            .tracks()
+            .iter()
+            .any(|track| track.source_id() == Some(source))
+    {
+        items.push(MenuItem {
+            label: "edit source",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::SourceManager(Action {
+                generation: view.project_generation,
+                revision: state.revision,
+                position,
+                operation: Operation::Edit(source),
+                label: "edit source".into(),
+            }),
+        });
+    }
     items.extend(
         state
             .project

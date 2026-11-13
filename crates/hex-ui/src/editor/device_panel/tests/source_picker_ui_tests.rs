@@ -3159,3 +3159,256 @@ fn source_picker_moves_shared_utility(cx: &mut TestAppContext, earlier: bool) {
                 == expected
     });
 }
+
+#[gpui::test]
+fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let original_track = state.project.track(receiver).unwrap().clone();
+    let fm = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unassigned fm".into(),
+            devices: vec![fm],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Some(Created::NativeSource(source)) = event.created else {
+        panic!("source")
+    };
+    let device = event
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let manager = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    == "manage sources"
+            })
+            .unwrap()
+    });
+    for _ in 0..manager {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let source_index = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("unassigned fm · 0 midi")
+            })
+            .unwrap()
+    });
+    for _ in 0..source_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let edit = editor.read_with(&visual, |view, _| {
+        let item = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item)) == "edit source"
+            })
+            .unwrap();
+        let EditorContextAction::SourceManager(action) = &item.action else {
+            panic!("edit source")
+        };
+        action.clone()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual
+        .update(|window, cx| editor.update(cx, |view, cx| edit.clone().perform(view, window, cx)));
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Source(source))
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(receiver)
+                .unwrap(),
+            &original_track
+        );
+    });
+    let parameter = hex_lattice_contract::ParameterId::from_static(1);
+    let control = editor.read_with(&visual, |view, _| {
+        let Some(ParameterControl::Float { entity, .. }) = view
+            .device_panel
+            .controls
+            .get(&ParameterKey { device, parameter })
+        else {
+            panic!("source parameter")
+        };
+        entity.clone()
+    });
+    // A queued input must not use the old source panel after selection changes,
+    // even before the next repaint installs the newly selected owner.
+    editor.update(&mut visual, |view, _| view.selected_track = None);
+    control.update(&mut visual, |_, cx| {
+        cx.emit(NumericControlEvent {
+            phase: NumericEventPhase::Begin,
+            value: 2.0,
+            gesture: None,
+        })
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none())
+    });
+    editor.update(&mut visual, |view, _| view.selected_track = Some(receiver));
+    let generation = editor.read_with(&visual, |view, _| view.project_generation);
+    editor.update(&mut visual, |view, _| {
+        view.project_generation = generation + 1
+    });
+    control.update(&mut visual, |_, cx| {
+        cx.emit(NumericControlEvent {
+            phase: NumericEventPhase::Begin,
+            value: 2.0,
+            gesture: None,
+        })
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none())
+    });
+    editor.update(&mut visual, |view, _| view.project_generation = generation);
+    enter_typed_value(&mut visual, device, parameter, "2");
+    editor.update(&mut visual, |view, cx| {
+        assert!(super::super::finalize_controls(view, cx))
+    });
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            view.device_panel
+                .source_manager
+                .close_focus
+                .as_ref()
+                .unwrap()
+                .focus(window);
+        })
+    });
+    visual.simulate_keystrokes("enter");
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(
+                view.device_panel.owner,
+                Some(DevicePanelOwner::Source(source))
+            );
+            assert!(view.device_gesture.snapshot().is_some());
+            let Some(ParameterControl::Float { entity, .. }) = view
+                .device_panel
+                .controls
+                .get(&ParameterKey { device, parameter })
+            else {
+                panic!("source parameter")
+            };
+            assert!((entity.read(cx).value() - 2.0).abs() < 0.00001);
+        });
+    }
+    settle(&editor, &mut visual, |view| {
+        view.device_gesture.snapshot().is_none()
+    });
+    visual.run_until_parked();
+    let value = |view: &EditorView| {
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .state(),
+            parameter,
+        )
+        .unwrap()
+    };
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Track(receiver))
+        );
+        assert_eq!(value(view), ParameterValue::Float(2.0));
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(receiver)
+                .unwrap(),
+            &original_track
+        );
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    settle(&editor, &mut visual, |view| {
+        value(view) == ParameterValue::Float(1.0)
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    settle(&editor, &mut visual, |view| {
+        value(view) == ParameterValue::Float(2.0)
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveNativeSource(source))))
+    });
+    settle(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(source)
+            .is_none()
+    });
+    visual.update(|window, cx| editor.update(cx, |view, cx| edit.perform(view, window, cx)));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_some());
+        assert_ne!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Source(source))
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(receiver)
+                .unwrap(),
+            &original_track
+        );
+    });
+}

@@ -234,6 +234,7 @@ pub(super) enum DevicePanelOwner {
     Main,
     Track(TrackId),
     Return(hex_project::ReturnId),
+    Source(hex_project::SourceId),
 }
 
 impl DevicePanelState {
@@ -746,6 +747,23 @@ pub(super) fn view(
     if view.selected_track.is_some() || view.focused_return.is_some() {
         view.device_panel.main_selected = None;
     }
+    if let Some((generation, source, anchor)) = view.device_panel.source_manager.source_view
+        && (generation != view.project_generation
+            || anchor != effect_bus::selected_track_owner(view, &state)
+            || !state
+                .project
+                .native_source(source)
+                .is_some_and(|definition| {
+                    definition.instrument().state().type_id().as_str() == Ok("hex.instrument.fm4")
+                })
+            || state
+                .project
+                .tracks()
+                .iter()
+                .any(|track| track.source_id() == Some(source)))
+    {
+        view.device_panel.source_manager.source_view = None;
+    }
     let desired_owner = selected_owner(view, &state);
     if desired_owner != view.device_panel.owner {
         if let Some(audio) = view.audio.as_mut() {
@@ -832,6 +850,7 @@ fn owner_exists(state: &ViewState, owner: DevicePanelOwner) -> bool {
             .return_tracks()
             .iter()
             .any(|candidate| candidate.id() == return_track),
+        DevicePanelOwner::Source(source) => state.project.native_source(source).is_some(),
     }
 }
 
@@ -858,6 +877,7 @@ fn render_owner(
             )
         }
         DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
+        DevicePanelOwner::Source(source) => render_source(view, window, cx, state, source),
         DevicePanelOwner::Return(return_track) => return_view::render(
             view,
             window,
@@ -871,6 +891,60 @@ fn render_owner(
             hex_project::InstrumentLoadPlacement::First,
         )),
     }
+}
+
+fn render_source(
+    view: &mut EditorView,
+    window: Option<&Window>,
+    cx: &mut Context<EditorView>,
+    state: &ViewState,
+    source: hex_project::SourceId,
+) -> Stateful<Div> {
+    let Some(definition) = state.project.native_source(source) else {
+        return empty_panel("source is no longer available");
+    };
+    let device = definition.instrument();
+    let metadata = match hex_engine::native_device_view_for_class(
+        NativeDeviceClass::Instrument,
+        device.state(),
+    ) {
+        Ok(metadata) => metadata,
+        Err(_) => return empty_panel("unsupported instrument state"),
+    };
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: metadata.type_id,
+    };
+    view.device_panel.views.insert(
+        device.id(),
+        (identity.class, device.state().clone(), Ok(metadata.clone())),
+    );
+    let body = parameter_rows::body(view, window, cx, device.id(), identity, &metadata);
+    let manager = source_manager::button(view, window, cx);
+    let close = source_manager::close_button(view, window, cx);
+    div()
+        .id("source-device-panel")
+        .debug_selector(|| "source-device-panel".into())
+        .h(px(DEVICE_PANEL_HEIGHT))
+        .w_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .child(
+            div()
+                .h(px(DEVICE_PANEL_HEADER_HEIGHT))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(manager)
+                .child(theme::text(format!(
+                    "source · {}",
+                    hex_session::service::text::verbatim(definition.name())
+                )))
+                .child(close),
+        )
+        .child(body)
 }
 
 fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
@@ -2028,14 +2102,16 @@ fn chain_ids(project: &hex_project::Project, owner: DevicePanelOwner) -> Vec<Dev
                     .collect()
             })
             .unwrap_or_default(),
+        DevicePanelOwner::Source(_) => Vec::new(),
     }
 }
 
-fn project_owner(owner: DevicePanelOwner) -> hex_project::DeviceChainOwner {
+fn project_owner(owner: DevicePanelOwner) -> Option<hex_project::DeviceChainOwner> {
     match owner {
-        DevicePanelOwner::Track(id) => hex_project::DeviceChainOwner::Track(id),
-        DevicePanelOwner::Main => hex_project::DeviceChainOwner::Main,
-        DevicePanelOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
+        DevicePanelOwner::Track(id) => Some(hex_project::DeviceChainOwner::Track(id)),
+        DevicePanelOwner::Main => Some(hex_project::DeviceChainOwner::Main),
+        DevicePanelOwner::Return(id) => Some(hex_project::DeviceChainOwner::Return(id)),
+        DevicePanelOwner::Source(_) => None,
     }
 }
 
@@ -2379,7 +2455,7 @@ fn duplicate_device_action(
         return Err("destination cannot accept another instrument");
     }
     Ok(hex_session::service::DeviceClipboardAction::Duplicate {
-        source: project_owner(owner),
+        source: project_owner(owner).ok_or("source view does not support device copying")?,
         selected,
         destination,
         before,
@@ -2440,10 +2516,13 @@ impl EditorView {
         }
         let selected = selected.clone();
         self.clear_native_device_drag(drag);
+        let Some(project_owner) = project_owner(owner) else {
+            return false;
+        };
         if self.enqueue_device_barrier(Request::ReorderDevices {
             project_generation: drag.project_generation,
             revision: drag.revision,
-            owner: project_owner(owner),
+            owner: project_owner,
             selected: selected.clone(),
             before,
         }) {
@@ -2512,8 +2591,10 @@ impl EditorView {
         if window.modifiers().alt
             && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
         {
-            let request =
-                self.duplicate_device_drag_request(drag, project_owner(panel_owner), before);
+            let Some(destination) = project_owner(panel_owner) else {
+                return;
+            };
+            let request = self.duplicate_device_drag_request(drag, destination, before);
             self.clear_native_device_drag(drag);
             match request {
                 Ok(request) => {
