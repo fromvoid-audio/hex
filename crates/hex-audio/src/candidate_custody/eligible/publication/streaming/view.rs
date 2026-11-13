@@ -221,7 +221,7 @@ impl Active {
     ) {
         self.stream_view().publication_replaces_prewarm(domains);
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn publication_abandoned(&mut self) {
         self.stream_view().publication_abandoned();
     }
