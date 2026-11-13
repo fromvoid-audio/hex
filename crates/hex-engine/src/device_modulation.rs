@@ -123,8 +123,10 @@ pub fn project_source_utility_matrix_edit_supported(
     device: DeviceId,
     parameter: ParameterId,
 ) -> bool {
-    use hex_devices::utility::parameter::{BALANCE, GAIN, MID_SIDE_ENABLED, WIDTH};
-    if !matches!(parameter, GAIN | BALANCE | WIDTH) {
+    use hex_devices::utility::parameter::{
+        BALANCE, GAIN, MID_SIDE_BALANCE, MID_SIDE_ENABLED, WIDTH,
+    };
+    if !matches!(parameter, GAIN | BALANCE | WIDTH | MID_SIDE_BALANCE) {
         return false;
     }
     let Some(location) = project.device_location(device) else {
@@ -137,11 +139,10 @@ pub fn project_source_utility_matrix_edit_supported(
         && !device.bypassed()
         && device.automation().is_empty()
         && device.modulation().is_empty()
-        && (parameter != WIDTH
+        && (!matches!(parameter, WIDTH | MID_SIDE_BALANCE)
             || matches!(
-                hex_devices::utility::UTILITY_DEFINITION
-                    .read_parameter(device.state(), MID_SIDE_ENABLED),
-                Ok(hex_lattice_contract::ParameterValue::Bool(false))
+                hex_devices::utility::UTILITY_DEFINITION.read_parameter(device.state(), MID_SIDE_ENABLED),
+                Ok(hex_lattice_contract::ParameterValue::Bool(enabled)) if enabled == (parameter == MID_SIDE_BALANCE)
             ))
         && hex_devices::utility::UTILITY_DEFINITION
             .parameter_enabled(device.state(), parameter)

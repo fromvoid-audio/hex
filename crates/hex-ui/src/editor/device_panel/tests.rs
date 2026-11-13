@@ -9301,6 +9301,9 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     let width_control =
         Box::leak(format!("device-{}-parameter-3-value", device.value()).into_boxed_str());
     assert!(visual.debug_bounds(width_control).is_none());
+    let mid_side_control =
+        Box::leak(format!("device-{}-parameter-10-value", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(mid_side_control).is_none());
     click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
     let mut mapping_targets = 0;
     for parameter in 1..=10 {

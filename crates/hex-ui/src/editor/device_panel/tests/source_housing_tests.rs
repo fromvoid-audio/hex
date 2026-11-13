@@ -103,18 +103,59 @@ fn shared_source_housing_excludes_local_prefix_and_suffix(cx: &mut TestAppContex
     }
 }
 
-#[gpui::test]
-fn shared_source_utility_matrix_edits_from_contributor(cx: &mut TestAppContext) {
-    for filter in [
-        None,
-        Some(hex_devices::utility::parameter::DC_REMOVE),
-        Some(hex_devices::utility::parameter::BASS_MONO),
-    ] {
-        for parameter in 1..=3 {
-            shared_source_utility_matrix_with_filter(cx, filter, parameter);
+macro_rules! source_matrix_case {
+    ($name:ident, $parameter:expr, $filter:expr) => {
+        #[gpui::test]
+        fn $name(cx: &mut TestAppContext) {
+            shared_source_utility_matrix_with_filter(cx, $filter, $parameter);
         }
-    }
+    };
 }
+
+source_matrix_case!(shared_source_gain_plain, 1, None);
+source_matrix_case!(
+    shared_source_gain_dc,
+    1,
+    Some(hex_devices::utility::parameter::DC_REMOVE)
+);
+source_matrix_case!(
+    shared_source_gain_bass,
+    1,
+    Some(hex_devices::utility::parameter::BASS_MONO)
+);
+source_matrix_case!(shared_source_balance_plain, 2, None);
+source_matrix_case!(
+    shared_source_balance_dc,
+    2,
+    Some(hex_devices::utility::parameter::DC_REMOVE)
+);
+source_matrix_case!(
+    shared_source_balance_bass,
+    2,
+    Some(hex_devices::utility::parameter::BASS_MONO)
+);
+source_matrix_case!(shared_source_width_plain, 3, None);
+source_matrix_case!(
+    shared_source_width_dc,
+    3,
+    Some(hex_devices::utility::parameter::DC_REMOVE)
+);
+source_matrix_case!(
+    shared_source_width_bass,
+    3,
+    Some(hex_devices::utility::parameter::BASS_MONO)
+);
+source_matrix_case!(shared_source_mid_side_plain, 10, None);
+source_matrix_case!(
+    shared_source_mid_side_dc,
+    10,
+    Some(hex_devices::utility::parameter::DC_REMOVE)
+);
+source_matrix_case!(
+    shared_source_mid_side_bass,
+    10,
+    Some(hex_devices::utility::parameter::BASS_MONO)
+);
 
 fn shared_source_utility_matrix_with_filter(
     cx: &mut TestAppContext,
@@ -153,6 +194,16 @@ fn shared_source_utility_matrix_with_filter(
         use hex_lattice_contract::NativeDeviceMetadata;
         utility = hex_devices::utility::UTILITY_DEFINITION
             .patch_parameter(&utility, filter, ParameterValue::Bool(true))
+            .unwrap();
+    }
+    if parameter == 10 {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        utility = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(
+                &utility,
+                hex_devices::utility::parameter::MID_SIDE_ENABLED,
+                ParameterValue::Bool(true),
+            )
             .unwrap();
     }
     let created = edit(Command::CreateNativeSource {
@@ -210,6 +261,7 @@ fn shared_source_utility_matrix_with_filter(
         1 => (1.0, 10.0_f32.powf(6.0 / 20.0), "6 db"),
         2 => (0.0, 0.5, "50 r"),
         3 => (1.0, 0.0, "0%"),
+        10 => (0.0, 0.5, "50 s"),
         _ => panic!("unsupported test parameter"),
     };
     let selector = Box::leak(
@@ -223,7 +275,7 @@ fn shared_source_utility_matrix_with_filter(
             format!("source-effect-modulation-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    for parameter in [1, 2, 3] {
+    for parameter in [1, 2, if parameter == 10 { 10 } else { 3 }] {
         let key = Box::leak(
             format!("device-{}-parameter-{}", device.value(), parameter).into_boxed_str(),
         );
@@ -240,6 +292,10 @@ fn shared_source_utility_matrix_with_filter(
             "control {parameter} was compressed: {control:?}"
         );
     }
+    let inactive = if parameter == 10 { 3 } else { 10 };
+    let inactive_selector =
+        Box::leak(format!("device-{}-parameter-{inactive}-value", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(inactive_selector).is_none());
     let picker = visual.debug_bounds("device-source-picker").unwrap();
     visual.simulate_click(picker.center(), Modifiers::default());
     visual.run_until_parked();
