@@ -926,6 +926,30 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        // A restart discards compensation history and cannot take custody of
+        // a proven retained foreign tail. Keep the predecessor alive instead.
+        if relocate
+            && previous
+                .tail_proven_grouped
+                .iter()
+                .enumerate()
+                .any(|(slot, proven)| {
+                    *proven
+                        && (previous
+                            .tail_output_active
+                            .get(slot)
+                            .copied()
+                            .unwrap_or(false)
+                            || previous.releases.iter().any(|release| {
+                                release
+                                    .location
+                                    .tail_group()
+                                    .is_some_and(|group| usize::from(group) == slot)
+                            }))
+                })
+        {
+            return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
+        }
         // A loop edit may carry a source effect only through the continuous
         // handoff. Its committed history belongs to the donor's running clock.
         if relocate && source_transfer.is_some() && new_loop_region != old_loop_region {
@@ -4277,34 +4301,72 @@ impl SessionPlayback {
         }
         // Pure inputs only: refuse before any commit, so the live path can
         // restart instead of leaving the old graph applied.
-        // A detached old track suffix is summed straight into Main's input.
-        // Under compensation it may carry over only where that sum stays on
-        // Main's clock in both revisions, with the clock itself unchanged: no
-        // tempo map or loop edit remaps it (Pulse #4188).
-        let detached_tails_aligned = match (
-            previous.revision.arrangement().signal_graph.as_deref(),
-            self.revision.arrangement().signal_graph.as_deref(),
-        ) {
-            (Some(old), Some(new)) => {
-                !timing_changed
-                    && old_loop == new_loop
-                    && !new.has_group_outputs()
-                    && old.main_input_arrival() == new.main_input_arrival()
-                    && old_track_tail_slots
-                        .iter()
-                        .enumerate()
-                        .all(|(index, slot)| {
-                            slot.is_none() || old.detached_suffix_reaches_main_aligned(index)
-                        })
-            }
-            _ => false,
-        };
+        // Flat tails enter Main directly, so their old suffix must already be
+        // aligned there. Grouped tails enter the old track's fader output and
+        // traverse its group path. They can use that path only when its whole
+        // signal graph and the copied compensation history are unchanged.
+        // Group-path and ancestor custody were checked above.
+        let has_new_track_tail = old_track_tail_slots.iter().any(Option::is_some);
+        let needs_prior_tail_proof = previous.tail_output_active.iter().any(|&active| active)
+            || active_tail_groups.iter().enumerate().any(|(slot, active)| {
+                *active
+                    && previous
+                        .tail_route_sends
+                        .get(slot)
+                        .copied()
+                        .unwrap_or(false)
+            });
+        let unchanged_grouped = needs_prior_tail_proof
+            && !timing_changed
+            && old_loop == new_loop
+            && old_graph.zip(new_graph).is_some_and(|(old, new)| {
+                new.has_group_outputs()
+                    && old == new
+                    && clock_transfer == 1
+                    && self.compensation.is_some()
+                    && previous.compensation.is_some()
+            });
+        let proven_prior_tails = unchanged_grouped
+            && active_tail_groups.iter().enumerate().all(|(slot, active)| {
+                !*active
+                    || previous
+                        .tail_proven_grouped
+                        .get(slot)
+                        .copied()
+                        .unwrap_or(false)
+            });
+        let detached_tails_aligned = !has_new_track_tail
+            || match (
+                previous.revision.arrangement().signal_graph.as_deref(),
+                self.revision.arrangement().signal_graph.as_deref(),
+            ) {
+                (Some(old), Some(new)) => {
+                    !timing_changed
+                        && old_loop == new_loop
+                        && old.main_input_arrival() == new.main_input_arrival()
+                        && if new.has_group_outputs() {
+                            old == new
+                                && clock_transfer == 1
+                                && self.compensation.is_some()
+                                && previous.compensation.is_some()
+                        } else {
+                            old_track_tail_slots
+                                .iter()
+                                .enumerate()
+                                .all(|(index, slot)| {
+                                    slot.is_none()
+                                        || old.detached_suffix_reaches_main_aligned(index)
+                                })
+                        }
+                }
+                _ => false,
+            };
         if (self.revision.arrangement().main_latency_frames() > 0
             || previous.revision.arrangement().main_latency_frames() > 0)
             && (return_tail_plan.captures_bus()
                 || old_track_mutable_tail_slots.iter().any(Option::is_some)
-                || (old_track_tail_slots.iter().any(Option::is_some) && !detached_tails_aligned)
-                || previous.tail_output_active.iter().any(|&active| active)
+                || !detached_tails_aligned
+                || (needs_prior_tail_proof && !proven_prior_tails)
                 || previous
                     .return_effect_tails
                     .slots()
@@ -4314,6 +4376,11 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
         }
+        let route_new_tail_sends = has_new_track_tail
+            && detached_tails_aligned
+            && new_graph.is_some_and(|graph| graph.has_group_outputs())
+            && (self.revision.arrangement().main_latency_frames() > 0
+                || previous.revision.arrangement().main_latency_frames() > 0);
         if let Some(demand) = demand {
             let generation = if visible_state_changed {
                 previous.route_state_generation.wrapping_add(1)
@@ -4664,6 +4731,9 @@ impl SessionPlayback {
             {
                 std::mem::swap(candidate, previous_group);
                 self.tail_track_ids[slot] = previous.tail_track_ids[slot];
+                self.tail_route_sends[slot] = previous.tail_route_sends[slot];
+                self.has_tail_route_sends |= self.tail_route_sends[slot];
+                self.tail_proven_grouped[slot] = previous.tail_proven_grouped[slot];
                 if let (Some(candidate_active), Some(previous_active)) = (
                     self.tail_output_active.get_mut(slot),
                     previous.tail_output_active.get(slot).copied(),
@@ -4716,12 +4786,39 @@ impl SessionPlayback {
                 )
                 && candidate.is_none()
             {
+                let suffix_start = old_track_tail_metadata
+                    .get(old_index)
+                    .copied()
+                    .flatten()
+                    .map(|(start, _)| start);
+                self.tail_proven_grouped[slot] = route_new_tail_sends
+                    && suffix_start.is_some_and(|start| {
+                        start < old_chain.len()
+                            && old_chain
+                                .storage_view()
+                                .entries()
+                                .skip(start)
+                                .all(|entry| entry.foreign_processor().is_some())
+                    })
+                    && !self.release_scratch.iter().any(|release| {
+                        release
+                            .location
+                            .tail_group()
+                            .is_some_and(|group| usize::from(group) == slot)
+                    });
                 old_chain.begin_output_tail();
                 *candidate = Some(std::mem::replace(
                     old_chain,
                     hex_lattice::NativeRuntimeChain::empty(),
                 ));
                 self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
+                self.tail_route_sends[slot] = route_new_tail_sends
+                    && old_graph
+                        .and_then(|graph| graph.tracks.get(old_index))
+                        .is_some_and(|track| {
+                            !track.sends.is_empty() || !track.audio_feeds.is_empty()
+                        });
+                self.has_tail_route_sends |= self.tail_route_sends[slot];
                 if let (Some(active), Some(prepared_active)) = (
                     self.tail_output_active.get_mut(slot),
                     old_track_tail_output_active.get(old_index).copied(),

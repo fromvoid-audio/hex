@@ -2555,6 +2555,31 @@ impl Playback {
             .ok_or(Invalid("ordinary session runtime unavailable"))?
             .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
     }
+    pub(crate) fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("session runtime unavailable"))?
+            .visit_current_stream_quantum(maximum_frames, playing, ordinary, visit)
+    }
+    pub(crate) fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("session runtime unavailable"))?
+            .visit_current_stream_quantum_at(start_offset, maximum_frames, playing, ordinary, visit)
+    }
     pub(crate) fn preview_stream_handoff_with_report(
         &mut self,
         previous: &mut Self,

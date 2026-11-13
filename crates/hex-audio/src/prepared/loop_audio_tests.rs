@@ -220,8 +220,46 @@ fn edited_loop_with_a_source_effect_follows_the_running_cursor_without_allocatio
 }
 
 #[test]
-fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
+fn shared_source_utility_gain_and_mute_retarget_without_callback_allocations() {
+    for (mute, settled, prefix) in [
+        (false, false, None),
+        (true, false, None),
+        (true, true, None),
+        (true, false, Some(11)),
+        (true, true, Some(12)),
+    ] {
+        for partition in [1, 7, 64, 128, 257] {
+            source_utility_matrix_callback_retarget(mute, settled, partition, prefix, None);
+        }
+    }
+}
+
+#[test]
+fn shared_source_filtered_utility_mute_handoff_is_allocation_free() {
+    for filter in [11, 12] {
+        for settled in [false, true] {
+            for partition in [1, 7, 64, 128, 257] {
+                source_utility_matrix_callback_retarget(
+                    true,
+                    settled,
+                    partition,
+                    None,
+                    Some(filter),
+                );
+            }
+        }
+    }
+}
+
+fn source_utility_matrix_callback_retarget(
+    mute: bool,
+    settled: bool,
+    partition: usize,
+    prefix: Option<u32>,
+    filter: Option<u32>,
+) {
     use hex_project::BeatTime;
+    let target_gain = if mute { 0.0 } else { 2.0 };
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(receiver) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -246,14 +284,44 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         .unwrap()
         .instrument()
         .id();
+    if let Some(prefix) = prefix {
+        let initial = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &initial,
+            hex_lattice_contract::ParameterId::from_static(prefix),
+            hex_lattice_contract::ParameterValue::Bool(true),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+    }
+    let mut state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    if let Some(filter) = filter {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &state,
+            hex_lattice_contract::ParameterId::from_static(filter),
+            hex_lattice_contract::ParameterValue::Bool(true),
+        )
+        .unwrap();
+    }
     let Created::Device(effect) = editor
         .execute(Command::InsertNestedDevice {
             parent: instrument,
-            state: hex_engine::default_native_device_state_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                hex_engine::DeviceTypeId::from_static("hex.utility"),
-            )
-            .unwrap(),
+            state,
         })
         .unwrap()
     else {
@@ -314,12 +382,16 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
     callback.render(&mut prefix).unwrap();
     reference.begin_block();
     reference.render(&mut prefix).unwrap();
-    let gain = hex_lattice_contract::ParameterId::from_static(1);
+    let parameter = hex_lattice_contract::ParameterId::from_static(if mute { 8 } else { 1 });
     let state = hex_engine::patch_native_device_parameter_for_class(
         hex_engine::NativeDeviceClass::Effect,
         editor.project().device(effect).unwrap().state(),
-        gain,
-        hex_lattice_contract::ParameterValue::Float(2.0),
+        parameter,
+        if mute {
+            hex_lattice_contract::ParameterValue::Bool(true)
+        } else {
+            hex_lattice_contract::ParameterValue::Float(2.0)
+        },
     )
     .unwrap();
     editor
@@ -376,8 +448,10 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         .unwrap();
     let mut actual = [[0.0; 2]; 128];
     let counts = allocation_counter::measure(|| {
-        callback.begin_block();
-        callback.render(&mut actual).unwrap();
+        for chunk in actual.chunks_mut(partition) {
+            callback.begin_block();
+            callback.render(chunk).unwrap();
+        }
     });
     assert_eq!(
         (
@@ -390,19 +464,50 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
     );
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
     let mut baseline = [[0.0; 2]; 128];
-    reference.begin_block();
-    reference.render(&mut baseline).unwrap();
+    for chunk in baseline.chunks_mut(partition) {
+        reference.begin_block();
+        reference.render(chunk).unwrap();
+    }
     assert!(
         baseline.iter().flatten().any(|sample| sample.abs() > 1e-5),
         "source is silent"
     );
     for (i, (actual, old)) in actual.iter().zip(baseline).enumerate() {
-        let factor = 1.0 + (i + 1) as f32 / 240.0;
+        let factor = 1.0 + (target_gain - 1.0) * (i + 1) as f32 / 240.0;
         for channel in 0..2 {
             assert!(
                 (actual[channel] - factor * old[channel]).abs() < 1e-4,
                 "frame {i}"
             );
+        }
+    }
+    if settled {
+        let mut tail = [[0.0; 2]; 112];
+        let mut baseline = tail;
+        let counts = allocation_counter::measure(|| {
+            for chunk in tail.chunks_mut(partition) {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for chunk in baseline.chunks_mut(partition) {
+            reference.begin_block();
+            reference.render(chunk).unwrap();
+        }
+        for (i, (actual, old)) in tail.iter().zip(baseline).enumerate() {
+            let factor = 1.0 - (128 + i + 1) as f32 / 240.0;
+            for channel in 0..2 {
+                assert!((actual[channel] - factor * old[channel]).abs() < 1e-4);
+            }
         }
     }
     control.reclaim();
@@ -411,8 +516,10 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
         .unwrap();
     let counts = allocation_counter::measure(|| {
-        callback.begin_block();
-        callback.render(&mut actual).unwrap();
+        for chunk in actual.chunks_mut(partition) {
+            callback.begin_block();
+            callback.render(chunk).unwrap();
+        }
     });
     assert_eq!(
         (
@@ -424,9 +531,15 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         (0, 0, 0, 0)
     );
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
-    reference.begin_block();
-    reference.render(&mut baseline).unwrap();
-    let start = 1.0 + 128.0 / 240.0;
+    for chunk in baseline.chunks_mut(partition) {
+        reference.begin_block();
+        reference.render(chunk).unwrap();
+    }
+    let start = if settled {
+        0.0
+    } else {
+        1.0 + (target_gain - 1.0) * 128.0 / 240.0
+    };
     for (i, (actual, old)) in actual.iter().zip(baseline).enumerate() {
         let factor = start + (1.0 - start) * (i + 1) as f32 / 240.0;
         for channel in 0..2 {
@@ -436,6 +549,34 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
             );
         }
     }
+    control.reclaim();
+    assert!(editor.redo());
+    let pending = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    control.command(PlaybackCommand::Stop).unwrap();
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 256]).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert!(
+        control.status.applied_revision.load(Acquire) == pending
+            || control
+                .status
+                .rejected_revision()
+                .is_some_and(|rejected| rejected.0 == pending),
+        "pending publication must have a terminal when Stop wins"
+    );
     for (ctl, cb) in [
         (&mut control, &mut callback),
         (&mut reference_control, &mut reference),
@@ -450,12 +591,21 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
 fn shared_source_utility_matrix_handoff_preserves_pcm_without_allocations() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::BeatTime;
-    for (dc, bass, equivalent) in [
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
-        (true, false, true),
-        (false, true, true),
+    for (dc, bass, equivalent, polarity, channel_choice) in [
+        (true, false, false, None, None),
+        (false, true, false, None, None),
+        (false, false, true, None, None),
+        (true, false, true, None, None),
+        (false, true, true, None, None),
+        (false, false, false, Some(5), None),
+        (false, false, false, Some(6), None),
+        (true, false, false, Some(5), None),
+        (true, false, false, Some(6), None),
+        (false, true, false, Some(5), None),
+        (false, true, false, Some(6), None),
+        (false, false, false, None, Some(1)),
+        (true, false, false, None, Some(2)),
+        (false, true, false, None, Some(3)),
     ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(receiver) = editor
@@ -576,12 +726,18 @@ fn shared_source_utility_matrix_handoff_preserves_pcm_without_allocations() {
         let state = hex_devices::utility::UTILITY_DEFINITION
             .patch_parameter(
                 editor.project().device(effect).unwrap().state(),
-                if equivalent {
+                if channel_choice.is_some() {
+                    hex_devices::utility::parameter::CHANNEL
+                } else if let Some(polarity) = polarity {
+                    hex_lattice_contract::ParameterId::from_static(polarity)
+                } else if equivalent {
                     hex_devices::utility::parameter::MID_SIDE_ENABLED
                 } else {
                     hex_devices::utility::parameter::GAIN
                 },
-                if equivalent {
+                if let Some(channel) = channel_choice {
+                    ParameterValue::Choice(channel)
+                } else if equivalent || polarity.is_some() {
                     ParameterValue::Bool(true)
                 } else {
                     ParameterValue::Float(2.0)
@@ -1083,7 +1239,12 @@ fn appending_neutral_source_utility_preserves_audio_without_callback_allocations
 fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocations() {
     use hex_lattice_contract::{ParameterId, ParameterValue};
     use hex_project::BeatTime;
-    for remove_first in [true, false] {
+    for (remove_first, append_third, reorder) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
         for partition in [1, 7, 64, 128, 257] {
             let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
             let Created::Track(receiver) = editor
@@ -1195,15 +1356,34 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
             else {
                 panic!("first")
             };
+            let last_state = if reorder {
+                hex_engine::patch_native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    &default,
+                    ParameterId::from_static(7),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap()
+            } else {
+                default.clone()
+            };
             let Created::Device(last) = editor
                 .execute(Command::InsertNestedDevice {
                     parent: instrument,
-                    state: default,
+                    state: last_state,
                 })
                 .unwrap()
             else {
                 panic!("last")
             };
+            if append_third {
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state: default,
+                    })
+                    .unwrap();
+            }
             let media = BTreeMap::from([(asset, Audio::new(48_000, vec![LOCAL; 512]).unwrap())]);
             let table = Arc::new(SineTable::new());
             let prepare = |editor: &Editor| {
@@ -1228,13 +1408,16 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
                 cb.begin_block();
                 cb.render(&mut [[0.0; 2]; 64]).unwrap();
             }
-            editor
-                .execute(Command::RemoveDevice(if remove_first {
-                    first
-                } else {
-                    last
-                }))
-                .unwrap();
+            let edit = if reorder {
+                Command::MoveNativeSourceDevice {
+                    source,
+                    device: last,
+                    before: Some(first),
+                }
+            } else {
+                Command::RemoveDevice(if remove_first { first } else { last })
+            };
+            editor.execute(edit).unwrap();
             let removed = control
                 .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
                 .unwrap();

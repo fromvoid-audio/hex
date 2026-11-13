@@ -422,7 +422,15 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
+            self.render_detached_tails(
+                self.performance_frame,
+                chunk,
+                offset,
+                capture,
+                None,
+                None,
+                foreign,
+            )?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }
