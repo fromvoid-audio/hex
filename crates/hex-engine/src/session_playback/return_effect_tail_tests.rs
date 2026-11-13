@@ -1737,6 +1737,11 @@ fn real_return_tail_survives_or_refuses_later_main_latency() {
         candidate.try_inherit_state_live_from(&mut with_tail),
         Err(SessionPlaybackError::LatencyLayoutChanged)
     ));
+    candidate.request_live_restart();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
     assert!(
         with_tail
             .return_effect_tails
