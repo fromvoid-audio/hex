@@ -517,7 +517,7 @@ pub(super) fn source_effect_card(
     let mut body = crate::device_composition::body()
         .flex()
         .flex_col()
-        .gap(px(3.0));
+        .gap(px(1.0));
     body = body.child(theme::text("source effect"));
     let controls = [
         (utility_panel::GAIN, "gain", None),
@@ -550,12 +550,13 @@ pub(super) fn source_effect_card(
                 row.descriptor.id,
             )
     });
+    let mut control_row = div().flex().gap(px(2.0));
     for (row, label, codec) in controls.iter().flatten() {
         let identity = DeviceControlIdentity {
             class: NativeDeviceClass::Effect,
             type_id: metadata.type_id,
         };
-        body = body.child(parameter_control_with_presentation(
+        control_row = control_row.child(parameter_control_with_presentation(
             view,
             cx,
             id,
@@ -567,6 +568,9 @@ pub(super) fn source_effect_card(
                 codec: *codec,
             },
         ));
+    }
+    if controls.iter().any(Option::is_some) {
+        body = body.child(control_row);
     }
     for row in &metadata.parameters {
         if !controls

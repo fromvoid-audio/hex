@@ -219,6 +219,28 @@ fn shared_source_utility_matrix_with_filter(
     visual
         .debug_bounds(selector)
         .expect("source Utility control");
+    let card = visual
+        .debug_bounds(Box::leak(
+            format!("source-effect-modulation-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    for parameter in [1, 2] {
+        let key = Box::leak(
+            format!("device-{}-parameter-{}", device.value(), parameter).into_boxed_str(),
+        );
+        let control = visual.debug_bounds(key).expect("source matrix control");
+        assert!(
+            control.origin.x >= card.origin.x
+                && control.origin.y >= card.origin.y
+                && control.origin.x + control.size.width <= card.origin.x + card.size.width
+                && control.origin.y + control.size.height <= card.origin.y + card.size.height,
+            "control {parameter} outside source card: {control:?} vs {card:?}"
+        );
+        assert!(
+            control.size.height >= px(hex_widgets::COMPACT_DIAL_HEIGHT),
+            "control {parameter} was compressed: {control:?}"
+        );
+    }
     let picker = visual.debug_bounds("device-source-picker").unwrap();
     visual.simulate_click(picker.center(), Modifiers::default());
     visual.run_until_parked();
