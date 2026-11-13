@@ -1137,6 +1137,16 @@ impl SessionPlayback {
                 .or_else(|| {
                     candidate
                         .graph
+                        .has_one_more_node_than(&old.graph)
+                        .then(|| muted_isolated_latency_addition(self, previous))
+                        .flatten()
+                        .map(|(track, device)| {
+                            crate::signal_graph::FreshHistory::ChangedTrack(track, device)
+                        })
+                })
+                .or_else(|| {
+                    candidate
+                        .graph
                         .added_isolated_return_from(&old.graph)
                         .or(removed_return)
                         .map(crate::signal_graph::FreshHistory::Return)
@@ -6083,6 +6093,122 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
             .iter()
             .any(|track| track.canonical_track_id() == Some(id)))
     .then_some(id)
+}
+
+/// The initial selective case is resident, Arrangement-owned audio only.
+/// Exactly one already-muted track gains one local native latency processor;
+/// graph preflight independently proves isolation, equal maximum latency and
+/// silent discarded rings before any runtime state is moved.
+fn muted_isolated_latency_addition(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> Option<(TrackId, u64)> {
+    if !previous.playing
+        || candidate.revision.contains_streamed_sources()
+        || previous.revision.contains_streamed_sources()
+        || candidate.loop_region().is_some()
+        || previous.loop_region().is_some()
+        || !candidate.source_effects.is_empty()
+        || !previous.source_effects.is_empty()
+        || previous.computer_keyboard.is_some()
+        || !previous.current_sampler_keyboards.is_empty()
+        || previous.monitor_source_releases
+        || !previous.releases.is_empty()
+        || !previous.foreign_arrangement.is_empty()
+        || [candidate, previous].iter().any(|runtime| {
+            runtime
+                .revision
+                .arrangement()
+                .main_device_chain
+                .iter()
+                .any(|device| {
+                    matches!(
+                        device.definition,
+                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                    )
+                })
+        })
+        || previous.tail_groups.iter().any(Option::is_some)
+        || previous.tail_output_active.iter().any(|active| *active)
+        || previous
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .any(|tail| tail.output_active)
+        || previous.routes.iter().any(|route| {
+            route.owner != RouteOwner::Arrangement
+                || route.pending.is_some()
+                || route.audio_release.is_some()
+        })
+    {
+        return None;
+    }
+    let old = previous.revision.arrangement().tracks();
+    let new = candidate.revision.arrangement().tracks();
+    if old.len() != new.len() {
+        return None;
+    }
+    let mut changed = None;
+    for (before, after) in old.iter().zip(new) {
+        let id = before.canonical_track_id()?;
+        if after.canonical_track_id() != Some(id)
+            || [before, after].iter().any(|track| {
+                track.instrument_id.is_some()
+                    || track.source_id.is_some()
+                    || track.midi_source_index.is_some()
+                    || track.device_chain.iter().any(|device| {
+                        matches!(
+                            device.definition,
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        )
+                    })
+            })
+        {
+            return None;
+        }
+        if before.device_chain.len() == after.device_chain.len()
+            && before
+                .device_chain
+                .iter()
+                .zip(after.device_chain.iter())
+                .all(|(a, b)| {
+                    a.device_id == b.device_id
+                        && a.device_type == b.device_type
+                        && a.bypassed == b.bypassed
+                        && a.matrix == b.matrix
+                        && a.configuration == b.configuration
+                        && a.automation == b.automation
+                        && a.modulation.is_none()
+                        && b.modulation.is_none()
+                })
+        {
+            continue;
+        }
+        let [device] = after.device_chain.as_ref() else {
+            return None;
+        };
+        if changed.is_some()
+            || !before.device_chain.is_empty()
+            || !before.mix.muted()
+            || !after.mix.muted()
+            || device.bypassed
+            || device
+                .algorithmic_latency_frames()
+                .is_none_or(|frames| frames == 0)
+            || !matches!(
+                device.definition,
+                Some(
+                    hex_lattice::PreparedProcessorFactory::Legacy(_)
+                        | hex_lattice::PreparedProcessorFactory::Owned(_)
+                )
+            )
+        {
+            return None;
+        }
+        changed = Some((id, device.device_id));
+    }
+    changed
 }
 
 /// The candidate frame and loop pass at the donor cursor's Arrangement beat.
