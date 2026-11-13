@@ -74,9 +74,9 @@ fn channel_bar(
 ) -> Div {
     let peak_selector = format!("{id}-peak");
     let held_above = held.is_finite() && held > 1.0;
-    crate::level_meter::meter_body(
+    crate::level_meter::signal_meter(
         id,
-        fraction(level),
+        crate::MeterLevel::fraction_from_amplitude(level),
         crate::LevelMeterStyle {
             background: style.rail,
             fill: colors.color(crate::MeterLevel::from_amplitude(level, false)),
@@ -86,7 +86,7 @@ fn channel_bar(
     .w(px(STEREO_PEAK_BAR_WIDTH))
     .h_full()
     .when(held.is_finite() && held > 0.0, |bar| {
-        let top = 1.0 - fraction(held);
+        let top = 1.0 - crate::MeterLevel::fraction_from_amplitude(held);
         bar.child(
             div()
                 .debug_selector(move || peak_selector.clone())
@@ -103,13 +103,6 @@ fn channel_bar(
                 )),
         )
     })
-}
-
-fn fraction(amplitude: f32) -> f32 {
-    if !amplitude.is_finite() || amplitude <= 0.0 {
-        return 0.0;
-    }
-    ((20.0 * amplitude.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
 struct MeterTooltip(SharedString, ControlStyle);

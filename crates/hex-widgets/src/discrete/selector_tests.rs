@@ -18,18 +18,27 @@ const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 10.0,
     text_case: crate::TextCase::Preserve,
 };
+gpui::actions!(selector_test_host, [HostShortcut]);
 struct Root {
     selector: Entity<Selector>,
     width: f32,
     top: f32,
     height: f32,
+    host_shortcuts: usize,
 }
 impl Render for Root {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .key_context("selector_test_host")
+            .on_action(cx.listener(|root, _: &HostShortcut, _, cx| {
+                root.host_shortcuts += 1;
+                cx.stop_propagation();
+            }))
             .debug_selector(|| "selector-slot".into())
             .w(px(self.width))
             .pt(px(self.top))
@@ -42,6 +51,7 @@ fn fixture(
     cx: &mut TestAppContext,
     appearance: SelectorAppearance,
 ) -> (gpui::AnyWindowHandle, Entity<Selector>, Entity<Root>) {
+    cx.update(bind_selector_keys);
     let handle = *cx.add_window(|_, _| Empty);
     let (selector, root) = cx
         .update_window(handle, |_, window, cx| {
@@ -63,6 +73,7 @@ fn fixture(
                 width: 180.0,
                 top: 0.0,
                 height: 24.0,
+                host_shortcuts: 0,
             });
             (selector, root)
         })
@@ -73,6 +84,136 @@ fn background(visual: &mut VisualTestContext, name: &'static str, color: u32) {
     assert_eq!(
         visual.rendered_background(name),
         Some(gpui::Background::from(rgb(color)))
+    );
+}
+
+#[gpui::test]
+fn staged_popup_navigation_confirms_once_and_cancellation_preserves_value(cx: &mut TestAppContext) {
+    let (handle, selector, _) = fixture(cx, SelectorAppearance::CompactSelector);
+    selector.update(cx, |s, cx| s.set_confirm_on_enter(true, cx));
+    let changed = Rc::new(RefCell::new(Vec::new()));
+    let captured = changed.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&selector, move |_, event, _| {
+            captured.borrow_mut().push(event.index);
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(240.0)));
+    visual.run_until_parked();
+    let field = visual.debug_bounds("choice").unwrap().center();
+    visual.simulate_click(field, gpui::Modifiers::default());
+    visual.simulate_keystrokes("down");
+    visual.run_until_parked();
+    assert_eq!(selector.read_with(cx, |s, _| s.selected()), 0);
+    assert!(changed.borrow().is_empty());
+    background(&mut visual, "choice-option-1", STYLE.hover);
+    background(&mut visual, "choice-option-marker-0", STYLE.accent);
+    assert!(visual.debug_bounds("choice-option-marker-1").is_none());
+    // Routine owner repaints must preserve the candidate.
+    selector.update(cx, |s, cx| {
+        s.set_selected(0, cx).unwrap();
+        s.set_confirm_on_enter(true, cx);
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(*changed.borrow(), [1]);
+    assert!(!selector.read_with(cx, |s, _| s.is_open()));
+    for outside in [false, true] {
+        visual.simulate_click(field, gpui::Modifiers::default());
+        visual.simulate_keystrokes("down");
+        if outside {
+            visual.simulate_click(point(px(300.0), px(200.0)), gpui::Modifiers::default());
+        } else {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.run_until_parked();
+        assert!(!selector.read_with(cx, |s, _| s.is_open()));
+        assert_eq!(selector.read_with(cx, |s, _| s.selected()), 1);
+        assert_eq!(*changed.borrow(), [1]);
+    }
+}
+
+#[gpui::test]
+fn staged_popup_scrolls_candidates_and_reconciles_external_values(cx: &mut TestAppContext) {
+    let (handle, selector, _) = fixture(cx, SelectorAppearance::CompactSelector);
+    selector.update(cx, |s, cx| {
+        s.choices = (0..40).map(|i| i.to_string().into()).collect();
+        s.set_selected(39, cx).unwrap();
+        s.set_confirm_on_enter(true, cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(120.0)));
+    visual.run_until_parked();
+    let field = visual.debug_bounds("choice").unwrap().center();
+    visual.simulate_click(field, gpui::Modifiers::default());
+    visual.run_until_parked();
+    let popup = visual.debug_bounds("choice-popup").unwrap();
+    assert!(
+        popup.contains(&visual.debug_bounds("choice-option-39").unwrap().center()),
+        "popup={popup:?} option={:?} scroll={:?}",
+        visual.debug_bounds("choice-option-39"),
+        selector.read_with(cx, |s, _| s.popup_scroll.offset())
+    );
+    visual.simulate_keystrokes("down");
+    visual.run_until_parked();
+    assert!(popup.contains(&visual.debug_bounds("choice-option-0").unwrap().center()));
+    assert_eq!(selector.read_with(cx, |s, _| s.selected()), 39);
+    selector.update(cx, |s, cx| s.set_selected(20, cx).unwrap());
+    visual.run_until_parked();
+    assert!(popup.contains(&visual.debug_bounds("choice-option-20").unwrap().center()));
+    visual.simulate_keystrokes("enter");
+    assert_eq!(selector.read_with(cx, |s, _| s.selected()), 20);
+    visual.simulate_keystrokes("enter");
+    visual.simulate_keystrokes("down");
+    selector.update(cx, |s, cx| s.set_enabled(false, cx));
+    visual.run_until_parked();
+    assert!(!selector.read_with(cx, |s, _| s.is_open()));
+    assert_eq!(selector.read_with(cx, |s, _| s.selected()), 20);
+}
+
+#[gpui::test]
+fn focused_popup_keys_precede_host_actions_and_closed_escape_still_reaches_host(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        cx.bind_keys(
+            ["enter", "space", "escape", "up", "down"]
+                .map(|key| gpui::KeyBinding::new(key, HostShortcut, Some("selector_test_host"))),
+        )
+    });
+    let (handle, selector, root) = fixture(cx, SelectorAppearance::CompactSelector);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let field = visual.debug_bounds("choice").unwrap().center();
+    visual.simulate_click(field, gpui::Modifiers::default());
+    visual.run_until_parked();
+    assert!(selector.read_with(cx, |selector, _| selector.is_open()));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+    assert_eq!(root.read_with(cx, |root, _| root.host_shortcuts), 0);
+    visual.simulate_keystrokes("escape");
+    assert_eq!(root.read_with(cx, |root, _| root.host_shortcuts), 1);
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(selector.read_with(cx, |selector, _| selector.is_open()));
+    visual.simulate_keystrokes("down");
+    visual.run_until_parked();
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+    assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+    assert_eq!(root.read_with(cx, |root, _| root.host_shortcuts), 1);
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(selector.read_with(cx, |selector, _| selector.is_open()));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    selector.update(cx, |selector, cx| selector.set_enabled(false, cx));
+    visual.simulate_keystrokes("enter");
+    assert_eq!(
+        root.read_with(cx, |root, _| root.host_shortcuts),
+        2,
+        "unavailable selector leaves host keys alone"
     );
 }
 

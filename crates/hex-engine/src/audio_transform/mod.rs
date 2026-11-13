@@ -21,13 +21,14 @@ mod budget;
 mod content;
 mod events;
 mod group;
-pub(crate) use group::GroupSource;
+pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
 use hex_project::{
     Asset, AudioClipDomain, AudioClipEdit, BeatsTail, Project as CanonicalProject, WarpMode,
+    WarpResampler,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -76,6 +77,19 @@ fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     })
 }
 
+/// Saved reconstruction law of the root pitch/warp render. The cache key holds
+/// the whole domain, so a law change never reuses another law's output.
+fn render_resampler(domain: &AudioClipDomain) -> hex_warp::Resampler {
+    warp_law(domain.warp_resampler)
+}
+
+fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
+    match law {
+        WarpResampler::V1 => hex_warp::Resampler::V1,
+        WarpResampler::V2 => hex_warp::Resampler::V2,
+    }
+}
+
 /// Check the existing renderer's projected stretch capability without PCM or
 /// preparation/cache ownership. Allocates the same bounded metadata map (at most
 /// 8192 segments and 1024 explicit attacks); this is control-side work, not a
@@ -94,7 +108,7 @@ pub fn validate_clip_warp_preview(
 
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
-/// Conservative full-original PCM charge, including pending cache entries.
+/// Maximum unique source PCM capacity retained by committed and pending cache entries.
 pub const MAX_CACHED_SOURCE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_RETAINED_DERIVED_BYTES: usize = budget::RETAINED_LIMIT;
 
@@ -106,7 +120,42 @@ struct Entry {
     source_rate: u32,
     prepared: Audio,
     bytes: usize,
-    source_bytes: usize,
+}
+// Charge each immutable PCM allocation once, including grouped source owners.
+// Entries keep the Arcs alive throughout this control-side calculation.
+fn source_charge<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+    extra: Option<&'a Audio>,
+) -> Result<usize, Invalid> {
+    let mut seen = std::collections::HashSet::new();
+    let mut bytes = 0usize;
+    let mut add = |audio: &Audio| -> Result<(), Invalid> {
+        seen.try_reserve(1)
+            .map_err(|_| Invalid("audio source accounting allocation failed"))?;
+        if seen.insert(Arc::as_ptr(&audio.frames)) {
+            bytes = bytes
+                .checked_add(
+                    audio
+                        .pcm_capacity_frames()
+                        .checked_mul(std::mem::size_of::<crate::Frame>())
+                        .ok_or(Invalid("audio source count overflow"))?,
+                )
+                .ok_or(Invalid("audio source count overflow"))?;
+        }
+        Ok(())
+    };
+    for entry in entries {
+        add(&entry.source)?;
+        if let EntryKey::Group { sources, .. } = &entry.key {
+            for (audio, _, _) in sources {
+                add(audio)?;
+            }
+        }
+    }
+    if let Some(audio) = extra {
+        add(audio)?;
+    }
+    Ok(bytes)
 }
 enum EntryKey {
     Root {
@@ -118,6 +167,7 @@ enum EntryKey {
     },
     Group {
         root_only: bool,
+        sparse: bool,
         edit: AudioClipEdit,
         duration: u64,
         sources: Vec<(Audio, u32, u32)>,
@@ -149,7 +199,6 @@ impl EntryKey {
 struct Cache {
     entries: VecDeque<Entry>,
     bytes: usize,
-    source_bytes: usize,
 }
 impl Cache {
     fn evict_oldest(&mut self) -> Result<(), Invalid> {
@@ -161,10 +210,6 @@ impl Cache {
             .bytes
             .checked_sub(old.bytes)
             .ok_or(Invalid("audio cache byte count underflow"))?;
-        self.source_bytes = self
-            .source_bytes
-            .checked_sub(old.source_bytes)
-            .ok_or(Invalid("audio cache source count underflow"))?;
         Ok(())
     }
 }
@@ -175,6 +220,7 @@ pub struct AudioTransformPreparation {
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
     shutdown: Arc<AtomicBool>,
+    preview_cancel: RefCell<Option<Arc<AtomicBool>>>,
     budget: Arc<budget::Budget>,
     cache_limit: usize,
     source_limit: usize,
@@ -204,11 +250,11 @@ impl AudioTransformPreparation {
             cache: RefCell::new(Cache {
                 entries: VecDeque::new(),
                 bytes: 0,
-                source_bytes: 0,
             }),
             pending: RefCell::new(None),
             tempo: RefCell::new(None),
             shutdown,
+            preview_cancel: RefCell::new(None),
             budget: budget::production_budget(),
             cache_limit: MAX_CACHED_DERIVED_BYTES,
             source_limit: MAX_CACHED_SOURCE_BYTES,
@@ -227,6 +273,23 @@ impl AudioTransformPreparation {
             self.cancel_after_polls.set(Some(remaining - 1));
         }
         self.shutdown.load(Ordering::Acquire)
+            || self
+                .preview_cancel
+                .borrow()
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+    }
+    /// Cooperatively abandon a superseded control-side preview without
+    /// cancelling the document's canonical preparation.
+    pub fn with_preview_cancellation<T>(
+        &self,
+        cancel: &Arc<AtomicBool>,
+        prepare: impl FnOnce() -> T,
+    ) -> T {
+        let previous = self.preview_cancel.replace(Some(Arc::clone(cancel)));
+        let result = prepare();
+        self.preview_cancel.replace(previous);
+        result
     }
     pub fn retained_pcm_bytes(&self) -> usize {
         self.budget.used()
@@ -317,7 +380,7 @@ impl AudioTransformPreparation {
     }
     fn insert(&self, entry: Entry) -> Result<(), Invalid> {
         if entry.bytes > self.cache_limit
-            || entry.source_bytes > self.source_limit
+            || source_charge(std::iter::once(&entry), None)? > self.source_limit
             || self.entry_limit == 0
         {
             return Ok(());
@@ -331,10 +394,8 @@ impl AudioTransformPreparation {
                 .bytes
                 .checked_add(entry.bytes)
                 .is_none_or(|bytes| bytes > self.cache_limit)
-            || cache
-                .source_bytes
-                .checked_add(entry.source_bytes)
-                .is_none_or(|bytes| bytes > self.source_limit)
+            || source_charge(cache.entries.iter().chain(std::iter::once(&entry)), None)?
+                > self.source_limit
         {
             cache.evict_oldest()?;
         }
@@ -346,16 +407,12 @@ impl AudioTransformPreparation {
             .bytes
             .checked_add(entry.bytes)
             .ok_or(Invalid("audio cache byte count overflow"))?;
-        cache.source_bytes = cache
-            .source_bytes
-            .checked_add(entry.source_bytes)
-            .ok_or(Invalid("audio source cache byte count overflow"))?;
         cache.entries.push_back(entry);
         Ok(())
     }
     fn retain(&self, entry: Entry) -> Result<(), Invalid> {
         if entry.bytes > self.cache_limit
-            || entry.source_bytes > self.source_limit
+            || source_charge(std::iter::once(&entry), None)? > self.source_limit
             || self.entry_limit == 0
         {
             return Ok(());
@@ -365,50 +422,39 @@ impl AudioTransformPreparation {
             .try_borrow_mut()
             .map_err(|_| Invalid("audio preparation transaction is already borrowed"))?;
         if let Some(entries) = pending.as_mut() {
-            let sum = |entries: &[Entry]| {
-                entries
-                    .iter()
-                    .try_fold((0_usize, 0_usize), |(pcm, source), entry| {
-                        Ok::<_, Invalid>((
-                            pcm.checked_add(entry.bytes)
-                                .ok_or(Invalid("audio pending byte count overflow"))?,
-                            source
-                                .checked_add(entry.source_bytes)
-                                .ok_or(Invalid("audio pending source count overflow"))?,
-                        ))
-                    })
-            };
-            let (mut bytes, mut sources) = sum(entries)?;
+            let mut bytes = entries.iter().try_fold(0usize, |sum, e| {
+                sum.checked_add(e.bytes)
+                    .ok_or(Invalid("audio pending byte count overflow"))
+            })?;
             while entries.len() >= self.entry_limit
                 || bytes
                     .checked_add(entry.bytes)
-                    .is_none_or(|bytes| bytes > self.cache_limit)
-                || sources
-                    .checked_add(entry.source_bytes)
-                    .is_none_or(|bytes| bytes > self.source_limit)
+                    .is_none_or(|sum| sum > self.cache_limit)
+                || source_charge(entries.iter().chain(std::iter::once(&entry)), None)?
+                    > self.source_limit
             {
                 if entries.is_empty() {
                     return Err(Invalid("audio pending cache accounting is inconsistent"));
                 }
-                let old = entries.remove(0);
-                bytes -= old.bytes;
-                sources -= old.source_bytes;
+                bytes -= entries.remove(0).bytes;
             }
-            // Pending plus committed cache owners share both finite byte caps.
             let mut cache = self
                 .cache
                 .try_borrow_mut()
                 .map_err(|_| Invalid("audio source cache is already borrowed"))?;
             while cache
-                .source_bytes
-                .checked_add(sources)
-                .and_then(|bytes| bytes.checked_add(entry.source_bytes))
-                .is_none_or(|bytes| bytes > self.source_limit)
-                || cache
-                    .bytes
-                    .checked_add(bytes)
-                    .and_then(|bytes| bytes.checked_add(entry.bytes))
-                    .is_none_or(|bytes| bytes > self.cache_limit)
+                .bytes
+                .checked_add(bytes)
+                .and_then(|n| n.checked_add(entry.bytes))
+                .is_none_or(|n| n > self.cache_limit)
+                || source_charge(
+                    cache
+                        .entries
+                        .iter()
+                        .chain(entries.iter())
+                        .chain(std::iter::once(&entry)),
+                    None,
+                )? > self.source_limit
             {
                 cache.evict_oldest()?;
             }
@@ -519,7 +565,10 @@ impl AudioTransformPreparation {
             .ok_or(Invalid("derived audio byte count overflow"))?;
         // Bound pending+committed cache ownership BEFORE reserving candidate PCM.
         // These are only cache references: audible/candidate graph owners remain charged.
-        let source_bytes = std::mem::size_of_val(source.frames());
+        let source_bytes = source
+            .pcm_capacity_frames()
+            .checked_mul(std::mem::size_of::<crate::Frame>())
+            .ok_or(Invalid("audio source count overflow"))?;
         let cacheable =
             bytes <= self.cache_limit && source_bytes <= self.source_limit && self.entry_limit > 0;
         if cacheable {
@@ -527,31 +576,25 @@ impl AudioTransformPreparation {
                 .pending
                 .try_borrow_mut()
                 .map_err(|_| Invalid("audio pending cache is already borrowed"))?;
-            let (mut pending_bytes, mut pending_sources) = (0_usize, 0_usize);
-            if let Some(entries) = pending.as_ref() {
-                for entry in entries {
-                    pending_bytes = pending_bytes
-                        .checked_add(entry.bytes)
-                        .ok_or(Invalid("audio pending byte count overflow"))?;
-                    pending_sources = pending_sources
-                        .checked_add(entry.source_bytes)
-                        .ok_or(Invalid("audio pending source count overflow"))?;
-                }
-            }
+            let mut pending_bytes =
+                pending
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .try_fold(0usize, |sum, entry| {
+                        sum.checked_add(entry.bytes)
+                            .ok_or(Invalid("audio pending byte count overflow"))
+                    })?;
             if let Some(entries) = pending.as_mut() {
                 while pending_bytes
                     .checked_add(bytes)
                     .is_none_or(|sum| sum > self.cache_limit)
-                    || pending_sources
-                        .checked_add(source_bytes)
-                        .is_none_or(|sum| sum > self.source_limit)
+                    || source_charge(entries.iter(), Some(source))? > self.source_limit
                 {
                     if entries.is_empty() {
                         return Err(Invalid("audio pending accounting is inconsistent"));
                     }
-                    let old = entries.remove(0);
-                    pending_bytes -= old.bytes;
-                    pending_sources -= old.source_bytes;
+                    pending_bytes -= entries.remove(0).bytes;
                 }
             }
             let mut cache = self
@@ -563,22 +606,48 @@ impl AudioTransformPreparation {
                 .checked_add(pending_bytes)
                 .and_then(|n| n.checked_add(bytes))
                 .is_none_or(|sum| sum > self.cache_limit)
-                || cache
-                    .source_bytes
-                    .checked_add(pending_sources)
-                    .and_then(|n| n.checked_add(source_bytes))
-                    .is_none_or(|sum| sum > self.source_limit)
+                || source_charge(
+                    cache
+                        .entries
+                        .iter()
+                        .chain(pending.as_ref().into_iter().flatten()),
+                    Some(source),
+                )? > self.source_limit
             {
                 cache.evict_oldest()?;
             }
         }
+        let source_edit = edit
+            .domain
+            .musical_event_source
+            .map(|source| {
+                let origin = edit.processing_origin()? + i128::from(source.zero_in_destination);
+                let mut root = view::occurrence_edit(edit, origin, self, tempo_map)?;
+                root.view_end = source.length.raw();
+                let domain = Arc::make_mut(&mut root.domain);
+                domain.clock = hex_project::AudioDomainClock::Beats(source.length);
+                domain.musical_event_source = None;
+                domain.events = None;
+                Ok::<_, Invalid>(root)
+            })
+            .transpose()?;
+        let read_root = source_edit.as_ref().unwrap_or(edit);
+        let read_length = if source_edit.is_some() {
+            read_root.projected_domain(tempo_map)?.1
+        } else {
+            length
+        };
         let reservation = self.reserve_with_eviction(bytes)?;
         let scratch_reservation = if edit.domain.events.is_some() {
-            Some(self.reserve_with_eviction(bytes)?)
+            let scratch_bytes = usize::try_from(read_length)
+                .ok()
+                .and_then(|length| length.checked_mul(std::mem::size_of::<crate::Frame>()))
+                .ok_or(Invalid("audio event source byte count overflow"))?;
+            Some(self.reserve_with_eviction(scratch_bytes)?)
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(edit, tempo_map, &self.shutdown)?;
+        let (map, attacks) = mapping::prepare_map(read_root, tempo_map, &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -606,17 +675,32 @@ impl AudioTransformPreparation {
             attacks: &attacks,
             input,
             map: &map,
-            output_frames: length as usize,
+            output_frames: read_length as usize,
             pitch_cents: domain.pitch_cents,
             mode,
         };
         let mut rendered =
-            hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+            hex_warp::render_with_resampler(&request, render_resampler(domain), &mut || {
+                self.cancelled()
+            })
+            .map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames = events::compose(&rendered.frames, edit, tempo_map, &self.shutdown)?;
+            rendered.frames = events::compose(
+                events::EventSource {
+                    frames: &rendered.frames,
+                    root: read_root,
+                    zero_in_destination: edit
+                        .domain
+                        .musical_event_source
+                        .map_or(0, |source| source.zero_in_destination),
+                },
+                edit,
+                tempo_map,
+                &self.shutdown,
+            )?;
         }
         drop(scratch_reservation);
-        mapping::apply_fade(&mut rendered.frames, edit, tempo_map, &self.shutdown)?;
+        mapping::apply_fade(&mut rendered.frames, 0, edit, tempo_map, &self.shutdown)?;
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
@@ -630,7 +714,6 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             bytes,
-            source_bytes: std::mem::size_of_val(source.frames()),
         })?;
         Ok(audio)
     }
@@ -677,7 +760,7 @@ impl AudioTransformPreparation {
     /// resident boundary; this pure query grants no decoding/admission custody.
     pub fn clip_requires_resident_source(clip: &hex_project::Clip) -> bool {
         clip.audio_edit().is_some_and(|edit| {
-            edit.content_view.is_some()
+            (edit.content_view.is_some() && edit.plain_reversed_source(clip).is_none())
                 || edit.placement.is_some()
                 || edit.domain.events.is_some()
                 || edit.domain.pitch_cents != 0
@@ -699,6 +782,19 @@ impl AudioTransformPreparation {
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
         if edit.content_view.is_some() {
+            if let PreparedAudioSourceRef::Streamed(source) = source
+                && let Some((offset, length)) = edit.plain_reversed_source(clip)
+            {
+                return Clip::streamed_region_reversed(
+                    Arc::clone(source),
+                    clip.start(),
+                    clip.duration(),
+                    offset,
+                    length,
+                    false,
+                )
+                .map(|prepared| Some(prepared.with_gain(clip.gain())));
+            }
             return self
                 .compile_content(tempo_map, clip, edit, asset, source)
                 .map(Some);
@@ -771,6 +867,7 @@ impl AudioTransformPreparation {
         .map(|clip_engine| Some(clip_engine.with_gain(clip.gain())))
     }
 }
+
 /// A root's processing origin only enters its render through tempo points
 /// relative to it, `tempo_at`, and differences `frame(origin + x) - frame(origin)`
 /// / `beat(frame(origin) + f) - origin`. Under one constant tempo, a non-negative

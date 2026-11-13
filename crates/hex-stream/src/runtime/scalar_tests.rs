@@ -397,6 +397,27 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
             .scalar_page(metadata.key(), 0)
             .is_some()
     );
+    let current = [audio_extents[0], extents[0]];
+    #[cfg(feature = "allocation-probe")]
+    let mut reserved = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        reserved = Some(loan.reserve_current_quantum(&current));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    #[cfg(feature = "allocation-probe")]
+    let reservation = reserved.unwrap().ok().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let reservation = loan.reserve_current_quantum(&current).ok().unwrap();
     assert_eq!(
         loan.submit_resources(
             ProtectionRole::Transition,
@@ -414,6 +435,32 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
         Err(ReadinessRefusal::Capacity)
     );
     assert!(loan.is_resource_protected(ProtectionRole::Active, active_stamp, &audio_extents));
+    assert!(loan.release_current_quantum(&reservation));
+    let partial_extents = [
+        StreamResourceExtent {
+            source: audio_key.into(),
+            page_index: 1,
+            start: 0,
+            end: 8,
+        },
+        extents[0],
+    ];
+    #[cfg(feature = "allocation-probe")]
+    let mut partial_result = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        partial_result = Some(loan.reserve_resident_current_quantum(&partial_extents));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocations);
+    #[cfg(feature = "allocation-probe")]
+    let (partial, complete) = partial_result.unwrap().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let (partial, complete) = loan
+        .reserve_resident_current_quantum(&partial_extents)
+        .unwrap();
+    assert!(!complete);
+    assert!(loan.release_current_quantum(&partial));
     assert!(loan.promote_resources_to_active(ProtectionRole::Candidate, stamp, &extents));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
@@ -500,6 +547,7 @@ fn shutdown_with_full_return_queue_reclaims_held_pages_and_worker_job() {
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (_quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,
@@ -587,6 +635,7 @@ fn full_return_queue_recovers_and_serves_new_pcm() {
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,
@@ -729,6 +778,7 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,

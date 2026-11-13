@@ -444,9 +444,9 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
         assert!(!expected.playing());
         // Demand preflight borrows the real ordinary predecessor and full native
         // successor. It does not inherit routes, move graph custody or play.
-        let window = actual
+        let (window, report) = actual
             .stream_playback(context)
-            .preview_stream_handoff(
+            .preview_stream_handoff_with_report(
                 &mut expected.stream_playback(context),
                 8,
                 Some(true),
@@ -456,6 +456,7 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
                 },
             )
             .unwrap();
+        assert!(!report.running_audio_restart());
         assert_eq!(window.frames, 8);
         assert!(!actual.playing());
         assert!(!expected.playing());
@@ -723,28 +724,29 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             .unwrap()
             .prepare_note(60, 127)
             .unwrap();
-        // Seeks start mutable voices empty: the held sampler note retriggers at
-        // the destination, while the analytic vector note and the frame-anchored
-        // audio clip keep their authored positions (the Play-from law).
+        // Interactive Play-from starts both mutable sampler and FM4 voices
+        // empty at the destination. The frame-anchored audio clip keeps its
+        // authored position; no instrument prefix history is replayed.
         for (age, actual) in sought_pcm.into_iter().enumerate() {
             let sampler = derivative[age];
-            let vector = vector.sample(age as u64 + 3, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let vector = vector.sample(age as u64, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             let audio = derivative[age + 3];
             for lane in 0..2 {
                 assert!((actual[lane] - (sampler[lane] + vector[lane] + audio[lane])).abs() < 1e-6);
             }
         }
-        assert!(
+        // No prefix replays, so the replay work budget does not bind.
+        let beyond_budget =
             SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                 Arc::clone(&revision),
                 &resources,
                 3,
                 2,
                 true,
-                &cancel
+                &cancel,
             )
-            .is_err()
-        );
+            .unwrap();
+        assert_eq!(beyond_budget.arrangement_frame(), 3);
     }
     let mut playback =
         SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
@@ -951,4 +953,444 @@ fn pcm_retired_output_book_retains_backing_until_control_releases_custody() {
     assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 4);
     drop(book);
     assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn native_source_program_bytes_remain_charged_through_refusal_and_matching_retirement() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let registry = hex_devices::native_instrument_registry().unwrap();
+            let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "program custody".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: registry
+                        .default_state(hex_devices::fm4::device::FM4_TYPE_ID)
+                        .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            let device = editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            let plain = editor.project().clone();
+            editor
+                .execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter: hex_devices::fm4::device::parameter::carrier(1),
+                    points: vec![hex_project::AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: hex_project::AutomationValue::new(0.75).unwrap(),
+                        outgoing: hex_project::AutomationInterpolation::Linear,
+                    }],
+                })
+                .unwrap();
+            let cancel = AtomicBool::new(false);
+            let store = ResidentDeviceAssets::default();
+            let resources = PreparedDeviceResources::prepare_on_control(
+                &store,
+                editor.project(),
+                20_000_000,
+                &cancel,
+            )
+            .unwrap();
+            let prepare = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare_with_device_resources(
+                        project,
+                        &BTreeMap::new(),
+                        Arc::new(SineTable::new()),
+                        None,
+                        &crate::audio_transform::AudioTransformPreparation::default(),
+                        &resources,
+                        resources.compiler_scan_work_on_control(project).unwrap(),
+                        &cancel,
+                    )
+                    .unwrap(),
+                )
+            };
+            let plain = prepare(&plain);
+            let automated = prepare(editor.project());
+            let bytes = automated.session().instrument_automation_storage_bytes();
+            assert!(bytes > 0);
+            let graph = |revision: &Arc<PreparedRevision>| {
+                crate::playback::Playback::try_from_prepared_with_device_resources(
+                    Arc::clone(revision),
+                    &resources,
+                )
+                .unwrap()
+            };
+            let plain_graph = graph(&plain);
+            let curve_graph = graph(&automated);
+            let base_bytes = plain_graph
+                .resource_control_metadata_bytes_on_control()
+                .unwrap();
+            assert_eq!(
+                curve_graph
+                    .resource_control_metadata_bytes_on_control()
+                    .unwrap(),
+                base_bytes + bytes
+            );
+            let mut book =
+                DeviceResourcePublication::reserve_on_control(pcm_limits(), 8, 3).unwrap();
+            let empty = book.inspect(None).unwrap().data_bytes;
+            let accept = |result| match result {
+                Ok(graph) => graph,
+                Err(_) => panic!("publication"),
+            };
+            let plain_graph = accept(book.publish_on_control(plain_graph, Ok::<_, ()>));
+            let curve_graph = accept(book.publish_on_control(curve_graph, Ok::<_, ()>));
+            let held = book.inspect(None).unwrap().data_bytes;
+            assert_eq!(held - empty, base_bytes * 2 + bytes);
+            let refused = book.publish_on_control(graph(&automated), Err::<(), _>);
+            let Err(DeviceResourcePublishError::Publication(returned)) = refused else {
+                panic!("queue refusal")
+            };
+            assert_eq!(book.inspect(None).unwrap().data_bytes, held);
+            assert!(book.retire_on_control(Box::new(returned)).is_err());
+            assert_eq!(book.inspect(None).unwrap().data_bytes, held);
+            assert!(book.retire_on_control(Box::new(plain_graph)).is_ok());
+            assert_eq!(
+                book.inspect(None).unwrap().data_bytes - empty,
+                base_bytes + bytes
+            );
+            assert!(book.retire_on_control(Box::new(curve_graph)).is_ok());
+            assert_eq!(book.inspect(None).unwrap().data_bytes, empty);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn ordinary_registered_sampler_delivers_saved_gain_in_arrangement_and_session() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| ordinary_sampler_gain_on_control(false))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn ordinary_registered_sampler_delivers_saved_host_output_trim() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| ordinary_sampler_gain_on_control(true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn ordinary_sampler_gain_on_control(host_output: bool) {
+    use crate::{LaunchQuantization, PlaybackAction, PlaybackCommand};
+    use hex_devices::modulation::lfo;
+    use hex_devices::sampler::{catalog::GAIN, state::TYPE_ID};
+    use hex_lattice_contract::HostGain;
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+
+    const RATE: u32 = 48_000;
+    let pcm = [
+        [0.125, -0.25],
+        [0.25, -0.125],
+        [0.375, 0.125],
+        [0.5, 0.25],
+        [0.625, -0.125],
+        [0.75, -0.25],
+        [0.875, 0.25],
+        [1.0, 0.125],
+    ];
+    let cancel = AtomicBool::new(false);
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: pcm.len() as u64,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let mut authored =
+        hex_devices::sampler::state::SamplerState::for_source_frames(pcm.len()).unwrap();
+    authored.mode = hex_devices::sampler::state::AuthoredMode::OneShot {
+        gate: hex_devices::sampler::GateMode::Trigger,
+    };
+    authored.gain = if host_output { 0.5 } else { 0.0 };
+    let base_trim = if host_output { -3_000 } else { 0 };
+    let original = authored
+        .to_native()
+        .unwrap()
+        .with_output_gain_millidb(base_trim)
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: original.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Clip(arrangement) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("arrangement clip");
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "a".into() })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    let Created::SessionClip(session) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "session".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("session clip");
+    };
+    for clip in [arrangement, session] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        super::super::current_sampler::validate_project(editor.project()),
+        Ok(true)
+    );
+
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                crate::OwnedAudioSource::try_resident(RATE, pcm.to_vec())
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 64,
+                root_rows: 32,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+            pcm.len() as u64,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&store, editor.project(), 20_000_000, &cancel)
+            .unwrap();
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare_with_device_resources(
+            project,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            8 * pcm.len() as u64,
+            &cancel,
+        )
+        .map(Arc::new)
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        enabled: true,
+        color: Default::default(),
+        state: lfo::Settings {
+            rate: lfo::Rate::Hertz(12_000.0),
+            phase: 0.0,
+            waveform: lfo::Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let edit = |target, amount| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![slot.clone()],
+            vec![DeviceModulationRoute {
+                id: ModulationRouteId::new(next + 1).unwrap(),
+                source,
+                output: ModulationOutputId::MAIN,
+                destination: ModulationDestination::Device {
+                    device_type: TYPE_ID,
+                    target,
+                    vst3_class: None,
+                },
+                amount: ModulationAmount::new(amount).unwrap(),
+                range: ModulationRange::default(),
+                enabled: true,
+            }],
+        )
+        .unwrap(),
+    };
+    let (target, first_depth, second_depth) = if host_output {
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            6.0 / 84.0,
+            12.0 / 84.0,
+        )
+    } else {
+        (DeviceAutomationTarget::Parameter(GAIN), 0.125, 0.25)
+    };
+    let (_, first) = editor
+        .execute_prepared(edit(target, first_depth), prepare)
+        .unwrap();
+    assert_eq!(
+        super::super::current_sampler::validate_project(editor.project()),
+        Err(AudioStorageError::UnsupportedGraph),
+    );
+    let (_, second) = editor
+        .execute_prepared(edit(target, second_depth), prepare)
+        .unwrap();
+    let stable = editor.project().clone();
+    assert!(
+        editor
+            .execute_prepared(
+                edit(
+                    DeviceAutomationTarget::Parameter(
+                        hex_lattice_contract::ParameterId::from_static(2)
+                    ),
+                    0.25,
+                ),
+                prepare
+            )
+            .is_err()
+    );
+    assert_eq!(*editor.project(), stable);
+    assert_eq!(stable.device(device).unwrap().state(), &original);
+    assert!(first.session().instrument_modulation(track).is_some());
+
+    let mut previous = crate::playback::Playback::try_from_prepared_with_device_resources(
+        Arc::clone(&first),
+        &resources,
+    )
+    .unwrap();
+    let mut current =
+        crate::playback::Playback::try_from_prepared_with_device_resources(second, &resources)
+            .unwrap();
+    previous
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut actual = [[0.0; 2]; 8];
+    previous.render(&mut actual[..3]).unwrap();
+    current.try_inherit_runtime_from(&mut previous).unwrap();
+    current.render(&mut actual[3..]).unwrap();
+    let expected_frame = |index: usize, new_depth: bool| {
+        let positive = index % 4 < 2;
+        let gain = if host_output {
+            let depth = if new_depth { 12_000 } else { 6_000 };
+            let millidb = base_trim + if positive { depth } else { -depth };
+            0.5 * HostGain::from_millidb(millidb).unwrap().linear()
+        } else if !positive {
+            0.0
+        } else if new_depth {
+            1.0
+        } else {
+            0.5
+        };
+        pcm[index].map(|sample| sample * gain)
+    };
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| expected_frame(index, index >= 3))
+    );
+
+    let mut console = SessionPlayback::new_with_device_resources(first, &resources).unwrap();
+    console
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    console.apply(SessionPlaybackCommand::Play).unwrap();
+    console.render(&mut actual[..1]).unwrap();
+    console.render(&mut actual[1..]).unwrap();
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| expected_frame(index, false))
+    );
+    assert_eq!(console.device_resource_leases().count(), 1);
+
+    let offline_sources = ControlSamplerSources::prepare_on_control(
+        &store,
+        &stable,
+        20_000_000,
+        8 * pcm.len() as u64,
+        &cancel,
+    )
+    .unwrap();
+    let offline = Arc::new(
+        PreparedRevision::prepare_control_sampler_export(
+            &stable,
+            &BTreeMap::new(),
+            table,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &offline_sources,
+        )
+        .unwrap(),
+    );
+    let mut offline =
+        SessionPlayback::new_control_sampler_export(offline, &offline_sources).unwrap();
+    offline.apply(SessionPlaybackCommand::Play).unwrap();
+    offline
+        .render_control_sampler_export(&mut actual, &offline_sources)
+        .unwrap();
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| expected_frame(index, true))
+    );
 }

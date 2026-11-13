@@ -10,6 +10,9 @@
 //! audio revision remain distinct until that acceptance. Queue acceptance, source readiness and
 //! physical disposal are separate facts; callback code must never finally destroy graphs, PCM or
 //! endpoints.
+//! Resident Clients stamp ordinary queued actions with the bound project generation. Compare it
+//! with the actual active graph before an action changes that graph. Same-document revisions
+//! share the binding. The existing output-wide priority Stop retains its independent cutoff.
 //!
 //! Ordinary computer keyboard inputs retain only this output's scalar activation clock. Control
 //! Stop revokes its reserved prefix before publishing the priority marker; callback consumption
@@ -62,6 +65,7 @@ impl Callback {
     }
 }
 mod action_outcomes;
+mod audible_clock;
 pub use action_outcomes::{
     ACTION_OUTCOME_CAPACITY, Failure as ActionOutcomeFailure, Outcome as ActionOutcome,
     Reader as ActionOutcomeReader, Receipt as ActionOutcomeReceipt,
@@ -92,6 +96,8 @@ mod delay_tests;
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod loop_audio_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
@@ -103,6 +109,8 @@ mod spectrum_multi_tests;
 #[cfg(test)]
 mod spectrum_profile;
 mod spectrum_stages;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod tempo_tests;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod ordinary_streaming;
@@ -110,6 +118,9 @@ mod ordinary_streaming;
 use spectrum_stages::SpectrumStage;
 use spectrum_stages::SpectrumStages;
 mod streaming;
+mod transport_fade;
+mod transport_observation;
+pub use transport_observation::TransportObservation;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -234,6 +245,8 @@ impl AtomicRouteSlot {
 struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
+    project_generation: Option<u64>,
+    expected_source: Option<AppliedAudioSource>,
     sampler_edit_gate: u64,
     transport_epoch: u64,
 }
@@ -265,6 +278,14 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
         | PlaybackAction::LaunchAndPlay(_)
         | PlaybackAction::SetMetronome(_) => false,
     }
+}
+
+fn is_pause_action(action: PlaybackAction) -> bool {
+    matches!(
+        action,
+        PlaybackAction::Transport(PlaybackCommand::Pause)
+            | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Pause)
+    )
 }
 
 fn starts_playback(action: PlaybackAction) -> bool {
@@ -320,13 +341,18 @@ pub(crate) struct Publication {
     source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
-    section_launch_frame: Option<u64>,
+    quantized_seek_frame: Option<u64>,
     streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
     // Field order matters: destroy the actual ordinary graph before releasing
     // its native source references. This publication is destroyed on control.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_references: Option<crate::candidate_custody::OrdinaryNativeReferences>,
+}
+
+struct RenderOutcome {
+    audible_recorded: bool,
+    start: Option<(u64, u64, bool)>,
 }
 // Exactly one active musical runtime, including the constructor-owned path.
 enum ActivePublication {
@@ -397,10 +423,10 @@ pub enum PublicationPolicy {
     /// Install only if the active runtime, route generation, and command prefix
     /// still match the caller's control-side capture.
     InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
-    /// A prepared section seek waits on the predecessor's musical clock.
+    /// A prepared quantized seek waits on the predecessor's musical clock.
     /// The first ready callback selects the next grid boundary. Installation
     /// uses ordinary seek/reset semantics, retaining the candidate's DSP clock.
-    InstallSectionWhenReady {
+    InstallQuantizedSeekWhenReady {
         fence: FreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },
@@ -411,16 +437,41 @@ pub enum PublicationPolicy {
     /// Only its ready native gate admits this ordinary successor; it does not
     /// inherit an old revoked runtime or authorize a different source context.
     InstallUnderNativeEpoch(StoppedEditFence),
+    /// Inherit the exact still-active ordinary native graph while its stopped
+    /// fence remains held. This does not renew or return its original sources.
+    InheritUnderStoppedNative {
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    },
+    /// Inherit only while the native parameter gesture's exact ordinary source
+    /// and transport are still current. This grants no native worker custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    InheritUnderNativeParameter {
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        playing: bool,
+    },
     /// Structural live edit under the same source/command gate; inherit the actual
     /// installation-boundary transport, routes and voice/release state.
     InheritUnderArrangement(StoppedEditFence),
 }
 
 impl PublicationPolicy {
+    fn inherits_runtime(self) -> bool {
+        match self {
+            Self::InheritRuntime
+            | Self::InheritUnderArrangement(_)
+            | Self::InheritUnderStoppedNative { .. } => true,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::InheritUnderNativeParameter { .. } => true,
+            _ => false,
+        }
+    }
+
     fn fresh_fence(self) -> Option<FreshRuntimeFence> {
         match self {
             Self::InstallFreshRuntimeIfUnchanged(fence)
-            | Self::InstallSectionWhenReady { fence, .. } => Some(fence),
+            | Self::InstallQuantizedSeekWhenReady { fence, .. } => Some(fence),
             _ => None,
         }
     }
@@ -535,6 +586,7 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    interface_sample_rate: Option<u32>,
     diagnostics_flags: AtomicU32,
     diagnostics_dropped: AtomicU64,
     sampler_edit: sampler_edit::Fence,
@@ -559,6 +611,7 @@ pub struct Status {
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
     render_fault_record: crate::render_fault::RenderFaultRecord,
+    pub cpu_meter: crate::cpu_meter::CpuMeter,
     pub callback_max_ns: AtomicU64,
     pub deadline_misses: AtomicU64,
     pub peak_left: AtomicU32,
@@ -572,6 +625,11 @@ pub struct Status {
     pub stream_applied_command_prefix: AtomicU64,
     /// Best-effort render telemetry, never a readiness/ownership receipt.
     pub stream_buffering: AtomicBool,
+    /// Monotonic count of callbacks that held streamed playback silent while
+    /// the transport was already playing with no Play/action pre-roll pending:
+    /// disk pages arrived too late for audible output. Counted per output;
+    /// a replacement output starts from zero. Best-effort telemetry.
+    pub stream_starved_callbacks: AtomicU64,
     /// Latest streamed launch accepted into actual PendingRoute scheduling.
     pub stream_scheduled_command: AtomicU64,
     /// Latest scheduled launch whose actual due route/render chunk committed.
@@ -584,6 +642,10 @@ pub struct Status {
     /// until a replacement graph is installed or the output is replaced;
     /// cached audio alone does not reverify the file.
     pub stream_source_changed: AtomicBool,
+    /// Coalescing notification of a demanded audio-page decode/read failure.
+    /// The sole control notification observer takes it through
+    /// `take_stream_read_failure`; it is not persistent unavailability state.
+    pub stream_read_failed: AtomicBool,
     /// Frames committed before the latest BUFFERING gap; zero when complete.
     pub stream_committed_frames: AtomicU64,
     /// Latest rejected command is read through `rejected_action` for a coherent pair.
@@ -595,7 +657,13 @@ pub struct Status {
     rejected_revision: AtomicU64,
     rejected_revision_reason: AtomicU32,
     rejected_revision_sequence: AtomicU64,
+    /// Scheduled Arrangement cursor: the next content frame the graph renders.
+    /// Recording, scheduling and edits use this position.
     pub position: AtomicU64,
+    /// Arrangement frame now leaving Main output: `position` delayed by the
+    /// graph's Main output latency, mapped back across loop wraps. Use it only
+    /// to display the playhead; see `prepared::audible_clock`.
+    pub audible_position: AtomicU64,
     // Last callback-published cursor, frozen before fault Stop rewinds the graph.
     recovery_position: AtomicU64,
     pub performance_frame: AtomicU64,
@@ -613,6 +681,7 @@ pub struct Status {
     pub session_capability: AtomicU32,
     sampler_console: AtomicBool,
     pub shutdown_complete: AtomicBool,
+    transport_observation: transport_observation::TransportObservationSlot,
     route_sequence: AtomicU64,
     route_revision: AtomicU64,
     route_count: AtomicU32,
@@ -637,6 +706,18 @@ impl Default for Status {
 }
 
 impl Status {
+    /// Nominal rate of this native output's interface, captured at open.
+    /// Headless endpoints do not have an interface.
+    pub fn interface_sample_rate(&self) -> Option<u32> {
+        self.interface_sample_rate
+    }
+
+    /// Snapshot of the publication reservation, not a guarantee that admission will succeed:
+    /// other actors may own admission, and the state can change immediately after this read.
+    pub fn publication_in_flight(&self) -> bool {
+        self.publication_pending.load(Acquire)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn headless_shutdown_requested(&self) -> bool {
         self.closing.load(Acquire)
@@ -770,8 +851,10 @@ impl Status {
             device_fault: AtomicBool::new(false),
             render_fault: AtomicBool::new(false),
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
+            interface_sample_rate: None,
             diagnostics_flags: AtomicU32::new(0),
             diagnostics_dropped: AtomicU64::new(0),
+            cpu_meter: crate::cpu_meter::CpuMeter::default(),
             callback_max_ns: AtomicU64::new(0),
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),
@@ -780,11 +863,13 @@ impl Status {
             consumed_command: AtomicU64::new(0),
             stream_applied_command_prefix: AtomicU64::new(0),
             stream_buffering: AtomicBool::new(false),
+            stream_starved_callbacks: AtomicU64::new(0),
             stream_scheduled_command: AtomicU64::new(0),
             stream_activated_command: AtomicU64::new(0),
             stream_invalidated_schedule: AtomicU64::new(0),
             stream_readiness_refused: AtomicBool::new(false),
             stream_source_changed: AtomicBool::new(false),
+            stream_read_failed: AtomicBool::new(false),
             stream_committed_frames: AtomicU64::new(0),
             rejected_action_ticket: AtomicU64::new(0),
             rejected_action_reason: AtomicU32::new(0),
@@ -793,6 +878,7 @@ impl Status {
             rejected_revision_reason: AtomicU32::new(0),
             rejected_revision_sequence: AtomicU64::new(0),
             position: AtomicU64::new(0),
+            audible_position: AtomicU64::new(0),
             recovery_position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
@@ -806,6 +892,7 @@ impl Status {
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             sampler_console: AtomicBool::new(false),
             shutdown_complete: AtomicBool::new(false),
+            transport_observation: Default::default(),
             route_sequence: AtomicU64::new(0),
             route_revision: AtomicU64::new(0),
             route_count: AtomicU32::new(0),
@@ -965,6 +1052,18 @@ impl Status {
             }
         }
         None
+    }
+
+    /// Read one coherent callback-published transport observation, or `None`
+    /// when no supported active runtime is published, the output is closing,
+    /// or a bounded read conflicts with a concurrent callback. The result is
+    /// telemetry only and can become stale immediately.
+    pub fn transport_observation(&self) -> Option<TransportObservation> {
+        if self.closing.load(Acquire) {
+            return None;
+        }
+        let value = self.transport_observation.read()?;
+        (!self.closing.load(Acquire)).then_some(value)
     }
 
     fn begin_route_snapshot(&self) {
@@ -1137,9 +1236,20 @@ impl Status {
     }
 }
 
+/// Classification of a refused ordinary graph publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishErrorKind {
+    /// An original native source was unavailable during reference admission.
+    /// The reason for its unavailability is not implied by this classification.
+    NativeSourceUnavailable,
+    /// Any other publication refusal; consult the diagnostic reason.
+    Other,
+}
+
 /// Failed publication retains the candidate so the caller can retry or dispose
 /// of it off the callback. Revisions advance only after successful publication.
 pub struct PublishError {
+    pub kind: PublishErrorKind,
     pub reason: &'static str,
     pub playback: Playback,
 }
@@ -1163,6 +1273,7 @@ impl std::fmt::Debug for PublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PublishError")
+            .field("kind", &self.kind)
             .field("reason", &self.reason)
             .finish_non_exhaustive()
     }
@@ -1174,6 +1285,7 @@ pub struct Control {
     diagnostics: audio_diagnostics::TraceReader,
     action_admission: Option<action_outcomes::Admission>,
     pub sample_preview: crate::sample_preview::Control,
+    pub sample_recording: crate::sample_recording::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
@@ -1185,7 +1297,10 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
-    requested_physical_callback_frames: Option<u16>,
+    foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    foreign_editor_delivery: Option<crate::foreign_parameter_delivery::editor::Control>,
+    plugin_callback_quantum: Option<u16>,
     output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
@@ -1306,16 +1421,18 @@ pub struct Callback {
     action_writer: Option<action_outcomes::Writer>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
-    requested_physical_callback_frames: Option<u16>,
+    plugin_callback_quantum: Option<u16>,
     output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
+    sample_recording: crate::sample_recording::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
     status: Arc<Status>,
+    audible_clock: audible_clock::AudibleClock,
     recovery_position_frozen: bool,
     recovery_seek_pending: Option<u64>,
     device_fault_stopped: bool,
@@ -1327,6 +1444,9 @@ pub struct Callback {
     processor_audition_rejected_epoch: u64,
     gain_recording: crate::gain_recording::Callback,
     native_parameter_input: Box<crate::native_parameter_input::Callback>,
+    foreign_parameter_delivery: crate::foreign_parameter_delivery::Callback,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    foreign_editor_delivery: crate::foreign_parameter_delivery::editor::Callback,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stages: SpectrumStages,
@@ -1341,7 +1461,9 @@ pub struct Callback {
     // capacity can accumulate before this callback publishes and flushes them.
     stream_outcomes: [Option<(u64, action_outcomes::Outcome)>; ACTION_OUTCOME_CAPACITY],
     stream_outcome_count: usize,
+    transport_fade: Option<transport_fade::PendingFade>,
     yield_stream_successor_once: bool,
+    current_quantum_pins: Option<crate::candidate_custody::QuantumPins>,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -1388,20 +1510,36 @@ pub fn channel_with_spectrum(
     rate: u32,
     capture: Option<SpectrumCapture>,
 ) -> Result<(Control, Callback), Invalid> {
+    channel_with_interface(rate, capture, None)
+}
+
+pub(crate) fn channel_with_interface(
+    rate: u32,
+    capture: Option<SpectrumCapture>,
+    interface_sample_rate: Option<u32>,
+) -> Result<(Control, Callback), Invalid> {
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
+    let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
     let (trace_writer, trace_reader) = audio_diagnostics::channel();
-    let status = Arc::new(Status::try_new()?);
+    let mut status = Status::try_new()?;
+    status.interface_sample_rate = interface_sample_rate;
+    let status = Arc::new(status);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
     let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
     let (mut native_parameter_input, callback_native_parameter_input) =
         crate::native_parameter_input::channel();
+    let (foreign_parameter_delivery, callback_foreign_parameter_delivery) =
+        crate::foreign_parameter_delivery::channel();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let (foreign_editor_delivery, callback_foreign_editor_delivery) =
+        crate::foreign_parameter_delivery::editor::channel();
     let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
     sample_preview.bind_status(status.clone());
     gain_recording.bind_status(status.clone());
@@ -1420,6 +1558,7 @@ pub fn channel_with_spectrum(
             diagnostics: trace_reader,
             action_admission: None,
             sample_preview,
+            sample_recording,
             commands,
             spectrum_target,
             processor_audition,
@@ -1428,7 +1567,10 @@ pub fn channel_with_spectrum(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
-                requested_physical_callback_frames: None,
+                foreign_parameter_delivery: Some(foreign_parameter_delivery),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                foreign_editor_delivery: Some(foreign_editor_delivery),
+                plugin_callback_quantum: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
@@ -1452,16 +1594,18 @@ pub fn channel_with_spectrum(
             action_writer: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
-            requested_physical_callback_frames: None,
+            plugin_callback_quantum: None,
             output_transport: None,
             output_transport_cancelled: false,
             transport_setup_open: true,
             sample_preview: callback_preview,
+            sample_recording: callback_recording,
             candidate_root,
             publications: incoming,
             retired: returning,
             commands: events,
             status,
+            audible_clock: audible_clock::AudibleClock::new(),
             recovery_position_frozen: false,
             recovery_seek_pending: None,
             device_fault_stopped: false,
@@ -1473,6 +1617,9 @@ pub fn channel_with_spectrum(
             processor_audition_rejected_epoch: 0,
             gain_recording: callback_gain_recording,
             native_parameter_input: callback_native_parameter_input,
+            foreign_parameter_delivery: callback_foreign_parameter_delivery,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            foreign_editor_delivery: callback_foreign_editor_delivery,
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
             spectrum_stages: SpectrumStages::new()?,
@@ -1485,7 +1632,9 @@ pub fn channel_with_spectrum(
             stream_pending_play: None,
             stream_outcomes: [None; ACTION_OUTCOME_CAPACITY],
             stream_outcome_count: 0,
+            transport_fade: None,
             yield_stream_successor_once: false,
+            current_quantum_pins: None,
             stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -1537,24 +1686,24 @@ impl PublicationControl {
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
     }
-    /// The fixed device buffer requested by this output's actual constructor.
-    /// This is not proof of delivered callback shape or a physical deadline;
-    /// every foreign callback must still validate its real complete extent.
-    pub fn requested_physical_callback_frames_on_control(&self) -> Option<u16> {
-        self.requested_physical_callback_frames
+    /// Immutable VST3 transport quantum in project frames. Same-rate output
+    /// requests this many hardware frames; a converting backend verifies its
+    /// maximum client slice against this quantum before starting. The callback
+    /// still validates its actual extent, including after a route change.
+    pub fn plugin_callback_quantum_on_control(&self) -> Option<u16> {
+        self.plugin_callback_quantum
     }
     /// Bind only while both exact constructor endpoints remain unexposed.
-    /// Device construction requests this fixed size before backend creation;
-    /// headless constructor fixtures may use the same finite delivery profile.
-    pub(crate) fn configure_physical_callback_request(
+    /// The backend or headless fixture owns the corresponding delivery bound.
+    pub(crate) fn configure_plugin_callback_quantum(
         &mut self,
         callback: &mut Callback,
         frames: u16,
     ) -> Result<(), Invalid> {
         if frames == 0
             || usize::from(frames) > hex_plugin_host::transport::MAX_FRAMES
-            || self.requested_physical_callback_frames.is_some()
-            || callback.requested_physical_callback_frames.is_some()
+            || self.plugin_callback_quantum.is_some()
+            || callback.plugin_callback_quantum.is_some()
             || self.revision != 0
             || self.native_custody
             || self.status.client_exposed.load(Acquire)
@@ -1564,11 +1713,11 @@ impl PublicationControl {
             || !callback.matches_native_status(&self.status)
         {
             return Err(Invalid(
-                "physical callback request requires its vacant constructor",
+                "plugin callback quantum requires its vacant constructor",
             ));
         }
-        self.requested_physical_callback_frames = Some(frames);
-        callback.requested_physical_callback_frames = Some(frames);
+        self.plugin_callback_quantum = Some(frames);
+        callback.plugin_callback_quantum = Some(frames);
         Ok(())
     }
     /// Capture the current route header under its sequence lock, then acquire
@@ -1576,6 +1725,86 @@ impl PublicationControl {
     /// invalid route snapshot so callers can retry before preparing a graph.
     pub fn capture_fresh_runtime_fence(&self) -> Option<FreshRuntimeFence> {
         capture_runtime_fence(&self.status)
+    }
+
+    /// Pair a running Session observation with the matching command/source
+    /// fence for conditional control-side preparation. A command batch can
+    /// make the observation lag until a later callback publication. The pair
+    /// can become stale immediately and does not authorize installation; the
+    /// callback must recheck the fence, exact graph and predicted clock. A
+    /// zero control generation is conservatively refused, even if explicit.
+    pub fn capture_running_transport_fence(
+        &self,
+    ) -> Option<(TransportObservation, FreshRuntimeFence)> {
+        let fence = capture_runtime_fence(&self.status)?;
+        let observation = self.status.transport_observation()?;
+        (observation.playing
+            && observation.loop_state.is_some()
+            && observation.control_generation != 0
+            && observation.audio_revision != 0
+            && observation.audio_revision == fence.expected_active_revision
+            && observation.consumed_command_ticket == fence.admitted_command_ticket
+            && self.status.admitted_ticket.load(Acquire) == fence.admitted_command_ticket
+            && self.status.consumed_command.load(Acquire) == fence.admitted_command_ticket
+            && self.status.last_output_fault_epoch.load(Acquire) == fence.output_fault_epoch
+            && !self.status.render_fault.load(Acquire)
+            && !self.status.device_fault.load(Acquire)
+            && self.status.pending_stop_marker.load(Acquire) == 0
+            && !self.status.closing.load(Acquire))
+        .then_some((observation, fence))
+    }
+
+    /// Prepare a conditional future anchor from this output's observed running
+    /// Session transport. `None` means the observation is unavailable or does
+    /// not match the requested source revision and control generation. The
+    /// caller must retain the real revisions independently and account for and
+    /// reclaim the returned token on control. This is not installation authority:
+    /// the callback must recheck the exact runtime graphs, clocks and host fence.
+    pub fn prepare_fenced_tempo_anchor(
+        &self,
+        expected_audio_revision: u64,
+        expected_control_generation: u64,
+        previous: Arc<hex_engine::PreparedRevision>,
+        candidate: Arc<hex_engine::PreparedRevision>,
+        cut_performance_frame: u64,
+    ) -> Result<
+        Option<(
+            hex_engine::session_playback::PreparedTempoAnchor,
+            FreshRuntimeFence,
+        )>,
+        hex_engine::session_playback::SessionPlaybackError,
+    > {
+        let Some((observation, fence)) = self.capture_running_transport_fence() else {
+            return Ok(None);
+        };
+        if observation.audio_revision != expected_audio_revision
+            || observation.control_generation != expected_control_generation
+        {
+            return Ok(None);
+        }
+        let Some(loop_state) = observation.loop_state else {
+            return Ok(None);
+        };
+        let anchor =
+            hex_engine::session_playback::PreparedTempoAnchor::prepare_from_running_observation(
+                previous,
+                candidate,
+                observation.arrangement_frame,
+                observation.performance_frame,
+                loop_state,
+                cut_performance_frame,
+            )?;
+        if !self
+            .capture_running_transport_fence()
+            .is_some_and(|(latest, current)| {
+                current == fence
+                    && latest.control_generation == expected_control_generation
+                    && latest.performance_frame <= cut_performance_frame
+            })
+        {
+            return Ok(None);
+        }
+        Ok(Some((anchor, fence)))
     }
 
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
@@ -1592,12 +1821,117 @@ impl PublicationControl {
         &mut self,
         reservation: hex_engine::AudioStorageLedgerReservation,
     ) -> Result<(), &'static str> {
+        self.configure_device_resource_publication(reservation, false)
+    }
+
+    /// Reserve both resource books on a fresh native output. The verified
+    /// constructor owns the shared source root and domain reservation; the
+    /// ordinary book is separate and does not include that root. `combined`
+    /// must cover both declared limits, with checked arithmetic. These are
+    /// caller limits, not an RSS or allocator bound. The combined ceiling
+    /// includes one ordinary demand workspace for every permitted graph.
+    /// This grants no ordinary publication or cross-kind switching authority;
+    /// the exposed client retains its verified publication policy.
+    /// If construction fails after configuring the
+    /// verified root, the output is closed and must be discarded rather than
+    /// exposed.
+    pub fn configure_combined_publication_on_control(
+        &mut self,
+        verified: crate::AudioCandidatePublicationReservation,
+        ordinary: hex_engine::AudioStorageLedgerReservation,
+        ordinary_extents: usize,
+        ordinary_metadata_bytes: usize,
+        combined: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<(), &'static str> {
+        let fits =
+            |a: usize, b: usize, limit: usize| a.checked_add(b).is_some_and(|sum| sum <= limit);
+        let graph_count = self
+            .publications
+            .buffer()
+            .capacity()
+            .checked_add(RETIRED)
+            .and_then(|count| count.checked_add(5))
+            .ok_or("combined audio reservation exceeded")?;
+        let workspace_bytes = ordinary_metadata_bytes
+            .checked_mul(graph_count)
+            .ok_or("combined audio reservation exceeded")?;
+        // One boxed ordinary stream owner plus four extent vectors per graph.
+        let workspace_rows = graph_count
+            .checked_mul(5)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_data_rows = ordinary
+            .data_rows
+            .checked_add(workspace_rows)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_retained = ordinary
+            .max_retained_bytes
+            .checked_add(workspace_bytes)
+            .ok_or("combined audio reservation exceeded")?;
+        let ordinary_peak = ordinary
+            .max_construction_peak_bytes
+            .checked_add(workspace_bytes)
+            .ok_or("combined audio reservation exceeded")?;
+        if combined.max_construction_peak_bytes < combined.max_retained_bytes
+            || !fits(verified.data_rows, ordinary_data_rows, combined.data_rows)
+            || !fits(
+                verified.handle_rows,
+                ordinary.handle_rows,
+                combined.handle_rows,
+            )
+            || !fits(1, ordinary.root_rows, combined.root_rows)
+            || !fits(
+                verified.max_retained_data_bytes,
+                ordinary_retained,
+                combined.max_retained_bytes,
+            )
+            || !fits(
+                verified.max_construction_peak_data_bytes,
+                ordinary_peak,
+                combined.max_construction_peak_bytes,
+            )
+        {
+            return Err("combined audio reservation exceeded");
+        }
+        if let Some(bridge) = self.resident_forwarding.as_ref() {
+            bridge.begin_combined_configuration(&self.status)?;
+        } else {
+            return Err("combined reservation requires paired native worker endpoints");
+        }
+        let result = match self.configure_audio_candidate_publication(verified) {
+            Err(error) => Err(error),
+            Ok(()) => match self
+                .configure_device_resource_publication(ordinary, true)
+                .and_then(|()| {
+                    self.candidate_root.configure_combined_ordinary_streams(
+                        ordinary_extents,
+                        ordinary_metadata_bytes,
+                    )
+                }) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.request_shutdown();
+                    Err(error)
+                }
+            },
+        };
+        if let Some(bridge) = self.resident_forwarding.as_ref() {
+            bridge.finish_combined_configuration();
+        }
+        result
+    }
+
+    fn configure_device_resource_publication(
+        &mut self,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+        shared_verified_root: bool,
+    ) -> Result<(), &'static str> {
         if self.device_resources.is_some()
             || self.revision != 0
             || self.status.client_exposed.load(Acquire)
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
-            || self.candidate_root.domains_configured()
+            || (self.candidate_root.domains_configured() && !shared_verified_root)
+            || (shared_verified_root && !self.status.constructor_mode.load(Acquire))
         {
             return Err("device resource publication requires a vacant unexposed ordinary output");
         }
@@ -1625,7 +1959,9 @@ impl PublicationControl {
             .as_ref()
             .map(Arc::clone)
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
-        bridge.claim_worker_publication_on_control(&self.status)?;
+        if !shared_verified_root {
+            bridge.claim_worker_publication_on_control(&self.status)?;
+        }
         self.resident_forwarding = Some(bridge);
         self.device_resources = Some(resources);
         Ok(())
@@ -1698,6 +2034,7 @@ impl PublicationControl {
     ) -> Result<u64, AdmittedPublishError<E>> {
         let Some(mut resources) = self.device_resources.take() else {
             return Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "ordinary worker publication is not configured",
                 playback,
             }));
@@ -1714,11 +2051,12 @@ impl PublicationControl {
                     .map_err(AdmittedPublishError::Publication)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
-                    AdmittedPublishError::Publication(PublishError { reason: "device resource publication storage reservation exceeded", playback }),
+                    AdmittedPublishError::Publication(PublishError { kind: PublishErrorKind::Other, reason: "device resource publication storage reservation exceeded", playback }),
                 hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
             })
         } else {
             Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation unavailable or overflowing",
                 playback,
             }))
@@ -1774,6 +2112,7 @@ impl PublicationControl {
         let Some(mut resources) = self.device_resources.take() else {
             if playback.contains_device_resource_leases() {
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "device resource publication was not reserved for this output",
                     playback,
                 });
@@ -1790,6 +2129,7 @@ impl PublicationControl {
         if forwarded_pcm {
             self.device_resources = Some(resources);
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "graph publication belongs to the audio worker for this output",
                 playback,
             });
@@ -1801,13 +2141,14 @@ impl PublicationControl {
             resources.publish_on_control(playback, |playback| {
                 self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm, None)
             }).map_err(|error| match error {
-                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError { kind: PublishErrorKind::Other,
                     reason: "device resource publication storage reservation exceeded", playback,
                 },
                 hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
             })
         } else {
             Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation unavailable or overflowing",
                 playback,
             })
@@ -1825,31 +2166,49 @@ impl PublicationControl {
         source_context: Option<hex_engine::AudioSourceContext>,
     ) -> Result<u64, PublishError> {
         let native_epoch = match policy {
-            PublicationPolicy::InstallUnderNativeEpoch(token) => Some(token),
+            PublicationPolicy::InstallUnderNativeEpoch(token)
+            | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. } => Some(token),
             _ => None,
         };
-        let reason = if native_epoch.is_some_and(|token| {
-            self.status
-                .sampler_edit
-                .native_epoch_context(token)
-                .is_none()
-                || self.status.sampler_edit.native_epoch_context(token) != source_context
-                || self.status.native_effect_source().is_some()
+        let native_inheritance = match policy {
+            PublicationPolicy::InheritUnderStoppedNative { source, fence } => Some((source, fence)),
+            _ => None,
+        };
+        let reason = if native_inheritance.is_some_and(|(source, fence)| {
+            !self
+                .status
+                .stopped_native_source_fence_matches(source, fence)
+                || self.status.applied_audio_source().is_some()
+                || source_context.is_none_or(|context| {
+                    context.project_generation != source.context.project_generation
+                })
         }) {
+            Some("native inheritance requires its exact stopped active source")
+        } else if native_inheritance.is_none()
+            && native_epoch.is_some_and(|token| {
+                self.status
+                    .sampler_edit
+                    .native_epoch_context(token)
+                    .is_none()
+                    || self.status.sampler_edit.native_epoch_context(token) != source_context
+                    || self.status.native_effect_source().is_some()
+            })
+        {
             Some("native successor requires its matching stopped returned source")
         } else if self.status.sampler_edit.native_epoch_active() && native_epoch.is_none() {
             Some("native epoch excludes unrelated graph publication")
         } else if self.status.sampler_edit.active()
-            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token)
+            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token) | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. }
                 if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
         {
             Some("stopped edit excludes unrelated graph publication")
-        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token)
+        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token) | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. }
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
-        } else if self.candidate_root.domains_configured()
-            && !self.candidate_root.ordinary_streams_configured()
+        } else if self.status.constructor_mode.load(Acquire)
+            || (self.candidate_root.domains_configured()
+                && !self.candidate_root.ordinary_streams_configured())
         {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.recording_active() {
@@ -1868,10 +2227,15 @@ impl PublicationControl {
             None
         };
         if let Some(reason) = reason {
-            return Err(PublishError { reason, playback });
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            });
         }
         let Some(pcm_frames) = playback.resident_pcm_capacity_frames() else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm capacity overflow",
                 playback,
             });
@@ -1881,6 +2245,7 @@ impl PublicationControl {
                 .checked_add(if forwarded_pcm { 0 } else { pcm_frames })
         else {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "resident pcm obligation overflow",
                 playback,
             });
@@ -1894,6 +2259,7 @@ impl PublicationControl {
         };
         if !reserved {
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "playback publication already pending",
                 playback,
             });
@@ -1915,20 +2281,30 @@ impl PublicationControl {
             Ok(Some(_)) if source_context.is_none() => {
                 self.status.publication_pending.store(false, Release);
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "native graph publication requires a canonical source context",
                     playback,
                 });
             }
             Ok(references) => references,
-            Err(reason) => {
+            Err(failure) => {
                 self.status.publication_pending.store(false, Release);
-                return Err(PublishError { reason, playback });
+                return Err(PublishError {
+                    kind: if failure.is_unavailable() {
+                        PublishErrorKind::NativeSourceUnavailable
+                    } else {
+                        PublishErrorKind::Other
+                    },
+                    reason: failure.message(),
+                    playback,
+                });
             }
         };
         let streams = if self.candidate_root.ordinary_streams_configured() {
             let Some(context) = source_context else {
                 self.status.publication_pending.store(false, Release);
                 return Err(PublishError {
+                    kind: PublishErrorKind::Other,
                     reason: "ordinary stream context unavailable",
                     playback,
                 });
@@ -1940,7 +2316,11 @@ impl PublicationControl {
                 Ok(streams) => Some(streams),
                 Err(reason) => {
                     self.status.publication_pending.store(false, Release);
-                    return Err(PublishError { reason, playback });
+                    return Err(PublishError {
+                        kind: PublishErrorKind::Other,
+                        reason,
+                        playback,
+                    });
                 }
             }
         } else {
@@ -1955,7 +2335,7 @@ impl PublicationControl {
             source_context,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams,
             playback: Box::new(playback),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1965,6 +2345,7 @@ impl PublicationControl {
             publication.release_streams_on_control(&self.candidate_root);
             self.status.publication_pending.store(false, Release);
             return Err(PublishError {
+                kind: PublishErrorKind::Other,
                 reason: "playback publication queue full",
                 playback: *publication.playback,
             });
@@ -2397,6 +2778,10 @@ impl Callback {
 
     pub(crate) fn revoke_output_transport(&mut self) {
         self.revoke_native_effects();
+        self.revoke_forwarded_output_transport();
+    }
+
+    fn revoke_forwarded_output_transport(&mut self) {
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -2513,10 +2898,18 @@ impl Callback {
         } else {
             crate::native_callback_owner::ChannelStorage::default()
         };
-        self.sample_preview
+        let storage = self
+            .sample_preview
             .constructor_channel_storage()?
+            .plus(crate::sample_recording::Control::callback_storage(
+                &self.sample_recording,
+            )?)?
             .plus(self.gain_recording.constructor_channel_storage()?)?
             .plus(self.native_parameter_input.constructor_channel_storage()?)?
+            .plus(
+                self.foreign_parameter_delivery
+                    .constructor_channel_storage()?,
+            )?
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
@@ -2525,7 +2918,10 @@ impl Callback {
                 data_bytes: self.spectrum_stages.heap_data_bytes()?,
                 shared_groups: 0,
                 shared_handles: 0,
-            })
+            })?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let storage = storage.plus(self.foreign_editor_delivery.constructor_channel_storage()?)?;
+        Some(storage)
     }
 
     fn install_candidate(
@@ -2684,10 +3080,10 @@ impl Callback {
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     fn apply_candidate_action(&mut self, action: PlaybackAction) {
-        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
-            if active.owner.test_apply_action(action).is_err() {
-                self.status.device_fault.store(true, Relaxed);
-            }
+        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut()
+            && active.owner.test_apply_action(action).is_err()
+        {
+            self.status.device_fault.store(true, Relaxed);
         }
     }
     pub(crate) fn close_candidate_custody_on_control(&mut self) {
@@ -2807,7 +3203,27 @@ impl Callback {
     }
 
     fn return_graph(&mut self, publication: Publication) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.restore_parameter_predecessor_prewarm(&publication);
         self.return_publication(ReturnedPublication::Legacy(publication));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn restore_parameter_predecessor_prewarm(&mut self, publication: &Publication) {
+        let PublicationPolicy::InheritUnderNativeParameter { source, .. } = publication.policy
+        else {
+            return;
+        };
+        if self.status.closing.load(Acquire) {
+            return;
+        }
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
+            && active.revision == source.audio_revision
+            && active.source_context == Some(source.context)
+            && let Some(mut view) = active.stream_view()
+        {
+            view.publication_abandoned();
+        }
     }
     fn return_publication(&mut self, publication: ReturnedPublication) {
         if let ReturnedPublication::Domain(pages) = &publication {
@@ -2881,19 +3297,19 @@ impl Callback {
                 ));
                 self.status.publication_pending.store(false, Release);
             }
-            if !self.retired.is_full() {
-                if let Some(publication) = self.deferred.take() {
-                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
-                        if cancellation.finish_for_shutdown() {
-                            self.reject_publication(
-                                publication.revision,
-                                PlaybackHandoffRejection::FreshRuntimeCancelled,
-                            );
-                        }
-                    }
-                    self.return_graph(publication);
-                    self.status.publication_pending.store(false, Release);
+            if !self.retired.is_full()
+                && let Some(publication) = self.deferred.take()
+            {
+                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
+                    && cancellation.finish_for_shutdown()
+                {
+                    self.reject_publication(
+                        publication.revision,
+                        PlaybackHandoffRejection::FreshRuntimeCancelled,
+                    );
                 }
+                self.return_graph(publication);
+                self.status.publication_pending.store(false, Release);
             }
             if !self.retired.is_full() {
                 if let Some(mut active) = self
@@ -2909,46 +3325,46 @@ impl Callback {
                     self.return_graph(publication);
                 }
             }
-            if !self.retired.is_full() {
-                if let Ok(publication) = self.publications.pop() {
-                    let publication = match publication {
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        QueuedPublication::NativeEpoch { .. } => return,
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        QueuedPublication::Native(endpoint) => {
-                            self.return_publication(ReturnedPublication::Native(endpoint));
-                            return;
-                        }
-                        QueuedPublication::Domain(pages) => {
-                            self.return_publication(ReturnedPublication::Domain(pages));
-                            return;
-                        }
-                        QueuedPublication::Eligible(value) => {
-                            self.return_publication(ReturnedPublication::Eligible(
-                                value.reject_before_install(),
-                            ));
-                            self.status.publication_pending.store(false, Release);
-                            return;
-                        }
-                        QueuedPublication::Legacy(publication) => publication,
-                        QueuedPublication::Candidate(candidate) => {
-                            self.return_publication(ReturnedPublication::Candidate(
-                                candidate.reject_before_install(),
-                            ));
-                            return;
-                        }
-                    };
-                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
-                        if cancellation.finish_for_shutdown() {
-                            self.reject_publication(
-                                publication.revision,
-                                PlaybackHandoffRejection::FreshRuntimeCancelled,
-                            );
-                        }
+            if !self.retired.is_full()
+                && let Ok(publication) = self.publications.pop()
+            {
+                let publication = match publication {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    QueuedPublication::NativeEpoch { .. } => return,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    QueuedPublication::Native(endpoint) => {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                        return;
                     }
-                    self.return_graph(publication);
-                    self.status.publication_pending.store(false, Release);
+                    QueuedPublication::Domain(pages) => {
+                        self.return_publication(ReturnedPublication::Domain(pages));
+                        return;
+                    }
+                    QueuedPublication::Eligible(value) => {
+                        self.return_publication(ReturnedPublication::Eligible(
+                            value.reject_before_install(),
+                        ));
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                    QueuedPublication::Legacy(publication) => publication,
+                    QueuedPublication::Candidate(candidate) => {
+                        self.return_publication(ReturnedPublication::Candidate(
+                            candidate.reject_before_install(),
+                        ));
+                        return;
+                    }
+                };
+                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
+                    && cancellation.finish_for_shutdown()
+                {
+                    self.reject_publication(
+                        publication.revision,
+                        PlaybackHandoffRejection::FreshRuntimeCancelled,
+                    );
                 }
+                self.return_graph(publication);
+                self.status.publication_pending.store(false, Release);
             }
             self.status.playing.store(false, Relaxed);
             if self.active.is_none()
@@ -3107,6 +3523,28 @@ impl Callback {
         );
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn native_parameter_fence_matches(
+        &self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        playing: bool,
+        successor: Option<hex_engine::AudioSourceContext>,
+    ) -> bool {
+        let predecessor = self.active.as_ref().and_then(ActivePublication::legacy);
+        self.status.native_parameter_source(playing) == Some((source, transport_epoch))
+            && source.output_identity == self.candidate_root.root_id()
+            && predecessor.is_some_and(|active| {
+                active.revision == source.audio_revision
+                    && active.source_context == Some(source.context)
+            })
+            && successor.is_some_and(|context| {
+                context.project_generation == source.context.project_generation
+                    && source.context.editor_revision.checked_add(1)
+                        == Some(context.editor_revision)
+            })
+    }
+
     fn advance_legacy_publication(&mut self, frames: Option<usize>) {
         if frames.is_none()
             && self
@@ -3114,9 +3552,27 @@ impl Callback {
                 .as_ref()
                 .is_some_and(|next| next.streams.is_some())
         {
+            // An already-prepared candidate must release its page role before
+            // an admitted command can schedule work on the predecessor.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if self.status.admitted_ticket.load(Acquire)
+                != self.status.consumed_command.load(Acquire)
+                && let Some(mut next) = self.deferred.take()
+            {
+                if matches!(
+                    next.policy,
+                    PublicationPolicy::InheritUnderNativeParameter { .. }
+                ) {
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.cancel_install(&mut self.domain_pages);
+                    }
+                    self.restore_parameter_predecessor_prewarm(&next);
+                }
+                self.deferred = Some(next);
+            }
             return;
         }
-        if !self.section_publication_due() {
+        if !self.quantized_seek_publication_due() {
             return;
         }
         // A candidate with a transient release-capacity refusal remains owned
@@ -3150,6 +3606,25 @@ impl Callback {
                 self.status.publication_pending.store(false, Release);
                 return;
             }
+            // Do not overtake an accepted transport command or cancel a
+            // streamed action while deciding a gesture-bound successor.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if matches!(
+                next.policy,
+                PublicationPolicy::InheritUnderNativeParameter { .. }
+            ) && (self.status.admitted_ticket.load(Acquire)
+                != self.status.consumed_command.load(Acquire)
+                || self.stream_pending_play.is_some()
+                || self.stream_action_pending()
+                || self.transport_fade.is_some())
+            {
+                if let Some(streams) = next.streams.as_mut() {
+                    streams.cancel_install(&mut self.domain_pages);
+                }
+                self.restore_parameter_predecessor_prewarm(&next);
+                self.deferred = Some(next);
+                return;
+            }
             #[cfg(test)]
             let forced_refusal = self.test_transient_handoff_refusals > 0;
             #[cfg(test)]
@@ -3160,7 +3635,7 @@ impl Callback {
             let forced_refusal = false;
             let stale_fence = match next.policy {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
-                | PublicationPolicy::InstallSectionWhenReady { fence, .. } => {
+                | PublicationPolicy::InstallQuantizedSeekWhenReady { fence, .. } => {
                     let active_revision = self
                         .active
                         .as_ref()
@@ -3206,6 +3681,40 @@ impl Callback {
                         || !live)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
+                PublicationPolicy::InheritUnderStoppedNative { source, fence } => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let live = self
+                        .native_sources
+                        .runtime_transports_are_live(&next.playback)
+                        && self.current_native_epoch_source() == Some(source);
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let live = false;
+                    (!live
+                        || !self
+                            .status
+                            .stopped_native_source_fence_matches(source, fence)
+                        || self
+                            .active
+                            .as_ref()
+                            .and_then(ActivePublication::legacy)
+                            .is_none_or(|active| active.playback.playing())
+                        || next.source_context.is_none_or(|context| {
+                            context.project_generation != source.context.project_generation
+                        }))
+                    .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                PublicationPolicy::InheritUnderNativeParameter {
+                    source,
+                    transport_epoch,
+                    playing,
+                } => (!self.native_parameter_fence_matches(
+                    source,
+                    transport_epoch,
+                    playing,
+                    next.source_context,
+                ))
+                .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged),
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             #[cfg(test)]
@@ -3213,7 +3722,7 @@ impl Callback {
                 && matches!(
                     next.policy,
                     PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                        | PublicationPolicy::InstallSectionWhenReady { .. }
+                        | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                 )
                 && let Some(barrier) = self.test_after_fresh_fence_validation.take()
             {
@@ -3222,25 +3731,75 @@ impl Callback {
             }
             let mut promotions = None;
             if !forced_refusal && stale_fence.is_none() && next.streams.is_some() {
-                if let Some(mut active) = self
+                let pending_window = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::stream_view)
-                    && active.has_pending_render_window()
-                {
-                    if matches!(
-                        next.policy,
-                        PublicationPolicy::InheritRuntime
-                            | PublicationPolicy::InheritUnderArrangement(_)
-                    ) {
+                    .is_some_and(|active| active.has_pending_render_window());
+                if pending_window {
+                    if next.policy.inherits_runtime() {
                         // Give an inheriting successor's predecessor a chance
-                        // to commit its exact pending window first.
+                        // to commit its exact pending window first, while
+                        // bounding a current demand that can never fit.
+                        if let Some(frames) = frames {
+                            let mut reservation = self.reserve_current_stream_window(frames);
+                            if matches!(
+                                reservation,
+                                Err(crate::candidate_custody::QuantumFailure::Capacity)
+                            ) {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                reservation = self.reserve_current_stream_window(frames);
+                            }
+                            match reservation {
+                                Ok(Some(pins)) => self.current_quantum_pins = Some(pins),
+                                Ok(None)
+                                | Err(crate::candidate_custody::QuantumFailure::PendingAction) => {}
+                                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                                    if !next
+                                        .streams
+                                        .as_mut()
+                                        .is_some_and(|streams| streams.retry_capacity_conflict())
+                                    {
+                                        if let Some(streams) = next.streams.as_mut() {
+                                            streams.cancel_install(&mut self.domain_pages);
+                                        }
+                                        self.reject_publication(
+                                            next.revision,
+                                            PlaybackHandoffRejection::StreamedPageCapacity,
+                                        );
+                                        self.return_graph(next);
+                                        self.status.publication_pending.store(false, Release);
+                                        return;
+                                    }
+                                }
+                                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                                    if let Some(streams) = next.streams.as_mut() {
+                                        streams.cancel_install(&mut self.domain_pages);
+                                    }
+                                    self.reject_publication(
+                                        next.revision,
+                                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    );
+                                    self.return_graph(next);
+                                    self.status.publication_pending.store(false, Release);
+                                    return;
+                                }
+                            }
+                        }
                         self.deferred = Some(next);
                         return;
                     }
                     // A fresh replacement is a recovery path when the current
                     // source cannot complete; it must not wait on that source.
-                    active.cancel_pending_render_window(&mut self.domain_pages);
+                    if let Some(mut active) = self
+                        .active
+                        .as_mut()
+                        .and_then(ActivePublication::stream_view)
+                    {
+                        active.cancel_pending_render_window(&mut self.domain_pages);
+                    }
                 }
                 self.cancel_active_stream_action();
                 if let Some(mut active) = self
@@ -3250,19 +3809,16 @@ impl Callback {
                 {
                     active.publication_replaces_prewarm(&mut self.domain_pages);
                 }
-                if matches!(
-                    next.policy,
-                    PublicationPolicy::InheritRuntime
-                        | PublicationPolicy::InheritUnderArrangement(_)
-                ) && self
-                    .active
-                    .as_ref()
-                    .and_then(ActivePublication::legacy)
-                    .is_some_and(|old| {
-                        old.source_context.is_none_or(|context| {
-                            context.project_generation != next.control_context_generation
+                if next.policy.inherits_runtime()
+                    && self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::legacy)
+                        .is_some_and(|old| {
+                            old.source_context.is_none_or(|context| {
+                                context.project_generation != next.control_context_generation
+                            })
                         })
-                    })
                 {
                     self.reject_publication(
                         next.revision,
@@ -3272,11 +3828,64 @@ impl Callback {
                     self.status.publication_pending.store(false, Release);
                     return;
                 }
-                let previous = if matches!(
-                    next.policy,
-                    PublicationPolicy::InheritRuntime
-                        | PublicationPolicy::InheritUnderArrangement(_)
-                ) {
+                if let Some(frames) = frames {
+                    let mut reservation = self.reserve_current_stream_window(frames);
+                    if matches!(
+                        reservation,
+                        Err(crate::candidate_custody::QuantumFailure::Capacity)
+                    ) {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        reservation = self.reserve_current_stream_window(frames);
+                    }
+                    let refusal = match reservation {
+                        Ok(Some(pins)) => {
+                            let complete = pins.complete();
+                            self.current_quantum_pins = Some(pins);
+                            if !complete && next.policy.inherits_runtime() {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            None
+                        }
+                        Ok(None) => None,
+                        Err(crate::candidate_custody::QuantumFailure::PendingAction) => {
+                            self.deferred = Some(next);
+                            return;
+                        }
+                        Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                            if next
+                                .streams
+                                .as_mut()
+                                .is_some_and(|streams| streams.retry_capacity_conflict())
+                            {
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            Some(PlaybackHandoffRejection::StreamedPageCapacity)
+                        }
+                        Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                            Some(PlaybackHandoffRejection::StreamedPagesNotReady)
+                        }
+                    };
+                    if let Some(reason) = refusal {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                            cancellation.finish();
+                        }
+                        self.reject_publication(next.revision, reason);
+                        self.return_graph(next);
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                }
+                let previous = if next.policy.inherits_runtime() {
                     self.active
                         .as_mut()
                         .and_then(ActivePublication::legacy_mut)
@@ -3287,6 +3896,9 @@ impl Callback {
                 } else {
                     None
                 };
+                let fenced_restart =
+                    matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                        && next.playback.live_restart_requested();
                 let prepared = next.streams.as_mut().map(|streams| {
                     streams.prepare_install(
                         &mut next.playback,
@@ -3295,10 +3907,60 @@ impl Callback {
                         self.stream_pending_play.is_some(),
                         self.stream_prefix,
                         frames.unwrap_or(0),
+                        fenced_restart,
                     )
                 });
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        // Page planning may span callbacks. Revalidate the
+                        // actual fence before promoting its protected pages.
+                        if let PublicationPolicy::InheritUnderArrangement(token) = next.policy
+                            && self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready
+                        {
+                            if let Some(streams) = next.streams.as_mut() {
+                                streams.cancel_install(&mut self.domain_pages);
+                            }
+                            self.reject_publication(
+                                next.revision,
+                                PlaybackHandoffRejection::RuntimeFenceChanged,
+                            );
+                            self.return_graph(next);
+                            self.status.publication_pending.store(false, Release);
+                            return;
+                        }
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        if let PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        } = next.policy
+                        {
+                            let changed = !self.native_parameter_fence_matches(
+                                source,
+                                transport_epoch,
+                                playing,
+                                next.source_context,
+                            );
+                            let commands_pending = self.status.admitted_ticket.load(Acquire)
+                                != self.status.consumed_command.load(Acquire);
+                            if changed || commands_pending {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                if changed {
+                                    self.reject_publication(
+                                        next.revision,
+                                        PlaybackHandoffRejection::RuntimeFenceChanged,
+                                    );
+                                    self.return_graph(next);
+                                    self.status.publication_pending.store(false, Release);
+                                } else {
+                                    self.restore_parameter_predecessor_prewarm(&next);
+                                    self.deferred = Some(next);
+                                }
+                                return;
+                            }
+                        }
                         self.trace_audio(
                             AudioDiagnosticKind::PublicationPrepared,
                             next.revision,
@@ -3331,6 +3993,22 @@ impl Callback {
                         return;
                     }
                     refused => {
+                        let capacity_conflict = next
+                            .streams
+                            .as_ref()
+                            .is_some_and(|streams| streams.capacity_conflict());
+                        if capacity_conflict
+                            && next
+                                .streams
+                                .as_mut()
+                                .is_some_and(|streams| streams.retry_capacity_conflict())
+                        {
+                            if let Some(streams) = next.streams.as_mut() {
+                                streams.cancel_install(&mut self.domain_pages);
+                            }
+                            self.deferred = Some(next);
+                            return;
+                        }
                         let source_changed = next
                             .streams
                             .as_mut()
@@ -3361,7 +4039,11 @@ impl Callback {
                                 PlaybackHandoffRejection::StreamSourceChanged
                             } else {
                                 handoff.map_or(
-                                    PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    if capacity_conflict {
+                                        PlaybackHandoffRejection::StreamedPageCapacity
+                                    } else {
+                                        PlaybackHandoffRejection::StreamedPagesNotReady
+                                    },
                                     PlaybackHandoffRejection::from_error,
                                 )
                             },
@@ -3372,6 +4054,8 @@ impl Callback {
                     }
                 }
             }
+            next.playback
+                .bind_browser_audition_transport(self.status.transport_epoch.load(Acquire));
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
                     hex_engine::SessionPlaybackError::ReleaseBankFull,
@@ -3382,7 +4066,7 @@ impl Callback {
                 next.policy,
                 PublicationPolicy::InstallFreshRuntime
                     | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                    | PublicationPolicy::InstallSectionWhenReady { .. }
+                    | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     | PublicationPolicy::InstallUnderStoppedArrangement(_)
                     | PublicationPolicy::InstallUnderNativeEpoch(_)
             ) {
@@ -3392,14 +4076,27 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::legacy_mut)
                     .map(|previous| {
-                        next.playback.try_inherit_runtime_in_control_context(
-                            &mut previous.playback,
-                            next.explicit_control_context
-                                .then_some(next.control_context_generation),
-                            previous
-                                .explicit_control_context
-                                .then_some(previous.control_context_generation),
-                        )
+                        let generation = next
+                            .explicit_control_context
+                            .then_some(next.control_context_generation);
+                        let previous_generation = previous
+                            .explicit_control_context
+                            .then_some(previous.control_context_generation);
+                        if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                            && next.playback.live_restart_requested()
+                        {
+                            next.playback.try_restart_runtime_under_arrangement_fence(
+                                &mut previous.playback,
+                                generation,
+                                previous_generation,
+                            )
+                        } else {
+                            next.playback.try_inherit_runtime_in_control_context(
+                                &mut previous.playback,
+                                generation,
+                                previous_generation,
+                            )
+                        }
                     })
             };
             match handoff {
@@ -3429,7 +4126,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                            | PublicationPolicy::InstallSectionWhenReady { .. }
+                            | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     ) && let Some(barrier) = self.test_before_fresh_runtime_apply.take()
                     {
                         barrier.wait();
@@ -3459,7 +4156,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                            | PublicationPolicy::InstallSectionWhenReady { .. }
+                            | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     ) && let Some(barrier) = self.test_after_fresh_runtime_apply_decision.take()
                     {
                         barrier.wait();
@@ -3476,30 +4173,31 @@ impl Callback {
                         .as_mut()
                         .and_then(ActivePublication::stream_view)
                     {
-                        if let Some(mut successor) = next.stream_view() {
-                            if let Some(ticket) =
+                        if let Some(mut successor) = next.stream_view()
+                            && let Some(ticket) =
                                 successor.inherit_schedule_observation(&mut previous)
-                            {
-                                self.status
-                                    .stream_invalidated_schedule
-                                    .store(ticket, Release);
-                            }
+                        {
+                            self.status
+                                .stream_invalidated_schedule
+                                .store(ticket, Release);
                         }
                         previous.clear_stream_roles(&mut self.domain_pages);
                     }
-                    // A fresh seek keeps its reconstructed transport/DSP
-                    // history. Carry only the transient click toggle after
-                    // every fence/cancellation refusal has been excluded.
+                    // A fresh seek keeps its reconstructed transport and
+                    // internal DSP. Retained workers still need their gate
+                    // identities after the final fence/cancellation decision.
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                            | PublicationPolicy::InstallSectionWhenReady { .. }
+                            | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     ) && let Some(previous) =
-                        self.active.as_ref().and_then(ActivePublication::legacy)
+                        self.active.as_mut().and_then(ActivePublication::legacy_mut)
                         && next.control_context_generation == previous.control_context_generation
                     {
                         next.playback
                             .inherit_metronome_for_fresh_seek(&previous.playback);
+                        next.playback
+                            .cut_retained_foreign_gates_for_fresh_seek(&mut previous.playback);
                     }
                     if let Some(previous) =
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
@@ -3577,7 +4275,15 @@ impl Callback {
                         return;
                     }
                     let diagnostic_context = next.source_context;
+                    let reset_audible = matches!(
+                        next.policy,
+                        PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+                    );
                     let previous = self.active.replace(ActivePublication::Legacy(next));
+                    if reset_audible {
+                        self.audible_clock.clear();
+                    }
+                    self.release_current_quantum_pins();
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
                     // native references. No lock/allocation/owner drop occurs.
@@ -3609,6 +4315,7 @@ impl Callback {
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.stream_source_changed.store(false, Release);
+                    self.status.stream_read_failed.store(false, Release);
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
@@ -3738,6 +4445,9 @@ impl Callback {
     fn take_stop_marker(&self) -> u64 {
         let marker = self.status.pending_stop_marker.load(Acquire);
         if marker != 0 {
+            // A reader may observe the cleared marker before Stop finishes.
+            // Refuse any existing stopped witness before opening that window.
+            self.status.sampler_edit.interrupt_for_stop();
             if !self.status.closing.load(Acquire) {
                 self.status.recovery_position.store(0, Release);
             }
@@ -3808,6 +4518,10 @@ impl Callback {
         // A publication can complete a streamed terminal before handing the
         // same block to resident consumption. Preserve completion order.
         self.flush_stream_outcomes();
+        if cut.stop_through.is_some() {
+            // The immediate priority Stop follows an interrupted fade's effects.
+            self.settle_transport_fade();
+        }
         if let Some(through_ticket) = cut.stop_through {
             if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
@@ -3857,6 +4571,31 @@ impl Callback {
             if !fault {
                 self.trace_command_dequeued(queued, cut);
             }
+            if !fault
+                && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
+                && queued.project_generation.is_some_and(|generation| {
+                    self.recording_source()
+                        .is_none_or(|source| source.context.project_generation != generation)
+                })
+            {
+                let reason = PlaybackActionRejection::ProjectChanged;
+                self.status.publish_rejected_action(queued.ticket, reason);
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
+                continue;
+            }
+            if !fault
+                && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
+                && queued
+                    .expected_source
+                    .is_some_and(|expected| self.recording_source() != Some(expected))
+            {
+                let reason = PlaybackActionRejection::AudioSourceChanged;
+                self.status.publish_rejected_action(queued.ticket, reason);
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
+                continue;
+            }
+            // Each command follows the audible end of an earlier fade.
+            self.settle_transport_fade();
             if fault && sampler_edit::is_stop(queued.action) {
                 self.status.recovery_position.store(0, Release);
                 *staged = Some((queued.ticket, action_outcomes::Outcome::Applied));
@@ -3914,21 +4653,24 @@ impl Callback {
             {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(queued.action);
-                if matches!(
-                    queued.action,
-                    PlaybackAction::Transport(PlaybackCommand::Stop)
-                ) {
-                    self.revoke_current_sampler_keyboard();
-                }
                 let mut invalidate_audition = false;
+                let mut fading = false;
                 let outcome;
+                let closing = self.status.closing.load(Acquire);
                 if let Some(mut active) = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::current_mut)
                 {
-                    match active.playback.try_apply_action(queued.action) {
+                    let applied = if closing {
+                        active.playback.try_apply_action(queued.action)
+                    } else {
+                        active.playback.try_apply_declicked_action(queued.action)
+                    };
+                    match applied {
                         Ok(()) => {
+                            fading =
+                                active.playback.pending_transport_fade() == Some(queued.action);
                             outcome = action_outcomes::Outcome::Applied;
                             if recovery_cursor_action(queued.action) {
                                 self.recovery_position_frozen = false;
@@ -3952,6 +4694,17 @@ impl Callback {
                     );
                 }
                 *staged = Some((queued.ticket, outcome));
+                let stop = matches!(
+                    queued.action,
+                    PlaybackAction::Transport(PlaybackCommand::Stop)
+                );
+                if fading {
+                    // The output transport, epoch and sampler keyboard stay
+                    // live until the fade's audible end.
+                    self.begin_transport_fade(queued.ticket, queued.action, false);
+                } else if stop {
+                    self.revoke_current_sampler_keyboard();
+                }
                 if invalidate_audition
                     || matches!(
                         queued.action,
@@ -3962,9 +4715,13 @@ impl Callback {
                     self.invalidate_midi_recording(
                         crate::midi_recording::AbortReason::TransportChanged,
                     );
-                    self.invalidate_gain_recording(
-                        crate::gain_recording::AbortReason::TransportChanged,
-                    );
+                    if fading {
+                        self.abort_transport_inputs(
+                            crate::gain_recording::AbortReason::TransportChanged,
+                        );
+                    } else {
+                        self.invalidate_for_transport_change(queued.action);
+                    }
                 }
                 if invalidate_audition {
                     self.invalidate_processor_audition_request();
@@ -4003,12 +4760,16 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        // The fault Stop below revokes every transport effect immediately.
+        self.transport_fade = None;
         self.recovery_position_frozen = true;
         if self.streamed_transport_mode() {
             self.cancel_stream_for_fault();
         }
         self.recovery_seek_pending = None;
         self.sample_preview.invalidate_on_fault();
+        self.sample_recording
+            .end(crate::sample_recording::End::OutputFailed);
         self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
         self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
@@ -4044,6 +4805,8 @@ impl Callback {
             self.stop_after_fault();
         } else {
             // A begin that raced the error still receives its reserved terminal.
+            self.sample_recording
+                .end(crate::sample_recording::End::OutputFailed);
             self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
             self.gain_recording
                 .abort(crate::gain_recording::AbortReason::OutputFailed);
@@ -4082,19 +4845,103 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        let result = self.render_inner(output);
+        let block = self.scheduled_transport();
+        let result = self.render_inner(output, block);
+        self.release_current_quantum_pins();
+        if self.transport_fade.is_some() && !self.transport_fade_pending() {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if result.is_ok()
+                && self.transport_fade_is_pause()
+                && let Some((_, before, true)) = block
+                && let Some((_, after, false)) = self.scheduled_transport()
+                && let Ok(frame) = usize::try_from(after.saturating_sub(before))
+                && frame < output.len()
+            {
+                self.native_sources.end_staging_at_pause(frame);
+            }
+            self.settle_transport_fade();
+        }
+        if let Ok(outcome) = &result
+            && !outcome.audible_recorded
+        {
+            self.record_audible_run(outcome.start, output.len());
+        }
+        self.publish_audible_position();
         self.flush_stream_outcomes();
-        result
+        result.map(|_| ())
     }
-    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+
+    fn record_audible_run(&mut self, block: Option<(u64, u64, bool)>, frames: usize) {
+        if let Some((position, performance, true)) = block
+            && frames != 0
+        {
+            // A declicked Pause/Stop can end inside the block; only the frames
+            // its performance clock advanced were played (#4151).
+            let frames = match self.scheduled_transport() {
+                Some((_, after, false)) => usize::try_from(after.saturating_sub(performance))
+                    .map_or(frames, |played| played.min(frames)),
+                _ => frames,
+            };
+            if frames > 0 {
+                self.audible_clock.push(position, performance, frames);
+            }
+        }
+    }
+
+    /// Scheduled position, performance frame and playing state of the current graph.
+    fn scheduled_transport(&self) -> Option<(u64, u64, bool)> {
+        self.active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .map(|active| {
+                (
+                    active.playback.position(),
+                    active.playback.performance_frame(),
+                    active.playback.playing(),
+                )
+            })
+    }
+
+    fn publish_audible_position(&self) {
+        if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
+            let playback = &active.playback;
+            let (latency, region) = playback.audible_timing();
+            self.status.audible_position.store(
+                self.audible_clock.audible(
+                    playback.position(),
+                    playback.performance_frame(),
+                    latency,
+                    region,
+                ),
+                Relaxed,
+            );
+        }
+    }
+    /// Returns whether a split seek recorded its own suffix and the clock used
+    /// for ordinary bookkeeping, adjusted for a pre-render streamed section.
+    fn render_inner(
+        &mut self,
+        output: &mut [Frame],
+        initial: Option<(u64, u64, bool)>,
+    ) -> Result<RenderOutcome, Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
             }
             output.fill([0.0; 2]);
-            return Ok(());
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
         let yield_successor = self.yield_stream_successor_once;
+        let quantized_revision = self.deferred.as_ref().and_then(|next| {
+            matches!(
+                next.policy,
+                PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+            )
+            .then_some(next.revision)
+        });
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
         }
@@ -4125,24 +4972,59 @@ impl Callback {
         // Take and live-input quanta still run so a racing take or gesture
         // receives its `OutputFailed` terminal instead of waiting on silence.
         if self.status.render_fault.load(Acquire) {
+            self.sample_recording
+                .end(crate::sample_recording::End::OutputFailed);
             if !output.is_empty() {
                 self.prepare_gain_recording_quantum();
                 self.prepare_native_parameter_quantum();
             }
             output.fill([0.0; 2]);
-            return Ok(());
+            return Ok(RenderOutcome {
+                audible_recorded: false,
+                start: initial,
+            });
         }
-        if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
-            self.render_project(output)?;
+        if self.output_transport.is_some() {
+            self.sample_recording
+                .end(crate::sample_recording::End::UnsupportedOutput);
+        } else {
+            self.sample_recording.begin(output.len());
+        }
+        // A ready streamed section can install above, before any frames
+        // render. Only that transition replaces the original block start.
+        let render_start = if quantized_revision.is_some_and(|revision| {
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_some_and(|active| active.revision == revision)
+        }) {
+            self.scheduled_transport()
+        } else {
+            initial
+        };
+        let quantized = if self.status.closing.load(Acquire) {
+            section_launch::QuantizedSeekRender::NotHandled
+        } else {
+            self.render_quantized_seek(output)?
+        };
+        if matches!(quantized, section_launch::QuantizedSeekRender::NotHandled) {
+            self.render_project(output, 0)?;
         }
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
-        Ok(())
+        Ok(RenderOutcome {
+            audible_recorded: matches!(quantized, section_launch::QuantizedSeekRender::Switched),
+            start: render_start,
+        })
     }
 
-    fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    fn render_project(
+        &mut self,
+        output: &mut [Frame],
+        capture_offset: usize,
+    ) -> Result<(), Invalid> {
         if self.native_effects_revoked() {
             output.fill([0.0; 2]);
             return if self.status.playing.load(Relaxed) {
@@ -4200,8 +5082,20 @@ impl Callback {
             .as_ref()
             .and_then(|c| c.project.as_ref())
             .is_some_and(|p| p.observing());
-        if !node_observed && !project_observed {
-            return self.render_unobserved(output);
+        if self.sample_recording.selection().is_some_and(|layout| {
+            self.status.closing.load(Acquire)
+                || active.as_ref().is_none_or(|active| {
+                    active.control_context_generation != layout.generation
+                        || active.playback.sample_rate() != self.rate
+                        || !active.playback.project_sample_sources_supported(layout)
+                })
+        }) {
+            self.sample_recording
+                .end(crate::sample_recording::End::SourceChanged);
+        }
+        let recording = self.sample_recording.observation();
+        if !node_observed && !project_observed && recording.is_none() {
+            return self.render_unobserved(output, capture_offset);
         }
         if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
@@ -4216,17 +5110,60 @@ impl Callback {
             .spectrum_capture
             .as_mut()
             .and_then(|c| c.project.as_mut());
-        let selection = project_capture.as_ref().and_then(|p| p.selection());
+        let selection = project_capture
+            .as_ref()
+            .and_then(|p| p.selection())
+            .filter(|_| project_observed);
+        let (record_tracks, returns) = recording
+            .as_ref()
+            .map_or((&[][..], &[][..]), |(layout, _)| {
+                (layout.tracks.as_ref(), layout.returns.as_ref())
+            });
+        let spectrum_tracks = selection.as_ref().map_or(&[][..], |s| s.tracks());
+        let mut joined = [0; crate::sample_recording::TRACKS];
+        let tracks =
+            crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined);
+        let recording_observed = recording.is_some();
+        let recording = std::cell::RefCell::new(recording);
         let mut observe_project = |signal, offset, frames: &[Frame]| {
-            if let Some(project) = project_capture.as_mut() {
+            if let Some(project) = project_capture.as_mut()
+                && match signal {
+                    hex_engine::ProjectSignal::Track(id) => {
+                        spectrum_tracks.binary_search(&id).is_ok()
+                    }
+                    hex_engine::ProjectSignal::Return(_) => false,
+                    _ => true,
+                }
+            {
                 project.observe(signal, offset, frames);
             }
+            if recording_observed
+                && let Ok(mut recording) = recording.try_borrow_mut()
+                && let Some((layout, stage)) = recording.as_mut()
+            {
+                stage.observe(layout, signal, capture_offset + offset, frames);
+            }
         };
-        let mut project = selection
-            .as_ref()
-            .filter(|_| project_observed)
-            .and_then(|selection| {
-                hex_engine::ProjectOutputTap::new(selection.tracks(), &mut observe_project)
+        let mut observe_timing = |offset, start, frames, map: &hex_engine::PreparedTempoMap| {
+            if let Ok(mut recording) = recording.try_borrow_mut()
+                && let Some((_, stage)) = recording.as_mut()
+            {
+                stage.observe_timing(capture_offset + offset, start, frames, map);
+            }
+        };
+        let mut project = tracks
+            .filter(|_| project_observed || recording_observed)
+            .and_then(|tracks| {
+                let tap = hex_engine::ProjectOutputTap::with_returns(
+                    tracks,
+                    returns,
+                    &mut observe_project,
+                )?;
+                Some(if recording_observed {
+                    tap.with_timing(&mut observe_timing)
+                } else {
+                    tap
+                })
             });
         let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
             Some(&mut observe)
@@ -4234,10 +5171,12 @@ impl Callback {
             None
         };
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
-            .native_sources
-            .has_endpoints()
-            .then_some(&mut self.native_sources);
+        let has_endpoints = self.native_sources.has_endpoints();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut foreign_window = NativeEffectWindow::new(&mut self.native_sources, capture_offset);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> =
+            has_endpoints.then_some(&mut foreign_window);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let foreign = None;
         if let Some(mut active) = self
@@ -4256,6 +5195,12 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            streaming::count_starvation(
+                &self.status,
+                self.stream_pending_play.is_some(),
+                action_pending,
+                &outcome,
+            );
             self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
@@ -4303,18 +5248,27 @@ impl Callback {
         Ok(())
     }
 
-    fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    fn render_unobserved(
+        &mut self,
+        output: &mut [Frame],
+        capture_offset: usize,
+    ) -> Result<(), Invalid> {
         if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
-            .native_sources
-            .has_endpoints()
-            .then_some(&mut self.native_sources);
+        let has_endpoints = self.native_sources.has_endpoints();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut foreign_window = NativeEffectWindow::new(&mut self.native_sources, capture_offset);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> =
+            has_endpoints.then_some(&mut foreign_window);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let foreign = None;
+        let foreign = {
+            let _ = capture_offset;
+            None
+        };
         if let Some(mut active) = self
             .active
             .as_mut()
@@ -4331,6 +5285,12 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            streaming::count_starvation(
+                &self.status,
+                self.stream_pending_play.is_some(),
+                action_pending,
+                &outcome,
+            );
             self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
@@ -4386,6 +5346,7 @@ impl Callback {
                     play_applied: false,
                     readiness_refused: false,
                     source_changed: false,
+                    read_failed: false,
                     fault: None,
                     action_rejection: None,
                     action_applied: None,
@@ -4498,6 +5459,27 @@ impl Callback {
     ) -> Option<crate::spectrum_worker::CaptureOutcome> {
         self.finish_analysis_block(captured_start, output_valid).0
     }
+
+    pub(crate) fn finish_sample_recording(&mut self, output_valid: bool) {
+        if output_valid
+            && self.sample_recording.selection().is_some_and(|layout| {
+                self.status.closing.load(Acquire)
+                    || self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::current)
+                        .is_none_or(|active| {
+                            active.control_context_generation != layout.generation
+                                || !active.playback.project_sample_sources_supported(layout)
+                        })
+            })
+        {
+            self.sample_recording
+                .end(crate::sample_recording::End::SourceChanged);
+            return;
+        }
+        self.sample_recording.finish(output_valid);
+    }
     fn finish_eq_spectrum(
         &mut self,
         captured_start: Instant,
@@ -4560,9 +5542,44 @@ impl Callback {
     }
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
+        self.revoke_native_effects();
+        self.invalidate_transport_recording(reason);
+    }
+
+    fn invalidate_for_transport_change(&mut self, action: PlaybackAction) {
+        let reason = crate::gain_recording::AbortReason::TransportChanged;
+        if is_pause_action(action) {
+            // Pause retains the active graph for monitoring, release tails
+            // and resume. The native endpoints belong to that same graph.
+            self.invalidate_transport_recording(reason);
+        } else {
+            self.invalidate_gain_recording(reason);
+        }
+    }
+
+    fn invalidate_transport_recording(&mut self, reason: crate::gain_recording::AbortReason) {
         // Reuse the existing transport-discontinuity owner/epoch; asynchronous
         // output must not expose pre-seek/pause/stop buffers in a new context.
-        self.revoke_output_transport();
+        self.revoke_forwarded_output_transport();
+        self.abort_transport_inputs(reason);
+        let prior_epoch = self
+            .status
+            .transport_epoch
+            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
+        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
+            self.status
+                .last_output_fault_epoch
+                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
+        }
+        if prior_epoch.is_err() {
+            self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+    /// Abort the gain take and native parameter gesture without revoking the
+    /// output transport or advancing its epoch. A declicked Pause/Stop does
+    /// this when consumed; the rest of `invalidate_gain_recording` follows at
+    /// its fade end.
+    fn abort_transport_inputs(&mut self, reason: crate::gain_recording::AbortReason) {
         self.gain_recording.abort(reason);
         self.invalidate_native_parameter_input(match reason {
             crate::gain_recording::AbortReason::SourceChanged => {
@@ -4588,18 +5605,6 @@ impl Callback {
         {
             active.playback.clear_gain_recording_override();
         }
-        let prior_epoch = self
-            .status
-            .transport_epoch
-            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
-        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
-            self.status
-                .last_output_fault_epoch
-                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
-        }
-        if prior_epoch.is_err() {
-            self.status.gain_recording_fault.store(true, Release);
-        }
     }
     fn invalidate_native_parameter_input(
         &mut self,
@@ -4624,6 +5629,7 @@ impl Callback {
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut);
+        let had_input = self.native_parameter_input.has_input();
         let live = self.native_parameter_input.prepare(|target| {
             if status.render_fault.load(Acquire)
                 || target.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
@@ -4660,7 +5666,7 @@ impl Callback {
                         .abort(AbortReason::TargetUnavailable);
                     active.playback.invalidate_native_parameter_input();
                 }
-            } else {
+            } else if had_input {
                 active.playback.invalidate_native_parameter_input();
             }
         }
@@ -4704,12 +5710,19 @@ impl Callback {
         let end = active
             .as_ref()
             .map_or(0, |active| active.playback.performance_frame());
-        self.native_parameter_input
-            .finish_quantum(application, end, valid, cancelled);
-        if !self.native_parameter_input.has_input()
+        let had_input = self.native_parameter_input.has_input();
+        let cleared =
+            self.native_parameter_input
+                .finish_quantum(application, end, valid, cancelled);
+        if had_input
+            && !self.native_parameter_input.has_input()
             && let Some(active) = &mut active
         {
-            active.playback.invalidate_native_parameter_input();
+            if cleared {
+                active.playback.finish_native_parameter_input();
+            } else {
+                active.playback.invalidate_native_parameter_input();
+            }
         }
         if self.native_parameter_input.receipt_fault {
             self.status
@@ -4753,22 +5766,24 @@ impl Callback {
                 loop_pass,
             })
         });
-        if let Some(mut active) = active {
+        if let Some(mut active) = active
+            && active.playback.set_gain_recording_input(live).is_err()
+        {
             active.playback.clear_gain_recording_override();
-            if let Some((track, gain)) = live {
-                if active
-                    .playback
-                    .set_gain_recording_override(track, gain)
-                    .is_err()
-                {
-                    self.gain_recording.abort(AbortReason::SourceChanged);
-                }
-            }
+            self.gain_recording.abort(AbortReason::SourceChanged);
         }
     }
     /// Confirm the exact converted output quantum; this is sink delivery, not
     /// physical loudspeaker playback. Failure discards the entire pending take.
     pub fn finish_gain_recording_quantum(&mut self, output_valid: bool) {
+        if !output_valid
+            && let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
+        {
+            active.playback.clear_gain_recording_override();
+        }
         let end = self
             .active
             .as_ref()
@@ -4832,6 +5847,24 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
+        let observation =
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .and_then(|active| {
+                    active.playback.transport().map(
+                        |(position, performance, playing, loop_state)| TransportObservation {
+                            audio_revision: active.revision,
+                            control_generation: active.control_context_generation,
+                            consumed_command_ticket: self.status.consumed_command.load(Acquire),
+                            arrangement_frame: position,
+                            performance_frame: performance,
+                            playing,
+                            loop_state,
+                        },
+                    )
+                });
+        self.status.transport_observation.publish(observation);
         self.status
             .recording_source
             .publish(self.recording_source());
@@ -4878,6 +5911,7 @@ impl Callback {
         if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
             let position = active.playback.position();
             self.status.position.store(position, Relaxed);
+            self.publish_audible_position();
             if !self.recovery_position_frozen {
                 self.status.recovery_position.store(position, Relaxed);
             }
@@ -4896,12 +5930,19 @@ impl Callback {
 
 /// Known channel payload/capacity quote for the pinned worker factory.
 pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let editor_bytes = crate::foreign_parameter_delivery::editor::constructor_storage_quote()?;
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let editor_bytes = 0;
     std::mem::size_of::<Status>()
         .checked_add(action_outcomes::storage_bytes())?
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
+        .checked_add(crate::sample_recording::storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
+        .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
+        .checked_add(editor_bytes)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?
@@ -5104,11 +6145,15 @@ mod tests {
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 2,
@@ -5121,9 +6166,11 @@ mod tests {
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: DEVICE_ID + if effect_buses { 3 } else { 2 },
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5135,6 +6182,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -5148,6 +6197,8 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID,
@@ -5187,6 +6238,8 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 1,
@@ -5279,16 +6332,20 @@ mod tests {
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5300,6 +6357,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -5313,6 +6372,8 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
@@ -5348,6 +6409,8 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
@@ -5413,16 +6476,20 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5434,6 +6501,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -5447,6 +6516,8 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
@@ -5482,6 +6553,8 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
@@ -5566,16 +6639,20 @@ mod tests {
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5587,6 +6664,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -5602,6 +6681,8 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        modulation: Default::default(),
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: TRACK_DEVICE_ID,
@@ -5641,6 +6722,8 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        modulation: Default::default(),
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: RETURN_DEVICE_ID,
@@ -5934,7 +7017,9 @@ mod tests {
             );
             assert!(control.status.metronome_enabled.load(Relaxed));
             assert_eq!(control.status.position.load(Relaxed), 37);
-            assert_eq!(control.status.playing.load(Relaxed), cancelled);
+            // A queued Pause is Applied when consumed but keeps playing
+            // through its fade until a render reaches its audible end (#4151).
+            assert!(control.status.playing.load(Relaxed));
             control.request_shutdown();
             callback.begin_block();
             control.reclaim();
@@ -5962,7 +7047,11 @@ mod tests {
             .with_shape(4, 4, 700, -700)
             .unwrap()
             .with_curve_positions(250, 750)
-            .unwrap();
+            .unwrap()
+            .with_curve_laws([
+                hex_project::ClipFade::DEFAULT_S_CURVE,
+                hex_project::FadeCurveLaw::Linear,
+            ]);
         editor
             .execute(hex_project::Command::SetClipFadeEnvelope { clip, fade })
             .unwrap();
@@ -6081,11 +7170,16 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        assert_eq!(output[0], [0.16; 2]);
+        // The Seek applies after its 21-frame fade at 8 kHz, where the
+        // undamped metronome click at frame zero follows (#4140).
+        assert_eq!(output[21], [0.16; 2]);
         control.command(PlaybackCommand::Pause).unwrap();
         let allocations = allocation_counter::measure(|| {
-            callback.begin_block();
-            callback.render(&mut output).unwrap();
+            // The first block is the queued Pause's 128-frame fade (#4151).
+            for _ in 0..2 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
         });
         assert_eq!(
             (
@@ -6104,6 +7198,137 @@ mod tests {
 
     #[cfg(feature = "allocation-probe")]
     #[test]
+    fn held_mutable_arrangement_loop_handoff_preserves_pcm_without_callback_allocation() {
+        for (old_enabled, new_enabled, block_frames) in
+            [(true, true, 256), (false, true, 17), (true, false, 1)]
+        {
+            check_held_arrangement_loop_handoff(old_enabled, new_enabled, block_frames);
+        }
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn check_held_arrangement_loop_handoff(
+        old_enabled: bool,
+        new_enabled: bool,
+        block_frames: usize,
+    ) {
+        use hex_project::{BeatTime, Command, Created, Editor, Project};
+        let class = hex_engine::NativeDeviceClass::Instrument;
+        let state = hex_engine::default_native_device_state_for_class(
+            class,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+        )
+        .unwrap();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            &state,
+            hex_lattice_contract::ParameterId::from_static(78),
+            hex_lattice_contract::ParameterValue::Float(0.4),
+        )
+        .unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "loop probe".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(10).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ONE,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        // Leave room for the native instrument's conservative release bound.
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 48_000,
+                end: 96_000_000,
+                enabled: old_enabled,
+            })
+            .unwrap();
+        let prepare = |project: &Project| {
+            Playback::from_prepared(Arc::new(
+                hex_engine::PreparedRevision::prepare(
+                    project,
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            ))
+        };
+        let mut reference = prepare(editor.project());
+        reference.apply(PlaybackCommand::Play);
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(prepare(editor.project())).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut prefix = vec![[0.0; 2]; 30_000];
+        for chunk in prefix.chunks_mut(256) {
+            callback.begin_block();
+            callback.render(chunk).unwrap();
+        }
+        let mut expected_prefix = prefix.clone();
+        reference.render(&mut expected_prefix).unwrap();
+        assert_eq!(prefix, expected_prefix);
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 24_000,
+                end: 120_000_000,
+                enabled: new_enabled,
+            })
+            .unwrap();
+        let revision = control.publish(prepare(editor.project())).unwrap();
+        let mut actual = vec![[0.0; 2]; block_frames * 3];
+        let measured = allocation_counter::measure(|| {
+            for chunk in actual.chunks_mut(block_frames) {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Relaxed), revision);
+        assert_eq!(control.status.rejected_revision(), None);
+        let mut expected = vec![[0.0; 2]; actual.len()];
+        for chunk in expected.chunks_mut(block_frames) {
+            reference.render(chunk).unwrap();
+        }
+        assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-6));
+        assert_eq!(actual, expected, "held source must keep its DSP history");
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
     fn saturator_track_and_return_revision_admission_and_render_allocate_nothing() {
         let (mut control, mut callback) = channel(48_000).expect("channel");
         let playback = saturator_track_and_return_graph(36.0);
@@ -6114,8 +7339,34 @@ mod tests {
         callback
             .render(&mut original_output)
             .expect("initial callback render");
+        // Each oversampled Saturator answers a step with exact DC once its
+        // declared latency and finite tail have elapsed. Main waits for the
+        // return path, two Saturators deep; pre-epoch output is silent.
+        let saturator = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+            &hex_lattice_contract::NativeDeviceMetadata::default_state(
+                &hex_devices::saturator::SATURATOR_DEFINITION,
+            )
+            .expect("default saturator"),
+            48_000,
+            &[],
+        )
+        .expect("standalone saturator");
+        let latency = hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&saturator)
+            .expect("declared latency") as usize;
+        let hex_lattice::OutputTail::Finite { max_tail_frames } =
+            hex_lattice::PreparedNativeProcessor::output_tail(&saturator)
+        else {
+            panic!("finite saturator tail");
+        };
+        let settled = 2 * (latency + max_tail_frames as usize);
+        assert_eq!((latency, settled), (11, 72));
         assert!(
-            original_output.iter().all(|frame| {
+            original_output[..2 * latency]
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert!(
+            original_output[settled..].iter().all(|frame| {
                 (frame[0] - 1.75).abs() < 1.0e-6 && (frame[1] + 1.75).abs() < 1.0e-6
             })
         );
@@ -6127,6 +7378,14 @@ mod tests {
         let allocations = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("callback render");
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("callback render during ramp");
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("callback render after ramp");
         });
         assert_eq!(
             (
@@ -6138,8 +7397,16 @@ mod tests {
             (0, 0, 0, 0),
         );
         assert_ne!(output, original_output);
-        assert!(output.iter().all(|frame| {
+        // At 48 kHz the 5 ms ramp from the edit at frame 128 ends at input
+        // frame 368; Main settles on the exact target `settled` frames later,
+        // inside the third 128-frame block (frames 384..512).
+        let target = 128 + 240 + settled - 384;
+        assert_eq!(target, 56);
+        assert!(output[target..].iter().all(|frame| {
             (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
+        }));
+        assert!(output[..target].iter().any(|frame| {
+            (frame[0] - 0.34375).abs() >= 1.0e-6 || (frame[1] + 0.55).abs() >= 1.0e-6
         }));
         control.request_shutdown();
         callback.begin_block();
@@ -6169,6 +7436,49 @@ mod tests {
         let allocations = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn rattle_track_return_handoff_and_render_allocate_nothing() {
+        use hex_devices::rattle::{RATTLE_DEFINITION as d, parameter};
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let original = d.default_state().unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(original.clone()))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        // The edited revision inherits oversampler/noise history and glides drive.
+        let changed = d
+            .patch_parameter(&original, parameter::DRIVE, ParameterValue::Float(1.0))
+            .unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(changed))
+            .unwrap();
+        let allocations = allocation_counter::measure(|| {
+            for _ in 0..4 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
         });
         assert_eq!(
             (
@@ -6322,8 +7632,11 @@ mod tests {
         for command in [PlaybackCommand::Seek(0), PlaybackCommand::Stop] {
             control.command(command).unwrap();
             let counts = allocation_counter::measure(|| {
-                callback.begin_block();
-                callback.render(&mut block).unwrap();
+                // A queued Stop fades over 128 frames, past one block (#4151).
+                for _ in 0..1 + usize::from(command == PlaybackCommand::Stop) {
+                    callback.begin_block();
+                    callback.render(&mut block).unwrap();
+                }
             });
             assert_eq!(
                 (
@@ -7067,6 +8380,8 @@ mod tests {
                 .push(QueuedCommand {
                     ticket,
                     action: PlaybackAction::Transport(PlaybackCommand::PlayFrom(45)),
+                    project_generation: None,
+                    expected_source: None,
                     sampler_edit_gate: gate,
                     transport_epoch: epoch,
                 })
@@ -7918,6 +9233,63 @@ mod tests {
     }
 
     #[test]
+    fn running_transport_fence_rejects_stale_and_pending_command_observations() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        control
+            .publish_with_policy_and_context_generation(
+                session_playback(1),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        callback.begin_block();
+        assert!(control.capture_running_transport_fence().is_none());
+        let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let (observed, fence) = control.capture_running_transport_fence().unwrap();
+        assert_eq!(observed.consumed_command_ticket, play);
+        assert_eq!(fence.admitted_command_ticket(), play);
+
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(0))
+            .unwrap();
+        assert!(control.capture_running_transport_fence().is_none());
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let current = control.status.transport_observation().unwrap();
+        assert_eq!(current.consumed_command_ticket, seek);
+        control.status.transport_observation.publish(Some(observed));
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.transport_observation.publish(Some(current));
+        assert!(control.capture_running_transport_fence().is_some());
+
+        control
+            .status
+            .transport_observation
+            .publish(Some(TransportObservation {
+                audio_revision: current.audio_revision + 1,
+                ..current
+            }));
+        assert!(control.capture_running_transport_fence().is_none());
+        control
+            .status
+            .transport_observation
+            .publish(Some(TransportObservation {
+                control_generation: 0,
+                ..current
+            }));
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.transport_observation.publish(Some(current));
+        control.status.device_fault.store(true, Release);
+        assert!(control.capture_running_transport_fence().is_none());
+        control.status.device_fault.store(false, Release);
+        assert!(control.capture_running_transport_fence().is_some());
+    }
+
+    #[test]
     fn fresh_runtime_fence_accepts_empty_and_exact_active_snapshots() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let empty = control.capture_fresh_runtime_fence().unwrap();
@@ -8111,7 +9483,7 @@ mod tests {
                 source_context: None,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
-                section_launch_frame: None,
+                quantized_seek_frame: None,
                 streams: None,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 native_references: None,
@@ -8427,6 +9799,338 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn source_bound_start_rejects_same_project_replacement_and_preserves_stop() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use hex_engine::AudioSourceContext;
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        let old = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 4,
+        };
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntime,
+                0,
+                true,
+                false,
+                Some(old),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(0);
+        let source = client.status().unwrap().recording_source().unwrap();
+        let wrong_output = AppliedAudioSource {
+            output_identity: source.output_identity + 1,
+            ..source
+        };
+        assert!(
+            client
+                .play_from_source_with_ticket(1, wrong_output)
+                .is_err()
+        );
+        let wrong_context = AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 1,
+                ..old
+            },
+            ..source
+        };
+        assert!(
+            client
+                .play_from_source_with_ticket(1, wrong_context)
+                .is_err()
+        );
+
+        let ticket = client.play_from_source_with_ticket(17, source).unwrap();
+        let measured =
+            allocation_counter::measure(|| data.owner_mut().unwrap().run(|c, _| c.begin_block()));
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Applied
+            })
+        );
+        assert!(client.status().unwrap().playing.load(Acquire));
+        client.stop();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+
+        let control = publication.control().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        // A graph can be replaced even while its canonical context is unchanged.
+        let next = old;
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                0,
+                true,
+                false,
+                Some(next),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        data.owner_mut()
+            .unwrap()
+            .run(|c, _| c.test_after_fresh_fence_validation = Some(Arc::clone(&barrier)));
+        let ticket = std::thread::scope(|scope| {
+            let callback = scope.spawn(|| {
+                allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| c.begin_block())
+                })
+            });
+            barrier.wait();
+            let ticket = client.play_from_source_with_ticket(47, source).unwrap();
+            barrier.wait();
+            let measured = callback.join().unwrap();
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            ticket
+        });
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Rejected(PlaybackActionRejection::AudioSourceChanged)
+            })
+        );
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        assert_eq!(
+            client.status().unwrap().recording_source().unwrap().context,
+            next
+        );
+        assert_ne!(
+            client
+                .status()
+                .unwrap()
+                .recording_source()
+                .unwrap()
+                .audio_revision,
+            source.audio_revision
+        );
+        assert!(client.play_from_source_with_ticket(47, source).is_err());
+        let source = client.status().unwrap().recording_source().unwrap();
+        for _ in 0..COMMANDS {
+            client.play_from_source_with_ticket(2, source).unwrap();
+        }
+        assert!(client.play_from_source_with_ticket(2, source).is_err());
+        client.stop();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn document_bound_client_rejects_commands_racing_a_successor_graph() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use hex_engine::{AudioSourceContext, LaunchQuantization, SessionPlaybackCommand};
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        let old = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 4,
+        };
+        let (old_graph, _, clip, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                old_graph,
+                PublicationPolicy::InstallFreshRuntime,
+                old.project_generation,
+                true,
+                false,
+                Some(old),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(old.project_generation);
+
+        let control = publication.control().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let new = AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 1,
+        };
+        let (new_graph, _, new_clip, _) = session_audio_graph();
+        assert_eq!(clip, new_clip);
+        control
+            .publish_unaccounted_pcm_obligation(
+                new_graph,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                2,
+                true,
+                false,
+                Some(new),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.test_after_fresh_fence_validation = Some(Arc::clone(&barrier));
+        });
+        let actions = [
+            PlaybackAction::Transport(PlaybackCommand::PlayFrom(47)),
+            PlaybackAction::Transport(PlaybackCommand::Seek(61)),
+            PlaybackAction::LaunchAndPlay(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            }),
+        ];
+        let tickets = std::thread::scope(|scope| {
+            let callback = scope.spawn(|| {
+                allocation_counter::measure(|| {
+                    data.owner_mut()
+                        .unwrap()
+                        .run(|callback, _| callback.begin_block());
+                })
+            });
+            barrier.wait();
+            let tickets = actions.map(|action| client.action_with_ticket(action));
+            barrier.wait();
+            let count = callback.join().unwrap();
+            assert_eq!(
+                (
+                    count.count_total,
+                    count.bytes_total,
+                    count.count_current,
+                    count.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            tickets.map(Result::unwrap)
+        });
+        for ticket in tickets {
+            assert_eq!(
+                reader.try_take(),
+                Some(ActionOutcomeReceipt {
+                    ticket,
+                    outcome: ActionOutcome::Rejected(PlaybackActionRejection::ProjectChanged),
+                })
+            );
+        }
+        let status = client.status().unwrap();
+        assert_eq!(
+            status.rejected_action(),
+            Some((tickets[2], PlaybackActionRejection::ProjectChanged))
+        );
+        assert_eq!(status.recording_source().unwrap().context, new);
+        assert_eq!(status.position.load(Acquire), 0);
+        assert!(!status.playing.load(Acquire));
+        assert!(client.command_with_ticket(PlaybackCommand::Play).is_err());
+
+        client.bind_resident_transport(new.project_generation);
+        let control = publication.control().unwrap();
+        assert_eq!(control.reclaim(), 1);
+        let edited = AudioSourceContext {
+            editor_revision: 2,
+            ..new
+        };
+        let (edited_graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                edited_graph,
+                PublicationPolicy::InstallFreshRuntime,
+                2,
+                true,
+                false,
+                Some(edited),
+            )
+            .unwrap();
+        let next = client
+            .command_with_ticket(PlaybackCommand::Seek(29))
+            .unwrap();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket: next,
+                outcome: ActionOutcome::Applied
+            })
+        );
+        assert_eq!(
+            client.status().unwrap().recording_source().unwrap().context,
+            edited
+        );
+        assert_eq!(client.status().unwrap().position.load(Acquire), 29);
+        for _ in 0..COMMANDS {
+            client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        }
+        assert!(client.command_with_ticket(PlaybackCommand::Play).is_err());
+        client.stop();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        assert_eq!(client.status().unwrap().position.load(Acquire), 0);
+
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
+    }
+
+    #[test]
     fn stop_admitted_after_fresh_fence_validation_stops_new_runtime() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         control.publish(graph().0).unwrap();
@@ -8484,11 +10188,16 @@ mod tests {
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
         assert_eq!(control.status.consumed_command.load(Acquire), ticket);
-        assert_eq!(control.status.position.load(Acquire), 13);
+        // A Seek while playing fades out, jumps and ramps in (#4140).
+        assert_eq!(control.status.position.load(Acquire), 0);
         assert!(control.status.publication_pending.load(Acquire));
+        let mut fade_out = [[0.0; 2]; 128];
+        callback.render(&mut fade_out).unwrap();
+        assert_eq!(control.status.position.load(Acquire), 13);
+        let ramp = |frame: usize| [0.25 * (frame + 1) as f32 / 128.0; 2];
         let mut before_retry = [[0.0; 2]; 8];
         callback.render(&mut before_retry).unwrap();
-        assert_eq!(before_retry, [[0.25; 2]; 8]);
+        assert_eq!(before_retry, std::array::from_fn(ramp));
         assert_eq!(control.status.position.load(Acquire), 21);
         assert_eq!(control.reclaim(), RETIRED);
         callback.begin_block();
@@ -8496,7 +10205,7 @@ mod tests {
         assert_fresh_fence_rejection(&mut control, revision);
         let mut after_retry = [[0.0; 2]; 8];
         callback.render(&mut after_retry).unwrap();
-        assert_eq!(after_retry, [[0.25; 2]; 8]);
+        assert_eq!(after_retry, std::array::from_fn(|frame| ramp(frame + 8)));
         assert_eq!(control.status.position.load(Acquire), 29);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
@@ -8519,7 +10228,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
-                    section_launch_frame: None,
+                    quantized_seek_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
@@ -9955,16 +11664,20 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: 5,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -9976,6 +11689,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -10267,7 +11982,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
@@ -10388,7 +12103,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        section_launch_frame: None,
+                        quantized_seek_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
@@ -10469,7 +12184,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        section_launch_frame: None,
+                        quantized_seek_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
@@ -10489,7 +12204,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            section_launch_frame: None,
+            quantized_seek_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
@@ -10643,7 +12358,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    section_launch_frame: None,
+                    quantized_seek_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
@@ -10673,19 +12388,25 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

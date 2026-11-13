@@ -5,6 +5,8 @@ use hex_plugin_host::protocol::{
     ParameterConversion, ParameterPageQuery, ParameterPlainValue, ParameterText,
 };
 
+mod extension;
+
 fn query(owner: &mut NativeWorker) -> NativeWorkerControllerQuery {
     let until = Instant::now() + Duration::from_secs(3);
     loop {

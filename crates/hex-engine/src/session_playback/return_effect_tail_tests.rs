@@ -274,6 +274,8 @@ fn prepared_return_project_with_bus(
             gain: return_gain,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
@@ -350,6 +352,8 @@ fn eq8_return_project(gain_db: f32, q: f32, kind: u32) -> Project {
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -692,9 +696,13 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
             offset += frames;
         }
         for index in 0..8 {
-            let current = if replacement { [0.1, -0.025] } else { [0.0; 2] };
+            let current = if replacement {
+                [0.1, -0.1 + 0.075 * (index + 1) as f32 / 240.0]
+            } else {
+                [0.0; 2]
+            };
             let current_return = if replacement {
-                [(0.1 - 0.025) * 0.5 * 0.25; 2]
+                [(current[0] + current[1]) * 0.5 * 0.25; 2]
             } else {
                 [0.0; 2]
             };
@@ -1510,7 +1518,7 @@ fn detached_track_tail_reaches_group_once_and_unsafe_reparent_refuses() {
     old.tail_output_active[0] = true;
     let mut refused = SessionPlayback::new(prepare(false)).unwrap();
     assert!(matches!(
-        refused.preview_stream_handoff(&mut old, 1, None, &mut |_| Ok(())),
+        refused.preview_stream_handoff_with_report(&mut old, 1, None, &mut |_| Ok(())),
         Err(SessionPlaybackError::GroupTailRoutingBusy)
     ));
     assert!(matches!(
@@ -1567,4 +1575,194 @@ fn detached_track_tail_reaches_group_once_and_unsafe_reparent_refuses() {
         "old tails must not enter current sends"
     );
     assert_eq!(main, [[0.125, -0.25]; 4]);
+}
+
+#[test]
+fn removing_unused_return_refuses_while_a_retained_return_tail_is_active() {
+    for later_return in [false, true] {
+        retained_tail_refuses_unused_return_removal(later_return);
+    }
+}
+
+fn retained_tail_refuses_unused_return_removal(later_return: bool) {
+    use hex_project::{Command, Created, Editor};
+
+    let mut editor = Editor::new(super::tests::project(1.0, 0, 8 << 32), 8).unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    if later_return {
+        editor
+            .execute(Command::AddReturnTrack {
+                name: "later".into(),
+            })
+            .unwrap();
+    }
+    let mut previous = playback(editor.project());
+    let mut reference = playback(editor.project());
+    for runtime in [&mut previous, &mut reference] {
+        warm(runtime);
+        let bus_ref = &runtime.revision.arrangement().return_buses()[0];
+        let tail = ReturnEffectTail::new(active_chain(bus, StereoMatrix::identity()), bus_ref);
+        runtime.return_effect_tails.slots_mut()[0] = Some(tail);
+    }
+    editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let mut candidate = playback(editor.project());
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    );
+    assert!(
+        previous.return_effect_tails.slots()[0]
+            .as_ref()
+            .unwrap()
+            .output_active
+    );
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn real_return_tail_survives_or_refuses_later_main_latency() {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, Created, Editor, Project};
+    use std::collections::BTreeMap;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "impulse".into(),
+            path: "memory.wav".into(),
+            sample_rate: 48_000,
+            frames: 12_000,
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let state = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let mut samples = vec![[0.0; 2]; 12_000];
+    samples[..512].fill([0.25, -0.125]);
+    let media = BTreeMap::from([(asset, crate::Audio::new(48_000, samples).unwrap())]);
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut original = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(initial).unwrap();
+    for playback in [&mut original, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let removed = prepare(editor.project());
+    let mut with_tail = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+    let mut reference_tail = SessionPlayback::new(removed).unwrap();
+    with_tail
+        .try_inherit_state_live_from(&mut original)
+        .unwrap();
+    reference_tail
+        .try_inherit_state_live_from(&mut reference)
+        .unwrap();
+    assert!(
+        with_tail
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .any(|tail| tail.output_active),
+        "actual removed reverb must create an active retained tail"
+    );
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    candidate.request_live_restart();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    assert!(
+        with_tail
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .any(|tail| tail.output_active),
+        "refusal must preserve the donor tail"
+    );
+    let mut actual = [[0.0; 2]; 512];
+    let mut expected = actual;
+    with_tail.render(&mut actual).unwrap();
+    reference_tail.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+
+    // A separately authenticated bounce fence represents audio already baked
+    // into the successor and deliberately resets the old tail.
+    let mut bounced = SessionPlayback::new(prepare(editor.project())).unwrap();
+    bounced.request_live_restart();
+    bounced
+        .try_inherit_state_fenced_restart_from(&mut reference_tail)
+        .unwrap();
 }

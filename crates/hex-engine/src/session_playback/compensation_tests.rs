@@ -2,6 +2,733 @@
 use super::*;
 use crate::signal_graph::tests::{fixture, prepare};
 use crate::{Audio, SineTable};
+
+#[test]
+fn adding_an_empty_track_keeps_compensated_pcm_continuous() {
+    use hex_project::Command;
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor
+            .execute(Command::AddTrack {
+                name: "empty".into(),
+            })
+            .unwrap();
+        let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = vec![[0.0; 2]; 257];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn adding_an_unused_return_keeps_compensated_pcm_continuous() {
+    use hex_project::Command;
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap();
+        let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = vec![[0.0; 2]; 257];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn adding_an_unused_return_preserves_a_sounding_return() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "active".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap();
+        let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = vec![[0.0; 2]; 257];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+        assert!(expected.iter().any(|frame| frame[0] > 1.0));
+    }
+}
+
+#[test]
+fn changing_an_unused_return_preserves_an_existing_reverb_tail() {
+    for remove in [false, true] {
+        unused_return_reverb_tail_case(remove);
+    }
+}
+
+fn unused_return_reverb_tail_case(remove: bool) {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, Created, Editor, Project};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "impulse".into(),
+            path: "memory.wav".into(),
+            sample_rate: 48_000,
+            frames: 12_000,
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let state = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let unused = if remove {
+        let Created::ReturnTrack(id) = editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        Some(id)
+    } else {
+        None
+    };
+    let mut samples = vec![[0.0; 2]; 12_000];
+    samples[..512].fill([0.25, -0.125]);
+    let media = std::collections::BTreeMap::from([(asset, Audio::new(48_000, samples).unwrap())]);
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let revision = prepare(editor.project());
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut old, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    if let Some(id) = unused {
+        editor.execute(Command::RemoveReturnTrack(id)).unwrap();
+    } else {
+        editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap();
+    }
+    let mut next = SessionPlayback::new(prepare(editor.project())).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 512];
+    let mut expected = actual;
+    next.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(
+        expected.iter().flatten().any(|sample| sample.abs() > 1e-7),
+        "reverb tail must be audible"
+    );
+}
+
+#[test]
+fn adding_a_routed_return_keeps_the_conservative_restart() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "routed".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 16];
+    next.render(&mut actual).unwrap();
+    assert_eq!(&actual[..7], &[[0.0; 2]; 7]);
+    assert!(actual[7][0] > 0.0);
+}
+
+#[test]
+fn removing_an_unused_return_keeps_compensated_pcm_continuous() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+        let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = vec![[0.0; 2]; 257];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn removing_and_undoing_an_earlier_unused_return_preserves_later_send() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 2048);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 2048]).unwrap();
+        }
+        let Created::ReturnTrack(unused) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("unused return")
+        };
+        let Created::ReturnTrack(active) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "active".into(),
+            })
+            .unwrap()
+        else {
+            panic!("active return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: active,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor
+            .execute(Command::RemoveReturnTrack(unused))
+            .unwrap();
+        for restored in [false, true] {
+            if restored {
+                assert!(f.editor.undo());
+                assert_eq!(f.editor.project().return_tracks()[0].id(), unused);
+            }
+            let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut actual = vec![[0.0; 2]; 257];
+            let mut expected = actual.clone();
+            for chunk in actual.chunks_mut(partition) {
+                next.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                reference.render(chunk).unwrap();
+            }
+            assert_eq!(
+                actual, expected,
+                "partition {partition}, restored={restored}"
+            );
+            assert!(expected.iter().any(|frame| frame[0] > 1.0));
+            old = next;
+        }
+    }
+}
+
+#[test]
+fn removing_an_unused_return_does_not_hide_a_changed_send_destination() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut returns = Vec::new();
+    for name in ["unused", "first", "second"] {
+        let Created::ReturnTrack(id) = f
+            .editor
+            .execute(Command::AddReturnTrack { name: name.into() })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        returns.push(id);
+    }
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: returns[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(Command::RemoveReturnTrack(returns[0]))
+        .unwrap();
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: returns[1],
+            gain: 0.0,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: returns[2],
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 16];
+    next.render(&mut actual).unwrap();
+    assert_eq!(&actual[..7], &[[0.0; 2]; 7]);
+    assert!(actual[7][0] > 0.0);
+}
+
+#[test]
+fn removing_a_routed_return_keeps_the_conservative_restart() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "routed".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 16];
+    next.render(&mut actual).unwrap();
+    assert_eq!(&actual[..7], &[[0.0; 2]; 7]);
+    assert_eq!(actual[7], [1.0, -0.5]);
+}
+
+#[test]
+fn removing_an_empty_track_keeps_compensated_pcm_continuous() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let Created::Track(empty) = f
+            .editor
+            .execute(Command::AddTrack {
+                name: "empty".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track creation");
+        };
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        f.editor.execute(Command::RemoveTrack(empty)).unwrap();
+        let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = vec![[0.0; 2]; 257];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn adding_a_routed_empty_track_keeps_the_conservative_restart() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    let Created::Track(track) = f
+        .editor
+        .execute(Command::AddTrack {
+            name: "routed".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut output = [[0.0; 2]; 16];
+    next.render(&mut output).unwrap();
+    assert_eq!(&output[..7], &[[0.0; 2]; 7]);
+    assert_eq!(output[7], [1.0, -0.5]);
+}
+#[test]
+fn compensated_fader_ramps_at_the_delayed_content_origin() {
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(hex_project::Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut frames = [[0.0; 2]; 256];
+    next.render(&mut frames).unwrap();
+    for (index, frame) in frames.iter().enumerate() {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        assert!((frame[0] - gain).abs() < 1e-5, "frame {index}: {frame:?}");
+        assert!(
+            (frame[1] + 0.5 * gain).abs() < 1e-5,
+            "frame {index}: {frame:?}"
+        );
+    }
+}
+
+#[test]
+fn noncompensated_device_fader_ramps_without_applying_gain_twice() {
+    let mut f = fixture(&[&[0]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    assert!(old.compensation.is_none());
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(hex_project::Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut frames = [[0.0; 2]; 256];
+    next.render(&mut frames).unwrap();
+    for (index, frame) in frames.iter().enumerate() {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        assert!((frame[0] - gain).abs() < 1e-5, "frame {index}: {frame:?}");
+        assert!(
+            (frame[1] + 0.5 * gain).abs() < 1e-5,
+            "frame {index}: {frame:?}"
+        );
+    }
+}
+
+#[test]
+fn compensated_fader_waits_for_origin_and_rolls_back_on_failure() {
+    let f = fixture(&[&[7]], 1024);
+    let revision = prepare(&f).unwrap();
+    let mut tested = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut oracle = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut tested, &mut oracle] {
+        runtime.track_faders[0].retarget([0.0; 2], 48000);
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let initial = tested.track_faders[0];
+    tested.render(&mut [[0.0; 2]; 6]).unwrap();
+    oracle.render(&mut [[0.0; 2]; 6]).unwrap();
+    assert_eq!(tested.track_faders[0], initial);
+    tested.arrangement_frame = u64::MAX - 300;
+    assert!(tested.render(&mut [[0.0; 2]; 512]).is_err());
+    assert_eq!(tested.track_faders[0], initial);
+    tested.arrangement_frame = 6;
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    tested.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(tested.track_faders[0], oracle.track_faders[0]);
+}
+
+#[test]
+fn track_fader_ramp_feeds_capture_and_send_once() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let plan = next
+        .output_capture_plan(
+            &[
+                OutputCaptureId::Track(f.tracks[0]),
+                OutputCaptureId::Return(bus),
+            ],
+            256,
+        )
+        .unwrap();
+    let mut main = [[0.0; 2]; 256];
+    let mut track = main;
+    let mut returned = main;
+    let mut buffers = [&mut track[..], &mut returned[..]];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    next.render_with_capture(&mut main, &mut capture).unwrap();
+    let track = capture.output(0).unwrap();
+    let returned = capture.output(1).unwrap();
+    for index in 0..256 {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        assert!((track[index][0] - gain).abs() < 1e-5);
+        assert!((returned[index][0] - 0.5 * gain).abs() < 1e-5);
+        assert!((main[index][0] - 1.5 * gain).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn rapid_gain_retarget_and_equivalent_publication_continue_from_current_level() {
+    use hex_project::Command;
+    let mut f = fixture(&[&[]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0; 2]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut down = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    down.try_inherit_state_from(&mut old).unwrap();
+    let mut down_frames = [[0.0; 2]; 64];
+    down.render(&mut down_frames).unwrap();
+    let current = 1.0 - 64.0 / 240.0;
+    assert!((down_frames[63][0] - current).abs() < 1e-5);
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 1.0,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut up = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    up.try_inherit_state_from(&mut down).unwrap();
+    let mut first = [[0.0; 2]; 32];
+    up.render(&mut first).unwrap();
+    let mut republished = SessionPlayback::new(revision).unwrap();
+    republished.try_inherit_state_from(&mut up).unwrap();
+    let mut rest = [[0.0; 2]; 208];
+    republished.render(&mut rest).unwrap();
+    for (index, frame) in first.iter().chain(rest.iter()).enumerate() {
+        let gain = current + (1.0 - current) * (index + 1) as f32 / 240.0;
+        assert!((frame[0] - gain).abs() < 1e-5, "frame {index}: {frame:?}");
+    }
+}
 #[test]
 fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
     let f = fixture(&[&[], &[7]], 1024);
@@ -445,8 +1172,8 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
         candidate.candidate_admission_open,
     );
     let mut pages = Vec::new();
-    let window = candidate
-        .preview_stream_handoff_with_scope(
+    let (window, report) = candidate
+        .preview_stream_handoff_with_policy_and_report(
             &mut old,
             64,
             None,
@@ -455,8 +1182,10 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
                 Ok(())
             },
             true,
+            false,
         )
         .unwrap();
+    assert!(!report.running_audio_restart());
     assert_eq!(window.frames, 0);
     assert!(pages.is_empty());
     assert_eq!(
@@ -483,7 +1212,11 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
         ),
         before
     );
-    candidate.try_inherit_state_from(&mut old).unwrap();
+    let committed = candidate.try_inherit_state_from(&mut old).unwrap();
+    assert_eq!(
+        report.running_audio_restart(),
+        committed.running_audio_restart()
+    );
     let mut oracle = SessionPlayback::new(revision).unwrap();
     for runtime in [&mut candidate, &mut oracle] {
         runtime.apply(SessionPlaybackCommand::Play).unwrap();

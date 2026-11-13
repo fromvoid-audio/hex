@@ -32,6 +32,70 @@ fn terminal(
     }
 }
 #[gpui::test]
+fn audio_start_drag_submits_held_marker_and_escape_cancels(cx: &mut TestAppContext) {
+    use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use hex_session::service::PlayStartEdit;
+    use std::sync::atomic::Ordering::Release;
+
+    let _output_guard = status_fixture_guard();
+    let (_files, mut visual, editor, clip) = open(cx);
+    let (mut output, _callback) = headless_status_output();
+    let control = output.take_client().unwrap();
+    control.status().unwrap().playing.store(true, Release);
+    editor.update(&mut visual, |v, cx| {
+        v.audio = Some(crate::editor_backend::EditorAudio {
+            control,
+            sample_rate: 48_000,
+            label: "play-start audition fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let moved = point(down.x + body.size.width * 0.25, down.y);
+    let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let target = v
+            .service
+            .held_arrangement_play_start_audition_for_test()
+            .unwrap();
+        assert_eq!(target.context.editor_revision, original);
+        assert_eq!(
+            target.edit,
+            PlayStartEdit::Audio {
+                clip,
+                position: v.audio_play_start_position().unwrap(),
+            }
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, original);
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.service
+                .held_arrangement_play_start_audition_for_test()
+                .is_none()
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, original);
+    });
+    assert!(marker_fraction(&mut visual).abs() < 0.002);
+}
+
+#[gpui::test]
 fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppContext) {
     for scenario in ["plain", "crop", "frozen"] {
         let cx = &mut cx.new_app();

@@ -1,5 +1,9 @@
 """Release channel/custody regressions; native gates remain separate acceptance."""
 import importlib.util
+import os
+import py_compile
+import shutil
+import sys
 import json
 from pathlib import Path
 import plistlib
@@ -14,6 +18,190 @@ release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
 
+class DeliveryImportSourceTests(unittest.TestCase):
+    @staticmethod
+    def load_entrypoints(root: Path):
+        source_scripts = Path(__file__).resolve().parents[1]
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("hex-release.py", "prepare-launch-discovery.py", "hex-test-build.py",
+                     "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py", "release_notes.py",
+                     "changelog.py", "manual.py", "hex-test-build.json", "hex-release.json"):
+            shutil.copyfile(source_scripts / name, scripts / name)
+        loaded = {}
+        for filename, name in (("hex-release.py", "source_guard_release_probe"),
+                               ("prepare-launch-discovery.py", "source_guard_launch_probe")):
+            spec = importlib.util.spec_from_file_location(name, scripts / filename)
+            entry = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {name: entry}):
+                spec.loader.exec_module(entry)
+            loaded[filename] = entry
+        return scripts, loaded
+
+    def test_loaded_delivery_source_is_checked_before_release_and_launch_work(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                scripts, entries = self.load_entrypoints(root)
+                release_entry = entries["hex-release.py"]
+                launch_entry = entries["prepare-launch-discovery.py"]
+                delivery_path = scripts / "hex-test-build.py"
+                executed_source = delivery_path.read_bytes()
+
+                # A matching source witness is accepted by the same guard used
+                # by the public entrypoints.
+                release_entry.delivery.require_delivery_source(root)
+                if changed:
+                    delivery_path.write_bytes(executed_source + b"\n# changed after import\n")
+
+                before = {path.relative_to(root) for path in root.rglob("*")}
+                expected_message = "delivery source"
+                operations = (
+                    (release_entry.Refusal, release_entry.cut,
+                     (SimpleNamespace(channel="beta", version="0.1.0", base=None,
+                                      max_changes=10, generation_timeout=300, checklist=None,
+                                      included=None, accept_source=None), root / "artifacts/releases")),
+                    (release_entry.Refusal, release_entry.package, (root / "candidate",)),
+                    (release_entry.Refusal, release_entry.install, (root / "release.json",)),
+                    (launch_entry.delivery.DeliveryError, launch_entry.prepare, (False,)),
+                )
+                for refusal, operation, arguments in operations:
+                    with self.subTest(operation=operation.__name__):
+                        if changed:
+                            with self.assertRaisesRegex(refusal, expected_message):
+                                operation(*arguments)
+                        else:
+                            # The guard accepts the matched bytes and execution
+                            # reaches the operation's next dependency.
+                            with patch.object(release_entry, "source", side_effect=RuntimeError("reached cut")), \
+                                    patch.object(release_entry, "locked", side_effect=RuntimeError("reached package")), \
+                                    patch.object(release_entry, "verify_release", side_effect=RuntimeError("reached install")), \
+                                    patch.object(launch_entry.delivery, "run", side_effect=RuntimeError("reached prepare")):
+                                with self.assertRaisesRegex(RuntimeError, "reached"):
+                                    operation(*arguments)
+                if changed:
+                    self.assertEqual({path.relative_to(root) for path in root.rglob("*")}, before)
+
+    def test_delivery_source_descriptors_close_when_wrapping_fails(self):
+        source = Path(__file__).resolve().parents[1] / "prepare-launch-discovery.py"
+        spec = importlib.util.spec_from_file_location("launch_close_probe", source)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "delivery.py"
+            path.write_text("pass\n")
+            for loader in (release._delivery_source, launcher._delivery_source):
+                with self.subTest(loader=loader.__module__):
+                    original_open = os.open
+                    opened = []
+
+                    def track_open(*args, **kwargs):
+                        descriptor = original_open(*args, **kwargs)
+                        opened.append(descriptor)
+                        return descriptor
+
+                    with patch.object(os, "open", side_effect=track_open), \
+                            patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+                        with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                            loader(path)
+                    self.assertEqual(len(opened), 2)
+                    for descriptor in opened:
+                        with self.assertRaises(OSError):
+                            os.fstat(descriptor)
+
+    def test_release_and_launch_refuse_symlinked_scripts_directory(self):
+        source = Path(__file__).resolve().parents[1] / "prepare-launch-discovery.py"
+        spec = importlib.util.spec_from_file_location("launch_directory_probe", source)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            actual = root / "actual-scripts"
+            actual.mkdir()
+            (actual / "hex-test-build.py").write_text("pass\n")
+            (root / "scripts").symlink_to(actual, target_is_directory=True)
+            for loader in (release._delivery_source, launcher._delivery_source):
+                with self.subTest(loader=loader.__module__), self.assertRaises(OSError):
+                    loader(root / "scripts" / "hex-test-build.py")
+
+    def test_release_and_launch_refuse_delivery_symlink_and_fifo_before_execution(self):
+        source_scripts = Path(__file__).resolve().parents[1]
+        for entrypoint in ("hex-release.py", "prepare-launch-discovery.py"):
+            for kind in ("symlink", "fifo", "missing", "directory"):
+                with self.subTest(entrypoint=entrypoint, kind=kind), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory).resolve()
+                    scripts = root / "scripts"
+                    scripts.mkdir()
+                    shutil.copyfile(source_scripts / entrypoint, scripts / entrypoint)
+                    marker = root / "executed"
+                    dependency = scripts / "hex-test-build.py"
+                    if kind == "symlink":
+                        payload = root / "payload.py"
+                        payload.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+                        dependency.symlink_to(payload)
+                    elif kind == "fifo":
+                        os.mkfifo(dependency)
+                    elif kind == "directory":
+                        dependency.mkdir()
+                    result = subprocess.run([sys.executable, str(scripts / entrypoint), "--help"],
+                                            capture_output=True, timeout=2)
+                    self.assertNotEqual(result.returncode, 0)
+                    if kind in ("fifo", "directory"):
+                        self.assertIn(b"delivery source is not a regular file", result.stderr)
+                    else:
+                        self.assertIn(b"hex-test-build.py", result.stderr)
+                    self.assertFalse(marker.exists())
+
+    def test_release_and_launch_import_current_delivery_source_with_stale_pyc(self):
+        source_scripts = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            for name in ("hex-release.py", "prepare-launch-discovery.py", "hex-test-build.py",
+                         "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                         "ci_checkpoint.py", "ci_target_storage.py", "release_notes.py",
+                         "changelog.py", "manual.py"):
+                shutil.copyfile(source_scripts / name, scripts / name)
+            delivery_path = scripts / "hex-test-build.py"
+            original = delivery_path.read_bytes()
+            before = b'IDENTITY = "org.portalsurfer.hex.dev"'
+            after = b'IDENTITY = "org.portalsurfer.hex.dex"'
+            self.assertEqual(original.count(before), 1)
+            self.assertEqual(len(before), len(after))
+            py_compile.compile(str(delivery_path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = delivery_path.stat()
+            delivery_path.write_bytes(original.replace(before, after, 1))
+            os.utime(delivery_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+            # Sensitivity control: standard timestamp-based loading really sees
+            # the stale bytecode; runtime-only name avoids CI imports.
+            control_spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            control = importlib.util.module_from_spec(control_spec)
+            with patch.dict(sys.modules, {control_spec.name: control}):
+                control_spec.loader.exec_module(control)
+            self.assertEqual(control.IDENTITY, "org.portalsurfer.hex.dev")
+            self.assertFalse(hasattr(control, "ci"))
+            self.assertFalse(hasattr(control, "changelog"))
+
+            for filename, name, delivery_name in (
+                ("hex-release.py", "release_source_probe", "hex_release_delivery"),
+                ("prepare-launch-discovery.py", "launch_source_probe", "hex_launch_delivery"),
+            ):
+                with self.subTest(filename=filename), patch.dict(sys.modules):
+                    spec = importlib.util.spec_from_file_location(name, scripts / filename)
+                    entry = importlib.util.module_from_spec(spec)
+                    sys.modules[name] = entry
+                    spec.loader.exec_module(entry)
+                    self.assertEqual(entry.delivery.IDENTITY, "org.portalsurfer.hex.dex")
+                    self.assertEqual(entry.delivery.__name__, delivery_name)
+                    self.assertEqual(Path(entry.delivery.__file__), delivery_path)
+                    self.assertEqual(entry.delivery.__spec__.origin, str(delivery_path))
+                    self.assertTrue(hasattr(entry.delivery, "ci"))
+                    self.assertTrue(hasattr(entry.delivery, "changelog"))
+
+
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -22,6 +210,8 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch.object(release, "ROOT", self.root).start()
         (self.root / "scripts").mkdir()
+        source_scripts = Path(__file__).resolve().parents[1]
+        shutil.copyfile(source_scripts / "hex-test-build.py", self.root / "scripts/hex-test-build.py")
         config = Path(__file__).resolve().parents[1] / "hex-test-build.json"
         (self.root / "scripts/hex-test-build.json").write_bytes(config.read_bytes())
         (self.root / "scripts/hex-release.json").write_text('{"notary_profile":"fixture"}')

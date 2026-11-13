@@ -1,13 +1,15 @@
 //! One worker-private audible overlay. Actual source/configuration/factory custody participates
-//! in every control union; UI sees only its existing read-only view and exact scalar identity.
+//! in every control union; clip groups retain a bounded shared control identity.
 use super::*;
 use crate::device_gesture::{GesturePreparation, command_for_snapshot};
 use hex_engine::native_device_resources::DeviceResourceAdmission;
+pub(super) mod plugin_parameter;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Identity {
     Device(DevicePreviewIdentity),
     Tuning(TuningPreviewIdentity),
+    Clip(clip_audition::Target),
 }
 pub(crate) struct Preview {
     pub(super) project: Arc<Project>,
@@ -15,17 +17,34 @@ pub(crate) struct Preview {
     pub(super) identity: Identity,
 }
 impl Preview {
+    /// A newer canonical preparation can supersede an overlay before rebase.
+    pub(super) fn follows(&self, canonical: &resident_audio::Snapshot) -> bool {
+        let overlay = self.snapshot.prepared_context;
+        let canonical = canonical.prepared_context;
+        overlay.project_generation == canonical.project_generation
+            && overlay.editor_revision >= canonical.editor_revision
+    }
+
     pub(super) fn device_identity(&self) -> Option<DevicePreviewIdentity> {
-        match self.identity {
-            Identity::Device(id) => Some(id),
+        match &self.identity {
+            Identity::Device(id) => Some(*id),
             _ => None,
         }
     }
     pub(super) fn tuning_identity(&self) -> Option<TuningPreviewIdentity> {
-        match self.identity {
-            Identity::Tuning(id) => Some(id),
+        match &self.identity {
+            Identity::Tuning(id) => Some(*id),
             _ => None,
         }
+    }
+    pub(super) fn clip_target(&self) -> Option<clip_audition::Target> {
+        match &self.identity {
+            Identity::Clip(target) => Some(target.clone()),
+            _ => None,
+        }
+    }
+    pub(super) fn clip_move_identity(&self) -> Option<ClipMovePreviewIdentity> {
+        self.clip_target()?.move_identity()
     }
     pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
         DeviceResourceAdmission::prepared_on_control(
@@ -33,16 +52,38 @@ impl Preview {
             &self.snapshot.prepared,
         )
     }
-    /// Native accounting covers the actual resource/factory union and this conservative fixed
-    /// input/control capture. The shared read-only Project remains in the existing bounded
-    /// control-model/ViewState scope, not a claim of whole-model allocation provenance.
+    /// Native accounting covers the resource/factory union and conservative
+    /// input/control capture, including a retained clip selection. The shared
+    /// Project remains in the existing bounded control-model/ViewState scope,
+    /// not a claim of whole-model allocation provenance.
     pub(super) fn control_bytes(&self) -> Result<usize, String> {
         self.snapshot
             .inputs
             .capture_bytes()
             .map_err(|e| e.to_string())?
             .checked_add(std::mem::size_of::<Self>())
+            .and_then(|bytes| {
+                bytes.checked_add(match &self.identity {
+                    Identity::Clip(target) => target.retained_bytes(),
+                    _ => 0,
+                })
+            })
             .ok_or_else(|| "preview metadata overflow".into())
+    }
+}
+impl Identity {
+    pub(super) fn source_origin(&self) -> ResidentSourceOrigin {
+        match self {
+            Self::Device(_) => ResidentSourceOrigin::DevicePreview,
+            Self::Tuning(_) => ResidentSourceOrigin::TuningPreview,
+            Self::Clip(clip_audition::Target::Move(_)) => ResidentSourceOrigin::ClipMovePreview,
+            Self::Clip(clip_audition::Target::Stretch(_)) => {
+                ResidentSourceOrigin::ClipStretchPreview
+            }
+            Self::Clip(clip_audition::Target::PlayStart(_)) => {
+                ResidentSourceOrigin::ClipPlayStartPreview
+            }
+        }
     }
 }
 fn metadata(
@@ -51,14 +92,19 @@ fn metadata(
     prepared: &PreparedRevision,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
-        context,
-        device_preview: identity.and_then(|id| match id {
-            Identity::Device(id) => Some(id),
-            Identity::Tuning(_) => None,
+        source_origin: crate::service::ResidentSourceOrigin::Unknown,
+        clip_preview: identity.as_ref().and_then(|id| match id {
+            Identity::Clip(target) => target.move_identity(),
+            _ => None,
         }),
-        tuning_preview: identity.and_then(|id| match id {
-            Identity::Tuning(id) => Some(id),
-            Identity::Device(_) => None,
+        context,
+        device_preview: identity.as_ref().and_then(|id| match id {
+            Identity::Device(id) => Some(*id),
+            _ => None,
+        }),
+        tuning_preview: identity.as_ref().and_then(|id| match id {
+            Identity::Tuning(id) => Some(*id),
+            _ => None,
         }),
         seek_request: None,
         stopped_restore: false,
@@ -78,6 +124,9 @@ pub(super) fn device_operation(
     admission: sampler_export::Admission<'_>,
 ) -> crate::device_gesture::PreparedGesture {
     match operation {
+        GesturePreparation::Plugin(operation) => plugin_parameter::operation(
+            session, operation, context, current, preview, sink, admission,
+        ),
         GesturePreparation::Preview(draft) => {
             let identity = Identity::Device(DevicePreviewIdentity {
                 project_generation: context.project_generation,
@@ -94,6 +143,7 @@ pub(super) fn device_operation(
                 preview,
                 sink,
                 admission,
+                None,
             )
         }
         GesturePreparation::Commit(draft) => commit_preview(
@@ -105,25 +155,7 @@ pub(super) fn device_operation(
             sink,
             admission,
         ),
-        GesturePreparation::Restore => {
-            let snapshot = current
-                .as_mut()
-                .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
-            let selected = snapshot.inputs.clone();
-            let admission = with_preview(admission, preview.as_ref());
-            session.publish_resident_runtime_inputs(
-                snapshot,
-                sink,
-                admission,
-                metadata(context, None, &snapshot.prepared),
-                ResidentPublicationPolicy::InheritRuntime,
-                selected,
-                None,
-            )?;
-            let prepared = Arc::clone(&snapshot.prepared);
-            *preview = None;
-            Ok(Some((Arc::new(session.project().clone()), prepared)))
-        }
+        GesturePreparation::Restore => restore(session, context, current, preview, sink, admission),
     }
 }
 #[allow(clippy::too_many_arguments)] // Same owner/admission boundary as ordinary device gestures.
@@ -152,6 +184,7 @@ pub(super) fn tuning_operation(
             preview,
             sink,
             admission,
+            None,
         ),
         TuningPreparation::Commit(draft) => commit_preview(
             session,
@@ -172,6 +205,66 @@ pub(super) fn tuning_operation(
             admission,
         ),
     }
+}
+
+pub(super) fn restore(
+    session: &Session,
+    context: hex_engine::AudioSourceContext,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+) -> crate::device_gesture::PreparedGesture {
+    let snapshot = current
+        .as_mut()
+        .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
+    let admission = with_preview(admission, preview.as_ref());
+    if admission.preview.is_some_and(|overlay| {
+        overlay.follows(snapshot) && overlay.snapshot.prepared.has_arrangement_foreign_programs()
+    }) {
+        *snapshot = session
+            .restore_resident_preview_with_foreign_programs(snapshot, sink, admission, context)?;
+    } else {
+        let selected = snapshot.inputs.clone();
+        session.publish_resident_runtime_inputs(
+            snapshot,
+            sink,
+            admission,
+            metadata(context, None, &snapshot.prepared),
+            ResidentPublicationPolicy::InheritRuntime,
+            selected,
+            None,
+        )?;
+    }
+    let prepared = Arc::clone(&snapshot.prepared);
+    *preview = None;
+    Ok(Some((Arc::new(session.project().clone()), prepared)))
+}
+
+pub(super) fn clip_audition(
+    session: &Session,
+    target: clip_audition::Target,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    cancel: &Arc<AtomicBool>,
+) -> crate::device_gesture::PreparedGesture {
+    session
+        .audio_transforms
+        .with_preview_cancellation(cancel, || {
+            prepare_preview(
+                session,
+                target.command(),
+                Identity::Clip(target.clone()),
+                target.context(),
+                current,
+                preview,
+                sink,
+                admission,
+                Some(cancel),
+            )
+        })
 }
 #[allow(clippy::too_many_arguments)] // Last fallible publication remains inside the reserved canonical transaction.
 fn commit_preview(
@@ -212,6 +305,7 @@ fn prepare_preview(
     preview: &mut Option<Preview>,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
+    cancel: Option<&AtomicBool>,
 ) -> crate::device_gesture::PreparedGesture {
     let canonical = current
         .as_mut()
@@ -224,11 +318,24 @@ fn prepare_preview(
                 .inputs
                 .capture_bytes()?
                 .checked_add(std::mem::size_of::<Preview>())
+                .and_then(|bytes| {
+                    bytes.checked_add(match &identity {
+                        Identity::Clip(target) => target.retained_bytes(),
+                        _ => 0,
+                    })
+                })
                 .ok_or(SessionError::Invalid("preview metadata overflow"))?,
         )
         .ok_or(SessionError::Invalid("preview metadata overflow"))?;
-    let (project, snapshot) =
-        session.prepare_resident_preview(command, context, identity, sink, admission, canonical)?;
+    let (project, snapshot) = session.prepare_resident_preview(
+        command,
+        context,
+        identity.clone(),
+        sink,
+        admission,
+        canonical,
+        cancel,
+    )?;
     let prepared = Arc::clone(&snapshot.prepared);
     canonical.inputs = snapshot.inputs.clone();
     *preview = Some(Preview {
@@ -276,6 +383,7 @@ pub(super) fn publish_inputs(
         .ok_or(SessionError::Invalid("preview input metadata overflow"))?;
     metadata.device_preview = overlay.device_identity();
     metadata.tuning_preview = overlay.tuning_identity();
+    metadata.clip_preview = overlay.clip_move_identity();
     metadata.requires_preroll = overlay
         .snapshot
         .prepared

@@ -1,7 +1,7 @@
 //! Shared Arrangement header presentation. Track and Return owners retain input,
 //! resize, mixer and device behavior; this module owns only common visual geometry.
 use crate::theme;
-use gpui::{Div, ElementId, Stateful, div, prelude::*, px, rgb};
+use gpui::{Div, ElementId, PathBuilder, Stateful, canvas, div, point, prelude::*, px, rgb};
 
 pub(super) const NAME_HEIGHT: f32 = 18.0;
 
@@ -10,7 +10,16 @@ pub(super) fn surface(
     width: f32,
     height: f32,
     selected: bool,
+    fill: Option<u32>,
 ) -> Stateful<Div> {
+    let background = fill.unwrap_or_else(|| {
+        theme::color(if selected {
+            theme::PaletteRole::Raised
+        } else {
+            theme::PaletteRole::Surface
+        })
+    });
+    let hover = fill.unwrap_or_else(|| theme::color(theme::PaletteRole::Hover));
     div()
         .id(id.into())
         .w(px(width))
@@ -25,12 +34,8 @@ pub(super) fn surface(
         .border_l_2()
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(if selected {
-            theme::PaletteRole::Raised
-        } else {
-            theme::PaletteRole::Surface
-        })))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+        .bg(rgb(background))
+        .hover(move |style| style.bg(rgb(hover)))
 }
 
 pub(super) fn name() -> Div {
@@ -43,6 +48,71 @@ pub(super) fn name() -> Div {
         .truncate()
         .text_xs()
         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+}
+
+/// The square leading edge meets the group rail, which owns the outer corners.
+/// The chamfer reveals the neutral header underneath.
+pub(super) fn name_plate(selector: String, color: u32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .debug_selector(move || selector.clone())
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let width = f32::from(bounds.size.width);
+                    let height = f32::from(bounds.size.height);
+                    let cut = 7.0_f32.min(width / 2.0).min(height / 2.0);
+                    let at = |x, y| bounds.origin + point(px(x), px(y));
+                    let mut path = PathBuilder::fill();
+                    path.move_to(at(0.0, 0.0));
+                    path.line_to(at(width, 0.0));
+                    path.line_to(at(width, height - cut));
+                    path.line_to(at(width - cut, height));
+                    path.line_to(at(0.0, height));
+                    path.close();
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, rgb(color));
+                    }
+                },
+            )
+            .size_full(),
+        )
+}
+
+/// Compact selection inset: its left edge is taller than its right edge.
+/// Groups reserve this space even when unselected to keep the fold control stable.
+pub(super) fn selection_marker(selector: String, visible: bool) -> Div {
+    let fill = theme::control_style().rail;
+    div()
+        .w(px(4.5))
+        .h(px(15.0))
+        .mr(px(2.0))
+        .flex_shrink_0()
+        .debug_selector(move || selector.clone())
+        .children(visible.then(|| {
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let at = |x, y| bounds.origin + point(px(x), px(y));
+                    let mut path = PathBuilder::fill();
+                    path.move_to(at(0.0, 1.3));
+                    path.curve_to(at(1.2, 0.5), at(0.0, 0.0));
+                    path.line_to(at(3.8, 1.8));
+                    path.curve_to(at(4.5, 2.8), at(4.5, 2.1));
+                    path.line_to(at(4.5, 12.2));
+                    path.curve_to(at(3.8, 13.2), at(4.5, 12.9));
+                    path.line_to(at(1.2, 14.5));
+                    path.curve_to(at(0.0, 13.7), at(0.0, 15.0));
+                    path.close();
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, rgb(fill));
+                    }
+                },
+            )
+            .size_full()
+        }))
 }
 
 pub(super) fn selection_outline(selector: String) -> Div {

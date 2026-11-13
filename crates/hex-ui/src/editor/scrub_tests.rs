@@ -1,6 +1,9 @@
 use super::*;
-use gpui::{point, px, size};
+#[cfg(all(test, not(feature = "ui-test-support")))]
+use gpui::size;
+use gpui::{point, px};
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 fn context() -> ScrubContext {
     ScrubContext {
         generation: 7,
@@ -16,6 +19,7 @@ fn context() -> ScrubContext {
     }
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 #[test]
 fn latest_target_replaces_moves_and_release_survives_an_in_flight_destination() {
     let mut gesture = ScrubGesture {

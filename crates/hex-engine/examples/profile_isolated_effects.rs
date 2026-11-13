@@ -189,7 +189,7 @@ fn run(tracks: usize, count: usize, block: usize, seconds: usize) -> Result<()> 
                 for value in frame {
                     window_peak = window_peak.max(value.abs());
                 }
-                if (offset - WARMUP * block + index + 1) % RATE as usize == 0 {
+                if (offset - WARMUP * block + index + 1).is_multiple_of(RATE as usize) {
                     if window_peak < 1.0e-6 {
                         return Err("silent measured second".into());
                     }

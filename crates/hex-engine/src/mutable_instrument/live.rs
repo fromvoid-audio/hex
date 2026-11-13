@@ -16,6 +16,7 @@ pub(super) struct LiveOccurrence {
     pub(super) id: u64,
     pub(super) quiet_age: Option<u64>,
     pub(super) release_requested: bool,
+    pub(super) contributor_fade: Option<ContributorFade>,
 }
 
 pub(super) struct LiveLedger {
@@ -51,6 +52,12 @@ impl LiveLedger {
         *slot = Some(event);
         self.pending_len += 1;
         Ok(())
+    }
+    fn committed_gates_released(&self) -> bool {
+        self.primary
+            .iter()
+            .flatten()
+            .all(|voice| voice.quiet_age.is_some() && !voice.release_requested)
     }
     pub(super) fn begin(&mut self) {
         self.scratch = self.primary;
@@ -169,6 +176,21 @@ impl MutableInstrumentTrackRuntime {
             .is_some_and(|ledger| ledger.primary.iter().any(Option::is_some))
     }
 
+    /// A detached release can rejoin only after every live gate's NoteOff
+    /// committed. A requested release is still owed; a scratch deadline does
+    /// not prove dispatch. Inheritance copies the exact source IDs, producer
+    /// generations/tokens, allocator and DSP age, so later input cannot reuse
+    /// an old voice or reset its release deadline.
+    pub(crate) fn committed_live_gates_released(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_none_or(|ledger| ledger.committed_gates_released())
+    }
+
+    pub(crate) fn supports_note_pressure(&self) -> bool {
+        self.pair.supports_note_pressure()
+    }
+
     pub(crate) fn validates_live_note(&self, pitch: u8, velocity: u8) -> bool {
         let Some(occurrence_id) = self.next_id.checked_add(1) else {
             return false;
@@ -194,7 +216,16 @@ impl MutableInstrumentTrackRuntime {
     /// releases plus the full future authored envelope. Rejections cannot steal
     /// a continuing authored voice or consume its reserved NoteOff capacity.
     pub(crate) fn live_voice_capacity(&self, authored_envelope: usize) -> usize {
-        let authored = self.scratch.len().saturating_add(authored_envelope);
+        self.live_voice_capacity_for_proofs(self.scratch.len(), authored_envelope)
+    }
+    /// Apply the same admission reserve to a donor's committed proofs before
+    /// inheriting its live ledger into a candidate with a new peak envelope.
+    pub(crate) fn live_voice_capacity_for_proofs(
+        &self,
+        authored_proofs: usize,
+        authored_envelope: usize,
+    ) -> usize {
+        let authored = authored_proofs.saturating_add(authored_envelope);
         let voices = self
             .max_active_occurrences()
             .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
@@ -221,6 +252,18 @@ impl MutableInstrumentTrackRuntime {
             .as_ref()
             .map_or(0, |live| live.scratch.iter().flatten().count())
     }
+    /// Live occurrences occupy the same provider capacity as authored proofs.
+    /// Match the transaction selected by the caller's route transition.
+    pub(crate) fn transition_live_count(&self, speculative: bool) -> usize {
+        self.live.as_ref().map_or(0, |live| {
+            let voices = if speculative {
+                &live.scratch
+            } else {
+                &live.primary
+            };
+            voices.iter().flatten().count()
+        })
+    }
     /// A scheduling span contains transitions at offset zero only. The first
     /// callback sample and ordered ingress events have a one-frame span; empty
     /// spans reuse the ordinary query width. Release room is reserved before
@@ -234,6 +277,7 @@ impl MutableInstrumentTrackRuntime {
         let capacity = self
             .max_active_occurrences()
             .min(MAX_MUTABLE_OCCURRENCE_PROOFS);
+        let supports_pressure = self.supports_note_pressure();
         let live = self
             .live
             .as_mut()
@@ -242,6 +286,35 @@ impl MutableInstrumentTrackRuntime {
         for &event in transitions {
             match event {
                 NativeInstrumentEvent::Expression { .. } => live.push(event)?,
+                NativeInstrumentEvent::NotePressure {
+                    frame_offset,
+                    occurrence_id: token,
+                    value,
+                } => {
+                    if !supports_pressure {
+                        continue;
+                    }
+                    // Resolve a producer's local token in its exact input generation.
+                    // A detached, released or stale input cannot modify another voice.
+                    if let Some(occurrence_id) = live
+                        .scratch
+                        .iter()
+                        .flatten()
+                        .find(|voice| {
+                            voice.input == input
+                                && voice.token == token.get()
+                                && voice.quiet_age.is_none()
+                                && !voice.release_requested
+                        })
+                        .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                    {
+                        live.push(NativeInstrumentEvent::NotePressure {
+                            frame_offset,
+                            occurrence_id,
+                            value,
+                        })?;
+                    }
+                }
                 NativeInstrumentEvent::NoteOff {
                     frame_offset,
                     occurrence_id: token,
@@ -295,6 +368,7 @@ impl MutableInstrumentTrackRuntime {
                         id,
                         quiet_age: None,
                         release_requested: false,
+                        contributor_fade: None,
                     });
                     live.push(NativeInstrumentEvent::NoteOn {
                         frame_offset,
@@ -435,6 +509,7 @@ impl MutableInstrumentTrackRuntime {
                             .gate_frame
                             .map(|gate| tail.saturating_sub(voice.age_frames.saturating_sub(gate))),
                         release_requested: false,
+                        contributor_fade: None,
                     });
                 }
             }
@@ -448,5 +523,60 @@ impl MutableInstrumentTrackRuntime {
             .unwrap_or(0);
         self.next_id_scratch = self.next_id;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scratch_note_off_and_requested_release_are_not_committed_release_proofs() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(8000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "live".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let mut ledger = LiveLedger::default();
+        ledger.primary[0] = Some(LiveOccurrence {
+            input: LiveInputId {
+                track,
+                generation: 9,
+            },
+            token: 1,
+            id: 7,
+            quiet_age: None,
+            release_requested: true,
+            contributor_fade: None,
+        });
+        assert!(!ledger.committed_gates_released());
+        ledger.begin();
+        ledger.emit_requested(800).unwrap();
+        assert_eq!(ledger.pending_len, 1);
+        assert!(matches!(
+            ledger.pending[0],
+            Some(NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 7
+            })
+        ));
+        assert!(
+            !ledger.committed_gates_released(),
+            "scratch dispatch may roll back"
+        );
+        ledger.begin();
+        assert!(!ledger.committed_gates_released());
+        ledger.emit_requested(800).unwrap();
+        ledger.primary = ledger.scratch;
+        assert!(ledger.committed_gates_released());
+        assert_eq!(ledger.primary[0].unwrap().quiet_age, Some(800));
+        assert_eq!(ledger.primary[0].unwrap().input.generation, 9);
+        assert_eq!(ledger.primary[0].unwrap().token, 1);
+        assert_eq!(ledger.primary[0].unwrap().id, 7);
     }
 }

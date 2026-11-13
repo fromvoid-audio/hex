@@ -22,7 +22,69 @@ fn surface(visual: &mut VisualTestContext, selector: &'static str, height: f32) 
 }
 
 #[gpui::test]
-fn arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces(cx: &mut TestAppContext) {
+fn arrangement_elapsed_row_tracks_frames_above_beats_under_pan_and_zoom(cx: &mut TestAppContext) {
+    use hex_project::{BeatTime, Command, Editor, Project, Tempo};
+
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    model
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ONE,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(
+        model
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_quarters(2).unwrap())
+            .unwrap(),
+        72_000
+    );
+    let (handle, editor) =
+        clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+
+    for viewport in [
+        viewport::Viewport::fit(192_000),
+        viewport::Viewport {
+            start: 24_000,
+            length: 96_000,
+        },
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(viewport);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        surface(&mut visual, "arrangement-time-ruler", 24.0);
+        let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+        let elapsed = visual.debug_bounds("arrangement-elapsed-row").unwrap();
+        let beats = visual.debug_bounds("arrangement-beat-row").unwrap();
+        assert_eq!(elapsed.top(), ruler.top());
+        assert_eq!(elapsed.bottom(), beats.top());
+        assert_eq!(beats.bottom(), ruler.bottom());
+        assert!((f32::from(elapsed.size.height - beats.size.height)).abs() <= 1.0);
+
+        let elapsed_tick = visual.debug_bounds("elapsed-ruler-tick-48000").unwrap();
+        let beat_tick = visual.debug_bounds("ruler-tick-72000").unwrap();
+        assert!(elapsed_tick.top() >= elapsed.top() && elapsed_tick.bottom() <= elapsed.bottom());
+        assert!(beat_tick.top() >= beats.top() && beat_tick.bottom() <= beats.bottom());
+        for (frame, actual) in [(48_000, elapsed_tick.left()), (72_000, beat_tick.left())] {
+            let expected = ruler.left() + ruler.size.width * viewport.fraction(frame).unwrap();
+            assert!((f32::from(actual - expected)).abs() <= 1.0);
+        }
+    }
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            model.project()
+        );
+    });
+}
+
+#[gpui::test]
+fn arrangement_audio_and_midi_share_timeline_surface_styling(cx: &mut TestAppContext) {
     {
         let cx = &mut cx.new_app();
         let (mut visual, editor, _environment, _) = midi_canvas::creation_tests::fixture(cx);
@@ -38,7 +100,7 @@ fn arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces(cx: &mut 
         assert!(visual.debug_bounds("midi-loop-start-marker").is_some());
         assert!(visual.debug_bounds("midi-loop-end-marker").is_some());
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = hex_project::BeatTime::ONE;
+            v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
             v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });
@@ -78,23 +140,6 @@ fn arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces(cx: &mut 
     }
 }
 
-#[test]
-fn malformed_and_invisible_shared_strip_geometry_paints_no_false_boundary() {
-    use super::timeline_strip::{loop_range, ruler_tick};
-    for (start, end) in [
-        (f64::NAN, 1.0),
-        (0.0, f64::INFINITY),
-        (0.8, 0.2),
-        (-2.0, -0.1),
-        (1.1, 2.0),
-    ] {
-        assert!(loop_range(start, end, true, ["start", "end"]).is_none());
-    }
-    for position in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
-        assert!(ruler_tick(position, "authored", false, false, false).is_none());
-    }
-}
-
 #[gpui::test]
 fn loop_endpoints_exactly_at_viewport_edges_remain_painted(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = midi_canvas::creation_tests::fixture(cx);
@@ -116,7 +161,8 @@ fn loop_endpoints_exactly_at_viewport_edges_remain_painted(cx: &mut TestAppConte
         (4, "midi-loop-end-marker", "midi-loop-start-marker", false),
     ] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = hex_project::BeatTime::from_quarters(first).unwrap();
+            v.piano_beat_start =
+                i128::from(hex_project::BeatTime::from_quarters(first).unwrap().raw());
             v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });

@@ -26,7 +26,7 @@ fn seek(h: &mut ResidentHarness, applied: &mut u64, revision: u64, request: u64)
 }
 #[test]
 fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_playback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let source = Files::new();
     let other = Files::new();
     let inactive = Files::new();
@@ -48,7 +48,9 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: source.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -190,7 +192,7 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         .to_owned();
     let raw = fs::read(&path).unwrap();
     assert_eq!(&raw[20..22], &3_u16.to_le_bytes());
-    let float = raw[44..]
+    let float = raw[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
         .chunks_exact(8)
         .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap()))
         .collect::<Vec<_>>();
@@ -306,8 +308,11 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         .to_owned();
     let bytes = fs::read(&session_path).unwrap();
     assert_eq!(&bytes[20..22], &3_u16.to_le_bytes());
-    assert_eq!(bytes.len(), 44 + session_frames as usize * 8);
-    for frame in bytes[44..].chunks_exact(8) {
+    assert_eq!(
+        bytes.len(),
+        hex_export::FLOAT32_WAV_HEADER_BYTES as usize + session_frames as usize * 8
+    );
+    for frame in bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..].chunks_exact(8) {
         assert!(
             (f32::from_le_bytes(frame[..4].try_into().unwrap()) - 0.25 / input_gain).abs() < 1e-6
         );
@@ -332,4 +337,92 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
     // Only this test's newly generated media is removed, never a source or preexisting bounce.
     fs::remove_file(&path).unwrap();
     fs::remove_dir(path.parent().unwrap()).unwrap();
+}
+
+/// Bounce in place while playing (Pulse #3784): the transport keeps running
+/// and audio restarts at the cursor on the baked clip. A carried effect state
+/// or detached tail would change the constant mix, so equal PCM proves none.
+#[test]
+fn track_bounce_in_place_and_its_history_apply_while_playing() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(2_000_000);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::ImportToNewTrack {
+        path: files.wav(48_000, 48_000),
+        before_track: None,
+        start: 0,
+    });
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(6.0)
+    .unwrap();
+    let inserted = edit(
+        &mut h,
+        &mut applied,
+        Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        },
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mix = h.render()[63];
+    assert!(mix[0] > 0.4, "utility gain is audible: {mix:?}");
+    let playing = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+    };
+    let assert_mix = |h: &ResidentHarness, step: &str| {
+        assert!(playing(h), "{step}: transport keeps running");
+        for frame in h.render() {
+            assert!((frame[0] - mix[0]).abs() < 1e-5, "{step}: {frame:?}");
+        }
+    };
+    let bounced = super::resident_sections::run_callback(
+        &mut h,
+        Request::BounceArrangement {
+            project_generation: 0,
+            revision: inserted.state.revision,
+            target: hex_project::BounceTarget::Track(track),
+            in_place: true,
+            adoption: hex_project::BounceAdoption::NewTracks,
+            control: hex_export::ExportControl::default(),
+        },
+    );
+    assert!(bounced.error.is_none(), "{:?}", bounced.error);
+    let project = &bounced.state.project;
+    assert!(project.track(track).unwrap().devices().is_empty());
+    let baked = project
+        .asset(project.track(track).unwrap().clips()[0].asset())
+        .unwrap()
+        .path()
+        .to_owned();
+    (applied, _) = h.applied(applied);
+    assert_mix(&h, "bounce");
+    for (request, step) in [(Request::Undo, "undo"), (Request::Redo, "redo")] {
+        let event = super::resident_sections::run_callback(&mut h, request);
+        assert!(event.error.is_none(), "{step}: {:?}", event.error);
+        (applied, _) = h.applied(applied);
+        assert_mix(&h, step);
+    }
+    // Only this test's generated media is removed, never its source.
+    fs::remove_file(&baked).unwrap();
+    fs::remove_dir(baked.parent().unwrap()).unwrap();
 }

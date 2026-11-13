@@ -9,6 +9,7 @@ struct Key {
     context: MarqueeContext,
     first: [f32; 2],
     velocity: bool,
+    additive: bool,
 }
 impl Surface {
     fn velocity(&self) -> bool {
@@ -112,6 +113,7 @@ impl EditorView {
             context,
             first: marquee.rectangle().0,
             velocity: surface.velocity(),
+            additive: marquee.additive(),
         };
         let owner = cx.entity().downgrade();
         let cancelled = owner.clone();
@@ -164,7 +166,22 @@ impl EditorView {
                         Ok(()) if released.is_none() => {
                             view.install_held_marquee(key.velocity, marquee)
                         }
-                        Ok(()) => {} // Release adopts the already visible membership.
+                        Ok(()) => {
+                            // A stationary empty velocity click still places the insertion marker.
+                            if key.velocity
+                                && !key.additive
+                                && (last[0] - key.first[0]).abs() < 3.0
+                                && (last[1] - key.first[1]).abs() < 3.0
+                                && let Some(event) = released
+                                && let Some(beat) = view.midi_marker_at(
+                                    key.context.bounds,
+                                    f32::from(at.x),
+                                    event.modifiers.platform,
+                                )
+                            {
+                                view.midi_marker = Some(beat);
+                            }
+                        }
                         Err(error) => {
                             view.cancel_live_midi_marquee(marquee);
                             view.error = Some(error.into());
@@ -204,7 +221,7 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: state.revision,
                 clip,
-                beat_start: self.piano_beat_start.raw(),
+                beat_start: self.piano_beat_start,
                 beat_span: self.piano_beat_span.raw(),
                 pitch_low: self.piano_pitch_low,
                 pitch_rows: self.piano_pitch_rows,

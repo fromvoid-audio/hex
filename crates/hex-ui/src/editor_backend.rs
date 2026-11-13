@@ -45,19 +45,88 @@ pub enum EditorAudioEvent {
         restart_request: Option<u64>,
         audio: EditorAudio,
     },
+    /// No output opened. A `RateMismatch` error is a recoverable paused
+    /// state; the UI names both rates and offers retry.
     Unavailable {
         project_generation: u64,
         restart_request: Option<u64>,
-        error: String,
+        error: hex_audio::OutputOpenError,
     },
     Publication {
         context: AudioSourceContext,
         output_identity: u64,
         state: EditorPublicationState,
     },
+    /// Project replacement kept this output for `project_generation`. The UI
+    /// keeps the endpoint it held across the replacement when its identity
+    /// matches; otherwise it requests a fresh output.
+    OutputRebound {
+        project_generation: u64,
+        output_identity: u64,
+    },
+    /// Project replacement retires this output for `project_generation`. The
+    /// UI closes the endpoint it held across the replacement so the worker can
+    /// open a fresh output; the next `Opened`/`Unavailable` follows.
+    OutputReleased {
+        project_generation: u64,
+        old_output_identity: u64,
+    },
+    /// The default output device or its nominal rate changed after this
+    /// output opened. The UI moves to the new route through the same
+    /// recovery as restart audio. Sent at most once per output.
+    OutputRouteChanged { output_identity: u64 },
+    /// A pending SDK restart on this exact ordinary installed graph.
+    NativeLatencyRestart {
+        source: hex_audio::prepared::AppliedAudioSource,
+    },
+    /// Latest native editor touch observed on an exact retained source. This
+    /// carries an optional SDK-confirmed Perform value for immediate display.
+    /// Controller pages still own metadata and edit authority.
+    /// The desktop coalesces per device under UI backpressure, never native
+    /// gesture receipts or their processing order.
+    PluginParameterTouched {
+        source: hex_audio::prepared::AppliedAudioSource,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        device: u64,
+        parameter: u32,
+        sequence: u64,
+        value: Option<hex_session::device_gesture::PluginParameterValue>,
+    },
+    /// The complete set of vst3 device ids for this document on this output whose endpoint
+    /// faulted and now passes audio through (#3977). Sent when the set
+    /// changes; an empty set clears every degraded marker.
+    DegradedPlugins {
+        project_generation: u64,
+        output_identity: u64,
+        devices: Vec<u64>,
+    },
+}
+
+/// Sorted, duplicate-free device ids, so membership is a binary search.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DegradedDevices(Vec<u64>);
+impl DegradedDevices {
+    pub(crate) fn new(mut devices: Vec<u64>) -> Self {
+        devices.sort_unstable();
+        devices.dedup();
+        Self(devices)
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub(crate) fn contains(&self, device: u64) -> bool {
+        self.0.binary_search(&device).is_ok()
+    }
+    #[cfg(all(test, not(feature = "ui-test-support")))]
+    fn as_slice(&self) -> &[u64] {
+        &self.0
+    }
 }
 
 /// UI-safe summary of a worker-owned publication attempt.
+// Resident metadata is bounded scalar data. Keeping it inline avoids an allocation
+// for each control-side publication while retaining exact callback correlation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum EditorPublicationState {
     Preparing,
@@ -80,4 +149,22 @@ pub enum EditorPublicationState {
     },
     Refused(String),
     Fault(String),
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    use super::DegradedDevices;
+
+    #[test]
+    fn degraded_devices_are_normalized_for_membership() {
+        let devices = DegradedDevices::new(vec![9, 3, 9, 5]);
+        assert_eq!(devices.as_slice(), [3, 5, 9]);
+        assert!([3, 5, 9].into_iter().all(|device| devices.contains(device)));
+        assert!(!devices.contains(4));
+        assert_eq!(
+            DegradedDevices::new(vec![5, 3]),
+            DegradedDevices::new(vec![3, 5, 3])
+        );
+        assert!(!DegradedDevices::default().contains(0));
+    }
 }

@@ -141,7 +141,6 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             bytes,
-            source_bytes: std::mem::size_of_val(source.frames()),
         })?;
         super::view::placed_clip(audio, clip)
     }
@@ -393,6 +392,11 @@ impl AudioTransformPreparation {
             }
         }
         let base = Audio::from_derived(source.sample_rate(), base, reservation)?;
+        let law = super::warp_law(
+            edit.content_view
+                .ok_or(Invalid("directed audio view missing"))?
+                .read_resampler,
+        );
         for i in 0..projection.occurrence_count() {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
@@ -405,7 +409,7 @@ impl AudioTransformPreparation {
                     .ok_or(Invalid(
                         "directed filtered destination exceeds admitted pcm",
                     ))?;
-                self.render_content_span(&base, &span.map, destination)?;
+                self.render_content_span(&base, &span.map, law, destination)?;
             }
         }
         if cropped {
@@ -423,6 +427,7 @@ impl AudioTransformPreparation {
         &self,
         root: &Audio,
         map: &hex_warp::TimeMap,
+        law: hex_warp::Resampler,
         destination: &mut [crate::Frame],
     ) -> Result<(), Invalid> {
         const Q32: i128 = 1_i128 << 32;
@@ -474,7 +479,10 @@ impl AudioTransformPreparation {
             pitch_cents: 0,
             mode: hex_warp::Mode::RePitch,
         };
-        let rendered = hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+        // The view's own read law, independent of the root content's law: saved
+        // musical views migrate to the frozen v1 reconstruction, new ones use v2.
+        let rendered = hex_warp::render_with_resampler(&request, law, &mut || self.cancelled())
+            .map_err(warp_error)?;
         if rendered.frames.len() != destination.len() {
             return Err(Invalid(
                 "directed filtered output differs from admitted span",

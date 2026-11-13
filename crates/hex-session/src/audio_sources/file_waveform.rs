@@ -3,7 +3,7 @@
 //! native endpoint or fabricated fine-resolution samples enter the display cache.
 use super::*;
 use hex_media::{
-    ResamplePlan,
+    ResampleKernel, ResamplePlan, ResampleVersion,
     waveform::{Peak, Waveform},
 };
 const MAX_BINS: usize = 1024;
@@ -36,9 +36,13 @@ impl VerifiedAudioFile {
         if count == 0 {
             return Err(SessionError::Invalid("empty file waveform"));
         }
-        let plan = ResamplePlan::new(
+        let kernel = ResampleKernel::with_version(
             self.source_rate(),
             self.project_rate(),
+            ResampleVersion::for_conversion(self.conversion_version())?,
+        )?;
+        let plan = ResamplePlan::with_kernel(
+            kernel,
             self.source_frames(),
             self.source_frames(),
             self.playback_frames(),
@@ -60,6 +64,7 @@ impl VerifiedAudioFile {
         let mut index = 0usize;
         let mut end = width + usize::from(extra != 0);
         let mut peaks: Option<[Peak; 2]> = None;
+        let mut identical_channels = true;
         // Decode contiguous bounded windows across peak-bin boundaries. Opening
         // a fresh verified read for each tiny bin repeatedly hashes the same raw
         // header/data pages; bin aggregation does not require that extra I/O.
@@ -90,6 +95,7 @@ impl VerifiedAudioFile {
                 &mut scratch,
             )?;
             for frame in &output[..take] {
+                identical_channels &= frame[0].to_bits() == frame[1].to_bits();
                 if let Some(peaks) = peaks.as_mut() {
                     for (peak, value) in peaks.iter_mut().zip(frame) {
                         peak.min = peak.min.min(*value);
@@ -123,7 +129,13 @@ impl VerifiedAudioFile {
                 "file waveform preparation cancelled or incomplete",
             ));
         }
-        self.waveform = Some(Arc::new(Waveform::from_peaks(frames, bins)?));
+        let waveform = Waveform::from_peaks(frames, bins)?;
+        let waveform = if identical_channels {
+            waveform.with_identical_channels()?
+        } else {
+            waveform
+        };
+        self.waveform = Some(Arc::new(waveform));
         Ok(())
     }
 }

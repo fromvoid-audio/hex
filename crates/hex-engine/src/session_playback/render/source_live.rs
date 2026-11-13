@@ -12,12 +12,16 @@ impl SessionPlayback {
             .routes
             .iter()
             .position(|route| route.id == keyboard.track())?;
+        if !self.revision.source_routing().contributes(contributor) {
+            return None;
+        }
         self.revision.source_routing().receiver_index(contributor)
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_source_live_input(
+    revision: &PreparedRevision,
     keyboard: Option<&mut crate::computer_keyboard::ComputerKeyboardRuntime>,
     source: Option<&mut MutableInstrumentTrackRuntime>,
     onsets: &mut MutableOnsetBuffer,
@@ -27,6 +31,7 @@ pub(super) fn render_source_live_input(
     output: &mut [Frame],
     timing: &crate::prepared_tempo::SessionTimingView<'_>,
     playing: bool,
+    parameter_values: Option<&dyn hex_lattice::NativeParameterAutomation>,
 ) -> Result<(), SessionPlaybackError> {
     if source.is_some() && output.len() > 256 {
         return Err(SessionPlaybackError::InvalidCommand);
@@ -35,6 +40,12 @@ pub(super) fn render_source_live_input(
     let input = keyboard
         .source_input_id()
         .ok_or(SessionPlaybackError::InvalidCommand)?;
+    let enabled = revision
+        .arrangement()
+        .tracks()
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(keyboard.track()))
+        .is_some_and(|track| track.receives_source_audio() || track.source_input_enabled());
     if let Some(source) = source.as_ref() {
         keyboard.set_source_capacity(source.live_input_voice_capacity(input, authored));
     }
@@ -51,9 +62,20 @@ pub(super) fn render_source_live_input(
                 .release_live_input(input)
                 .map_err(|error| error.render_error())?;
         }
-        source
-            .stage_live_events(input, keyboard.source_input_events())
-            .map_err(|error| error.render_error())?;
+        if enabled {
+            source
+                .stage_live_events(input, keyboard.source_input_events())
+                .map_err(|error| error.render_error())?;
+        } else {
+            for event in keyboard.source_input_events() {
+                if matches!(event, hex_lattice::NativeInstrumentEvent::NoteOn { .. }) {
+                    continue;
+                }
+                source
+                    .stage_live_events(input, std::slice::from_ref(event))
+                    .map_err(|error| error.render_error())?;
+            }
+        }
         if !playing {
             onsets.clear();
             let source_clock = source
@@ -78,6 +100,7 @@ pub(super) fn render_source_live_input(
                     Some(&source_clock),
                     &hex_lattice::EMPTY_DEVICE_RESOURCES,
                     None,
+                    parameter_values,
                 )
                 .map_err(|error| error.render_error())?;
         }

@@ -1,6 +1,6 @@
 //! Rendered G grouping dispatches one canonical MIDI clip edit.
 use super::super::drag::group_drag_ui_test::{click, fixture, pump};
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
@@ -232,6 +232,62 @@ fn g_does_not_group_arrangement_selection_under_another_focus_owner(cx: &mut Tes
 }
 
 #[gpui::test]
+fn dragging_an_empty_lane_range_then_g_creates_a_blank_clip(cx: &mut TestAppContext) {
+    let (_files, handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let viewport = editor.read_with(&visual, |view, _| {
+        view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+    });
+    let y = lane.origin.y + px(22.0);
+    let start = point(lane.origin.x + px(1.0), y);
+    let end = point(
+        lane.origin.x + lane.size.width * viewport.fraction(24_000).unwrap(),
+        y,
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let range = editor.read_with(&visual, |view, _| view.normalized_time_selection().unwrap());
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        let [clip] = project.track(track).unwrap().midi_clips() else {
+            panic!("blank clip");
+        };
+        let tempo = project.tempo_map();
+        assert_eq!(tempo.beat_to_frame(clip.start()).unwrap(), range.start());
+        assert_eq!(
+            tempo
+                .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+                .unwrap(),
+            range.end()
+        );
+        assert!(clip.notes().is_empty());
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let mut restored = view.state.as_ref().unwrap().project.snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+    });
+}
+
+#[gpui::test]
 fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
     cx: &mut TestAppContext,
 ) {
@@ -241,8 +297,8 @@ fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
     let before = editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
         v.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 60_000,
             end_frame: 108_000,
         });
@@ -277,8 +333,8 @@ fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestA
     editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
         v.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 36_000,
             end_frame: 132_000,
         });

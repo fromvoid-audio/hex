@@ -1,6 +1,5 @@
 use super::*;
 use hex_tuning::{Audition, ProjectTuning};
-use std::time::{Duration, Instant};
 
 fn stale_library_write(export: bool) {
     let directory = library_scratch();
@@ -52,16 +51,51 @@ fn review_stale_tuning_export_creates_no_file_after_revision_or_generation_chang
     stale_library_write(true);
 }
 
+#[test]
+fn full_tuning_recovery_reports_guidance_without_changing_the_slot() {
+    let directory = library_scratch();
+    let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
+    hex_storage::tuning_library::save(&directory.0, 1, "original", tuning(333.0).scale()).unwrap();
+    for number in 1..=32 {
+        std::fs::write(
+            directory
+                .0
+                .join(format!("slot-1-recovery-{number:02}.freqs")),
+            b"preserve",
+        )
+        .unwrap();
+    }
+    let path = directory.0.join("slot-1.freqs");
+    let original = std::fs::read(&path).unwrap();
+    let (result, prepared) = run_tuning_library_operation_in(
+        &mut session,
+        TuningLibraryContext {
+            request_generation: 0,
+            request_revision: 0,
+            operation_id: 1,
+            current_generation: 0,
+            current_revision: 0,
+        },
+        TuningLibraryOperation::Save {
+            slot: 1,
+            name: "new".into(),
+        },
+        None,
+        &directory.0,
+    );
+    let error = result.error.unwrap();
+    assert!(error.contains("recovery is full"));
+    assert!(error.contains(&directory.0.to_string_lossy().to_string()));
+    assert!(prepared.is_none());
+    assert_eq!(std::fs::read(path).unwrap(), original);
+    assert_eq!(result.slots[0].name.as_deref(), Some("original"));
+}
+
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(2))
-            }
-            Err(error) => panic!("worker did not reply: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("next: worker event absent: {error}"),
     }
 }
 fn tuning(hz: f64) -> ProjectTuning {

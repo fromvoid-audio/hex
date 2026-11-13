@@ -58,6 +58,38 @@ impl NativeInstrumentClock for Clock {
         Some(offset as u64)
     }
 }
+
+#[test]
+fn tail_split_control_preflight_accepts_only_unautomated_output_gain() {
+    let empty = PreparedParameterAutomation::default();
+    assert!(empty.supports_tail_split_controls());
+    let mut output = empty.clone();
+    output
+        .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    assert!(output.supports_tail_split_controls());
+    let mut external_output = empty.clone();
+    external_output
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    assert!(external_output.supports_tail_split_controls());
+    let mut input = empty.clone();
+    input
+        .arm_host_gain_input(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!input.supports_tail_split_controls());
+    let mut external_input = empty.clone();
+    external_input
+        .prepare_external_host(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!external_input.supports_tail_split_controls());
+    let mut provider = empty;
+    provider
+        .arm_provider_input(descriptor(), semantics())
+        .unwrap();
+    assert!(!provider.supports_tail_split_controls());
+    assert!(!program(descriptor(), semantics()).supports_tail_split_controls());
+}
 #[test]
 fn content_origin_linear_increment_discrete_and_absent_laws_are_partition_independent() {
     let id = descriptor().id;
@@ -185,16 +217,27 @@ fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
         )
         .is_err()
     );
-    assert!(
-        PreparedParameterAutomation::new(
-            vec![ParameterAutomationLane {
-                points: 0..2,
-                ..lane.clone()
-            }],
-            vec![point, point]
-        )
-        .is_err()
-    );
+    for points in [
+        vec![point, point, point],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 1,
+                ..point
+            },
+            point,
+        ],
+    ] {
+        assert!(
+            PreparedParameterAutomation::new(
+                vec![ParameterAutomationLane {
+                    points: 0..points.len(),
+                    ..lane.clone()
+                }],
+                points,
+            )
+            .is_err()
+        );
+    }
     assert!(
         PreparedParameterAutomation::new(vec![lane.clone(); MAX_AUTOMATION_LANES + 1], vec![point])
             .is_err()
@@ -261,6 +304,7 @@ fn both_actual_runtime_twins_must_confirm_factory_parameter_support() {
         }
     }
     let prepared = PreparedRuntimeInstance {
+        modulation: None,
         automation: program(descriptor(), semantics()),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -430,6 +474,7 @@ fn host_lanes_are_not_provider_ids_and_use_content_clock_and_exact_physical_stor
 fn host_chain(bypassed: bool) -> crate::NativeRuntimeChain {
     use crate::*;
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
         automation: host_program(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -554,6 +599,39 @@ fn memoryless_host_chain_runs_without_provider_optin_and_freezes_only_committed_
         .process_range_with_clock(0..1, &mut dry, Some(&Clock), Some(&Clock))
         .unwrap();
     assert_eq!(dry, [[1.0, 0.5]; 32]);
+}
+
+#[test]
+fn bypass_transition_preserves_automation_clock_across_internal_chunks() {
+    let mut active = host_chain(false);
+    let mut wet = [[1.0, 0.5]; 300];
+    active.begin_block();
+    active
+        .process_range_with_clock(0..1, &mut wet, Some(&Clock), Some(&Clock))
+        .unwrap();
+    active.commit_block();
+
+    let mut old = host_chain(false);
+    let mut bypass = host_chain(true);
+    assert!(bypass.configuration_matches_range(&old, 0..1));
+    bypass.transfer_history_from(&mut old);
+    let mut actual = [[1.0, 0.5]; 300];
+    bypass.begin_block();
+    bypass
+        .process_range_with_clock(0..1, &mut actual, Some(&Clock), Some(&Clock))
+        .unwrap();
+    bypass.commit_block();
+    for (index, (actual, wet)) in actual.iter().zip(wet).enumerate() {
+        let mix = 1.0 - ((index + 1).min(240) as f32 / 240.0);
+        for channel in 0..2 {
+            let dry = if channel == 0 { 1.0 } else { 0.5 };
+            let expected = dry + (wet[channel] - dry) * mix;
+            assert!(
+                (actual[channel] - expected).abs() < 1e-5,
+                "frame {index} channel {channel}: {actual:?} expected {expected}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -907,7 +985,9 @@ fn transient_host_stages_only_successful_current_processing_and_clear_restores_b
     let mut frame = [[1.0, 0.5]];
     process_transient_host(&mut chain, &mut frame, Some(&mut context), 9).unwrap();
     let input = HostGain::from_db(-6.0).unwrap().linear();
-    assert_eq!(frame, [[2.0 * input, input]]);
+    let base = HostGain::from_db(3.0).unwrap().linear();
+    let down = (f64::from(base) + (1.0 - f64::from(base)) / 240.0) as f32;
+    assert_eq!(frame, [[2.0 * input * down, input * down]]);
     assert_eq!(
         context.applied,
         Some(crate::NativeTransientApplication {
@@ -932,8 +1012,8 @@ fn transient_host_stages_only_successful_current_processing_and_clear_restores_b
             offset: 0
         })
     );
-    let base = input * HostGain::from_db(3.0).unwrap().linear();
-    assert_eq!(cleared, [[2.0 * base, base]]);
+    let up = (f64::from(down) + (f64::from(base) - f64::from(down)) / 240.0) as f32;
+    assert_eq!(cleared, [[2.0 * input * up, input * up]]);
     chain.rollback_block();
     chain.begin_output_tail();
     context.applied = None;
@@ -1041,6 +1121,7 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
     let mut armed = PreparedParameterAutomation::default();
     armed.arm_provider_input(descriptor(), semantics()).unwrap();
     let make = |device_id, automation, fail_loud| PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner: ProcessorChainOwner::Main,
@@ -1254,4 +1335,338 @@ fn external_only_provider_and_host_slots_do_not_arm_live_input() {
         values: &values,
     };
     assert!(prepared.block_with_external(None, 2, None, &bad).is_err());
+}
+
+#[test]
+fn external_groups_apply_multiple_targets_and_processors_once() {
+    use crate::{
+        NativeExternalAutomation, NativeExternalAutomationSet, NativeRuntimeChain,
+        PreparedRuntimeInstance, ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    struct Windows<'a>([NativeExternalAutomation<'a>; 2]);
+    impl NativeExternalAutomationSet for Windows<'_> {
+        fn window(
+            &self,
+            identity: ProcessorInstanceIdentity,
+        ) -> Option<NativeExternalAutomation<'_>> {
+            self.0
+                .iter()
+                .copied()
+                .find(|window| window.identity == identity)
+        }
+    }
+    let owner = ProcessorChainOwner::Track(1);
+    let first = ProcessorInstanceIdentity::new(owner, 1).unwrap();
+    let second = ProcessorInstanceIdentity::new(owner, 2).unwrap();
+    let mut first_targets = [
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ];
+    first_targets.sort_unstable();
+    let second_targets = [DeviceAutomationTarget::HostInputGain];
+    let first_values = [Some(NormalizedAutomationValue::new(0.0).unwrap()), None];
+    let second_values = [
+        Some(NormalizedAutomationValue::new(1.0).unwrap()),
+        Some(NormalizedAutomationValue::new(0.5).unwrap()),
+    ];
+    let first_external = External {
+        targets: &first_targets,
+        values: &first_values,
+    };
+    let second_external = External {
+        targets: &second_targets,
+        values: &second_values,
+    };
+    let windows = Windows([
+        NativeExternalAutomation {
+            identity: first,
+            frame_offset: 0,
+            values: &first_external,
+        },
+        NativeExternalAutomation {
+            identity: second,
+            frame_offset: 0,
+            values: &second_external,
+        },
+    ]);
+    let instance = |id, targets: &[DeviceAutomationTarget]| {
+        let mut automation = PreparedParameterAutomation::default();
+        for &target in targets {
+            automation.prepare_external_host(target).unwrap();
+        }
+        PreparedRuntimeInstance {
+            modulation: None,
+            automation,
+            meter: std::sync::Arc::new(crate::DeviceMeter::default()),
+            owner,
+            device_id: id,
+            device_type: DeviceTypeId::from_static("test.host"),
+            matrix: crate::StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(std::sync::Arc::new(
+                NativeDeviceState::new(DeviceTypeId::from_static("test.host"), 1, vec![]).unwrap(),
+            )),
+            definition: None,
+        }
+    };
+    let mut chain = NativeRuntimeChain::new_prepared(vec![
+        instance(1, &first_targets),
+        instance(2, &second_targets),
+    ])
+    .unwrap();
+    chain.begin_block();
+    let mut output = [[1.0; 2]; 2];
+    chain
+        .process_range_tapped_with_foreign_input_and_external_set(
+            0..2,
+            &mut output,
+            0,
+            None,
+            None,
+            &mut crate::RefuseForeign,
+            None,
+            Some(&windows),
+            &mut |_, _, _, _, _, _| {},
+        )
+        .unwrap();
+    let low = HostGain::from_normalized(0.0).unwrap().linear();
+    let high = HostGain::from_normalized(1.0).unwrap().linear();
+    let middle = HostGain::from_normalized(0.5).unwrap().linear();
+    assert!((output[0][0] - low * low * high).abs() < 1e-7);
+    assert!((output[1][0] - middle).abs() < 1e-6);
+    chain.commit_block();
+
+    let mut duplicate = NativeRuntimeChain::new_prepared(vec![
+        instance(1, &first_targets),
+        instance(1, &first_targets),
+    ])
+    .unwrap();
+    duplicate.begin_block();
+    let mut untouched = [[1.0; 2]; 2];
+    assert!(
+        duplicate
+            .process_range_tapped_with_foreign_input_and_external_set(
+                0..2,
+                &mut untouched,
+                0,
+                None,
+                None,
+                &mut crate::RefuseForeign,
+                None,
+                Some(&windows),
+                &mut |_, _, _, _, _, _| {},
+            )
+            .is_err()
+    );
+    assert_eq!(untouched, [[1.0; 2]; 2]);
+}
+
+#[test]
+fn foreign_history_updates_preserve_native_and_host_envelopes_and_reject_key_aliases() {
+    struct Foreign;
+    impl crate::ForeignAutomationProgram for Foreign {
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            _: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            Ok(0)
+        }
+    }
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let make = |key| {
+        crate::PreparedForeignAutomation::new(
+            binding,
+            std::num::NonZeroU64::new(key).unwrap(),
+            Foreign,
+            0,
+        )
+        .unwrap()
+    };
+    let previous = PreparedParameterAutomation::for_foreign(make(1));
+    let mut current = program(descriptor(), semantics());
+    current
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    current.foreign = Some(make(2));
+    let before = current
+        .block(Some(&Clock), 32)
+        .value_at(ParameterId::from_static(1), 15);
+    current
+        .retain_foreign_history_on_control(&previous, None)
+        .unwrap();
+    assert_eq!(
+        current
+            .block(Some(&Clock), 32)
+            .value_at(ParameterId::from_static(1), 15),
+        before
+    );
+    assert!(current.has_host_target(DeviceAutomationTarget::HostOutputGain));
+    assert!(
+        current
+            .foreign()
+            .unwrap()
+            .borrow()
+            .contains_revision(std::num::NonZeroU64::new(1).unwrap())
+    );
+    let mut same_metadata = current.clone();
+    same_metadata.foreign = previous.foreign.clone();
+    assert!(current.shares_foreign_program_history_with(&same_metadata, binding));
+    assert!(!current.shares_foreign_program_history_with(
+        &same_metadata,
+        ForeignProcessorBinding {
+            epoch: 5,
+            ..binding
+        }
+    ));
+    same_metadata.points[0].point.beat_raw += 1;
+    assert!(!current.shares_foreign_program_history_with(&same_metadata, binding));
+    same_metadata.points = current.points.clone();
+    same_metadata
+        .prepare_external_host(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!current.shares_foreign_program_history_with(&same_metadata, binding));
+    let same_owner = current.clone();
+    current
+        .retain_foreign_history_on_control(&same_owner, None)
+        .unwrap();
+    let ambiguous = PreparedParameterAutomation::for_foreign(make(2));
+    let storage = current.foreign().unwrap().storage_bytes();
+    assert!(
+        current
+            .retain_foreign_history_on_control(&ambiguous, None)
+            .is_err()
+    );
+    assert_eq!(current.foreign().unwrap().storage_bytes(), storage);
+    assert!(current.has_host_target(DeviceAutomationTarget::HostOutputGain));
+}
+
+#[test]
+fn host_gain_reads_preserve_unrounded_frames_and_existing_linear_precedence() {
+    let target = DeviceAutomationTarget::HostOutputGain;
+    let left = 0.123_456_7_f32;
+    let right = 0.872_346_9_f32;
+    let touch = 0.654_321_1_f32;
+    let external_value = 0.456_789_1_f32;
+    let mut prepared = PreparedParameterAutomation::new_with_host_and_touch(
+        Vec::new(),
+        vec![HostAutomationLane {
+            target,
+            points: 0..2,
+        }],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 2,
+                normalized: left,
+                step: false,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 6,
+                normalized: right,
+                step: true,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 5,
+                normalized: touch,
+                step: true,
+            },
+        ],
+        vec![ParameterAutomationTouchSpan {
+            target,
+            start_beat: 5,
+            end_beat: 6,
+            points: 2..3,
+        }],
+    )
+    .unwrap();
+    prepared.arm_host_gain_input(target).unwrap();
+
+    let samples = [
+        None,
+        Some(NormalizedAutomationValue::new(external_value).unwrap()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
+    let external = External {
+        targets: &[target],
+        values: &samples,
+    };
+    let block = prepared
+        .block_with_external(Some(&Clock), samples.len(), None, &external)
+        .unwrap();
+    let expected = |block: &ParameterAutomationBlock<'_>, frame, normalized: f32| {
+        assert_eq!(
+            block.host_gain_normalized_at(target, frame).unwrap().get(),
+            normalized
+        );
+        let millidb = (84_000.0 * f64::from(normalized) - 60_000.0).round();
+        let db = millidb as f32 / 1000.0;
+        assert_eq!(
+            block.host_gain_at(target, frame),
+            Some(10.0_f32.powf(db / 20.0))
+        );
+    };
+    expected(&block, 0, left);
+    expected(&block, 1, external_value);
+    expected(
+        &block,
+        4,
+        ((f64::from(left) + f64::from(right)) * 0.5) as f32,
+    );
+    expected(&block, 5, touch);
+    expected(&block, 6, right);
+    assert_eq!(block.host_gain_normalized_at(target, 7), None);
+    assert_eq!(
+        prepared.block(None, 1).host_gain_normalized_at(target, 0),
+        None
+    );
+
+    let held = HostGain::from_millidb(-4_321).unwrap();
+    let with_held = prepared
+        .block_with_external(
+            Some(&Clock),
+            samples.len(),
+            Some(NativeTransientValue::HostOutputGain(held)),
+            &external,
+        )
+        .unwrap();
+    expected(&with_held, 1, held.normalized());
+    expected(&with_held, 5, held.normalized());
+}
+
+#[test]
+fn native_automation_ramps_to_the_incoming_point_and_jumps_at_the_shared_beat() {
+    let descriptor = descriptor();
+    let program = PreparedParameterAutomation::new(
+        vec![ParameterAutomationLane {
+            descriptor,
+            semantics: semantics(),
+            points: 0..4,
+        }],
+        [(0, 0.0), (20, 1.0), (20, 0.25), (40, 0.75)]
+            .map(|(beat_raw, normalized)| ParameterAutomationPoint {
+                beat_raw,
+                normalized,
+                step: false,
+            })
+            .to_vec(),
+    )
+    .unwrap();
+    let block = program.block(Some(&Clock), 42);
+    for (offset, expected) in [(10, 5.0), (20, 3.0), (30, 5.0)] {
+        assert_eq!(
+            block.value_at(descriptor.id, offset),
+            Some(ParameterValue::Float(expected))
+        );
+    }
 }

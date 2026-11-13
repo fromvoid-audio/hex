@@ -143,6 +143,13 @@ impl Project {
         }
         clip.fade.validate_segment(clip.duration)?;
         if let Some(edit) = clip.audio_edit() {
+            if edit.domain.clock.length() > crate::MAX_AUDIO_DOMAIN_FRAMES
+                && (edit.plain_frame_event_root() || edit.is_plain_reversed_capture(clip))
+            {
+                return Err(Invalid(
+                    "long frame event timelines and plain reversals cannot be nested as retained audio sources",
+                ));
+            }
             edit.validate(clip, &root.tempo, asset.playback_frames())?;
             if let Some(events) = &edit.domain.events {
                 for child in &events.sources {
