@@ -1292,4 +1292,114 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
             .id(),
         effect
     );
+    let remove =
+        |revision, generation, track, instrument, effect| Request::RemoveOnlySourceUtility {
+            project_generation: generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+        };
+    let revision = redone.state.revision;
+    assert!(!remove(revision, 0, receiver, instrument, effect).finalizes_parameter_gesture());
+    refused(
+        &service,
+        &redone,
+        remove(revision, 1, receiver, instrument, effect),
+        "project changed",
+    );
+    refused(
+        &service,
+        &redone,
+        remove(revision - 1, 0, receiver, instrument, effect),
+        "project changed",
+    );
+    refused(
+        &service,
+        &redone,
+        remove(revision, 0, other_track, instrument, effect),
+        "track binding changed",
+    );
+    refused(
+        &service,
+        &redone,
+        remove(revision, 0, receiver, local, effect),
+        "source chain changed",
+    );
+    refused(
+        &service,
+        &redone,
+        remove(revision, 0, receiver, instrument, local),
+        "source chain changed",
+    );
+    let key = GestureKey {
+        generation: 0,
+        token: 7761,
+    };
+    let begun = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track: receiver },
+        }),
+    );
+    assert!(begun.active_device_gesture.is_some());
+    refused(
+        &service,
+        &begun,
+        remove(begun.state.revision, 0, receiver, instrument, effect),
+        "active gesture",
+    );
+    let cancelled = run(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    let removed = run(
+        &service,
+        remove(cancelled.state.revision, 0, receiver, instrument, effect),
+    );
+    assert!(
+        removed
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()
+            .is_empty()
+    );
+    assert_eq!(
+        removed.state.project.track(receiver).unwrap().devices()[0].id(),
+        local
+    );
+    assert_eq!(
+        removed
+            .state
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id(),
+        Some(source)
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        undone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()[0]
+            .id(),
+        effect
+    );
+    let redone = run(&service, Request::Redo);
+    assert!(
+        redone
+            .state
+            .project
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()
+            .is_empty()
+    );
 }
