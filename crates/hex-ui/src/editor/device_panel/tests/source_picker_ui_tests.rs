@@ -3189,7 +3189,23 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
         .unwrap()
         .instrument()
         .id();
-    let (handle, editor) = actor_editor_window(cx, service, event.state, receiver);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "later contributor".into(),
+        }))
+        .unwrap();
+    let before_bind = receive_service_event(&service);
+    let Some(Created::Track(contributor)) = before_bind.created else {
+        panic!("contributor")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    let bound_event = receive_service_event(&service);
+    let (handle, editor) = actor_editor_window(cx, service, before_bind.state, receiver);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(700.0)));
     visual.run_until_parked();
@@ -3310,6 +3326,29 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
     editor.update(&mut visual, |view, cx| {
         assert!(super::super::finalize_controls(view, cx))
     });
+    editor.update(&mut visual, |view, cx| {
+        view.receive(bound_event);
+        cx.notify();
+    });
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(
+                view.device_panel.owner,
+                Some(DevicePanelOwner::Source(source))
+            );
+            assert!(view.device_gesture.has_pending_terminal());
+            let Some(ParameterControl::Float { entity, .. }) = view
+                .device_panel
+                .controls
+                .get(&ParameterKey { device, parameter })
+            else {
+                panic!("pending source parameter")
+            };
+            assert!((entity.read(cx).value() - 2.0).abs() < 0.00001);
+        });
+    }
     visual.update(|window, cx| {
         editor.read_with(cx, |view, _| {
             view.device_panel
@@ -3384,6 +3423,22 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
         value(view) == ParameterValue::Float(2.0)
     });
     editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: None
+        })))
+    });
+    settle(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id()
+            .is_none()
+    });
+    editor.update(&mut visual, |view, _| {
         assert!(view.enqueue(Request::Edit(Command::RemoveNativeSource(source))))
     });
     settle(&editor, &mut visual, |view| {
@@ -3400,6 +3455,242 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
         assert_ne!(
             view.device_panel.owner,
             Some(DevicePanelOwner::Source(source))
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(receiver)
+                .unwrap(),
+            &original_track
+        );
+    });
+}
+
+#[gpui::test]
+fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAppContext) {
+    use hex_session::device_gesture::{GestureKey, GestureRequest};
+    cx.update(crate::editor::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, receiver, _, _, _) = actor_utility_fixture();
+    let original_track = state.project.track(receiver).unwrap().clone();
+    let kind = hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.fm4");
+    let fm = hex_engine::default_native_device_state_for_class(NativeDeviceClass::Instrument, kind)
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "pending fm".into(),
+            devices: vec![fm.clone()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let created = receive_service_event(&service);
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "later contributor".into(),
+        }))
+        .unwrap();
+    let before_bind = receive_service_event(&service);
+    let Some(Created::Track(contributor)) = before_bind.created else {
+        panic!("contributor")
+    };
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let parameter = hex_lattice_contract::ParameterId::from_static(1);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter { device, parameter },
+        }))
+        .unwrap();
+    assert!(
+        receive_service_event(&service)
+            .gesture_ack
+            .unwrap()
+            .accepted
+    );
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(2.0),
+        }))
+        .unwrap();
+    assert!(
+        receive_service_event(&service)
+            .active_device_gesture
+            .is_some()
+    );
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    let bound = receive_service_event(&service);
+    assert!(bound.active_device_gesture.is_some());
+    service
+        .submit(Request::Edit(Command::ReplaceTrackInstrument {
+            track: contributor,
+            replacing: device,
+            state: fm,
+        }))
+        .unwrap();
+    let replaced = receive_service_event(&service);
+    let new_device = replaced
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    assert_ne!(device, new_device);
+    assert!(
+        replaced
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.key == key && ack.reason.is_some())
+    );
+    let (handle, editor) = actor_editor_window(cx, service, before_bind.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(700.0)));
+    visual.run_until_parked();
+    let picker = visual.debug_bounds("device-source-picker").unwrap();
+    visual.simulate_click(picker.center(), Modifiers::default());
+    visual.run_until_parked();
+    let manager = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    == "manage sources"
+            })
+            .unwrap()
+    });
+    for _ in 0..manager {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let source_index = editor.read_with(&visual, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item))
+                    .contains("pending fm · 0 midi")
+            })
+            .unwrap()
+    });
+    for _ in 0..source_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let edit = editor.read_with(&visual, |view, _| {
+        let item = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| {
+                theme::text(crate::editor::context_menu::context_item_label(item)) == "edit source"
+            })
+            .unwrap();
+        let EditorContextAction::SourceManager(action) = &item.action else {
+            panic!("source action")
+        };
+        action.clone()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.update(|window, cx| editor.update(cx, |view, cx| edit.perform(view, window, cx)));
+    visual.run_until_parked();
+    enter_typed_value(&mut visual, device, parameter, "2");
+    editor.update(&mut visual, |view, cx| {
+        assert!(super::super::finalize_controls(view, cx))
+    });
+    let old_control = editor.read_with(&visual, |view, _| {
+        assert_eq!(view.device_gesture.snapshot().unwrap().key, key);
+        let Some(ParameterControl::Float { entity, .. }) = view
+            .device_panel
+            .controls
+            .get(&ParameterKey { device, parameter })
+        else {
+            panic!("source control")
+        };
+        entity.clone()
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.receive(bound);
+        cx.notify();
+    });
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(
+                view.device_panel.owner,
+                Some(DevicePanelOwner::Source(source))
+            );
+            assert!(view.device_gesture.has_pending_terminal());
+            let Some(ParameterControl::Float { entity, .. }) = view
+                .device_panel
+                .controls
+                .get(&ParameterKey { device, parameter })
+            else {
+                panic!("pending source control")
+            };
+            assert!((entity.read(cx).value() - 2.0).abs() < 0.00001);
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(replaced);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    old_control.update(&mut visual, |_, cx| {
+        cx.emit(NumericControlEvent {
+            phase: NumericEventPhase::Begin,
+            value: 3.0,
+            gesture: None,
+        })
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none());
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Track(receiver))
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .id(),
+            new_device
         );
         assert_eq!(
             view.state
