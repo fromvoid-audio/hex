@@ -4809,8 +4809,8 @@ impl Callback {
             );
         }
     }
-    /// Returns whether a split seek recorded its own suffix and the clock at
-    /// the start of the normal render path, after any streamed installation.
+    /// Returns whether a split seek recorded its own suffix and the clock used
+    /// for ordinary bookkeeping, adjusted for a pre-render streamed section.
     fn render_inner(
         &mut self,
         output: &mut [Frame],
