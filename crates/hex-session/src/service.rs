@@ -596,6 +596,16 @@ pub enum Request {
         expected_source: Option<hex_project::SourceId>,
         source: Option<hex_project::SourceId>,
     },
+    /// Explicitly move a source's audio receiver to an already linked track.
+    /// The captured receiver and project stamps must still match. Callers must
+    /// reject unsent gestures; this request does not finalize them.
+    ChooseNativeSourceReceiver {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::SourceId,
+        expected_receiver: Option<hex_project::TrackId>,
+        track: hex_project::TrackId,
+    },
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
     /// Replace one device's bank against the displayed canonical revision.
@@ -3484,6 +3494,48 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::ChooseNativeSourceReceiver {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                expected_receiver,
+                track,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source receiver selection canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before choosing a source receiver"
+                            .into(),
+                    );
+                }
+                let project = session.project();
+                let definition = project
+                    .native_source(*source)
+                    .ok_or("source receiver selection canceled · source no longer exists")?;
+                if definition.receiver() != *expected_receiver {
+                    return Err("source receiver selection canceled · receiver changed".into());
+                }
+                let target = project
+                    .track(*track)
+                    .ok_or("source receiver selection canceled · track no longer exists")?;
+                if target.source_id() != Some(*source) {
+                    return Err(
+                        "source receiver selection canceled · track is not linked to source".into(),
+                    );
+                }
+                if *expected_receiver == Some(*track) {
+                    return Err("source receiver is unchanged".into());
+                }
+                Ok(Command::SetNativeSourceReceiver {
+                    source: *source,
+                    track: Some(*track),
+                })
+            })()),
             Request::RebindNativeSource {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5472,7 +5524,9 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::BindUnassignedNativeSource { .. } | Request::RebindNativeSource { .. } => {
+                Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. } => {
                     error = Some("source assignment was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
