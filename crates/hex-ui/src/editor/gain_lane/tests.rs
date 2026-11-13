@@ -232,6 +232,14 @@ pub(in crate::editor) mod native {
                     source,
                 }
             ));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::CreateRetainedNativeSource {
+                    project_generation: 0,
+                    revision: 1,
+                    type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+                    name: "source".into(),
+                }
+            ));
             assert!(view.gain_lane.draft.is_some());
             assert!(
                 view.error
