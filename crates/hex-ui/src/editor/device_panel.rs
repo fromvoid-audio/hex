@@ -963,15 +963,14 @@ fn render_source(
         device.id(),
         (identity.class, device.state().clone(), Ok(metadata.clone())),
     );
-    let body = if metadata.type_id.as_str() == Ok("hex.instrument.sampler") {
+    let sampler_source = metadata.type_id.as_str() == Ok("hex.instrument.sampler");
+    let body = if sampler_source {
         if hex_engine::is_empty_sampler_state_on_control(device.state()) {
             div()
                 .id("source-sampler-empty")
                 .debug_selector(|| "source-sampler-empty".into())
                 .p(px(8.0))
-                .child(theme::text(
-                    "empty sampler · sample loading from source view is not yet available",
-                ))
+                .child(theme::text("empty sampler · drop a browser sample here"))
         } else {
             let owner = hex_session::service::SamplerParameterOwner::Source(source);
             let mut fields = [
@@ -1025,9 +1024,7 @@ fn render_source(
                         .gap(px(4.0))
                         .p(px(4.0))
                         .child(overview)
-                        .child(theme::text(
-                            "sample loading from source view is not yet available",
-                        ))
+                        .child(theme::text("drop a browser sample here to replace"))
                         .child(
                             div()
                                 .grid()
@@ -1069,6 +1066,13 @@ fn render_source(
         .flex()
         .flex_col()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .when(sampler_source, |panel| {
+            panel.on_drop(
+                cx.listener(move |view, drag: &drag::BrowserAudioDrag, _, cx| {
+                    view.drop_browser_sample_on_source(drag, source, cx);
+                }),
+            )
+        })
         .child(
             div()
                 .h(px(DEVICE_PANEL_HEADER_HEIGHT))
