@@ -105,6 +105,19 @@ fn shared_source_housing_excludes_local_prefix_and_suffix(cx: &mut TestAppContex
 
 #[gpui::test]
 fn shared_source_utility_gain_edits_from_contributor(cx: &mut TestAppContext) {
+    for filter in [
+        None,
+        Some(hex_devices::utility::parameter::DC_REMOVE),
+        Some(hex_devices::utility::parameter::BASS_MONO),
+    ] {
+        shared_source_utility_gain_with_filter(cx, filter);
+    }
+}
+
+fn shared_source_utility_gain_with_filter(
+    cx: &mut TestAppContext,
+    filter: Option<hex_lattice_contract::ParameterId>,
+) {
     cx.update(crate::editor::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -129,10 +142,16 @@ fn shared_source_utility_gain_edits_from_contributor(cx: &mut TestAppContext) {
     else {
         panic!("contributor")
     };
-    let utility = hex_engine::default_native_device_state(
+    let mut utility = hex_engine::default_native_device_state(
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
     )
     .unwrap();
+    if let Some(filter) = filter {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        utility = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(&utility, filter, ParameterValue::Bool(true))
+            .unwrap();
+    }
     let created = edit(Command::CreateNativeSource {
         name: "shared".into(),
         devices: vec![
@@ -321,7 +340,7 @@ fn shared_source_utility_gain_edits_from_contributor(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn source_utility_gain_is_limited_to_unautomated_memoryless_processing() {
+fn source_utility_gain_is_limited_to_unautomated_active_processing() {
     use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata};
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -385,7 +404,7 @@ fn source_utility_gain_is_limited_to_unautomated_memoryless_processing() {
     editor
         .execute(Command::ReplaceDeviceState { device, state })
         .unwrap();
-    assert!(!available(&editor));
+    assert!(available(&editor));
     assert!(editor.undo());
     editor
         .execute(Command::ReplaceDeviceAutomationTarget {
