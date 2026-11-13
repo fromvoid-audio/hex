@@ -252,7 +252,7 @@ fn prepared_with_latency(
                 ProcessorChainOwner::Track(track.value()),
             )
         }
-        4..=6 | 8..=11 => {
+        4..=6 | 8..=12 => {
             let track = f.tracks[0];
             f.editor
                 .execute(Command::InsertInstrument {
@@ -305,7 +305,7 @@ fn prepared_with_latency(
                         .unwrap();
                 }
             }
-            if (8..=10).contains(&location) {
+            if (8..=10).contains(&location) || location == 12 {
                 let Created::ReturnTrack(bus) = f
                     .editor
                     .execute(Command::AddReturnTrack {
@@ -317,7 +317,11 @@ fn prepared_with_latency(
                 };
                 f.editor
                     .execute(Command::SetReturnSend {
-                        track: if location == 10 { track } else { group },
+                        track: if matches!(location, 10 | 12) {
+                            track
+                        } else {
+                            group
+                        },
                         return_track: bus,
                         gain: if location == 8 { 0.5 } else { 0.75 },
                     })
@@ -338,6 +342,15 @@ fn prepared_with_latency(
                         source: hex_project::RoutingOwner::Track(track),
                         destination: target,
                         gain: 0.5,
+                    })
+                    .unwrap();
+            }
+            if location == 12 {
+                f.editor
+                    .execute(Command::SetLoopRegion {
+                        start: 0,
+                        end: 256,
+                        enabled: true,
                     })
                     .unwrap();
             }
@@ -794,6 +807,76 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
 struct QuietTrackEffect;
 
 #[test]
+fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
+    struct NonQuiet {
+        frames: [usize; SESSION_TAIL_GROUP_CAPACITY + 1],
+    }
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            self.frames[index] += frames.len();
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut current =
+        SessionPlayback::new(prepared_with_latency(10, false, 512, Some(1)).0).unwrap();
+    let mut probe = NonQuiet {
+        frames: [0; SESSION_TAIL_GROUP_CAPACITY + 1],
+    };
+    current.apply(SessionPlaybackCommand::Play).unwrap();
+    current
+        .render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+        .unwrap();
+    for epoch in 2..=(SESSION_TAIL_GROUP_CAPACITY as u64 + 2) {
+        let mut next =
+            SessionPlayback::new(prepared_with_latency(10, false, 512, Some(epoch)).0).unwrap();
+        let previous_position = current.performance_frame;
+        let previous_tails = current.tail_groups.iter().flatten().count();
+        let before = if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
+            Some(probe.frames)
+        } else {
+            None
+        };
+        let result = next.try_inherit_state_from(&mut current);
+        if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
+            let before = before.unwrap();
+            assert_eq!(previous_tails, SESSION_TAIL_GROUP_CAPACITY);
+            assert!(matches!(result, Err(SessionPlaybackError::ReleaseBankFull)));
+            assert!(current.playing);
+            assert_eq!(current.performance_frame, previous_position);
+            assert_eq!(current.tail_groups.iter().flatten().count(), previous_tails);
+            assert!(next.tail_groups.iter().all(Option::is_none));
+            assert_eq!(probe.frames, before);
+            current
+                .render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+                .unwrap();
+            assert_eq!(current.performance_frame, previous_position + 1);
+            for (after, before) in probe.frames.iter().zip(before) {
+                assert_eq!(*after, before + 1);
+            }
+            current.apply(SessionPlaybackCommand::Stop).unwrap();
+            assert!(next.try_inherit_state_from(&mut current).is_ok());
+        } else {
+            result.unwrap();
+            next.render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+                .unwrap();
+            current = next;
+        }
+    }
+}
+
+#[test]
 fn overlapping_foreign_tails_keep_grouped_send_and_feed_pcm() {
     struct Probe {
         rings: [[[f32; 2]; 128]; 3],
@@ -1016,7 +1099,7 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
     }
 
     // A changed route or aliased endpoint must leave the old worker audible.
-    for (location, epoch, alias) in [(9, 3, false), (10, 1, true)] {
+    for (location, epoch, alias) in [(9, 3, false), (10, 1, true), (12, 3, false)] {
         let mut old = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
         let mut reference_old =
             SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
@@ -1026,6 +1109,13 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
             SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
         let mut later =
             SessionPlayback::new(prepared_with_latency(location, false, 0, Some(epoch)).0).unwrap();
+        if location == 12 {
+            assert_eq!(
+                current.revision.arrangement().signal_graph,
+                later.revision.arrangement().signal_graph
+            );
+            assert_ne!(current.loop_region(), later.loop_region());
+        }
         for playback in [&mut old, &mut reference_old] {
             playback.apply(SessionPlaybackCommand::Play).unwrap();
             playback
