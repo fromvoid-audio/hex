@@ -1999,6 +1999,7 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
     let first = first_wav.definition(first_asset, 11);
     let second = second_wav.definition(second_asset, 11);
     let first_key = first.metadata.key();
+    let second_key = second.metadata.key();
     let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
         source: second.metadata.key(),
         page_index: 1,
@@ -2116,6 +2117,24 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
         }
         std::thread::yield_now();
     }
+    let mut coalesced = false;
+    data.owner_mut().unwrap().run(|c, _| {
+        if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+            && let Some(streams) = active.streams.as_ref()
+        {
+            coalesced = streams.test_coalesced_prefetch(
+                &mut c.domain_pages,
+                hex_stream::ResourcePageKey {
+                    source: second_key.into(),
+                    page_index: 1,
+                },
+            );
+        }
+    });
+    assert!(
+        coalesced,
+        "the gated page must be lookahead coalesced with actual readiness"
+    );
     assert!(result.0, "first domain did not deliver the requested page");
     assert!(
         result.1,
@@ -2156,6 +2175,18 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
             "fresh replacement remained blocked by an unrelated held page"
         );
         release.send(()).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        loop {
+            measured_render(&mut data, &mut output);
+            if output.iter().all(|frame| *frame == [0.25; 2]) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fresh replacement did not resume its resident source"
+            );
+            std::thread::yield_now();
+        }
     } else {
         control.stop();
         measured_render(&mut data, &mut output);

@@ -683,6 +683,11 @@ impl ConstructorPageLoan {
     pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
         self.pages.endpoint.has_extent(extent)
     }
+    /// Test-only observation of a speculative request coalesced with readiness.
+    #[cfg(feature = "test-support")]
+    pub fn test_coalesced_prefetch(&self, key: crate::ResourcePageKey) -> bool {
+        self.pages.endpoint.test_coalesced_prefetch(key)
+    }
     /// Test-only observation of the next worker-ready page; it grants no custody.
     #[cfg(feature = "test-support")]
     pub fn test_ready_page(&self, key: crate::ResourcePageKey) -> bool {
