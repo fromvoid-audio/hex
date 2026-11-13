@@ -911,6 +911,94 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
 }
 
 #[test]
+fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
+    let (mut editor, identity) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "session".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "notes".into(),
+            source_length: BeatTime::from_ratio(1, 32).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 64).unwrap(),
+            pitch: 64,
+            channel: 3,
+            velocity: 98,
+        })
+        .unwrap();
+    let revision = prepare(&editor, identity, true).unwrap();
+
+    for block in [1, 7, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        endpoint.render(&mut playback, &mut [[0.0; 2]; 16]).unwrap();
+        let [(0, original)] = endpoint.notes.as_slice() else {
+            panic!("expected the original Session onset: {:?}", endpoint.notes)
+        };
+        let original = *original;
+        assert!(original.on && original.pitch == 64 && original.channel == 3);
+
+        playback.play_from(12_000).unwrap();
+        let mut events = Vec::new();
+        let mut output = [[0.0; 2]; 400];
+        let mut elapsed = 0;
+        for chunk in output.chunks_mut(block) {
+            endpoint.render(&mut playback, chunk).unwrap();
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (elapsed + offset, *note)),
+            );
+            elapsed += chunk.len();
+        }
+        let [(0, released), (0, restarted), (375, ended)] = events.as_slice() else {
+            panic!("block {block}: unexpected events {events:?}")
+        };
+        assert!(
+            !released.on && released.note_id == original.note_id,
+            "block {block}"
+        );
+        assert!(
+            restarted.on && restarted.note_id != original.note_id,
+            "block {block}"
+        );
+        assert_eq!(
+            (restarted.pitch, restarted.channel, restarted.velocity),
+            (64, 3, 98)
+        );
+        assert!(
+            !ended.on && ended.note_id == restarted.note_id,
+            "block {block}"
+        );
+    }
+}
+
+#[test]
 fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
     use crate::LaunchQuantization::Immediate;
     let (mut editor, identity) = fixture();
