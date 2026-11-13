@@ -85,8 +85,7 @@ fn pause_guard_case(after_install: bool) {
     };
     let edited = automation::edit_with_running_callback(&mut h, lane);
     assert!(edited.error.is_none(), "{:?}", edited.error);
-    let (_applied, metadata) = h.applied(applied);
-    let _binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let (_, metadata) = h.applied(applied);
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     h.run(Request::QueryPluginParameters(PluginParameterQuery {
         context: metadata.context,
@@ -96,7 +95,7 @@ fn pause_guard_case(after_install: bool) {
         page_first: None,
     }));
     let result = h.next().plugin_parameters.unwrap();
-    let _original_source = result.source.unwrap();
+    assert!(result.source.is_some());
     let rows = result.rows.unwrap();
     let [row] = rows.as_slice() else {
         panic!("one SDK parameter")
@@ -301,16 +300,7 @@ fn pause_guard_case(after_install: bool) {
         diagnostics.push(event);
     }
     let status = h.audio.as_ref().unwrap().status().unwrap();
-    println!(
-        "PAUSE_GUARD_PROBE accepted={} source_lost={} retained={} error={:?} old_output={old_output:?} output={output:?} before_revision={before_revision} after_revision={} rejected={:?} recording={:?} diagnostics={diagnostics:?}",
-        ack.accepted,
-        ack.source_lost,
-        ack.preview_retained,
-        event.error,
-        status.applied_revision.load(Acquire),
-        status.rejected_revision(),
-        status.recording_source()
-    );
+    assert!(event.error.is_none(), "{:?}", event.error);
     if after_install {
         assert!(
             ack.accepted,
