@@ -356,8 +356,8 @@ impl SessionPlayback {
         playing: Option<bool>,
         ordinary: bool,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<usize, crate::StreamQuantumProjectionError> {
-        use crate::StreamQuantumProjectionError as Error;
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        use crate::playback::StreamQuantumProjectionError as Error;
         let ordinary = ordinary || self.linear_arrangement_export;
         if !ordinary && !self.supports_closed_stream_demand() {
             return Err(Error::Unsupported);

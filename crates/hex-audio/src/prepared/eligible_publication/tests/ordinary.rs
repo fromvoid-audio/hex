@@ -1544,9 +1544,11 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
         ),
         (0, 0, 0, 0)
     );
-    let expected = Some(Err(hex_engine::StreamQuantumProjectionError::Visitor(
-        hex_engine::Invalid("visitor full"),
-    )));
+    let expected = Some(Err(
+        hex_engine::playback::StreamQuantumProjectionError::Visitor(hex_engine::Invalid(
+            "visitor full",
+        )),
+    ));
     assert_eq!(ordinary_failure, expected);
     assert_eq!(constructor_failure, expected);
 }

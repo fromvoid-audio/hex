@@ -19,6 +19,37 @@ pub use timed_transport::{
     MAX_TIMED_TRANSPORT_COMMANDS, TimedTransportCommand, TimedTransportError,
 };
 
+/// Why a bounded current-stream projection could not be completed.
+/// Visitor refusal may leave partial caller-owned observations speculative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamQuantumProjectionError {
+    Unsupported,
+    ClockOverflow,
+    Visitor(Invalid),
+    Projection(Invalid),
+}
+
+impl From<StreamQuantumProjectionError> for Invalid {
+    fn from(error: StreamQuantumProjectionError) -> Self {
+        match error {
+            StreamQuantumProjectionError::Unsupported => {
+                Self("stream demand requires a closed audio runtime")
+            }
+            StreamQuantumProjectionError::ClockOverflow => {
+                Self("stream callback projection overflow")
+            }
+            StreamQuantumProjectionError::Visitor(error)
+            | StreamQuantumProjectionError::Projection(error) => error,
+        }
+    }
+}
+impl std::fmt::Display for StreamQuantumProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&Invalid::from(self.clone()), f)
+    }
+}
+impl std::error::Error for StreamQuantumProjectionError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
@@ -2574,12 +2605,12 @@ impl Playback {
         playing: Option<bool>,
         ordinary: bool,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<usize, crate::StreamQuantumProjectionError> {
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
         self.session_runtime
             .as_mut()
-            .ok_or(crate::StreamQuantumProjectionError::Projection(Invalid(
-                "session runtime unavailable",
-            )))?
+            .ok_or(crate::playback::StreamQuantumProjectionError::Projection(
+                Invalid("session runtime unavailable"),
+            ))?
             .visit_current_stream_quantum_at(start_offset, maximum_frames, playing, ordinary, visit)
     }
     pub(crate) fn preview_stream_handoff_with_report(

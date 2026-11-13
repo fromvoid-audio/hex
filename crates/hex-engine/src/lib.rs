@@ -367,37 +367,6 @@ pub(crate) fn render_streamed_page_span_captured(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invalid(pub &'static str);
-
-/// Why a bounded current-stream projection could not be completed.
-/// Visitor refusal may leave partial caller-owned observations speculative.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamQuantumProjectionError {
-    Unsupported,
-    ClockOverflow,
-    Visitor(Invalid),
-    Projection(Invalid),
-}
-
-impl From<StreamQuantumProjectionError> for Invalid {
-    fn from(error: StreamQuantumProjectionError) -> Self {
-        match error {
-            StreamQuantumProjectionError::Unsupported => {
-                Self("stream demand requires a closed audio runtime")
-            }
-            StreamQuantumProjectionError::ClockOverflow => {
-                Self("stream callback projection overflow")
-            }
-            StreamQuantumProjectionError::Visitor(error)
-            | StreamQuantumProjectionError::Projection(error) => error,
-        }
-    }
-}
-impl fmt::Display for StreamQuantumProjectionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Invalid::from(self.clone()), f)
-    }
-}
-impl std::error::Error for StreamQuantumProjectionError {}
 impl fmt::Display for Invalid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)

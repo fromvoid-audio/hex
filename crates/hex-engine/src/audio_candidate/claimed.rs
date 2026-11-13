@@ -451,16 +451,16 @@ impl ClaimedAudioCandidateRuntime {
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
-    ) -> Result<usize, crate::StreamQuantumProjectionError> {
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
         if self.inner.phase != ClaimedPhase::Current {
-            return Err(crate::StreamQuantumProjectionError::Projection(
+            return Err(crate::playback::StreamQuantumProjectionError::Projection(
                 crate::Invalid("candidate runtime is not current"),
             ));
         }
         self.inner
             .runtime
             .as_mut()
-            .ok_or(crate::StreamQuantumProjectionError::Projection(
+            .ok_or(crate::playback::StreamQuantumProjectionError::Projection(
                 crate::Invalid("candidate runtime unavailable"),
             ))?
             .playback
