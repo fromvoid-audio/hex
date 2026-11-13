@@ -3878,3 +3878,109 @@ fn source_manager_edits_unassigned_operator_with_its_specialized_panel(cx: &mut 
         assert!(view.error.is_some());
     });
 }
+
+#[gpui::test]
+fn unassigned_sampler_parameter_target_refuses_stale_source_context(cx: &mut TestAppContext) {
+    let (service, state, selected, _, _, _) = actor_utility_fixture();
+    let sampler = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unassigned sampler".into(),
+            devices: vec![sampler],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let created = receive_service_event(&service);
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let unbound = receive_service_event(&service);
+    let Some(Created::Track(contributor)) = unbound.created else {
+        panic!("track")
+    };
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        }))
+        .unwrap();
+    let bound = receive_service_event(&service);
+    let replacement = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceTrackInstrument {
+            track: contributor,
+            replacing: device,
+            state: replacement,
+        }))
+        .unwrap();
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: None,
+        }))
+        .unwrap();
+    let replaced = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::RemoveNativeSource(source)))
+        .unwrap();
+    let removed = receive_service_event(&service);
+    let (_, editor) = actor_editor_window(cx, service, unbound.state.clone(), selected);
+    editor.update(cx, |view, _| {
+        let generation = view.project_generation;
+        view.device_panel.owner = Some(DevicePanelOwner::Source(source));
+        view.device_panel.source_manager.source_view =
+            Some((generation, source, Some(DevicePanelOwner::Track(selected))));
+        view.clip_view_open = true;
+        view.device_panel_active = true;
+        let target = crate::editor::sampler_parameter::Target::new(
+            generation,
+            unbound.state.revision,
+            hex_session::service::SamplerParameterOwner::Source(source),
+            device,
+            hex_engine::SamplerParameter::Gain,
+        );
+        assert!(target.current(view));
+        view.selected_track = None;
+        assert!(!target.current(view));
+        view.selected_track = Some(selected);
+        view.project_generation += 1;
+        assert!(!target.current(view));
+        view.project_generation = generation;
+        view.clip_view_open = false;
+        assert!(!target.current(view));
+        view.clip_view_open = true;
+        for state in [&bound.state, &replaced.state, &removed.state] {
+            view.state = Some(Arc::clone(state));
+            let fresh = crate::editor::sampler_parameter::Target::new(
+                generation,
+                state.revision,
+                hex_session::service::SamplerParameterOwner::Source(source),
+                device,
+                hex_engine::SamplerParameter::Gain,
+            );
+            assert!(!fresh.current(view));
+        }
+    });
+    drop(state);
+}
