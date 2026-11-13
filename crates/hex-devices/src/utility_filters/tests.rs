@@ -213,10 +213,13 @@ fn compatible_history_transfer_preserves_candidate_configuration() {
     let changed = PreparedUtilityFilters::new(48_000, true, true, 350.0, true).unwrap();
     let muted = UtilityFilterProcessor::new(old.prepared.with_output_mute(true));
     assert!(muted.can_retarget_parameters_from(&old));
+    assert!(old.can_retarget_source_host_matrix_from(&old));
+    assert!(!muted.can_retarget_source_host_matrix_from(&old));
     let mut continued = old;
     continued.reconfigure(changed);
     let mut candidate = UtilityFilterProcessor::new(changed);
     assert!(!candidate.can_retarget_parameters_from(&old));
+    assert!(!candidate.can_retarget_source_host_matrix_from(&old));
     assert!(candidate.inherit_history_from(&old));
     for _ in 0..128 {
         assert_eq!(

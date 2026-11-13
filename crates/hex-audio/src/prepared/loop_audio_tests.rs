@@ -445,3 +445,176 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         ctl.reclaim();
     }
 }
+
+#[test]
+fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations() {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::BeatTime;
+    for (dc, bass) in [(true, false), (false, true)] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let state = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(
+                &hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+                if dc {
+                    hex_devices::utility::parameter::DC_REMOVE
+                } else {
+                    hex_devices::utility::parameter::BASS_MONO
+                },
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let Created::Device(effect) = editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("effect")
+        };
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        let table = Arc::new(SineTable::new());
+        let prepare = |editor: &Editor| {
+            Arc::new(
+                PreparedRevision::prepare(
+                    editor.project(),
+                    &BTreeMap::new(),
+                    Arc::clone(&table),
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let original = prepare(&editor);
+        let mut reference = hex_engine::SessionPlayback::new(Arc::clone(&original)).unwrap();
+        reference
+            .apply(hex_engine::SessionPlaybackCommand::Play)
+            .unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish(Playback::try_from_prepared_with_session(original).unwrap())
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = [[0.0; 2]; 64];
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert!(
+            expected.iter().flatten().any(|x| x.abs() > 1e-5),
+            "silent source"
+        );
+        let state = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(
+                editor.project().device(effect).unwrap().state(),
+                hex_devices::utility::parameter::GAIN,
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: effect,
+                state,
+            })
+            .unwrap();
+        for undo in [false, true] {
+            if undo {
+                assert!(editor.undo());
+            }
+            let next = prepare(&editor);
+            let mut reference_next = hex_engine::SessionPlayback::new(Arc::clone(&next)).unwrap();
+            reference_next
+                .try_inherit_state_live_from(&mut reference)
+                .unwrap();
+            reference = reference_next;
+            let revision = control
+                .publish(Playback::try_from_prepared_with_session(next).unwrap())
+                .unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut actual).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), revision);
+            reference.render(&mut expected).unwrap();
+            for (a, b) in actual.iter().zip(expected) {
+                assert!(
+                    (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5,
+                    "dc={dc} bass={bass} undo={undo}: {a:?} vs {b:?}"
+                );
+            }
+            control.reclaim();
+        }
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+}
