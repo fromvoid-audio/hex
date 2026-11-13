@@ -1440,27 +1440,37 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
 
 #[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
-    pending_replacement_case(true, false);
+    pending_replacement_case(true, false, false);
 }
 
 #[test]
 fn ordinary_short_one_shot_replacement_at_device_cadence() {
-    pending_replacement_case(false, false);
+    pending_replacement_case(false, false, false);
 }
 
 #[test]
 fn fenced_retained_restart_waits_for_missing_pages_without_displacing_current_audio() {
-    pending_replacement_case(false, true);
+    pending_replacement_case(false, true, false);
 }
 
-fn pending_replacement_case(looping: bool, retained_restart: bool) {
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_pending_replacement_preserves_resident_loop_page_in_same_callback() {
+    pending_replacement_case(true, false, true);
+}
+
+fn pending_replacement_case(looping: bool, retained_restart: bool, _short_loop: bool) {
     use hex_project::{Command, Created, Editor};
 
     let _serial = serial();
     let frames = (hex_engine::STREAM_PAGE_FRAMES * 2) as u64;
     let mut snapshot = super::readiness::project_with_frames(frames).snapshot();
     if looping {
-        snapshot.loop_region = Some(hex_project::LoopRegion::new(0, frames, true).unwrap());
+        snapshot.loop_region = Some(if _short_loop {
+            hex_project::LoopRegion::new(3840, 4224, true).unwrap()
+        } else {
+            hex_project::LoopRegion::new(0, frames, true).unwrap()
+        });
     }
     let original = hex_project::Project::from_snapshot(snapshot).unwrap();
     let a_track = original.tracks()[0].id();
@@ -1632,7 +1642,58 @@ fn pending_replacement_case(looping: bool, retained_restart: bool) {
     let mut output = [[0.0; 2]; 256];
 
     #[cfg(feature = "stream-test-support")]
-    if looping && !retained_restart {
+    let loop_baseline = if _short_loop {
+        // Warm A1 and leave its first 64 frames active; A0 remains resident.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 4096 {
+            measured_render(&mut data, &mut output[..64]);
+            assert!(std::time::Instant::now() < deadline, "warm A1");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.status.position.load(Acquire), 4160);
+        let a0 = hex_engine::StreamResourceExtent {
+            source: a_key.into(),
+            page_index: 0,
+            start: 3840,
+            end: 3841,
+        };
+        let mut cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, a0);
+            }
+        });
+        assert!(cached, "loop destination must be resident");
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.stream_buffering.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 4032);
+        let baseline = output;
+        control.command(PlaybackCommand::Seek(4096)).unwrap();
+        while control.status.position.load(Acquire) != 4160 {
+            measured_render(&mut data, &mut output[..64]);
+            assert!(std::time::Instant::now() < deadline, "restore A1 boundary");
+            std::thread::yield_now();
+        }
+        cached = false;
+        data.owner_mut().unwrap().run(|c, _| {
+            if let Some(ActivePublication::Legacy(active)) = c.active.as_ref()
+                && let Some(streams) = active.streams.as_ref()
+            {
+                cached = streams.test_has_extent(&mut c.domain_pages, a0);
+            }
+        });
+        assert!(
+            cached,
+            "loop destination must remain resident before successor"
+        );
+        Some(baseline)
+    } else {
+        None
+    };
+    #[cfg(feature = "stream-test-support")]
+    if looping && !retained_restart && !_short_loop {
         // Exercise A1 once so it can remain resident after returning to A0.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while control.status.position.load(Acquire) == 4096 {
@@ -1778,6 +1839,35 @@ fn pending_replacement_case(looping: bool, retained_restart: bool) {
             );
         }
     };
+    #[cfg(feature = "stream-test-support")]
+    if let Some(baseline) = loop_baseline {
+        measured_render(&mut data, &mut output);
+        assert!(
+            !control.status.stream_buffering.load(Acquire),
+            "successor displaced resident loop destination"
+        );
+        assert_eq!(control.status.position.load(Acquire), 4032);
+        assert_eq!(output, baseline, "successor changed current callback PCM");
+        assert!(control.retire_audio_candidate_domain(domain));
+        control.request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "source reclamation");
+            std::thread::yield_now();
+        }
+        assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+        drop(data);
+        drop(errors);
+        drop(control);
+        finish(&mut retirement);
+        return;
+    }
     render_checked(&mut data, &mut output);
     #[cfg(feature = "stream-test-support")]
     if looping && !retained_restart {
