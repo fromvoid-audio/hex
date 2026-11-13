@@ -586,6 +586,16 @@ pub enum Request {
         track: hex_project::TrackId,
         source: hex_project::SourceId,
     },
+    /// Add the first neutral Utility to the captured bound source. The worker
+    /// validates the project stamps, track binding, instrument and empty suffix;
+    /// callers must reject their own unsent gestures before submitting.
+    AddFirstSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+    },
     /// Explicitly change a captured track binding, including unlinking. A shared
     /// source's receiver must first be moved when other contributors remain.
     /// Callers must reject unsent gestures; this request never finalizes them.
@@ -3621,6 +3631,55 @@ fn run_worker(
                     track: Some(*track),
                 })
             })()),
+            Request::AddFirstSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let source = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                if source.receiver().is_none()
+                    || source.instrument().id() != *instrument
+                    || source.instrument().state().type_id() != default_instrument.type_id()
+                    || !source.post_instrument_effects().is_empty()
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                let state = hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .map_err(|_| "utility is unavailable")?;
+                Ok(Command::InsertNestedDevice {
+                    parent: *instrument,
+                    state,
+                })
+            })()),
             Request::RebindNativeSource {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5609,7 +5668,8 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::BindUnassignedNativeSource { .. }
+                Request::AddFirstSourceUtility { .. }
+                | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
                 | Request::RenameRetainedSource { .. }
