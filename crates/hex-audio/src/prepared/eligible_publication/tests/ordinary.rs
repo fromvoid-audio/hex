@@ -3507,3 +3507,214 @@ fn refused_parameter_successor_reenables_predecessor_launch_prewarm() {
     drop(control);
     finish(&mut retirement);
 }
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn cancelled_quantized_stream_releases_pending_candidate_pages() {
+    rejected_quantized_stream_releases_pending_candidate_pages(false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn stale_quantized_stream_releases_pending_candidate_pages() {
+    rejected_quantized_stream_releases_pending_candidate_pages(true);
+}
+
+#[cfg(feature = "stream-test-support")]
+fn rejected_quantized_stream_releases_pending_candidate_pages(stale: bool) {
+    let _serial = serial();
+    let frames = (hex_engine::STREAM_PAGE_FRAMES * 2) as u64;
+    let project = super::readiness::project_with_frames(frames);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(frames.try_into().unwrap());
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let key = metadata.key();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: key,
+        page_index: 1,
+    });
+    let mut runtime = hex_stream::StreamRuntime::new_with_page_gate(
+        hex_stream::StreamConfig::with_pool_pages(3),
+        vec![definition],
+        gate,
+    )
+    .unwrap();
+    runtime
+        .wait_until_ready(std::time::Duration::from_secs(2))
+        .unwrap();
+    let pair = runtime.split().ok().unwrap();
+    let store = ResidentDeviceAssets::default();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    struct ReleaseGate(Option<std::sync::mpsc::SyncSender<()>>);
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() {
+                let _ = release.try_send(());
+            }
+        }
+    }
+    let mut release = ReleaseGate(Some(release));
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            2,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            pair,
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .unwrap_or_else(|error| panic!("domain registration: {}", error.reason));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let old = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata.clone(), &store),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("old publication"));
+    control.command(PlaybackCommand::Play).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut output = [[0.0; 2]; 8];
+    loop {
+        measured_render(&mut data, &mut output);
+        if output.contains(&[0.25; 2]) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "initial page");
+        std::thread::yield_now();
+    }
+    let mut next = compile(&project, metadata.clone(), &store);
+    next.apply(PlaybackCommand::PlayFrom(
+        hex_engine::STREAM_PAGE_FRAMES as u64,
+    ));
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            next,
+            PublicationPolicy::InstallQuantizedSeekWhenReady {
+                fence,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            },
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("candidate publication"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut pending = false;
+    while !pending {
+        measured_render(&mut data, &mut output);
+        data.owner_mut().unwrap().run(|callback, _| {
+            pending = callback
+                .deferred
+                .as_ref()
+                .and_then(|p| p.streams.as_ref())
+                .is_some_and(|s| s.has_install_pending());
+        });
+        assert!(
+            std::time::Instant::now() < deadline,
+            "candidate reservation"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), old);
+    assert!(
+        entered
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_ok()
+    );
+    let reason = if stale {
+        control.command(PlaybackCommand::Play).unwrap();
+        PlaybackHandoffRejection::RuntimeFenceChanged
+    } else {
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(revision),
+            FreshRuntimeCancellationResult::Cancelled
+        );
+        PlaybackHandoffRejection::FreshRuntimeCancelled
+    };
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.status.rejected_revision(), Some((revision, reason)));
+    assert_eq!(control.status.applied_revision.load(Acquire), old);
+    assert!(output.contains(&[0.25; 2]), "old stream continues");
+    let returned = control.publication.retired.as_mut().unwrap().pop().unwrap();
+    let ReturnedPublication::Legacy(ref publication) = returned else {
+        panic!("returned candidate")
+    };
+    let pending_after_return = publication.streams.as_ref().unwrap().has_install_pending();
+    release.0.take().unwrap().send(()).unwrap();
+    assert!(
+        !pending_after_return,
+        "cancelled candidate must release its page reservation"
+    );
+    control.publication.held_control_return = Some(returned);
+    control.reclaim();
+    let mut retry = compile(&project, metadata, &store);
+    retry.apply(PlaybackCommand::PlayFrom(
+        hex_engine::STREAM_PAGE_FRAMES as u64,
+    ));
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let retry_revision = control
+        .publish_with_admission_and_source_on_control(
+            retry,
+            PublicationPolicy::InstallQuantizedSeekWhenReady {
+                fence,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            },
+            hex_engine::AudioSourceContext {
+                editor_revision: 5,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("retry publication"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while control.status.applied_revision.load(Acquire) != retry_revision {
+        measured_render(&mut data, &mut output);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "released page must admit the next candidate"
+        );
+        std::thread::yield_now();
+    }
+    assert!(output.contains(&[0.25; 2]));
+    control.reclaim();
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source reclamation");
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
