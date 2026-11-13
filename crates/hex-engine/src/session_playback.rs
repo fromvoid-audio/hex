@@ -2723,6 +2723,7 @@ mod clip_gain;
 mod commands;
 mod current_sampler_routes;
 mod handoff;
+pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
 mod preroll;
 mod render;
