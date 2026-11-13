@@ -1986,6 +1986,10 @@ impl EditorView {
     }
 
     pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
+        if device_panel::source_sampler_edit_active(self) {
+            self.error = Some("finish the sampler edit before changing the source view".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };

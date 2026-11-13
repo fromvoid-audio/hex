@@ -81,12 +81,7 @@ pub(super) fn close_button(
         }))
 }
 
-pub(super) fn close_view(view: &mut EditorView, cx: &mut Context<EditorView>) {
-    if view.sampler_parameter_pending() || view.sampler_parameter.numeric_draft_active() {
-        view.error = Some("finish the sampler edit before closing the source".into());
-        cx.notify();
-        return;
-    }
+fn close_view(view: &mut EditorView, cx: &mut Context<EditorView>) {
     if super::finalize_controls(view, cx) {
         view.device_panel.source_manager.source_view = None;
     }
@@ -227,7 +222,9 @@ impl Action {
                         .is_some_and(|definition| {
                             matches!(
                                 definition.instrument().state().type_id().as_str(),
-                                Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                                Ok("hex.instrument.fm4"
+                                    | "hex.instrument.operator"
+                                    | "hex.instrument.sampler")
                             )
                         })
                         && !state
@@ -471,7 +468,7 @@ fn details(
     ];
     if matches!(
         definition.instrument().state().type_id().as_str(),
-        Ok("hex.instrument.fm4" | "hex.instrument.operator")
+        Ok("hex.instrument.fm4" | "hex.instrument.operator" | "hex.instrument.sampler")
     ) && !state
         .project
         .tracks()

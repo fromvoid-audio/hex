@@ -539,16 +539,6 @@ pub(in crate::editor) fn rendered_control_value(
         .map(|control| control.entity.read(cx).value())
 }
 
-pub(in crate::editor) fn control_entity(
-    view: &EditorView,
-    parameter: SamplerParameter,
-) -> Option<Entity<NumericControl>> {
-    view.sampler_parameter
-        .controls
-        .get(&parameter)
-        .map(|control| control.entity.clone())
-}
-
 #[gpui::test]
 fn scalar_sampler_preview_survives_repaints_until_matching_terminal(cx: &mut TestAppContext) {
     let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
@@ -622,4 +612,15 @@ fn scalar_sampler_preview_survives_repaints_until_matching_terminal(cx: &mut Tes
             100.0
         );
     });
+}
+
+pub(in crate::editor) fn control_editing(
+    view: &EditorView,
+    parameter: SamplerParameter,
+    cx: &gpui::App,
+) -> bool {
+    view.sampler_parameter
+        .controls
+        .get(&parameter)
+        .is_some_and(|control| control.entity.read(cx).is_editing())
 }
