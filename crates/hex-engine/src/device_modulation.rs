@@ -152,6 +152,24 @@ pub fn project_source_utility_matrix_edit_supported(
             .unwrap_or(false)
 }
 
+/// A source Utility whose mute is a memoryless static matrix transition.
+/// Prepared publication independently checks the actual runtime handoff.
+pub fn project_source_utility_mute_edit_supported(project: &Project, device: DeviceId) -> bool {
+    use hex_devices::utility::parameter::{BASS_MONO, DC_REMOVE, GAIN, MUTE};
+    project_source_utility_matrix_edit_supported(project, device, GAIN)
+        && project.device(device).is_some_and(|device| {
+            [BASS_MONO, DC_REMOVE].into_iter().all(|parameter| {
+                matches!(
+                    hex_devices::utility::UTILITY_DEFINITION
+                        .read_parameter(device.state(), parameter),
+                    Ok(hex_lattice_contract::ParameterValue::Bool(false))
+                )
+            }) && hex_devices::utility::UTILITY_DEFINITION
+                .parameter_enabled(device.state(), MUTE)
+                .unwrap_or(false)
+        })
+}
+
 /// State-aware eligibility for native device-panel mapping. Ownership is
 /// resolved from the current project. Preparation independently validates the
 /// actual factory, runtime binding and source program before publication.
