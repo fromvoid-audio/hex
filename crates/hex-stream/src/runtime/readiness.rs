@@ -46,6 +46,32 @@ fn extent_eq(actual: &[StreamResourceExtent], expected: ExtentSlice<'_>) -> bool
     actual.iter().copied().eq(expected.iter())
 }
 
+fn slices_fit_pool<const N: usize>(slices: [ExtentSlice<'_>; N], capacity: usize) -> bool {
+    let mut cursors = [0usize; N];
+    let mut count = 0usize;
+    while let Some(key) = slices
+        .iter()
+        .zip(cursors)
+        .filter_map(|(slice, cursor)| slice.get(cursor))
+        .map(|extent| (extent.source, extent.page_index))
+        .min()
+    {
+        count += 1;
+        if count > capacity {
+            return false;
+        }
+        for (slice, cursor) in slices.iter().zip(&mut cursors) {
+            while slice
+                .get(*cursor)
+                .is_some_and(|extent| (extent.source, extent.page_index) == key)
+            {
+                *cursor += 1;
+            }
+        }
+    }
+    true
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProtectionRole {
     Active,
@@ -281,7 +307,7 @@ impl PreparedReadiness {
     /// Count distinct pages among retained protections and outstanding intents,
     /// including the new request. No allocation or synthetic pool enlargement.
     fn fits_pool(&self, replacement: usize, extents: ExtentSlice<'_>, capacity: usize) -> bool {
-        let slices = [
+        let roles = [
             ExtentSlice::Resources(self.roles[0].protected.as_slice()),
             ExtentSlice::Resources(self.roles[1].protected.as_slice()),
             ExtentSlice::Resources(self.roles[2].protected.as_slice()),
@@ -300,36 +326,29 @@ impl PreparedReadiness {
             } else {
                 ExtentSlice::Resources(self.roles[2].wanted.as_slice())
             },
-            if replacement == 3 {
-                ExtentSlice::Resources(&[])
-            } else {
-                ExtentSlice::Resources(&self.current_quantum)
-            },
-            extents,
         ];
-        let mut cursors = [0usize; 8];
-        let mut count = 0usize;
-        while let Some(key) = slices
-            .iter()
-            .zip(cursors)
-            .filter_map(|(slice, cursor)| slice.get(cursor))
-            .map(|extent| (extent.source, extent.page_index))
-            .min()
-        {
-            count += 1;
-            if count > capacity {
-                return false;
-            }
-            for (slice, cursor) in slices.iter().zip(&mut cursors) {
-                while slice
-                    .get(*cursor)
-                    .is_some_and(|extent| (extent.source, extent.page_index) == key)
-                {
-                    *cursor += 1;
-                }
-            }
+        if replacement == 3 || self.current_quantum.is_empty() {
+            slices_fit_pool(
+                [
+                    roles[0], roles[1], roles[2], roles[3], roles[4], roles[5], extents,
+                ],
+                capacity,
+            )
+        } else {
+            slices_fit_pool(
+                [
+                    roles[0],
+                    roles[1],
+                    roles[2],
+                    roles[3],
+                    roles[4],
+                    roles[5],
+                    ExtentSlice::Resources(&self.current_quantum),
+                    extents,
+                ],
+                capacity,
+            )
         }
-        true
     }
     fn submit(
         &mut self,
