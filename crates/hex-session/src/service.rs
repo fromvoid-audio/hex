@@ -255,13 +255,21 @@ pub enum SamplerLoadSlot {
         expected_state: hex_lattice_contract::NativeDeviceState,
     },
 }
+/// Captured owner of a sampler parameter edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SamplerParameterOwner {
+    /// The instrument of an existing track.
+    Track(hex_project::TrackId),
+    /// An unassigned retained source; binding it invalidates this target.
+    Source(hex_project::SourceId),
+}
 /// One completed sampler parameter gesture, bound to its captured canonical target.
 #[derive(Clone, Debug)]
 pub struct SamplerParameterEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
-    pub track: hex_project::TrackId,
+    pub owner: SamplerParameterOwner,
     pub device: hex_project::DeviceId,
     pub parameter: hex_engine::SamplerParameter,
     pub value: f64,
