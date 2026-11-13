@@ -642,3 +642,52 @@ fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
         control.reclaim();
     }
 }
+
+#[test]
+fn running_restart_does_not_click_at_the_publication_boundary() {
+    let mut discontinuities = Vec::new();
+    for frames in [1, 64, 257] {
+        let (editor, _, _) = editor_with_delay();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish_with_policy_and_context_generation(
+                graph(editor.project()),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        let mut output = vec![[0.0; 2]; frames];
+        block(&mut callback, &mut output);
+        control.command(PlaybackCommand::Play).unwrap();
+        let previous = (0..20_000)
+            .find_map(|_| {
+                block(&mut callback, &mut output);
+                let sample = output[frames - 1][0];
+                (sample.abs() > 0.05).then_some(sample)
+            })
+            .expect("the predecessor must reach an audible sample");
+        let mut next = graph(editor.project());
+        assert!(next.request_live_restart());
+        let revision = control
+            .publish_with_policy_and_context_generation(next, PublicationPolicy::InheritRuntime, 7)
+            .unwrap();
+        let mut last = previous;
+        let mut max_delta = 0.0_f32;
+        for _ in 0..(128 / frames + 3) {
+            block(&mut callback, &mut output);
+            for sample in &output {
+                max_delta = max_delta.max((sample[0] - last).abs());
+                last = sample[0];
+            }
+            if control.status.applied_revision.load(Acquire) == revision {
+                break;
+            }
+        }
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        discontinuities.push((frames, max_delta));
+    }
+    assert!(
+        discontinuities.iter().all(|(_, delta)| *delta < 0.02),
+        "restart discontinuities: {discontinuities:?}"
+    );
+}
