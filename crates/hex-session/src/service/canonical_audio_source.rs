@@ -133,7 +133,7 @@ impl CanonicalAudioSourceSnapshot {
         // A sizing-only generation gives raw and derived facts a common identity;
         // the actual host catalog and its leases are checked at construction.
         let mut streams = BTreeMap::new();
-        let mut pitch_count = 0usize;
+        let mut derived_count = 0usize;
         for (asset, source) in self.required_sources() {
             if let crate::AudioSourceBinding::VerifiedFile(file) = source {
                 let metadata = file
@@ -156,7 +156,25 @@ impl CanonicalAudioSourceSnapshot {
                 .and_then(|raw| raw.with_plain_pitch(pitch.cents, pitch.law))
                 .map_err(|_| AudioStorageError::SourceMismatch)?;
             if streams.insert(metadata.key(), metadata).is_none() {
-                pitch_count = pitch_count
+                derived_count = derived_count
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(crate::AudioSourceBinding::VerifiedFile(file)) =
+                self.sources.get(&clip.asset())
+            else {
+                continue;
+            };
+            let Some(metadata) =
+                crate::audio_sources::repitch_source_metadata(project, clip, file, 1)
+                    .map_err(|_| AudioStorageError::SourceMismatch)?
+            else {
+                continue;
+            };
+            if streams.insert(metadata.key(), metadata).is_none() {
+                derived_count = derived_count
                     .checked_add(1)
                     .ok_or(AudioStorageError::Overflow)?;
             }
@@ -164,7 +182,7 @@ impl CanonicalAudioSourceSnapshot {
         let sources = self
             .required_sources()
             .count()
-            .checked_add(pitch_count)
+            .checked_add(derived_count)
             .ok_or(AudioStorageError::Overflow)?;
         let streams: Vec<_> = streams.into_values().collect();
         hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(

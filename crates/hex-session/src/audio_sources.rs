@@ -260,6 +260,29 @@ pub(crate) fn plain_pitch_requirement(
             law: edit.domain.warp_resampler,
         })
 }
+/// Derive immutable metadata only for the streamed Re-Pitch shape supported by
+/// the canonical engine projection. The caller still owns file and page custody.
+pub(crate) fn repitch_source_metadata(
+    project: &Project,
+    clip: &hex_project::Clip,
+    file: &VerifiedAudioFile,
+    generation: u64,
+) -> Result<Option<hex_engine::StreamedSourceMetadata>, hex_engine::Invalid> {
+    let Some(edit) = clip.audio_edit() else {
+        return Ok(None);
+    };
+    let raw = file.source_metadata(clip.asset(), generation)?;
+    let Ok((map, law)) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        project.tempo_map(),
+        raw.playback_frames(),
+        &std::sync::atomic::AtomicBool::new(false),
+    ) else {
+        return Ok(None);
+    };
+    raw.with_repitch(&map, law).map(Some)
+}
+
 impl MediaBank {
     pub(crate) fn required_verified_pitches(
         &self,
@@ -350,20 +373,12 @@ impl MediaBank {
         // Each exact map is a separate worker output. Duplicate clips with
         // identical maps share the same immutable metadata, never raw PCM.
         for clip in project.tracks().iter().flat_map(|track| track.clips()) {
-            let (Some(file), Some(edit)) = (self.verified.get(&clip.asset()), clip.audio_edit())
-            else {
+            let Some(file) = self.verified.get(&clip.asset()) else {
                 continue;
             };
-            let raw = file.source_metadata(clip.asset(), self.epoch)?;
-            let Ok((map, law)) = hex_engine::audio_transform::streamed_repitch_map(
-                edit,
-                project.tempo_map(),
-                raw.playback_frames(),
-                &std::sync::atomic::AtomicBool::new(false),
-            ) else {
+            let Some(derived) = repitch_source_metadata(project, clip, file, self.epoch)? else {
                 continue;
             };
-            let derived = raw.with_repitch(&map, law)?;
             if let Some(existing) = pitched.get(&derived.key()) {
                 if existing.as_ref() != &derived {
                     return Err(hex_engine::Invalid("conflicting repitch source metadata"));
