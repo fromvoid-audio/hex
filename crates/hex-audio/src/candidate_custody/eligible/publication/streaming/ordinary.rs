@@ -105,6 +105,11 @@ impl OrdinaryStreams {
             .as_mut()
             .is_some_and(Workspace::retry_capacity_conflict)
     }
+    pub(crate) fn retry_candidate_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_candidate_capacity_conflict)
+    }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_coalesced_prefetch(
         &self,
@@ -135,6 +140,22 @@ impl OrdinaryStreams {
                 .is_some_and(|loan| {
                     rows.iter()
                         .any(|row| row.source == source && loan.test_has_resource_extent(*row))
+                })
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_candidate_role_idle(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| {
+                    loan.covers_resource_key(source)
+                        && loan.test_role_is_idle(hex_stream::ProtectionRole::Candidate)
                 })
         })
     }

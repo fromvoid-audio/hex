@@ -117,7 +117,7 @@ impl Queued {
                         && next
                             .streaming
                             .as_mut()
-                            .is_some_and(|workspace| workspace.retry_capacity_conflict())
+                            .is_some_and(|workspace| workspace.retry_candidate_capacity_conflict())
                     {
                         next.cancel_stream_pending(request.domains);
                         return InstallDecision::Retry;

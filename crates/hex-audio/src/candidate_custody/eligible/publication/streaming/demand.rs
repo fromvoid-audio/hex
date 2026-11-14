@@ -168,6 +168,13 @@ impl StateView<'_> {
         // maximum to one, without allocating or publishing a partial intent.
         // Failure at one frame retains the existing refusal.
         let mut frames = request.frames.min(256);
+        // Only an immediate successor shrinks after shared-pool capacity
+        // refusal. Each retry replans its exact source and clock; the owner
+        // cancels every partial domain intent before retrying. Current demand
+        // and scheduled prewarm retain their existing limits and protection.
+        if role == ProtectionRole::Candidate && due.is_none() {
+            frames = frames.min(workspace.candidate_frame_limit);
+        }
         let window = loop {
             for rows in &mut workspace.extents {
                 rows.clear();
@@ -351,8 +358,35 @@ impl StateView<'_> {
                     admitted_command_prefix: request.command_prefix,
                     window,
                 };
-                if let Err(refusal) = loan.submit_resources(role, stamp, rows) {
+                #[cfg(all(test, feature = "allocation-probe", feature = "stream-test-support"))]
+                if role == ProtectionRole::Candidate && due.is_none() {
+                    crate::candidate_window_probe::attempt(window.frames);
+                }
+                let submitted = loan.submit_resources(role, stamp, rows);
+                #[cfg(all(test, feature = "allocation-probe", feature = "stream-test-support"))]
+                if role == ProtectionRole::Candidate && due.is_none() && submitted.is_ok() {
+                    crate::candidate_window_probe::accepted(token.slot);
+                }
+                if let Err(refusal) = submitted {
+                    #[cfg(all(
+                        test,
+                        feature = "allocation-probe",
+                        feature = "stream-test-support"
+                    ))]
+                    if role == ProtectionRole::Candidate
+                        && due.is_none()
+                        && refusal == hex_stream::ReadinessRefusal::Capacity
+                    {
+                        crate::candidate_window_probe::capacity(window.frames, token.slot);
+                    }
                     workspace.capacity_conflict = refusal == hex_stream::ReadinessRefusal::Capacity;
+                    if workspace.capacity_conflict
+                        && role == ProtectionRole::Candidate
+                        && due.is_none()
+                        && window.frames > 1
+                    {
+                        workspace.candidate_frame_limit = window.frames.div_ceil(2);
+                    }
                     return Err(hex_engine::Invalid("stream protection reservation refused"));
                 }
                 pages.inner.epoch = epoch;
