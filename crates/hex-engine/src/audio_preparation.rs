@@ -1572,6 +1572,7 @@ impl AudioPreparationCustody {
         let (derived_retained, derived_workspace) =
             transformed::transformed_audio_quote_for(project, &|clip| {
                 transformed::pitched_source_index(project, inputs, clip).is_some()
+                    || transformed::repitch_source_index(project, inputs, clip).is_some()
             })?;
         capacity.declared_source_bytes = capacity
             .declared_source_bytes
@@ -1675,11 +1676,26 @@ impl AudioPreparationCustody {
                     return Err(AudioStorageError::SourceMismatch);
                 }
                 let pitch_source = transformed::pitched_source_index(project, inputs, clip);
-                let transformed = clip.audio_edit().is_some() && pitch_source.is_none();
-                if pitch_source.is_none() {
+                let repitch_source = transformed::repitch_source_index(project, inputs, clip);
+                let derived_source = pitch_source.or(repitch_source);
+                let transformed = clip.audio_edit().is_some() && derived_source.is_none();
+                if derived_source.is_none() {
                     transformed::validate_sources(project, inputs, clip)?;
                 }
-                let source = pitch_source.unwrap_or(source);
+                let source = derived_source.unwrap_or(source);
+                let repitch_view = if repitch_source.is_some() {
+                    let edit = clip.audio_edit().ok_or(AudioStorageError::SourceMismatch)?;
+                    let (_, _, start, end) = edit
+                        .projected_domain(project.tempo_map())
+                        .map_err(|_| AudioStorageError::SourceMismatch)?;
+                    let derived_frames = inputs.sources[source].1.frames();
+                    if start >= end || end > derived_frames {
+                        return Err(AudioStorageError::SourceMismatch);
+                    }
+                    Some((start, end - start))
+                } else {
+                    None
+                };
                 let end = clip
                     .start()
                     .checked_add(clip.duration())
@@ -1709,20 +1725,28 @@ impl AudioPreparationCustody {
                     end,
                     source_offset: usize::try_from(if transformed {
                         0
+                    } else if let Some((start, _)) = repitch_view {
+                        start
                     } else {
                         clip.source_offset()
                     })
                     .map_err(|_| AudioStorageError::Overflow)?,
                     source_length: usize::try_from(if transformed {
                         clip.duration()
+                    } else if let Some((_, length)) = repitch_view {
+                        length
                     } else {
                         clip.source_length()
                     })
                     .map_err(|_| AudioStorageError::Overflow)?,
-                    phase: if transformed { 0 } else { clip.source_phase() },
+                    phase: if transformed || repitch_view.is_some() {
+                        0
+                    } else {
+                        clip.source_phase()
+                    },
                     gain: clip.gain().linear(),
-                    looping: !transformed && clip.looping(),
-                    fade: if transformed {
+                    looping: !transformed && repitch_view.is_none() && clip.looping(),
+                    fade: if transformed || repitch_view.is_some() {
                         hex_project::ClipFade::neutral(clip.duration())
                             .map_err(|_| AudioStorageError::SourceMismatch)?
                     } else {
