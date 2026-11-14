@@ -126,7 +126,10 @@ impl OwnedAudioSource {
     ) -> Result<Self, Box<StreamedSourceRefusal>> {
         let result = (|| {
             let pitch = metadata.key().pitch();
-            if pitch.is_some() != pitched || pitch.is_some_and(|(cents, _)| cents == 0) {
+            if (pitched && pitch.is_none())
+                || (!pitched && !metadata.key().is_raw())
+                || pitch.is_some_and(|(cents, _)| cents == 0)
+            {
                 return Err(AudioStorageError::SourceMismatch);
             }
             if !crate::pcm_arc::native_layout_known() {
@@ -384,6 +387,9 @@ impl OwnedAudioInputs {
         for (index, (id, source)) in sources.iter().enumerate() {
             let pitched = match &source.kind {
                 SourceKind::Streamed(metadata) => {
+                    if !metadata.key().is_raw() && metadata.key().pitch().is_none() {
+                        return Err(AudioStorageError::SourceMismatch);
+                    }
                     metadata.key().pitch().map(|pitch| (metadata, pitch))
                 }
                 SourceKind::Resident(_) => None,
@@ -399,7 +405,7 @@ impl OwnedAudioInputs {
                             return None;
                         }
                         match &source.kind {
-                            SourceKind::Streamed(raw) if raw.key().pitch().is_none() => Some(raw),
+                            SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
                             _ => None,
                         }
                     })

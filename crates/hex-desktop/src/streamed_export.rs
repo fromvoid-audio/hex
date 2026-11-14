@@ -217,7 +217,8 @@ impl VerifiedPages {
                 Some((cents, law)) => original
                     .with_plain_pitch(cents, law)
                     .map_err(ExportError::Render)?,
-                None => original,
+                None if metadata.key().is_raw() => original,
+                None => return Err(ExportError::Invalid("unsupported derived export source")),
             };
             if expected != *metadata {
                 return Err(ExportError::Invalid(
