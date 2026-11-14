@@ -463,16 +463,20 @@ the previous target and failed report; changing the location is not evidence tha
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
 
-For a one-time dev target admission, set an explicit absolute `CARGO_TARGET_DIR`
-with existing ancestors and pass `--fresh-target` to a full or scoped run.
+For a one-time dev target admission, first create an empty target directory,
+set its explicit absolute path as `CARGO_TARGET_DIR`, and pass `--fresh-target`
+to a full or scoped run.
 
 ```sh
-mkdir -p artifacts
+mkdir -p artifacts/cargo-ci-target
 CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target" \
   python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile full --fresh-target
 ```
 
-The target must be absent or empty and have no existing owner. The reservation
+The target must already exist, be empty and have no existing owner. An absent
+target is refused before Cargo metadata: the runner cannot yet prove the identity
+of a directory it creates before opening it. Create an empty directory yourself
+and retry; existing target contents are never removed. The reservation
 pins directory ancestry and holds the same lock across planner metadata, runner
 metadata, create-only owner publication and guarded checks. Metadata temporarily
 disables the rustc information cache, then must report the selected workspace
@@ -503,8 +507,8 @@ before its first Cargo operation and retain it through the later custody
 decision. Metadata must report exactly the explicit target and leave it fresh;
 resolution alone neither admits the target nor publishes ownership. A target
 inferred only from Cargo configuration does not meet this API's proof contract.
-The dev publisher uses the existing owner schema for absent and empty targets.
-An absent target is materialized under the held lock before owner publication.
+The dev publisher uses the existing owner schema for pre-existing empty targets.
+Identity-bound creation for absent targets remains unsupported.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
