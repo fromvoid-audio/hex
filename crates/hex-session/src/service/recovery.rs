@@ -466,7 +466,7 @@ pub(super) fn prepare_project(
         for asset in online_assets(&project) {
             let path = asset_media_path(project_dir, asset);
             let source = candidate
-                .verify_asset(path, asset)
+                .verify_asset(path, asset, None)
                 .map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -513,7 +513,7 @@ pub(super) fn prepare_project(
             && let Some(candidate) = file_candidate.as_mut()
         {
             let file = candidate
-                .verify_asset(media_path, asset)
+                .verify_asset(media_path, asset, current.verified_sources.get(&asset.id()))
                 .map_err(|e| e.to_string())?;
             if !file.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
