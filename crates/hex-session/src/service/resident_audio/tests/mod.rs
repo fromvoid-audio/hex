@@ -1816,17 +1816,18 @@ fn wait_for_seek(service: &Service) -> ResidentArrangementSeekResult {
 
 #[test]
 fn locator_checkpoint_keeps_seek_preparation_and_terminals_ordered() {
-    for (stale, cancelled, conflict) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
+    for (stale, cancelled, conflict, shutdown) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, false, true, false),
+        (false, false, false, true),
     ] {
-        check_locator_checkpoint_seek(stale, cancelled, conflict);
+        check_locator_checkpoint_seek(stale, cancelled, conflict, shutdown);
     }
 }
 
-fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool) {
+fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, shutdown: bool) {
     let files = sampler_export::tests::Files::new(false);
     let journal = files
         .source()
@@ -1835,7 +1836,7 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool) {
         .join("locator-seek.hex-journal");
     let observed = Arc::new(Observed::default());
     let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
-    let service = Service::with_audio_sink_and_native_reservation(
+    let mut service = Service::with_audio_sink_and_native_reservation(
         16,
         8_000_000,
         Some(journal.clone()),
@@ -1915,7 +1916,7 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool) {
         }
         thread::yield_now();
     };
-    if !stale && !cancelled && !conflict {
+    if !stale && !cancelled && !conflict && !shutdown {
         service
             .submit(Request::NewWithAudioMode {
                 mode: DocumentAudioMode::Resident,
@@ -1924,6 +1925,15 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool) {
             .unwrap();
     }
     let early_terminal = service.try_event().ok();
+    if shutdown {
+        assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        release.send(()).unwrap();
+        service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
+        assert!(early_terminal.is_none());
+        assert!(result.is_some(), "seek result must precede shutdown");
+        return;
+    }
     release.send(()).unwrap();
     let result = result.expect("seek should finish preparation while checkpoint is held");
     assert_eq!(result.request_id, 1);
