@@ -7,6 +7,7 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
 use hex_audio::sample_recording::{self, End, OutputCaptureId, Phase, Source, Take};
 use std::{
+    path::Path,
     sync::mpsc::{self, Receiver, TryRecvError},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -56,7 +57,7 @@ pub(super) struct Recorder {
 }
 
 struct Job {
-    result: Receiver<std::io::Result<sample_recording::Takes>>,
+    result: Receiver<Result<sample_recording::Takes, String>>,
     names: Vec<(Source, String)>,
     output: u64,
 }
@@ -230,11 +231,12 @@ impl EditorView {
         std::thread::Builder::new()
             .name("hex-sample-takes".into())
             .spawn(move || {
-                let result = hex_session::service::sample_take_root(document.as_deref())
-                    .map_err(std::io::Error::other)
-                    .and_then(|root| {
-                        std::fs::create_dir_all(&root)?;
-                        sample_recording::write_takes(reader, &root.join(name))
+                let result =
+                    hex_session::service::sample_take_root(document.as_deref()).and_then(|root| {
+                        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+                        let directory = root.join(name);
+                        sample_recording::write_takes(reader, &directory)
+                            .map_err(|error| take_write_error(&directory, &error))
                     });
                 let _ = complete.send(result);
             })
@@ -281,7 +283,7 @@ impl EditorView {
             .unwrap_or(Phase::Finishing);
         let phase_changed = self.sample_recorder.phase.replace(phase) != Some(phase);
         let result = match job.result.try_recv() {
-            Ok(result) => result.map_err(|error| error.to_string()),
+            Ok(result) => result,
             Err(TryRecvError::Disconnected) => Err("sample take writer exited".into()),
             Err(TryRecvError::Empty) => return arms_changed || phase_changed || preview_changed,
         };
@@ -433,6 +435,13 @@ impl EditorView {
     }
 }
 
+fn take_write_error(directory: &Path, error: &std::io::Error) -> String {
+    format!(
+        "{error} · check {} for recoverable take files",
+        hex_session::service::text::verbatim(directory.display())
+    )
+}
+
 fn end_label(end: End) -> &'static str {
     match end {
         End::Stopped => "stopped",
@@ -450,6 +459,39 @@ mod tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn failed_take_reports_the_case_sensitive_recovery_location(cx: &mut TestAppContext) {
+        let (project, _, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        let directory = Path::new("/Users/Example/Project/Sample-Takes/Take-ABC");
+        let error = std::io::Error::other("No Space Left");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(Err(take_write_error(directory, &error)))
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job { result: receiver, names: Vec::new(), output: 0 });
+            assert!(view.tick_sample_recorder());
+            let message = theme::text(view.sample_recorder.error.as_deref().unwrap());
+            assert_eq!(message.as_ref(), "sample take writer · no space left · check /Users/Example/Project/Sample-Takes/Take-ABC for recoverable take files");
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(sender);
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert_eq!(
+                view.sample_recorder.error.as_deref(),
+                Some("sample take writer · sample take writer exited")
+            );
+        });
+    }
 
     #[gpui::test]
     fn recorder_header_fits_the_button_labels_and_hit_targets(cx: &mut TestAppContext) {
