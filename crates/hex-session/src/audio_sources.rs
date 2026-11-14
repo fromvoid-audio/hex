@@ -336,8 +336,19 @@ impl MediaBank {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }
         let sources = self.prepared_sources()?;
-        PreparedRevision::prepare_with_prepared_audio_sources(
-            project, &sources, self.epoch, table, previous,
+        let mut pitched = BTreeMap::new();
+        for pitch in self.required_verified_pitches(project)? {
+            let file = self
+                .verified
+                .get(&pitch.asset)
+                .ok_or(hex_engine::Invalid("verified pitch source unavailable"))?;
+            let metadata = file
+                .source_metadata(pitch.asset, self.epoch)?
+                .with_plain_pitch(pitch.cents, pitch.law)?;
+            pitched.insert(metadata.key(), Arc::new(metadata));
+        }
+        PreparedRevision::prepare_with_prepared_pitch_sources(
+            project, &sources, &pitched, self.epoch, table, previous,
         )
     }
 

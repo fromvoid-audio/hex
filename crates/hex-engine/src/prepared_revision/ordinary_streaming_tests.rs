@@ -126,6 +126,35 @@ fn pitch_revision_keeps_session_source_raw_and_refuses_mismatched_pages() {
         panic!("streamed session source")
     };
     assert_eq!(session_source.as_ref(), &raw);
+    let semantic = |pitched: &BTreeMap<_, _>| {
+        PreparedRevision::prepare_with_prepared_pitch_sources(
+            editor.project(),
+            &sources,
+            pitched,
+            7,
+            Arc::new(SineTable::new()),
+            None,
+        )
+    };
+    assert!(semantic(&BTreeMap::new()).is_err());
+    let semantic = semantic(&BTreeMap::from([(
+        derived.key(),
+        Arc::new(derived.clone()),
+    )]))
+    .unwrap();
+    assert_eq!(
+        semantic
+            .arrangement_stream_sources()
+            .map(|source| source.key())
+            .collect::<Vec<_>>(),
+        vec![derived.key()]
+    );
+    let PreparedAudioSource::Streamed(session_source) =
+        semantic.session().audio_clips()[0].source()
+    else {
+        panic!("streamed session source")
+    };
+    assert_eq!(session_source.as_ref(), &raw);
 }
 struct Pages<'a> {
     samples: &'a [Frame],
