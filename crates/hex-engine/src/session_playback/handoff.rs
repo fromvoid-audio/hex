@@ -1280,6 +1280,33 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
+        // A reset cannot capture a newly removed or changed audible Return
+        // chain. Refuse before modifying either runtime while its tail is live.
+        if relocate && restart != Restart::Baked {
+            let old_buses = previous.revision.arrangement().return_buses();
+            let new_buses = self.revision.arrangement().return_buses();
+            for (index, bus) in old_buses.iter().enumerate() {
+                let old = previous
+                    .return_chains
+                    .get(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if bus.muted || bus.gain == 0.0 || old.committed_range_is_quiescent(0..old.len()) {
+                    continue;
+                }
+                let unchanged = new_buses
+                    .iter()
+                    .position(|new| new.id == bus.id)
+                    .and_then(|index| self.return_chains.get(index))
+                    .is_some_and(|new| {
+                        old.len() == new.len()
+                            && old.configuration_matches_range(new, 0..old.len())
+                            && new.can_inherit_from(old)
+                    });
+                if !unchanged {
+                    return Err(SessionPlaybackError::LatencyLayoutChanged);
+                }
+            }
+        }
         // A restart discards compensation history and cannot take custody of
         // a proven retained foreign tail. Keep the predecessor alive instead.
         if relocate
