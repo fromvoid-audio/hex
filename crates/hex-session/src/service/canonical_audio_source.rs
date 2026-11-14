@@ -120,12 +120,55 @@ impl CanonicalAudioSourceSnapshot {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+        self.candidate_reservation_quote_for(&self.project)
+    }
+    pub(super) fn candidate_reservation_quote_for(
+        &self,
+        project: &Project,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        use hex_engine::AudioStorageError;
+        if hex_engine::native_device_resources::requires_private_sampler_sources(project) {
             return Err(hex_engine::AudioStorageError::UnsupportedGraph);
         }
-        hex_engine::AudioCandidateReservationQuote::for_project(
-            &self.project,
-            self.required_sources().count(),
+        // A sizing-only generation gives raw and derived facts a common identity;
+        // the actual host catalog and its leases are checked at construction.
+        let mut streams = BTreeMap::new();
+        let mut pitch_count = 0usize;
+        for (asset, source) in self.required_sources() {
+            if let crate::AudioSourceBinding::VerifiedFile(file) = source {
+                let metadata = file
+                    .source_metadata(asset, 1)
+                    .map_err(|_| AudioStorageError::SourceMismatch)?;
+                streams.insert(metadata.key(), metadata);
+            }
+        }
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(pitch) = crate::audio_sources::plain_pitch_requirement(project, clip) else {
+                continue;
+            };
+            let Some(crate::AudioSourceBinding::VerifiedFile(file)) =
+                self.sources.get(&pitch.asset)
+            else {
+                continue;
+            };
+            let metadata = file
+                .source_metadata(pitch.asset, 1)
+                .and_then(|raw| raw.with_plain_pitch(pitch.cents, pitch.law))
+                .map_err(|_| AudioStorageError::SourceMismatch)?;
+            if streams.insert(metadata.key(), metadata).is_none() {
+                pitch_count = pitch_count
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        let sources = self
+            .required_sources()
+            .count()
+            .checked_add(pitch_count)
+            .ok_or(AudioStorageError::Overflow)?;
+        let streams: Vec<_> = streams.into_values().collect();
+        hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            project, sources, &streams,
         )
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -317,6 +360,26 @@ mod tests {
                 cents: 500,
             })
             .unwrap();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(hex_project::Command::MoveClip {
+                clip,
+                track,
+                start: 10_000,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(repeated) = editor
+            .execute(hex_project::Command::DuplicateClip(clip))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: repeated,
+                cents: 700,
+            })
+            .unwrap();
         let snapshot = CanonicalAudioSourceSnapshot {
             project: Arc::new(editor.project().clone()),
             context: hex_engine::AudioSourceContext {
@@ -338,13 +401,21 @@ mod tests {
             .required_plain_pitch_sources()
             .map(|(id, _, cents, law)| (id, cents, law))
             .collect::<Vec<_>>();
+        assert_eq!(requirements.len(), 3);
         requirements.sort_by_key(|(_, cents, _)| *cents);
+        requirements.dedup();
         assert_eq!(
             requirements,
             vec![
                 (asset, -300, hex_project::WarpResampler::V2),
                 (asset, 700, hex_project::WarpResampler::V2)
             ]
+        );
+        let quote = snapshot.candidate_reservation_quote().unwrap();
+        assert_eq!(quote.source_capacity, 4);
+        assert!(
+            quote.prepared_pcm_frames >= 32,
+            "resident and partial transforms still reserve pcm"
         );
     }
     fn next(service: &Service) -> Event {

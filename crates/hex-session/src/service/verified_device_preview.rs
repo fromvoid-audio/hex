@@ -147,13 +147,8 @@ impl VerifiedDeviceParameterSource {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(self.project()) {
-            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
-        }
-        hex_engine::AudioCandidateReservationQuote::for_project(
-            self.project(),
-            self.canonical.required_sources().count(),
-        )
+        self.canonical
+            .candidate_reservation_quote_for(self.project())
     }
     /// Only the existing reserved cell constructs a graph. Context and catalog
     /// remain anchored to the genuine canonical source; no resident fallback.
