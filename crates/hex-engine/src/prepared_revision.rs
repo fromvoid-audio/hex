@@ -1040,6 +1040,38 @@ impl PreparedRevision {
         resources: &crate::native_device_resources::PreparedDeviceResources,
         max_scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+            project,
+            sources,
+            pitched,
+            expected_generation,
+            sine_table,
+            previous_session,
+            transforms,
+            resources,
+            max_scan_frames,
+            cancel,
+            &effects,
+            None,
+        )
+    }
+
+    /// Same preparation with the host's borrowed effect registry and input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, Invalid> {
