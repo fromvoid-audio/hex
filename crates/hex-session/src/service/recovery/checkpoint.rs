@@ -1,20 +1,22 @@
 //! Worker-owned recovery availability and explicitly confirmed slot replacement.
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 type CheckpointGate = (
     PathBuf,
     std::sync::mpsc::SyncSender<()>,
     std::sync::mpsc::Receiver<()>,
 );
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 pub(super) static CHECKPOINT_GATE: std::sync::Mutex<Vec<CheckpointGate>> =
     std::sync::Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
 pub(super) fn wait_at_checkpoint(path: &Path) {
     let gate = {
-        let mut gates = CHECKPOINT_GATE.lock().unwrap();
+        let mut gates = CHECKPOINT_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         gates
             .iter()
             .position(|(target, _, _)| target == path)
@@ -22,7 +24,12 @@ pub(super) fn wait_at_checkpoint(path: &Path) {
     };
     if let Some((_, entered, release)) = gate {
         let _ = entered.send(());
-        let _ = release.recv_timeout(std::time::Duration::from_millis(500));
+        let timeout = if cfg!(feature = "recovery-checkpoint-test-support") {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        let _ = release.recv_timeout(timeout);
     }
 }
 
@@ -116,6 +123,11 @@ impl RecoveryTracker {
 
     pub fn async_ready(&self) -> bool {
         self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| worker.ready())
+    }
+
+    /// Whether an admitted publication still needs its control owner to wait.
+    pub fn async_waiting(&self) -> bool {
+        self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| !worker.ready())
     }
 
     /// Collect the sole pending publication on control and update the same
@@ -298,6 +310,96 @@ mod tests {
         }
         fn poll(&mut self) {}
         fn close(&mut self) {}
+    }
+
+    struct PollSink {
+        requested: Arc<std::sync::atomic::AtomicBool>,
+        revision: Arc<AtomicU64>,
+        polled: std::sync::mpsc::SyncSender<()>,
+    }
+    impl WorkerAudioSink for PollSink {
+        fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+            self.revision
+                .store(source.context().editor_revision, Ordering::Release);
+        }
+        fn poll(&mut self) {
+            if self
+                .requested
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                let _ = self.polled.try_send(());
+            }
+        }
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn staged_edit_keeps_audio_control_polling_during_checkpoint() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-recovery-poll-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let requested = Arc::new(AtomicBool::new(false));
+        let revision = Arc::new(AtomicU64::new(0));
+        let (polled_tx, polled) = std::sync::mpsc::sync_channel(1);
+        let mut service = Service::with_audio_sink(
+            16,
+            8_000_000,
+            Some(path.clone()),
+            Box::new(PollSink {
+                requested: Arc::clone(&requested),
+                revision: Arc::clone(&revision),
+                polled: polled_tx,
+            }),
+        )
+        .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let before = next(&service);
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        let locator = |frame| Request::Edit(Command::AddArrangementLocator { frame });
+        service.submit(locator(24_000)).unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        service.submit(locator(48_000)).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(180);
+        loop {
+            if revision.load(Ordering::Acquire) == before.state.revision + 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "second edit did not commit");
+            std::thread::yield_now();
+        }
+        requested.store(true, Ordering::Release);
+        let result = polled.recv_timeout(Duration::from_millis(150));
+        assert!(
+            service.try_event().is_err(),
+            "terminal preceded checkpoint release"
+        );
+        release.send(()).unwrap();
+        assert!(
+            result.is_ok(),
+            "audio control was not polled while checkpoint was held"
+        );
+        assert_eq!(next(&service).state.revision, before.state.revision + 1);
+        assert_eq!(next(&service).state.revision, before.state.revision + 2);
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     struct Fixture {
         directory: PathBuf,
@@ -1950,6 +2052,166 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_section_copies_stage_while_first_checkpoint_is_held() {
+        for variant in 0..4 {
+            check_consecutive_section_copies(false, variant);
+        }
+    }
+
+    #[test]
+    fn consecutive_section_copies_preserve_conflicting_recovery_bytes() {
+        check_consecutive_section_copies(true, 0);
+    }
+
+    fn check_consecutive_section_copies(conflict: bool, variant: u8) {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-section-copy-stage-{}-{conflict}-{variant}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let initial = next(&service);
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "intro".into(),
+                    start: hex_project::BeatTime::ZERO,
+                    end: hex_project::BeatTime::ONE,
+                    color: hex_project::ElementColor::Cyan,
+                },
+            })
+            .unwrap();
+        let first_section = next(&service);
+        let Some(Created::ArrangementSection(section)) = first_section.created else {
+            panic!("section")
+        };
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: first_section.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "outro".into(),
+                    start: hex_project::BeatTime::ONE,
+                    end: hex_project::BeatTime::from_quarters(2).unwrap(),
+                    color: hex_project::ElementColor::Cyan,
+                },
+            })
+            .unwrap();
+        let before = next(&service);
+        let Some(Created::ArrangementSection(target)) = before.created else {
+            panic!("target")
+        };
+        let initial_revision = before.state.revision;
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        let duplicate = |revision| Request::EditArrangementSection {
+            project_generation: 0,
+            revision,
+            command: Command::DuplicateArrangementSection(section),
+        };
+        let first_command = match variant {
+            0 => Command::DuplicateArrangementSection(section),
+            1 => Command::DuplicateArrangementSectionAt {
+                section,
+                target,
+                after: true,
+            },
+            2 => Command::AppendArrangementSectionCopy {
+                section,
+                start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                gap_name: "gap".into(),
+                gap_color: hex_project::ElementColor::Cyan,
+            },
+            3 => Command::ReplaceArrangementSection {
+                source: section,
+                target,
+                copy: true,
+            },
+            _ => panic!("unknown section-copy variant"),
+        };
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial_revision,
+                command: first_command,
+            })
+            .unwrap();
+        entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let first = service.try_arrangement_edit_view().unwrap();
+        let first_state = first.state.upgrade().unwrap();
+        assert_eq!(first_state.revision, initial_revision + 1);
+        if conflict {
+            std::fs::write(&path, b"another writer's journal").unwrap();
+        }
+        service.submit(duplicate(initial_revision + 1)).unwrap();
+        let until = Instant::now() + Duration::from_millis(180);
+        let second_state = loop {
+            if let Ok(view) = service.try_arrangement_edit_view()
+                && let Some(state) = view.state.upgrade()
+                && state.revision == initial_revision + 2
+            {
+                break Some(state);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let second_state =
+            second_state.expect("second section copy must commit before checkpoint release");
+        let final_count = if variant == 3 { 3 } else { 4 };
+        assert_eq!(
+            second_state.project.arrangement_sections().len(),
+            final_count
+        );
+        let first_terminal = next(&service);
+        let second_terminal = next(&service);
+        assert_eq!(first_terminal.state.revision, initial_revision + 1);
+        assert_eq!(second_terminal.state.revision, initial_revision + 2);
+        if conflict {
+            assert!(first_terminal.recovery_failure.is_some());
+            assert!(second_terminal.recovery_failure.is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
+        } else {
+            assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *second_terminal.state.project
+            );
+        }
+        service.submit(duplicate(initial_revision)).unwrap();
+        let stale = next(&service);
+        assert!(stale.error.is_some());
+        assert_eq!(stale.state.revision, initial_revision + 2);
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            next(&service).state.project.arrangement_sections().len(),
+            final_count - 1
+        );
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(
+            next(&service).state.project.arrangement_sections().len(),
+            final_count
+        );
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn section_copy_view_precedes_the_durable_terminal() {
         let directory = std::env::temp_dir().join(format!(
             "hex-section-copy-checkpoint-{}",
@@ -2010,16 +2272,22 @@ mod tests {
             service.try_event(),
             Err(std::sync::mpsc::TryRecvError::Empty)
         ));
+        // Undo is a different operation and must stay behind journal custody.
+        service.submit(Request::Undo).unwrap();
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         release.send(()).unwrap();
         let committed = next(&service);
         assert!(committed.request_complete && committed.error.is_none());
         assert!(Arc::ptr_eq(&visible, &committed.state));
+        let undone_event = next(&service);
         assert_eq!(
             hex_storage::load_journal(&path).unwrap(),
-            *committed.state.project
+            *undone_event.state.project
         );
-        service.submit(Request::Undo).unwrap();
-        let mut undone = next(&service).state.project.snapshot();
+        let mut undone = undone_event.state.project.snapshot();
         let before = before.state.project.snapshot();
         undone.next_id = before.next_id;
         assert_eq!(undone, before);
@@ -2988,6 +3256,166 @@ mod tests {
                 ..
             }
         )));
+        drop(rows);
+        service.shutdown(Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn midi_note_update_reports_only_its_recovery_maintenance() {
+        use hex_project::{BeatTime, MidiNoteUpdate};
+        use std::time::Duration;
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-midi-timing-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        let rows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&rows);
+        service
+            .set_diagnostic_observer(Arc::new(diagnostics::DiagnosticObserver::new(
+                move |event| {
+                    sink.lock()
+                        .unwrap()
+                        .push((event.request, event.stage, event.details.clone()));
+                },
+            )))
+            .unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "source".into(),
+            }))
+            .unwrap();
+        let Some(Created::Track(track)) = next(&service).created else {
+            panic!("track")
+        };
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            }))
+            .unwrap();
+        let Some(Created::Clip(clip)) = next(&service).created else {
+            panic!("clip")
+        };
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let Some(Created::Note(note)) = next(&service).created else {
+            panic!("note")
+        };
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 64,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let Some(Created::Note(other)) = next(&service).created else {
+            panic!("second note")
+        };
+        let update = |start| MidiNoteUpdate {
+            note,
+            start,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        };
+        let first = update(BeatTime::ONE);
+        let second = update(BeatTime::from_quarters(2).unwrap());
+        for command in [
+            Command::UpdateMidiNote {
+                note,
+                start: first.start,
+                duration: first.duration,
+                pitch: first.pitch,
+                channel: first.channel,
+                velocity: first.velocity,
+            },
+            Command::UpdateMidiNotes {
+                clip,
+                notes: vec![
+                    second,
+                    MidiNoteUpdate {
+                        note: other,
+                        pitch: 64,
+                        ..second
+                    },
+                ],
+            },
+        ] {
+            let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+            let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+            CHECKPOINT_GATE
+                .lock()
+                .unwrap()
+                .push((path.clone(), entered_tx, release_rx));
+            service.submit(Request::Edit(command)).unwrap();
+            entered.recv_timeout(Duration::from_millis(500)).unwrap();
+            assert!(matches!(
+                service.try_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            release.send(()).unwrap();
+            let terminal = next(&service);
+            assert!(terminal.request_complete && terminal.error.is_none());
+            assert_eq!(
+                hex_storage::load_journal(&path).unwrap(),
+                *terminal.state.project
+            );
+        }
+        service
+            .submit(Request::Edit(Command::UpdateMidiNote {
+                note,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 255,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        assert!(next(&service).error.is_some());
+        service.submit(Request::Undo).unwrap();
+        next(&service);
+        let rows = rows.lock().unwrap();
+        let timed: Vec<_> = rows
+            .iter()
+            .filter_map(|(request, stage, details)| {
+                details
+                    .split_whitespace()
+                    .find_map(|part| part.strip_prefix("midi_note_recovery_us="))
+                    .map(|value| (request, stage, value))
+            })
+            .collect();
+        assert_eq!(timed.len(), 2);
+        for (request, stage, value) in timed {
+            assert!(
+                matches!(request, Some(request) if matches!(request.operation, Some("update_midi_note" | "update_midi_notes")))
+            );
+            assert!(matches!(
+                stage,
+                diagnostics::DiagnosticStage::OutcomeReady {
+                    request_complete: true,
+                    ..
+                }
+            ));
+            assert!(value.parse::<u128>().is_ok());
+        }
         drop(rows);
         service.shutdown(Duration::from_secs(2)).unwrap();
         drop(service);

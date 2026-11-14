@@ -62,6 +62,7 @@ pub(crate) struct StreamInstall<'a> {
     pub(crate) pending_play: bool,
     pub(crate) command_prefix: u64,
     pub(crate) frames: usize,
+    pub(crate) fenced_restart: bool,
 }
 pub(super) fn envelope(
     domains: &mut [Option<DomainEnvelope>; 2],
@@ -74,7 +75,7 @@ pub(super) fn envelope(
         .ok_or(hex_engine::Invalid("exact stream page loan is unavailable"))
 }
 impl Workspace {
-    fn insert(
+    pub(super) fn insert(
         extents: &mut [Vec<StreamResourceExtent>; 2],
         limit: usize,
         index: usize,
@@ -201,15 +202,26 @@ impl StateView<'_> {
             let planned = if let Some(due) = due {
                 runtime.visit_pending_stream_chunk(due, frames, &mut visit)
             } else if let Some(previous) = previous.as_deref_mut() {
-                match runtime.preview_stream_handoff(
-                    previous
-                        .runtime
-                        .as_mut()
-                        .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
-                    frames,
-                    request.pending_play.then_some(true),
-                    &mut visit,
-                ) {
+                let previous = previous
+                    .runtime
+                    .as_mut()
+                    .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?;
+                let preview = if request.fenced_restart {
+                    runtime.preview_ordinary_fenced_restart(
+                        previous,
+                        frames,
+                        request.pending_play.then_some(true),
+                        &mut visit,
+                    )
+                } else {
+                    runtime.preview_stream_handoff(
+                        previous,
+                        frames,
+                        request.pending_play.then_some(true),
+                        &mut visit,
+                    )
+                };
+                match preview {
                     Ok(window) => Ok(window),
                     Err(_) if overflow.get() => {
                         Err(hex_engine::Invalid("exact stream demand capacity exceeded"))
@@ -549,6 +561,7 @@ impl ActiveView<'_> {
             pending_play: false,
             command_prefix,
             frames: output.len(),
+            fenced_restart: false,
         };
         let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
             super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
@@ -584,6 +597,7 @@ impl ActiveView<'_> {
                 pending_play: pending_play && !play_applied,
                 command_prefix,
                 frames: output.len() - committed,
+                fenced_restart: false,
             };
             let mut planned =
                 self.state

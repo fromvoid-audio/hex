@@ -27,6 +27,247 @@ pub enum Resampler {
     V2,
 }
 
+/// Prepared unwarped, non-looping pitch reconstruction for bounded worker
+/// windows. Positions are relative to the complete source, not each window.
+/// Source PCM must already be at the project rate. This owns a filter bank and
+/// is intended for control/worker use, never construction in an audio callback.
+pub struct PitchWindow {
+    source_frames: u64,
+    pitch_q32: i128,
+    bank: Bandlimited,
+}
+
+/// Bounded, non-looping Re-Pitch reconstruction at complete-map coordinates.
+/// The caller owns source identity and supplies the requested source halo.
+/// Construction and rendering are control/worker operations, not callback work.
+pub struct RepitchWindow {
+    source_frames: u64,
+    map: TimeMap,
+    bank: Bandlimited,
+}
+
+impl RepitchWindow {
+    /// Prepare the same versioned filter and segment rates as resident Re-Pitch.
+    pub fn new(
+        source_frames: u64,
+        map: TimeMap,
+        resampler: Resampler,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, Error> {
+        if source_frames == 0
+            || source_frames > (1_u64 << 36)
+            || map.segments.capacity() > MAX_MAP_SEGMENTS
+        {
+            return Err(Error::Invalid("invalid repitch source extent"));
+        }
+        map.validate_stretch(Mode::RePitch, 0)?;
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler,
+        };
+        work.check(0)?;
+        let bank = Bandlimited::new(map.rate_at(0), &mut work)?;
+        Ok(Self {
+            source_frames,
+            map,
+            bank,
+        })
+    }
+
+    /// Maximum filter payload and actual retained backing capacities for a worker reservation.
+    pub const fn filter_reservation_bytes(resampler: Resampler) -> usize {
+        bank_bytes(resampler)
+    }
+    pub fn filter_backing_bytes(&self) -> Option<usize> {
+        self.bank
+            .coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
+    pub fn map_backing_bytes(&self) -> Option<usize> {
+        self.map
+            .segments
+            .capacity()
+            .checked_mul(std::mem::size_of::<MapSegment>())
+    }
+
+    /// Return a conservative halo for at most 4096 output frames. Positions
+    /// outside the complete source are zero, just as in resident rendering.
+    pub fn required_source_range(
+        &self,
+        output_start: u64,
+        count: usize,
+    ) -> Result<std::ops::Range<u64>, Error> {
+        if count == 0 || count > 4096 {
+            return Err(Error::Invalid("invalid repitch window length"));
+        }
+        let output_extent = self
+            .map
+            .segments
+            .last()
+            .ok_or(Error::Invalid("empty audio map"))?
+            .output_end;
+        let end = output_start
+            .checked_add(count as u64)
+            .filter(|end| *end <= output_extent)
+            .ok_or(Error::Invalid("repitch window exceeds output extent"))?;
+        let first = self
+            .map
+            .position_q32(i128::from(output_start))?
+            .div_euclid(Q32);
+        let last = self.map.position_q32(i128::from(end - 1))?.div_euclid(Q32);
+        let half = match self.bank.resampler {
+            Resampler::V1 => TAPS / 2,
+            Resampler::V2 => V2_MAX_TAPS / 2,
+        } as i128;
+        let limit = i128::from(self.source_frames);
+        Ok((first - (half - 1)).clamp(0, limit) as u64..(last + half + 1).clamp(0, limit) as u64)
+    }
+
+    /// Render an exact output window from its requested halo. Arbitrary window
+    /// order is supported; cancellation may leave output partially written.
+    pub fn render(
+        &mut self,
+        output_start: u64,
+        source_start: u64,
+        source: &[Frame],
+        output: &mut [Frame],
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let range = self.required_source_range(output_start, output.len())?;
+        if source_start != range.start || source.len() as u64 != range.end - range.start {
+            return Err(Error::Invalid("incomplete repitch source window"));
+        }
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler: self.bank.resampler,
+        };
+        for (index, target) in output.iter_mut().enumerate() {
+            if index % 1024 == 0 {
+                work.check(1024 * V2_MAX_TAPS as u64)?;
+            }
+            let frame = output_start + index as u64;
+            let position = self.map.position_q32(i128::from(frame))?;
+            self.bank.set_rate(self.map.rate_at(frame), &mut work)?;
+            *target = finite(self.bank.sample_with(position, |at| {
+                if at < i128::from(range.start) || at >= i128::from(range.end) {
+                    return [0.0; 2];
+                }
+                let sample = source[(at - i128::from(range.start)) as usize];
+                [f64::from(sample[0]), f64::from(sample[1])]
+            }))?;
+        }
+        Ok(())
+    }
+}
+
+impl PitchWindow {
+    /// Maximum coefficient payload requested during construction for this law.
+    /// The caller must compare actual retained capacity against its reservation.
+    pub const fn filter_reservation_bytes(resampler: Resampler) -> usize {
+        bank_bytes(resampler)
+    }
+
+    /// Actual retained coefficient capacity, excluding this inline value.
+    pub fn filter_backing_bytes(&self) -> Option<usize> {
+        self.bank
+            .coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
+
+    /// Prepare the same filter and fixed-point pitch used by resident rendering.
+    pub fn new(
+        source_frames: u64,
+        pitch_cents: i16,
+        resampler: Resampler,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, Error> {
+        if source_frames == 0 || source_frames > (1_u64 << 36) {
+            return Err(Error::Invalid("invalid pitch window extent"));
+        }
+        validate_stretch_ratio(1.0, Mode::Resample, pitch_cents)?;
+        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler,
+        };
+        work.check(0)?;
+        let bank = Bandlimited::new(pitch, &mut work)?;
+        Ok(Self {
+            source_frames,
+            pitch_q32: (pitch * Q32 as f64).round() as i128,
+            bank,
+        })
+    }
+
+    /// Return the complete, clipped source halo needed for an output window.
+    /// Output windows are limited to 4096 frames and must lie in the clip.
+    pub fn required_source_range(
+        &self,
+        output_start: u64,
+        count: usize,
+    ) -> Result<std::ops::Range<u64>, Error> {
+        if count == 0 || count > 4096 {
+            return Err(Error::Invalid("invalid pitch window length"));
+        }
+        let end = output_start
+            .checked_add(count as u64)
+            .filter(|end| *end <= self.source_frames)
+            .ok_or(Error::Invalid("pitch window exceeds output extent"))?;
+        let first = i128::from(output_start) * self.pitch_q32 / Q32;
+        let last = i128::from(end - 1) * self.pitch_q32 / Q32;
+        let half = (self.bank.taps / 2) as i128;
+        let limit = i128::from(self.source_frames);
+        let start = (first - (half - 1)).clamp(0, limit) as u64;
+        let end = (last + half + 1).clamp(0, limit) as u64;
+        Ok(start..end)
+    }
+
+    /// Render from exactly the requested halo. Samples outside the full source
+    /// are zero, as in the resident renderer; missing in-range PCM is an error.
+    /// An error or cancellation can leave the output partially written.
+    pub fn render(
+        &self,
+        output_start: u64,
+        source_start: u64,
+        source: &[Frame],
+        output: &mut [Frame],
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let range = self.required_source_range(output_start, output.len())?;
+        if source_start != range.start || source.len() as u64 != range.end - range.start {
+            return Err(Error::Invalid("incomplete pitch source window"));
+        }
+        for (index, target) in output.iter_mut().enumerate() {
+            if index % 1024 == 0 && cancel() {
+                return Err(Error::Cancelled);
+            }
+            let position = i128::from(output_start + index as u64) * self.pitch_q32;
+            *target = finite(self.bank.sample_with(position, |at| {
+                if at < i128::from(range.start) || at >= i128::from(range.end) {
+                    return [0.0; 2];
+                }
+                let frame = source[(at - i128::from(range.start)) as usize];
+                [f64::from(frame[0]), f64::from(frame[1])]
+            }))?;
+        }
+        Ok(())
+    }
+}
+
 /// Coefficient bank size a render with `resampler` accounts as scratch.
 pub(super) const fn bank_bytes(resampler: Resampler) -> usize {
     match resampler {

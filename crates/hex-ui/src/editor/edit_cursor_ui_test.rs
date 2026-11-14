@@ -1755,6 +1755,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         playback: None,
         status: None,
         error: Some("test rejection".to_owned()),
+        range_copy_source_unavailable: None,
         recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,
@@ -2101,6 +2102,7 @@ fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext
             // Native resident metadata deliberately carries no graph handle.
             // Its stateful flag formerly forced Space through the seek worker.
             view.audible_playback = Some(super::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: Some(true),
                 observation: None,
                 audio_revision: 1,

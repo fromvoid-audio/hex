@@ -227,6 +227,142 @@ fn prepared_with_latency(
                 ProcessorChainOwner::Return(bus.value()),
             )
         }
+        3 => {
+            let Created::Track(track) = f
+                .editor
+                .execute(Command::AddMidiTrack {
+                    name: "midi".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            f.editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap();
+            (
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(19).unwrap(),
+                },
+                ProcessorChainOwner::Track(track.value()),
+            )
+        }
+        4..=6 | 8..=12 => {
+            let track = f.tracks[0];
+            f.editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap();
+            let Created::Track(group) = f
+                .editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group")
+            };
+            f.editor
+                .execute(Command::Gain {
+                    track: group,
+                    gain: 0.5,
+                })
+                .unwrap();
+            if (5..=6).contains(&location) {
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: group,
+                        before: None,
+                        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                    })
+                    .unwrap();
+            }
+            if location == 6 {
+                let Created::Track(sibling) = f
+                    .editor
+                    .execute(Command::AddTrack {
+                        name: "slower".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                for _ in 0..2 {
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: sibling,
+                            before: None,
+                            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                        })
+                        .unwrap();
+                }
+            }
+            if (8..=10).contains(&location) || location == 12 {
+                let Created::ReturnTrack(bus) = f
+                    .editor
+                    .execute(Command::AddReturnTrack {
+                        name: "return".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return")
+                };
+                f.editor
+                    .execute(Command::SetReturnSend {
+                        track: if matches!(location, 10 | 12) {
+                            track
+                        } else {
+                            group
+                        },
+                        return_track: bus,
+                        gain: if location == 8 { 0.5 } else { 0.75 },
+                    })
+                    .unwrap();
+            }
+            if location == 11 {
+                let Created::Track(target) = f
+                    .editor
+                    .execute(Command::AddTrack {
+                        name: "feed target".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                f.editor
+                    .execute(Command::SetAudioFeed {
+                        source: hex_project::RoutingOwner::Track(track),
+                        destination: target,
+                        gain: 0.5,
+                    })
+                    .unwrap();
+            }
+            if location == 12 {
+                f.editor
+                    .execute(Command::SetLoopRegion {
+                        start: 0,
+                        end: 256,
+                        enabled: true,
+                    })
+                    .unwrap();
+            }
+            (
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(19).unwrap(),
+                },
+                ProcessorChainOwner::Track(track.value()),
+            )
+        }
         _ => (
             Command::InsertMainDevice {
                 before: None,
@@ -248,7 +384,8 @@ fn prepared_with_latency(
             latency,
         )],
     };
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::limiter::DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let instruments = hex_devices::native_instrument_registry().unwrap();
     let revision = PreparedRevision::prepare_with_registries(
@@ -265,6 +402,114 @@ fn prepared_with_latency(
         Borrowed::new(owner, device.value()),
         f.samples,
     )
+}
+
+#[test]
+fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+        BeatTime, DeviceAutomation, DeviceAutomationTarget,
+    };
+
+    struct AutomatedEffect(Borrowed);
+    impl ForeignProcessors for AutomatedEffect {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let program = node
+                .automation
+                .expect("prepared automation reaches the offline effect");
+            assert_eq!(Some(program.binding), node.prepared.binding());
+            let mut origins = [None; 8];
+            origins[0] = clock.and_then(|clock| clock.authored_arrangement_frame_at_offset(0));
+            let mut points = [hex_lattice_contract::ForeignParameterPoint::default(); 8];
+            let count = program.program.render_quantum(&origins, &[], &mut points)?;
+            if count != 0 {
+                assert_eq!(points[0].id, 7);
+                frames[0] = frames[0].map(|sample| sample * points[0].normalized as f32);
+            }
+            self.0.process_segment(node, offset, frames, clock)
+        }
+
+        fn reject_callback(&mut self) {
+            self.0.reject_callback();
+        }
+    }
+
+    let (mut revision, effect, samples) = prepared_with_latency(0, false, 3, Some(1));
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: effect.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let class = [1; 16];
+    let project = hex_project::Project::new(48_000).unwrap();
+    let program = crate::foreign_automation::BoundProgram::prepare(
+        &[DeviceAutomation {
+            read_selection: AutomationReadSelection::Authored,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            vst3_class: Some(class),
+            points: [
+                (BeatTime::ZERO, 0.25),
+                (BeatTime::from_ratio(1, 1000).unwrap(), 0.75),
+            ]
+            .map(|(beat, value)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            })
+            .to_vec(),
+            touch: Vec::new(),
+        }],
+        hex_lattice::ForeignAutomationSource {
+            binding,
+            revision: std::num::NonZeroU64::MIN,
+            class,
+            sample_rate: 48_000,
+            quantum_frames: 8,
+            dense_parameter: None,
+            parameters: &[hex_lattice::ForeignParameterCapability {
+                id: 7,
+                steps: 0,
+                normalized_base_bits: 0.5f64.to_bits(),
+            }],
+        },
+        project.tempo_map(),
+        8,
+    )
+    .unwrap()
+    .unwrap();
+    Arc::get_mut(&mut revision)
+        .unwrap()
+        .install_foreign_automation_on_control(vec![program], 8192)
+        .unwrap();
+    let mut output = [[0.0; 2]; 88];
+    let frames = output.len() as u64;
+    assert!(SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).is_err());
+    assert!(
+        SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, frames)
+            .is_err()
+    );
+    let mut bounce =
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames)
+            .unwrap();
+    bounce.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut effect = AutomatedEffect(effect);
+    for block in output.chunks_mut(5) {
+        effect.0.next_offset = 0;
+        bounce
+            .render_with_foreign_processors(block, None, None, None, &mut effect)
+            .unwrap();
+    }
+    let mut expected = [[0.0; 2]; 88];
+    expected[19] = samples[0].map(|sample| sample * (0.25 * 0.25));
+    expected[19 + 63] = samples[63].map(|sample| sample * (0.75 * 0.25));
+    assert_eq!(output, expected);
 }
 
 #[test]
@@ -557,6 +802,616 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
             .epoch,
         2
     );
+}
+
+struct QuietTrackEffect;
+
+#[test]
+fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
+    struct NonQuiet {
+        frames: [usize; SESSION_TAIL_GROUP_CAPACITY + 1],
+    }
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            self.frames[index] += frames.len();
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut current =
+        SessionPlayback::new(prepared_with_latency(10, false, 512, Some(1)).0).unwrap();
+    let mut probe = NonQuiet {
+        frames: [0; SESSION_TAIL_GROUP_CAPACITY + 1],
+    };
+    current.apply(SessionPlaybackCommand::Play).unwrap();
+    current
+        .render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+        .unwrap();
+    for epoch in 2..=(SESSION_TAIL_GROUP_CAPACITY as u64 + 2) {
+        let mut next =
+            SessionPlayback::new(prepared_with_latency(10, false, 512, Some(epoch)).0).unwrap();
+        let previous_position = current.performance_frame;
+        let previous_tails = current.tail_groups.iter().flatten().count();
+        let before = if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
+            Some(probe.frames)
+        } else {
+            None
+        };
+        let result = next.try_inherit_state_from(&mut current);
+        if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
+            let before = before.unwrap();
+            assert_eq!(previous_tails, SESSION_TAIL_GROUP_CAPACITY);
+            assert!(matches!(result, Err(SessionPlaybackError::ReleaseBankFull)));
+            assert!(current.playing);
+            assert_eq!(current.performance_frame, previous_position);
+            assert_eq!(current.tail_groups.iter().flatten().count(), previous_tails);
+            assert!(next.tail_groups.iter().all(Option::is_none));
+            assert_eq!(probe.frames, before);
+            current
+                .render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+                .unwrap();
+            assert_eq!(current.performance_frame, previous_position + 1);
+            for (after, before) in probe.frames.iter().zip(before) {
+                assert_eq!(*after, before + 1);
+            }
+            current.apply(SessionPlaybackCommand::Stop).unwrap();
+            assert!(next.try_inherit_state_from(&mut current).is_ok());
+        } else {
+            result.unwrap();
+            next.render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+                .unwrap();
+            current = next;
+        }
+    }
+}
+
+#[test]
+fn overlapping_foreign_tails_keep_grouped_send_and_feed_pcm() {
+    struct Probe {
+        rings: [[[f32; 2]; 128]; 3],
+        cursors: [usize; 3],
+        frames: [usize; 3],
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            self.frames[index] += frames.len();
+            for frame in frames {
+                std::mem::swap(frame, &mut self.rings[index][self.cursors[index]]);
+                self.cursors[index] = (self.cursors[index] + 1) % 128;
+            }
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in [10, 11] {
+        for partition in [1, 8, 64] {
+            let mut old =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(1)).0)
+                    .unwrap();
+            let mut current =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(2)).0)
+                    .unwrap();
+            let mut next =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(3)).0)
+                    .unwrap();
+            let mut reference =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(1)).0)
+                    .unwrap();
+            let mut probe = Probe {
+                rings: [[[0.0; 2]; 128]; 3],
+                cursors: [0; 3],
+                frames: [0; 3],
+            };
+            let mut reference_probe = Probe {
+                rings: [[[0.0; 2]; 128]; 3],
+                cursors: [0; 3],
+                frames: [0; 3],
+            };
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut expected = [[0.0; 2]; 320];
+            reference
+                .render_with_foreign_processors(
+                    &mut expected,
+                    None,
+                    None,
+                    None,
+                    &mut reference_probe,
+                )
+                .unwrap();
+            let mut actual = [[0.0; 2]; 320];
+            old.render_with_foreign_processors(&mut actual[..8], None, None, None, &mut probe)
+                .unwrap();
+            current.try_inherit_state_from(&mut old).unwrap();
+            current
+                .render_with_foreign_processors(&mut actual[8..68], None, None, None, &mut probe)
+                .unwrap();
+            next.try_inherit_state_from(&mut current).unwrap();
+            for chunk in actual[68..].chunks_mut(partition) {
+                next.render_with_foreign_processors(chunk, None, None, None, &mut probe)
+                    .unwrap();
+            }
+            assert_eq!(actual, expected);
+            assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+            assert!(probe.frames.iter().all(|&frames| frames > 0));
+            assert!(probe.frames[0] <= 320 && probe.frames[1] <= 312);
+            assert_eq!(probe.frames[2], 252);
+            assert_ne!(expected[128], [0.0; 2]);
+            assert_ne!(expected[191], [0.0; 2]);
+        }
+    }
+}
+
+#[test]
+fn active_foreign_tail_keeps_unchanged_compensated_group_pcm() {
+    struct Probe {
+        rings: [[[f32; 2]; 16]; 2],
+        cursors: [usize; 2],
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            for frame in frames {
+                std::mem::swap(frame, &mut self.rings[index][self.cursors[index]]);
+                self.cursors[index] = (self.cursors[index] + 1) % 16;
+            }
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in [4, 5, 6, 8, 10, 11] {
+        for partition in [1, 8, 64] {
+            let mut old =
+                SessionPlayback::new(prepared_with_latency(location, false, 0, Some(1)).0).unwrap();
+            let mut next =
+                SessionPlayback::new(prepared_with_latency(location, false, 0, Some(2)).0).unwrap();
+            let mut reference =
+                SessionPlayback::new(prepared_with_latency(location, false, 0, Some(1)).0).unwrap();
+            assert_eq!(
+                old.revision.arrangement().signal_graph,
+                next.revision.arrangement().signal_graph
+            );
+            let mut probe = Probe {
+                rings: [[[0.0; 2]; 16]; 2],
+                cursors: [0; 2],
+            };
+            let mut reference_probe = Probe {
+                rings: [[[0.0; 2]; 16]; 2],
+                cursors: [0; 2],
+            };
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut oracle = [[0.0; 2]; 192];
+            reference
+                .render_with_foreign_processors(&mut oracle, None, None, None, &mut reference_probe)
+                .unwrap();
+            let mut before = [[0.0; 2]; 8];
+            old.render_with_foreign_processors(&mut before, None, None, None, &mut probe)
+                .unwrap();
+            assert_eq!(before, oracle[..8]);
+            assert!(old.revision.arrangement().main_latency_frames() > 0);
+            assert!(
+                old.revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .unwrap()
+                    .has_group_outputs()
+            );
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut output = [[0.0; 2]; 184];
+            for chunk in output.chunks_mut(partition) {
+                next.render_with_foreign_processors(chunk, None, None, None, &mut probe)
+                    .unwrap();
+            }
+            assert_eq!(output, oracle[8..]);
+            assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+        }
+    }
+}
+
+#[test]
+fn unsafe_grouped_tail_preserves_the_previous_playback() {
+    struct NonQuiet;
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    {
+        let (old_location, new_location) = (8, 9);
+        let mut old =
+            SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
+        let mut reference =
+            SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
+        let mut next =
+            SessionPlayback::new(prepared_with_latency(new_location, false, 0, Some(2)).0).unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        let old_position = old.performance_frame;
+        assert_eq!(
+            old.revision.arrangement().signal_graph == next.revision.arrangement().signal_graph,
+            old_location == new_location
+        );
+        assert!(matches!(
+            next.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::Arrangement(
+                super::handoff::COMPENSATED_TAILS_CHANGED
+            ))
+        ));
+        assert!(old.playing);
+        assert_eq!(old.performance_frame, old_position);
+        let mut actual = [[0.0; 2]; 24];
+        let mut expected = [[0.0; 2]; 24];
+        old.render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    }
+
+    // A changed route or aliased endpoint must leave the old worker audible.
+    for (location, epoch, alias) in [(9, 3, false), (10, 1, true), (12, 3, false)] {
+        let mut old = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+        let mut reference_old =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+        let mut current =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+        let mut reference =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+        let mut later =
+            SessionPlayback::new(prepared_with_latency(location, false, 0, Some(epoch)).0).unwrap();
+        if location == 12 {
+            assert_eq!(
+                current.revision.arrangement().signal_graph,
+                later.revision.arrangement().signal_graph
+            );
+            assert_ne!(current.loop_region(), later.loop_region());
+        }
+        for playback in [&mut old, &mut reference_old] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback
+                .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+                .unwrap();
+        }
+        current.try_inherit_state_from(&mut old).unwrap();
+        reference
+            .try_inherit_state_from(&mut reference_old)
+            .unwrap();
+        let refusal = later.try_inherit_state_from(&mut current);
+        if alias {
+            assert!(matches!(
+                refusal,
+                Err(SessionPlaybackError::ForeignTailSourceBusy)
+            ));
+        } else {
+            assert!(matches!(
+                refusal,
+                Err(SessionPlaybackError::Arrangement(
+                    super::handoff::COMPENSATED_TAILS_CHANGED
+                ))
+            ));
+        }
+        let mut actual = [[0.0; 2]; 24];
+        let mut expected = [[0.0; 2]; 24];
+        current
+            .render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    }
+}
+
+#[test]
+fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
+    struct Probe {
+        calls: Vec<(u64, usize)>,
+        drained: bool,
+        fail_tail: bool,
+        rejected: bool,
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let epoch = node.prepared.binding().unwrap().epoch;
+            assert_eq!(frames.len(), 1);
+            if epoch == 1 {
+                assert_eq!(frames, &[[0.0; 2]]);
+            }
+            self.calls.push((epoch, offset));
+            if epoch == 1 && self.fail_tail {
+                return Err(DeviceContractError::ForeignProcessingFailed);
+            }
+            frames.fill(if epoch == 1 && !self.drained {
+                [0.2, 0.2]
+            } else {
+                [0.0, 0.0]
+            });
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+            self.drained && node.prepared.binding().unwrap().epoch == 1
+        }
+        fn reject_callback(&mut self) {
+            self.rejected = true;
+        }
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(3, false, 0, Some(2)).0).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut probe = Probe {
+        calls: vec![],
+        drained: false,
+        fail_tail: false,
+        rejected: false,
+    };
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.tail_groups.iter().any(Option::is_some));
+    probe.calls.clear();
+    let mut output = [[0.0; 2]; 8];
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    assert_eq!(
+        probe.calls,
+        (0..8)
+            .flat_map(|offset| [(2, offset), (1, offset)])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(output, [[0.2, 0.2]; 8]);
+    probe.drained = true;
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    probe.calls.clear();
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    assert!(probe.calls.iter().all(|(epoch, _)| *epoch == 2));
+
+    let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(3, false, 0, Some(2)).0).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    probe.drained = false;
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let previous_frame = candidate.performance_frame;
+    probe.fail_tail = true;
+    output.fill([9.0; 2]);
+    assert!(
+        candidate
+            .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+            .is_err()
+    );
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert_eq!(candidate.performance_frame, previous_frame);
+    assert!(probe.rejected);
+}
+impl ForeignProcessors for QuietTrackEffect {
+    fn process_segment(
+        &mut self,
+        _: ForeignProcessorNode<'_>,
+        _: usize,
+        frames: &mut [Frame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
+        Ok(())
+    }
+    fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
+    fn reject_callback(&mut self) {
+        panic!("quiet planner fixture rejected");
+    }
+}
+
+#[test]
+fn completed_foreign_track_suffix_can_be_replaced_without_losing_history() {
+    let mut active = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let mut next = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(2)).0).unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(!active.device_chains[0].committed_range_is_quiescent(0..1));
+    match next.try_inherit_state_from(&mut active) {
+        Ok(_) => assert!(next.tail_groups.iter().any(Option::is_some)),
+        Err(_) => assert!(active.playing),
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(0, false, 3, Some(2)).0).unwrap();
+    let chain = &mut old.device_chains[0];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert!(candidate.tail_groups.iter().all(Option::is_none));
+    assert_eq!(
+        candidate.device_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+}
+
+#[test]
+fn completed_foreign_track_suffix_does_not_reuse_a_changed_endpoint() {
+    let mut old = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let candidate = SessionPlayback::new(prepared_with_latency(0, false, 4, Some(1)).0).unwrap();
+    let chain = &mut old.device_chains[0];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(matches!(
+        super::handoff::validate_foreign_tail_sources(&candidate, &old.device_chains[0], 0),
+        Err(SessionPlaybackError::ForeignTailSourceBusy)
+    ));
+    assert!(old.playing);
+    assert!(!candidate.playing);
+}
+
+#[test]
+fn completed_foreign_track_does_not_discard_native_suffix_history() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    let prepare = |epoch| {
+        let mut f = fixture(&[&[]], 64);
+        let track = f.tracks[0];
+        let Created::Device(device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: state(19).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let utility = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: utility,
+            })
+            .unwrap();
+        let foreign = BorrowedDefinition {
+            binding_epoch: Some(epoch),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(
+                    ProcessorChainOwner::Track(track.value()),
+                    device.value(),
+                )
+                .unwrap(),
+                3,
+            )],
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&foreign, &UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let revision = PreparedRevision::prepare_with_registries(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+            &instruments,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut old = prepare(1);
+    let mut next = prepare(2);
+    let chain = &mut old.device_chains[0];
+    assert_eq!(chain.len(), 2);
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(next.try_inherit_state_from(&mut old).is_err());
+    assert!(old.playing);
 }
 
 mod shared_source_release;

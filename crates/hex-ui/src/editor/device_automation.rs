@@ -285,6 +285,7 @@ fn devices(project: &Project, owner: Owner) -> Vec<(&Device, NativeDeviceClass)>
                     .collect()
             })
             .unwrap_or_default(),
+        Owner::Source(_) => Vec::new(),
     }
 }
 
@@ -293,6 +294,7 @@ fn owner_exists(project: &Project, owner: Owner) -> bool {
         Owner::Main => true,
         Owner::Track(id) => project.track(id).is_some(),
         Owner::Return(id) => project.return_tracks().iter().any(|track| track.id() == id),
+        Owner::Source(_) => false,
     }
 }
 
@@ -336,6 +338,7 @@ impl Target {
                     .find(|device| device.id() == self.device)?,
                 NativeDeviceClass::Effect,
             ),
+            Owner::Source(_) => return None,
         };
         (class == self.class
             && self
@@ -558,6 +561,69 @@ impl Entry {
 }
 
 impl Lanes {
+    /// Reveal the lanes for one owner, or across the Arrangement. A lane can
+    /// come from the project, a previous assignment, or the current preview.
+    pub(super) fn reveal(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        owner: Option<Owner>,
+        used_only: bool,
+    ) {
+        if used_only {
+            self.extra.retain(|entry| {
+                owner.is_some_and(|owner| entry.target.owner != owner)
+                    || project
+                        .device(entry.target.device)
+                        .and_then(|device| device.automation_target(entry.target.kind))
+                        .is_some()
+            });
+        }
+        let owners = match owner {
+            Some(owner) => vec![owner],
+            None => std::iter::once(Owner::Main)
+                .chain(
+                    project
+                        .tracks()
+                        .iter()
+                        .map(|track| Owner::Track(track.id())),
+                )
+                .chain(
+                    project
+                        .return_tracks()
+                        .iter()
+                        .map(|track| Owner::Return(track.id())),
+                )
+                .collect(),
+        };
+        let lane_key = |entry: &Entry| {
+            let target = entry.target;
+            (target.owner, target.device, target.kind)
+        };
+        let mut visible: std::collections::HashSet<_> = self.extra.iter().map(lane_key).collect();
+        for owner in owners {
+            for (device, _) in devices(project, owner) {
+                let authored = device.automation().iter().filter_map(|lane| {
+                    Entry::read(project, generation, owner, device.id(), lane.target)
+                });
+                self.extra
+                    .extend(authored.filter(|entry| visible.insert(lane_key(entry))));
+            }
+        }
+        if !used_only {
+            self.extra.extend(
+                self.known
+                    .iter()
+                    .chain(&self.main)
+                    .filter(|entry| {
+                        owner.is_none_or(|owner| entry.target.owner == owner)
+                            && visible.insert(lane_key(entry))
+                    })
+                    .cloned(),
+            );
+        }
+    }
+
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in crate::editor) fn main_target_for_test(&self) -> Option<Target> {
         self.main.last().map(|entry| entry.target)
@@ -1131,57 +1197,12 @@ impl EditorView {
                 let Some(state) = &self.state else {
                     return;
                 };
-                let entries: Vec<_> = devices(&state.project, owner)
-                    .into_iter()
-                    .flat_map(|(device, _)| {
-                        device.automation().iter().filter_map(|lane| {
-                            Entry::read(
-                                &state.project,
-                                self.project_generation,
-                                owner,
-                                device.id(),
-                                lane.target,
-                            )
-                        })
-                    })
-                    .collect();
-                let lanes = &mut self.automation_view.devices;
-                if used_only {
-                    lanes.extra.retain(|entry| {
-                        entry.target.owner != owner
-                            || state
-                                .project
-                                .device(entry.target.device)
-                                .and_then(|device| device.automation_target(entry.target.kind))
-                                .is_some()
-                    });
-                }
-                for entry in entries {
-                    if !lanes.extra.iter().any(|old| old.target == entry.target) {
-                        lanes.extra.push(entry);
-                    }
-                }
-                if !used_only {
-                    for entry in lanes
-                        .known
-                        .iter()
-                        .filter(|entry| entry.target.owner == owner)
-                    {
-                        if !lanes.extra.iter().any(|old| old.target == entry.target) {
-                            lanes.extra.push(entry.clone());
-                        }
-                    }
-                }
-                if !used_only
-                    && let Some(main) = lanes
-                        .main
-                        .iter()
-                        .find(|entry| entry.target.owner == owner)
-                        .cloned()
-                    && !lanes.extra.iter().any(|entry| entry.target == main.target)
-                {
-                    lanes.extra.push(main);
-                }
+                self.automation_view.devices.reveal(
+                    &state.project,
+                    self.project_generation,
+                    Some(owner),
+                    used_only,
+                );
                 self.set_mode(super::EditorMode::Arrangement);
                 self.automation_view.enabled = true;
                 self.track_scroll.remeasure();

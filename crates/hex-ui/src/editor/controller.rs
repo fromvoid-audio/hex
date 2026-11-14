@@ -117,6 +117,7 @@ impl EditorView {
             candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         };
         let resident_applied = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.audible_playback.as_ref().is_some_and(|candidate| {
@@ -242,7 +243,11 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+        super::recovery::clear_recovery(
+            &mut self.recovery,
+            &mut self.pending_sample_drop,
+            &mut self.pending_time_range_move,
+        );
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -443,6 +448,8 @@ impl EditorView {
     }
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
+        self.cancel_held_clip_move_audition();
+        self.clip_preview_may_apply = false;
         self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
         self.prepared_seek = None;
@@ -487,6 +494,7 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        clip_preview_identity: None,
                         worker_requires_preroll: None,
                         observation: None,
                         audio_revision,
@@ -524,7 +532,13 @@ impl EditorView {
                     return;
                 }
                 if metadata.is_some_and(|metadata| {
-                    metadata.device_preview.is_some() && metadata.tuning_preview.is_some()
+                    u8::from(metadata.device_preview.is_some())
+                        + u8::from(metadata.tuning_preview.is_some())
+                        + u8::from(metadata.clip_preview.is_some())
+                        > 1
+                        || metadata
+                            .clip_preview
+                            .is_some_and(|identity| identity.context != context)
                 }) {
                     self.error =
                         Some("audio publication has conflicting preview identities".into());
@@ -542,6 +556,7 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        clip_preview_identity: metadata.and_then(|metadata| metadata.clip_preview),
                         worker_requires_preroll: metadata.map(|metadata| metadata.requires_preroll),
                         observation,
                         audio_revision,
@@ -555,8 +570,14 @@ impl EditorView {
                             .and_then(|metadata| metadata.tuning_preview),
                     });
                 }
+                // A section seek repairing a refused loop leaves the current
+                // admission in place until the callback applies the seek.
                 if metadata.is_none_or(|metadata| {
-                    metadata.device_preview.is_none() && metadata.tuning_preview.is_none()
+                    metadata.device_preview.is_none()
+                        && metadata.tuning_preview.is_none()
+                        && metadata.clip_preview.is_none()
+                        && (metadata.seek_request.is_none()
+                            || self.applied_project_revision == Some(authoring_revision))
                 }) {
                     self.audio_admission.published(
                         super::audio_admission::ProjectRevision {
@@ -1000,6 +1021,7 @@ impl EditorView {
                         .published(project_revision, audio_revision);
                 }
                 self.playback_candidates.push_back(PlaybackCandidate {
+                    clip_preview_identity: None,
                     worker_requires_preroll: None,
                     observation: None,
                     audio_revision,
@@ -1145,6 +1167,7 @@ impl EditorView {
             visible_change |= self.retire_audio_preserving_gain_take();
         }
         visible_change |= self.poll_update(cx);
+        visible_change |= self.sync_held_clip_move_audition();
         self.sync_held_stretch_audition();
         self.sync_held_play_start_audition();
         visible_change |= self.poll_browser_sample_playback();
@@ -1369,6 +1392,11 @@ impl EditorView {
             .prepared_seek
             .as_ref()
             .and_then(|pending| self.native_seek_applied_source(pending));
+        let applied_section_source = applied_seek_source.filter(|_| {
+            self.prepared_seek.as_ref().is_some_and(|pending| {
+                pending.kind.section().is_some() && pending.device_preview_identity.is_none()
+            })
+        });
         let current_seek_source = self
             .prepared_seek
             .as_ref()
@@ -1550,7 +1578,16 @@ impl EditorView {
             .control
             .status()
             .and_then(|status| status.rejected_revision())
-            .filter(|(revision, _)| *revision > self.observed_rejected_revision);
+            .filter(|(revision, _)| {
+                // The callback can refuse before the worker sends the view
+                // metadata. Reconcile that exact candidate when it arrives.
+                *revision > self.observed_rejected_revision
+                    || (*revision == self.observed_rejected_revision
+                        && self
+                            .playback_candidates
+                            .iter()
+                            .any(|candidate| candidate.audio_revision == *revision))
+            });
         if let Some((audio_revision, reason)) = rejected_revision {
             if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
                 && let Some(output) = audio.control.output_identity()
@@ -1692,6 +1729,37 @@ impl EditorView {
         );
         visible_change |= reconciled;
 
+        // Submission metadata can lag or be coalesced independently of the
+        // callback. During a held move, an unknown newer applied revision must
+        // not leave the previously audible canonical graph reported as current.
+        if self.clip_preview_may_apply
+            && applied != 0
+            && (self
+                .audible_playback
+                .as_ref()
+                .is_some_and(|candidate| candidate.audio_revision != applied)
+                || self
+                    .applied_clip_preview
+                    .is_some_and(|(revision, _)| revision != applied)
+                || (self.audible_playback.is_none()
+                    && self.applied_clip_preview.is_none()
+                    && self.applied_project_revision.is_some()
+                    && self
+                        .audio_admission
+                        .current()
+                        .and_then(|current| current.audio_revision)
+                        != Some(applied)))
+            && !self
+                .playback_candidates
+                .iter()
+                .any(|candidate| candidate.audio_revision == applied)
+        {
+            visible_change |= self.applied_project_revision.take().is_some();
+            visible_change |= self.applied_clip_preview.take().is_some();
+            visible_change |= self.audible_playback.take().is_some();
+            visible_change |= self.audio_admission.preview_applied(applied);
+        }
+
         if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
             &self.playback_candidates,
             applied,
@@ -1710,8 +1778,25 @@ impl EditorView {
                     .seek_request_id
                     .map(|request| (request, candidate.audio_revision))
         });
-        if let Some(candidate) = audible {
-            let source = if candidate.seek_request_id.is_some_and(|request_id| {
+        if let Some(candidate) = audible.filter(|candidate| {
+            candidate.clip_preview_identity.is_none() || candidate.audio_revision == applied
+        }) {
+            if candidate.clip_preview_identity.is_some() {
+                self.applied_project_revision = None;
+                visible_change |= self
+                    .audio_admission
+                    .preview_applied(candidate.audio_revision);
+            }
+            let source = if let Some(identity) = candidate.clip_preview_identity {
+                applied_clip_candidate_source(
+                    &candidate,
+                    identity,
+                    applied,
+                    self.project_generation,
+                    self.state.as_ref().map(|state| state.revision),
+                    self.expected_clip_preview,
+                )
+            } else if candidate.seek_request_id.is_some_and(|request_id| {
                 current_seek_source != Some((request_id, candidate.device_preview_identity))
             }) {
                 AppliedCandidateSource::SupersededPreview
@@ -1731,7 +1816,19 @@ impl EditorView {
                     )
                 })
             };
-            if source == AppliedCandidateSource::Current {
+            if candidate.clip_preview_identity.is_some() {
+                let actual = (source == AppliedCandidateSource::Current)
+                    .then(|| {
+                        candidate
+                            .clip_preview_identity
+                            .map(|identity| (applied, identity))
+                    })
+                    .flatten();
+                visible_change |= self.applied_clip_preview != actual;
+                self.applied_clip_preview = actual;
+                visible_change |= self.audible_playback.take().is_some();
+            } else if source == AppliedCandidateSource::Current {
+                visible_change |= self.applied_clip_preview.take().is_some();
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(
                         candidate.project_generation,
@@ -1739,8 +1836,21 @@ impl EditorView {
                         candidate.state.project.tuning(),
                     );
                 }
-                if candidate.project_generation == self.project_generation
+                let applied_section = candidate.seek_request_id.is_some_and(|request| {
+                    applied_section_source == Some((request, candidate.audio_revision))
+                });
+                if candidate.project_generation == self.project_generation && applied_section {
+                    self.applied_project_revision = Some(candidate.state.revision);
+                    visible_change |= self.audio_admission.applied(
+                        super::audio_admission::ProjectRevision {
+                            generation: candidate.project_generation,
+                            revision: candidate.state.revision,
+                        },
+                        candidate.audio_revision,
+                    );
+                } else if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
+                    && candidate.clip_preview_identity.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
                     if matches!(
@@ -1778,6 +1888,7 @@ impl EditorView {
                         || candidate.project_generation != source.context.project_generation
                 }) {
                     self.audible_playback = Some(PlaybackCandidate {
+                        clip_preview_identity: None,
                         worker_requires_preroll: None,
                         observation: None,
                         audio_revision: source.audio_revision,
@@ -1821,7 +1932,11 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2356,6 +2471,9 @@ impl EditorView {
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
         if event.project_replaced {
+            self.expected_clip_preview = None;
+            self.applied_clip_preview = None;
+            self.clip_preview_may_apply = false;
             self.pending_requests
                 .retain(|request| self.locators.queued_add_frame(request).is_none());
         }
@@ -2402,7 +2520,11 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            super::recovery::clear_recovery(&mut self.recovery, &mut self.pending_sample_drop);
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;
@@ -2634,6 +2756,7 @@ impl EditorView {
             resize_owns_viewport,
         );
         let time_range_was_pending = self.pending_time_range_move.is_some();
+        let recovery_before_time_completion = self.recovery.generation();
         let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -2642,6 +2765,11 @@ impl EditorView {
         } else {
             self.complete_time_duplicate_pair(&event)
         };
+        let recovering_refused_time_copy = event.range_copy_source_unavailable.is_some()
+            && recovery_before_time_completion.is_none()
+            && self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
+                edit.kind == super::recovery_state::DeferredEditKind::TimeDuplicate
+            });
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -3273,7 +3401,10 @@ impl EditorView {
             self.status = status;
             self.error = None;
         }
-        if let Some(error) = event.error {
+        if recovering_refused_time_copy {
+            self.status = "restarting audio · time will be duplicated when ready".into();
+        }
+        if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
             self.error = Some(
                 event
                     .audio_batch_failure
@@ -3422,6 +3553,15 @@ impl EditorView {
         let independent_edit = matches!(
             request,
             Request::Edit(_)
+                | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
+                | Request::RenameRetainedSource { .. }
                 | Request::ChangeProjectSampleRate { .. }
                 | Request::Import(_)
                 | Request::ImportAudioBatch { .. }
@@ -3447,6 +3587,8 @@ impl EditorView {
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
                 | Request::DropNativeDevice { .. }
+                | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
@@ -3779,7 +3921,18 @@ impl EditorView {
         if matches!(
             &request,
             Request::DeviceGesture(_)
+                | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
+                | Request::RenameRetainedSource { .. }
                 | Request::DropNativeDevice { .. }
+                | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
@@ -4244,6 +4397,74 @@ impl EditorView {
                 PlaybackAction::SetMetronome(!self.metronome_enabled()),
                 None,
             );
+        }
+    }
+
+    /// Starts only on the source that actually accepted this committed copy.
+    /// A full UI or audio queue refuses visibly rather than dropping the fence.
+    pub(super) fn queue_section_copy_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.wake_poll();
+        let playing = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.status())
+            .is_some_and(|status| status.playing.load(Acquire));
+        if self.desired_playing(playing)
+            || !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        let token = match super::play_intent::prepare_admission(
+            &mut self.play_intent,
+            Some(true),
+            0,
+            UI_REQUEST_CAPACITY,
+        ) {
+            Ok(token) => token,
+            Err(AdmissionError::QueueFull) => {
+                self.error = Some("playback command queue full".into());
+                return;
+            }
+            Err(AdmissionError::TokenExhausted) => {
+                self.report_intent_exhausted();
+                return;
+            }
+        };
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .play_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        let command = PlaybackCommand::PlayFrom(frame);
+        self.admit_play_intent(
+            PendingPlaybackAction {
+                action: PlaybackAction::Transport(command),
+                generation: self.project_generation,
+                revision: None,
+                intent_token: token,
+            },
+            Some(true),
+            Some(ticket),
+        );
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(command);
         }
     }
 
@@ -5115,6 +5336,7 @@ fn latest_applied_canonical_candidate(
                 && Some(candidate.audio_revision) != rejected_audio_revision
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         })
         .map(|candidate| {
             (
@@ -5138,6 +5360,7 @@ fn rejected_candidate_project(
                 && candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         })
         .map(|candidate| super::audio_admission::ProjectRevision {
             generation: candidate.project_generation,
@@ -5187,6 +5410,31 @@ enum AppliedCandidateSource {
     Current,
     SupersededPreview,
     InvalidPreview,
+}
+
+fn applied_clip_candidate_source(
+    candidate: &PlaybackCandidate,
+    identity: hex_session::service::ClipMovePreviewIdentity,
+    applied_audio_revision: u64,
+    generation: u64,
+    revision: Option<u64>,
+    expected: Option<hex_session::service::ClipMovePreviewIdentity>,
+) -> AppliedCandidateSource {
+    if candidate.audio_revision == applied_audio_revision
+        && identity.context.project_generation == generation
+        && candidate.project_generation == generation
+        && identity.context.editor_revision == candidate.state.revision
+        && revision == Some(candidate.state.revision)
+        && expected.is_some_and(|current| {
+            current.context == identity.context
+                && current.gesture == identity.gesture
+                && (identity.sequence < current.sequence || identity == current)
+        })
+    {
+        AppliedCandidateSource::Current
+    } else {
+        AppliedCandidateSource::SupersededPreview
+    }
 }
 
 fn applied_candidate_source(
@@ -5879,10 +6127,9 @@ mod sampler_native_ui_protocol_tests {
         let client = output.take_client().unwrap();
         assert!(client.worker_owns_graph_publication());
         let publish = |output: &mut hex_audio::WorkerPreparedOutput| {
-            output
-                .publication
-                .control()
-                .unwrap()
+            let control = output.publication.control().unwrap();
+            control.reclaim();
+            control
                 .publish_with_policy_and_context_generation(
                     hex_engine::playback::Playback::try_from_prepared_with_device_resources(
                         Arc::clone(&prepared),
@@ -5966,6 +6213,8 @@ mod sampler_native_ui_protocol_tests {
             assert!(view.applied_project_revision.is_none());
             assert_eq!(view.audio_admission, before);
             let mut metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
+                clip_preview: None,
                 context,
                 device_preview: Some(identity),
                 tuning_preview: None,
@@ -6020,6 +6269,156 @@ mod sampler_native_ui_protocol_tests {
             let audible = view.audible_playback.as_ref().unwrap();
             assert_eq!(audible.audio_revision, canonical_revision);
             assert!(audible.device_preview_identity.is_none());
+
+            let clip_identity = hex_session::service::ClipMovePreviewIdentity {
+                context,
+                gesture: 13,
+                sequence: 2,
+                destination: hex_session::service::ClipMovePreviewDestination::Existing(
+                    canonical.project.tracks()[0].id(),
+                ),
+                position: hex_project::ClipGroupPosition::Audio(1_000),
+                mode: hex_session::service::ArrangementMoveMode::Move,
+            };
+            let canonical_project = super::super::audio_admission::ProjectRevision {
+                generation: context.project_generation,
+                revision: canonical.revision,
+            };
+            view.audio_admission.canonical_revision(canonical_project);
+            view.audio_admission
+                .published(canonical_project, canonical_revision);
+            view.audio_admission
+                .applied(canonical_project, canonical_revision);
+            view.expected_clip_preview = Some(clip_identity);
+            view.clip_preview_may_apply = true;
+            metadata.clip_preview = Some(clip_identity);
+            let clip_revision = publish(&mut output);
+            view.retain_publication_observation(
+                context,
+                output_identity.wrapping_add(1),
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            assert!(
+                !view
+                    .playback_candidates
+                    .iter()
+                    .any(|candidate| candidate.audio_revision == clip_revision)
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                canonical_revision
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                backend.status().unwrap().applied_revision.load(Acquire),
+                clip_revision
+            );
+            assert!(view.audible_playback.is_none());
+            assert!(view.applied_project_revision.is_none());
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(view.audible_playback.is_none());
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((clip_revision, clip_identity))
+            );
+            assert!(view.applied_project_revision.is_none());
+            assert_ne!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Applied
+            );
+
+            let stale_revision = publish(&mut output);
+            let next_identity = hex_session::service::ClipMovePreviewIdentity {
+                sequence: clip_identity.sequence + 1,
+                position: hex_project::ClipGroupPosition::Midi(hex_project::BeatTime::ONE),
+                mode: hex_session::service::ArrangementMoveMode::Copy,
+                ..clip_identity
+            };
+            view.expected_clip_preview = Some(next_identity);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((clip_revision, clip_identity))
+            );
+            for _ in 0..128 {
+                backend.render(&mut [[0.0; 2]; 64]).unwrap();
+                view.tick(cx);
+                if backend.status().unwrap().applied_revision.load(Acquire) == stale_revision {
+                    break;
+                }
+            }
+            assert_eq!(
+                backend.status().unwrap().applied_revision.load(Acquire),
+                stale_revision,
+                "rejected: {:?}",
+                backend.status().unwrap().rejected_revision()
+            );
+            assert!(view.audible_playback.is_none());
+            assert!(view.applied_clip_preview.is_none());
+            assert!(view.applied_project_revision.is_none());
+            metadata.clip_preview = Some(next_identity);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: stale_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((stale_revision, next_identity))
+            );
+            metadata.clip_preview = Some(clip_identity);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((stale_revision, next_identity))
+            );
+            view.expected_clip_preview = None;
+            metadata.clip_preview = None;
+            let restored_revision = publish(&mut output);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: restored_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                restored_revision
+            );
+            assert!(view.applied_clip_preview.is_none());
             if loaded_sampler {
                 view.audio = None;
                 return;
@@ -6088,9 +6487,9 @@ mod sampler_native_ui_protocol_tests {
                 .control()
                 .unwrap()
                 .publish_with_policy_and_context_generation(
-                    hex_engine::playback::Playback::try_from_prepared_with_session(
-                        runtime_prepared,
-                    )
+                    hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(
+                        &runtime_prepared,
+                    ))
                     .unwrap(),
                     PublicationPolicy::InheritRuntime,
                     context.project_generation,
@@ -6102,7 +6501,7 @@ mod sampler_native_ui_protocol_tests {
                 output_identity,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: runtime_revision,
-                    observation: runtime_observation,
+                    observation: Arc::clone(&runtime_observation),
                     metadata,
                 },
             );
@@ -6121,6 +6520,48 @@ mod sampler_native_ui_protocol_tests {
                 runtime_revision
             );
             assert_eq!(view.applied_project_revision, Some(authored.revision));
+
+            // Deliver a callback refusal before its protected worker metadata.
+            let control = output.publication.control().unwrap();
+            control.reclaim();
+            let fence = control.capture_fresh_runtime_fence().unwrap();
+            let rejected = control
+                .publish_with_policy_and_context_generation(
+                    hex_engine::playback::Playback::try_from_prepared_with_session(
+                        runtime_prepared,
+                    )
+                    .unwrap(),
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                    context.project_generation,
+                )
+                .unwrap();
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(rejected),
+                hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(view.observed_rejected_revision, rejected);
+            view.retain_publication_observation(
+                runtime_context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: rejected,
+                    observation: runtime_observation,
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(matches!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Rejected(_)
+            ));
+            assert!(view.playback_candidates.is_empty());
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                runtime_revision
+            );
+
             view.audio = None;
         });
         backend.close();
@@ -6196,6 +6637,8 @@ mod sampler_native_ui_protocol_tests {
                 canonical_revision: canonical.revision,
             };
             let metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
+                clip_preview: None,
                 context,
                 device_preview: Some(identity),
                 tuning_preview: None,

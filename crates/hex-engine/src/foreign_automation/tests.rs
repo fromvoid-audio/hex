@@ -21,6 +21,45 @@ fn instrument_loop_edits_share_a_worker_only_with_a_bounded_wrap_distance() {
     assert!(!QuantumProfile::keeps_instrument_epoch(256, first, short));
 }
 
+#[test]
+fn effect_loop_activation_reuses_only_compatible_marker_budgets() {
+    let region =
+        |start, end, enabled| Some(hex_project::LoopRegion::new(start, end, enabled).unwrap());
+    let later = region(1024, 2048, false);
+    let earlier = region(0, 1024, true);
+    let short = region(0, 128, true);
+    let same_short = region(0, 128, false);
+    let overlapping = region(0, 1025, true);
+    let later_short = region(1024, 1152, false);
+    let different_enabled = region(1024, 2048, true);
+
+    for (before, after) in [
+        (None, earlier),
+        (later, earlier),
+        (later, different_enabled),
+        (different_enabled, later),
+        (same_short, short),
+        (short, same_short),
+    ] {
+        assert!(QuantumProfile::keeps_effect_epoch(Some(256), before, after));
+    }
+    for (before, after) in [
+        (None, short),
+        (later, short),
+        (later, overlapping),
+        (different_enabled, earlier),
+        (later_short, earlier),
+        (earlier, None),
+    ] {
+        assert!(!QuantumProfile::keeps_effect_epoch(
+            Some(256),
+            before,
+            after
+        ));
+    }
+    assert!(!QuantumProfile::keeps_effect_epoch(None, later, earlier));
+}
+
 fn point(beat: BeatTime, value: f32, outgoing: AutomationInterpolation) -> AutomationPoint {
     AutomationPoint {
         beat,
@@ -55,6 +94,79 @@ fn render(program: &Program, origins: &[Option<u64>], cuts: &[u16]) -> Vec<Forei
     let count = program.render_quantum(origins, cuts, &mut output).unwrap();
     assert!(count <= program.point_budget());
     output[..count].to_vec()
+}
+
+#[test]
+fn linear_effect_programs_admit_in_flight_loop_wraps_when_the_budget_allows() {
+    let tempo = tempo();
+    let enabled = hex_project::LoopRegion::new(1024, 1536, true).unwrap();
+    let disabled = hex_project::LoopRegion::new(1024, 1536, false).unwrap();
+    let capabilities = std::array::from_fn::<_, 7, _>(|id| ParameterCapability {
+        id: id as u32,
+        steps: 0,
+        normalized_base_bits: 0,
+    });
+    let lanes = capabilities.map(|parameter| {
+        lane(
+            parameter.id,
+            vec![
+                point(BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+                point(BeatTime::ONE, 0.75, AutomationInterpolation::Step),
+            ],
+        )
+    });
+    let source = hex_lattice::ForeignAutomationSource {
+        binding: hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        },
+        revision: std::num::NonZeroU64::MIN,
+        class: CLASS,
+        sample_rate: tempo.sample_rate(),
+        quantum_frames: 256,
+        dense_parameter: None,
+        parameters: &capabilities,
+    };
+    let prepare = |count, region| {
+        Program::prepare_arrangement_source(
+            &lanes[..count],
+            hex_lattice::ForeignAutomationSource {
+                parameters: &capabilities[..count],
+                ..source
+            },
+            &tempo,
+            region,
+            false,
+        )
+    };
+    let old = prepare(1, Some(enabled)).unwrap().unwrap();
+    // Disabling can leave a wrap in delayed audio. Enabling can introduce a
+    // wrap while an old linear program still owns the partial worker quantum.
+    let origins = std::array::from_fn::<_, 256, _>(|frame| {
+        Some(if frame < 64 {
+            1472 + frame as u64
+        } else {
+            1024 + (frame - 64) as u64
+        })
+    });
+    let cuts = [16, 32, 48, 80, 96, 112, 128];
+    let points = render(&old, &origins, &cuts);
+    assert_eq!(points.len(), 18);
+    assert!(points[8].normalized < points[7].normalized);
+
+    assert!(matches!(
+        prepare(7, Some(enabled)),
+        Err(AUTOMATION_POINT_LIMIT)
+    ));
+    let linear = std::array::from_fn::<_, 256, _>(|frame| Some(1472 + frame as u64));
+    for region in [None, Some(disabled)] {
+        let linear_program = prepare(1, region).unwrap().unwrap();
+        assert_eq!(render(&linear_program, &origins, &cuts), points);
+        let dense_linear = prepare(7, region).unwrap().unwrap();
+        assert_eq!(render(&dense_linear, &linear, &cuts).len(), 112);
+    }
 }
 
 #[test]

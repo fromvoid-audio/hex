@@ -36,8 +36,9 @@ pub enum DocumentAudioMode {
 pub const MAX_STREAMED_FILE_BYTES: u64 = u32::MAX as u64;
 /// Largest source extent a verified streaming binding may reference. Four clip
 /// domains admit 192 kHz originals in a 48 kHz project. Plain placement and playback
-/// stream any admitted extent; domain-bound edits (views, stretch, fades, grouping)
-/// keep their explicit [`hex_project::MAX_AUDIO_DOMAIN_FRAMES`] refusals.
+/// stream any admitted extent, as do exact plain frame reversals. Processed
+/// views, stretch, fades and grouping retain their explicit
+/// [`hex_project::MAX_AUDIO_DOMAIN_FRAMES`] refusals.
 pub const MAX_STREAMED_SOURCE_FRAMES: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES * 4;
 /// Metadata-only preparation bounds, independent of resident duration. An ordinary
 /// document may also reserve these for file-backed clip bindings without changing
@@ -246,7 +247,49 @@ pub(crate) struct MediaBank {
     pub(crate) resident: BTreeMap<AssetId, Audio>,
     pub(crate) verified: BTreeMap<AssetId, VerifiedAudioFile>,
 }
+pub(crate) fn plain_pitch_requirement(
+    project: &Project,
+    clip: &hex_project::Clip,
+) -> Option<crate::service::ResidentFilePitch> {
+    let edit = clip.audio_edit()?;
+    let asset = project.asset(clip.asset())?;
+    (edit.is_plain_pitch_capture(clip) && clip.source_length() == asset.playback_frames())
+        .then_some(crate::service::ResidentFilePitch {
+            asset: clip.asset(),
+            cents: edit.domain.pitch_cents,
+            law: edit.domain.warp_resampler,
+        })
+}
 impl MediaBank {
+    pub(crate) fn required_verified_pitches(
+        &self,
+        project: &Project,
+    ) -> Result<Vec<crate::service::ResidentFilePitch>, hex_engine::Invalid> {
+        let mut pitches = Vec::new();
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(pitch) = plain_pitch_requirement(project, clip) else {
+                continue;
+            };
+            if self.verified.contains_key(&pitch.asset) {
+                if pitches.len() >= hex_project::MAX_CLIPS {
+                    return Err(hex_engine::Invalid("ordinary pitch source count exceeded"));
+                }
+                pitches
+                    .try_reserve(1)
+                    .map_err(|_| hex_engine::Invalid("ordinary pitch source reservation failed"))?;
+                pitches.push(pitch);
+            }
+        }
+        pitches.sort_unstable_by_key(|pitch| {
+            (
+                pitch.asset,
+                pitch.cents,
+                matches!(pitch.law, hex_project::WarpResampler::V2),
+            )
+        });
+        pitches.dedup();
+        Ok(pitches)
+    }
     pub(crate) fn validate_clip_sources(
         &self,
         project: &Project,
@@ -293,8 +336,19 @@ impl MediaBank {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }
         let sources = self.prepared_sources()?;
-        PreparedRevision::prepare_with_prepared_audio_sources(
-            project, &sources, self.epoch, table, previous,
+        let mut pitched = BTreeMap::new();
+        for pitch in self.required_verified_pitches(project)? {
+            let file = self
+                .verified
+                .get(&pitch.asset)
+                .ok_or(hex_engine::Invalid("verified pitch source unavailable"))?;
+            let metadata = file
+                .source_metadata(pitch.asset, self.epoch)?
+                .with_plain_pitch(pitch.cents, pitch.law)?;
+            pitched.insert(metadata.key(), Arc::new(metadata));
+        }
+        PreparedRevision::prepare_with_prepared_pitch_sources(
+            project, &sources, &pitched, self.epoch, table, previous,
         )
     }
 
@@ -335,10 +389,7 @@ impl MediaBank {
         resources: &hex_engine::native_device_resources::PreparedDeviceResources,
         scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
-        catalog: Option<(
-            u64,
-            &BTreeMap<AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
-        )>,
+        catalog: Option<&crate::service::ResidentFileMetadata>,
         effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
         native_input: Option<hex_engine::NativeParameterInputTarget>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
@@ -384,7 +435,8 @@ impl MediaBank {
                 cancel,
             );
         }
-        let (generation, sources) = if let Some((generation, metadata)) = catalog {
+        let (generation, sources) = if let Some(catalog) = catalog {
+            let generation = catalog.catalog_generation();
             if generation == 0 {
                 return Err(hex_engine::Invalid(
                     "ordinary native catalog generation unavailable",
@@ -395,7 +447,7 @@ impl MediaBank {
                 .iter()
                 .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
                 .collect();
-            for (id, actual) in metadata {
+            for (id, actual) in catalog.sources() {
                 let file = self.verified.get(id).ok_or(hex_engine::Invalid(
                     "ordinary native source is not captured",
                 ))?;
@@ -409,6 +461,38 @@ impl MediaBank {
         } else {
             (self.epoch, self.prepared_sources()?)
         };
+        if let Some(pitched) = catalog
+            .map(|catalog| catalog.pitched_sources())
+            .filter(|map| !map.is_empty())
+        {
+            if let Some(effects) = effects {
+                return effects.prepare_registered_pitch_source_revision(
+                    project,
+                    &sources,
+                    pitched,
+                    generation,
+                    table,
+                    previous,
+                    transforms,
+                    resources,
+                    scan_frames,
+                    cancel,
+                    native_input,
+                );
+            }
+            return PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+                project,
+                &sources,
+                pitched,
+                generation,
+                table,
+                previous,
+                transforms,
+                resources,
+                scan_frames,
+                cancel,
+            );
+        }
         if let Some(effects) = effects {
             return effects.prepare_registered_source_revision(
                 project,

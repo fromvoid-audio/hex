@@ -10,10 +10,10 @@
 //! staged across contiguous graph segments until the complete physical callback
 //! passes final host conversion; only then may it reach a worker.
 //! Malformed output or saturation revokes the entire one-shot exchange.
-//! Native PCM workers may conceal one missing reply and discard its late
-//! output. The audio host uses aligned dry input for effects and silence for
-//! instruments. No stale-buffer replay, waiting, waking, allocation or DSP
-//! rollback occurs.
+//! Native PCM workers may conceal up to six consecutive missing replies and
+//! discard their late output. The audio host uses aligned dry input for effects
+//! and silence for instruments. No stale-buffer replay, waiting, waking,
+//! allocation or DSP rollback occurs; persistent misses still revoke the epoch.
 
 type Frame = [f32; 2];
 use crate::protocol::{EditorPerforms, EditorRestorations};
@@ -51,6 +51,8 @@ pub const MAX_EVENTS: usize = 64;
 /// the smaller generic event bound.
 pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 160;
 pub const QUEUE_CAPACITY: usize = 8;
+// Two pipeline quanta and six concealed quanta fit in the bounded input ring.
+const MAX_CONCEALED_OUTPUT_GAPS: u8 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -794,6 +796,8 @@ struct State {
     input_editor_scope: Option<NonZeroU64>,
     output: OutputReply,
     output_gap: bool,
+    consecutive_output_gaps: u8,
+    next_output_reply: u64,
     parameter_capacity: usize,
 }
 #[derive(Clone, Copy)]
@@ -879,9 +883,9 @@ pub fn channel_from_completed_prefix(
 }
 
 /// The native instance wire carries PCM and parameter observations, with no
-/// output MIDI. A single deadline miss conceals one quantum while preserving
-/// ordered input and the fixed 2Q alignment of subsequent replies. A late
-/// reply never acknowledges audio, editor gestures or manual parameters.
+/// output MIDI. Up to six consecutive deadline misses conceal their quanta
+/// while preserving ordered input and the fixed 2Q alignment of later replies.
+/// A late reply never acknowledges audio, editor gestures or manual parameters.
 pub fn native_pcm_channel_from_completed_prefix(
     binding: Binding,
     quantum: u16,
@@ -930,6 +934,8 @@ fn channel_with_policy(
                     editor: None,
                 },
                 output_gap: false,
+                consecutive_output_gaps: 0,
+                next_output_reply: completed_blocks,
                 parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
@@ -1316,8 +1322,9 @@ impl Callback {
                         sequence - 2,
                     )?;
                     if stage.state.output_gap {
+                        let start = result.concealed_output.map_or(index, |span| span.0);
                         result.concealed_output =
-                            Some((index, input.len().min(index + quantum_frames)));
+                            Some((start, input.len().min(index + quantum_frames)));
                     }
                     if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
@@ -1539,35 +1546,44 @@ fn stage_reply(
         }
         reply.valid(binding, quantum, sequence)
     };
-    let mut reply = replies.pop();
-    if state.output_gap
-        && let Ok(late) = &reply
-        && expected.checked_sub(1) == Some(late.block.sequence)
-    {
-        // At most one concealed block may precede the sample-aligned reply.
-        validate(late, late.block.sequence)?;
-        reply = replies.pop();
+    if state.next_output_reply > expected {
+        return Err(Fault::Protocol);
     }
-    match reply {
-        Ok(reply) => {
-            validate(&reply, expected)?;
-            state.output = reply;
-            state.output_gap = false;
-        }
-        Err(_) if conceal_output_gap && !state.output_gap => {
-            state.output = OutputReply {
-                block: Block::empty(binding, quantum),
-                manual: None,
-                editor: None,
-            };
-            state.output_gap = true;
-        }
-        Err(_) => {
-            revoked.record_deadline_miss(expected);
-            return Err(Fault::MissingOutput);
+    // At most six stale replies and the current reply can be consumed in one
+    // callback. Validate every sequence before discarding its PCM and facts.
+    for _ in 0..=MAX_CONCEALED_OUTPUT_GAPS {
+        match replies.pop() {
+            Ok(reply) => {
+                validate(&reply, state.next_output_reply)?;
+                let sequence = state.next_output_reply;
+                state.next_output_reply = sequence.checked_add(1).ok_or(Fault::Exhausted)?;
+                if sequence == expected {
+                    state.output = reply;
+                    state.output_gap = false;
+                    state.consecutive_output_gaps = 0;
+                    return Ok(());
+                }
+            }
+            Err(_)
+                if conceal_output_gap
+                    && state.consecutive_output_gaps < MAX_CONCEALED_OUTPUT_GAPS =>
+            {
+                state.output = OutputReply {
+                    block: Block::empty(binding, quantum),
+                    manual: None,
+                    editor: None,
+                };
+                state.output_gap = true;
+                state.consecutive_output_gaps += 1;
+                return Ok(());
+            }
+            Err(_) => {
+                revoked.record_deadline_miss(expected);
+                return Err(Fault::MissingOutput);
+            }
         }
     }
-    Ok(())
+    Err(Fault::Protocol)
 }
 
 impl Worker {

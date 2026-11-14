@@ -99,6 +99,7 @@ impl EditorView {
             self.retire_active_clip_drag();
             return;
         }
+        self.cancel_held_clip_move_audition();
         // Input capture ends here; the bounce gate refuses while a drag is held.
         let Some(active) = self.active_clip_drag.take() else {
             return;

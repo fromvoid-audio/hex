@@ -379,6 +379,18 @@ class FreshTargetReservationTests(unittest.TestCase):
         self.assertIsNone(reservation._lock.file)
 
 
+class ManualFixtureCleanupTests(unittest.TestCase):
+    def test_manual_teardown_restores_runner_sequence_guard(self):
+        original = local_ci.LocalCiRunner._step_sequence_error
+        fixture = LocalCiRunnerTests()
+        fixture.setUp()
+        try:
+            self.assertIsNot(local_ci.LocalCiRunner._step_sequence_error, original)
+        finally:
+            fixture.tearDown()
+        self.assertIs(local_ci.LocalCiRunner._step_sequence_error, original)
+
+
 class LocalCiRunnerTests(unittest.TestCase):
     def test_qualifying_step_sequence_refuses_drift_before_execution_or_target_access(self):
         self.step_sequence_patch.stop()
@@ -524,7 +536,12 @@ class LocalCiRunnerTests(unittest.TestCase):
 
 
     def tearDown(self) -> None:
-        self.temp.cleanup()
+        try:
+            self.temp.cleanup()
+        finally:
+            # Some other test modules construct this fixture manually.
+            # unittest invokes cleanups automatically only for its own run().
+            self.doCleanups()
 
     def test_programmatic_source_admission_and_missing_witness_refuse(self):
         for missing_witness in (False, True):

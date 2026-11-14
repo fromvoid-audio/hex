@@ -57,6 +57,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         playback: None,
         status: None,
         error: None,
+        range_copy_source_unavailable: None,
         recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,
@@ -850,6 +851,14 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
             Box::leak(format!("clip-visual-{}", next_audio.value()).into_boxed_str());
         let next_midi_selector: &'static str =
             Box::leak(format!("midi-clip-visual-{}", next_midi.value()).into_boxed_str());
+        let bar_selectors: [&'static str; 2] = editor.read_with(&visual, |v, _| {
+            let tracks = v.state.as_ref().unwrap().project.tracks();
+            [&tracks[0], &tracks[1]].map(|track| {
+                let selector: &'static str =
+                    Box::leak(format!("narrow-clip-bars-{}", track.id().value()).into_boxed_str());
+                selector
+            })
+        });
         for (width, viewport) in [
             (
                 1280.0,
@@ -885,6 +894,9 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
             let expected = lane.left()
                 + lane.size.width
                     * ((offset + 48_000 - viewport.start) as f32 / viewport.length as f32);
+            let projected_start = lane.left()
+                + lane.size.width
+                    * ((offset + 48_000 - tail - viewport.start) as f32 / viewport.length as f32);
             let endpoint = visual
                 .debug_bounds("arrangement-section-0")
                 .unwrap()
@@ -905,11 +917,47 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                 assert_eq!(endpoint, grid.left());
                 assert_eq!(section_edge.left(), grid.left());
             }
-            for (prefix, id) in [("clip-trailing", audio), ("midi-clip-trailing", midi)] {
-                let name = Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
-                let edge = visual.debug_bounds(name).unwrap();
-                assert_eq!(edge.left(), endpoint);
-                assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+            if tail == 48 {
+                let inks = editor.read_with(&visual, |view, _| {
+                    let project = &view.state.as_ref().unwrap().project;
+                    let a = project.clip(audio).unwrap();
+                    let m = project.midi_clip(midi).unwrap();
+                    let tracks = project.tracks();
+                    [
+                        (audio, tracks[0].color(), a.flavor(), a.active()),
+                        (midi, tracks[1].color(), m.flavor(), m.active()),
+                    ]
+                    .map(|(id, color, flavor, active)| {
+                        let header = crate::theme::clip_activity_fill(color, flavor, false, active);
+                        crate::theme::arrangement_clip_body_fill(header, view.clip_is_selected(id))
+                    })
+                });
+                // The bar covers every device pixel touched by the shared
+                // interval, including a partial column at either edge.
+                let first = f64::from(projected_start.scale(scale)).floor();
+                let end = f64::from(expected.scale(scale)).ceil();
+                assert!(first < end);
+                for (selector, ink) in bar_selectors.into_iter().zip(inks) {
+                    let canvas = visual.debug_bounds(selector).unwrap().scale(scale);
+                    let fills = visual.rendered_filled_quads(selector);
+                    assert!(
+                        fills.iter().any(|(paint, fill)| {
+                            *fill == gpui::rgb(ink).into()
+                                && paint.top() == canvas.top()
+                                && paint.bottom() == canvas.bottom()
+                                && f64::from(paint.left()) == first
+                                && f64::from(paint.right()) == end
+                        }),
+                        "actual {selector} paint must cover device columns {first}..{end}, offset={offset}, viewport={viewport:?}, fills={fills:?}"
+                    );
+                }
+            } else {
+                for (prefix, id) in [("clip-trailing", audio), ("midi-clip-trailing", midi)] {
+                    let name = Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
+                    let edge = visual.debug_bounds(name).unwrap();
+                    assert_eq!(edge.left(), endpoint);
+                    assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+                }
             }
             for selector in [audio_selector, midi_selector, "arrangement-section-0"] {
                 let bounds = visual.debug_bounds(selector).unwrap();
@@ -947,7 +995,7 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                                         < 0.1),
                             "actual shaped section: {bounds:?}, offset={offset}, tail={tail}"
                         );
-                    } else {
+                    } else if tail != 48 {
                         assert!(
                             visual.rendered_surface_geometry(selector).is_some(),
                             "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
@@ -977,9 +1025,6 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                 audio_bounds.left(),
                 visual.debug_bounds("arrangement-section-0").unwrap().left()
             );
-            let projected_start = lane.left()
-                + lane.size.width
-                    * ((offset + 48_000 - tail - viewport.start) as f32 / viewport.length as f32);
             assert!((audio_bounds.left() - projected_start).abs() <= px(0.25));
             if tail == 480 {
                 let header = visual

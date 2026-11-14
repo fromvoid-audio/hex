@@ -339,6 +339,8 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
+                source_origin: selected.source_origin,
+                prepared_context: selected.prepared_context,
                 file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
@@ -429,6 +431,8 @@ impl Lane {
                         sink,
                         admission,
                         ResidentPublicationMetadata {
+                            source_origin: crate::service::ResidentSourceOrigin::Unknown,
+                            clip_preview: None,
                             context,
                             device_preview: job.intent.device_preview,
                             tuning_preview: job.intent.tuning_preview,

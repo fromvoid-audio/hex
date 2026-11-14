@@ -1,6 +1,9 @@
 //! Launch a section with the quantized seek worker. L-click enables the
 //! canonical Arrangement loop. A plain launch disables an enabled loop in
 //! place and plays to the section end on the transport's content clock.
+//! A refused live loop handoff can still launch from the worker's committed
+//! revision. Only the adjacent loop change can use the prior audible graph as
+//! its quantization source, under the same fresh-runtime fence as a normal launch.
 use super::{
     EditorView,
     audio_admission::{AdmissionState, ProjectRevision},
@@ -207,6 +210,32 @@ impl EditorView {
         self.wake_poll();
     }
 
+    pub(super) fn section_can_replace_refused_loop(&self, section: SectionLaunch) -> bool {
+        let (Some(state), Some(audible), Some(admission)) = (
+            self.state.as_ref(),
+            self.audible_playback.as_ref(),
+            self.audio_admission.current(),
+        ) else {
+            return false;
+        };
+        admission.project.generation == self.project_generation
+            && admission.project.revision == state.revision
+            && matches!(admission.state, AdmissionState::Rejected(_))
+            && admission.audio_revision.is_some_and(|revision| {
+                self.audio_status()
+                    .and_then(|status| status.rejected_revision())
+                    == Some((
+                        revision,
+                        hex_engine::PlaybackHandoffRejection::SessionRuntime,
+                    ))
+            })
+            && audible.project_generation == self.project_generation
+            && self.applied_project_revision() == Some(audible.state.revision)
+            && audible.state.revision.checked_add(1) == Some(state.revision)
+            && section.matches_loop(state.project.loop_region())
+            && !section.matches_loop(audible.state.project.loop_region())
+    }
+
     pub(super) fn tick_section_launch(&mut self) -> bool {
         let Some(pending) = self.section_launch_after_loop.as_ref() else {
             return false;
@@ -223,15 +252,21 @@ impl EditorView {
                 state.revision != pending.project.revision
                     || state.project.loop_region() != pending.expected_loop
             })
-            || self.audio_admission.current().is_some_and(|admission| {
-                admission.project == pending.project
-                    && matches!(admission.state, AdmissionState::Rejected(_))
-            })
         {
             self.section_launch_after_loop = None;
             return true;
         }
-        if self.applied_project_revision() != Some(pending.project.revision) {
+        if self.applied_project_revision() != Some(pending.project.revision)
+            && !self.section_can_replace_refused_loop(pending.section)
+        {
+            if let Some(admission) = self.audio_admission.current()
+                && admission.project == pending.project
+                && let AdmissionState::Rejected(reason) = admission.state
+            {
+                self.section_launch_after_loop = None;
+                self.error = Some(reason.into());
+                return true;
+            }
             return false;
         }
         let section = pending.section;

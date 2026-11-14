@@ -163,12 +163,18 @@ impl Client {
         }
     }
 
-    pub(crate) fn activate(&mut self) {
+    pub(crate) fn activate(&mut self) -> bool {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            self.worker_owned_publication = endpoints
+            let Some(worker_owned) = endpoints
                 .resident_forwarding
-                .expose_client_on_control(&endpoints.status);
+                .expose_client_on_control(&endpoints.status)
+            else {
+                return false;
+            };
+            self.worker_owned_publication = worker_owned;
+            return true;
         }
+        false
     }
     /// Immutable publication policy captured under the existing exposure lock. Every graph on
     /// this output belongs to its control worker; transport and shared input clients remain
@@ -289,10 +295,43 @@ impl Client {
             CommandSource {
                 revision: endpoints.status.submitted_revision.load(Acquire),
                 project_generation: self.project_generation,
+                expected_source: None,
             },
             &mut endpoints.processor_audition,
             action,
         )
+    }
+    /// Enqueue a start that may execute only on the exact callback-applied source.
+    /// A later replacement is reported through the ordinary action receipt.
+    pub fn play_from_source_with_ticket(
+        &mut self,
+        frame: u64,
+        expected: AppliedAudioSource,
+    ) -> Result<u64, PlaybackCommand> {
+        let command = PlaybackCommand::PlayFrom(frame);
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Err(command);
+        };
+        if !endpoints.status.client_exposed.load(Acquire)
+            || endpoints.status.recording_source() != Some(expected)
+            || self.project_generation != Some(expected.context.project_generation)
+        {
+            return Err(command);
+        }
+        enqueue_action(
+            &mut endpoints.commands,
+            &mut endpoints.action_admission,
+            &mut endpoints.command_ticket,
+            &endpoints.status,
+            CommandSource {
+                revision: endpoints.status.submitted_revision.load(Acquire),
+                project_generation: self.project_generation,
+                expected_source: Some(expected),
+            },
+            &mut endpoints.processor_audition,
+            PlaybackAction::Transport(command),
+        )
+        .map_err(|_| command)
     }
     pub fn command_with_ticket(
         &mut self,
@@ -783,6 +822,7 @@ impl ClientEndpoints {
 struct CommandSource {
     revision: u64,
     project_generation: Option<u64>,
+    expected_source: Option<AppliedAudioSource>,
 }
 
 fn enqueue_action(
@@ -824,6 +864,7 @@ fn enqueue_action(
         ticket: next,
         action,
         project_generation: source.project_generation,
+        expected_source: source.expected_source,
         sampler_edit_gate,
         transport_epoch,
     }) {
@@ -855,6 +896,7 @@ pub(super) fn legacy_enqueue(
         CommandSource {
             revision: control.publication.revision,
             project_generation: None,
+            expected_source: None,
         },
         &mut control.processor_audition,
         action,

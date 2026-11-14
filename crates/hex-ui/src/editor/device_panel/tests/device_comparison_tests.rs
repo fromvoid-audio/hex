@@ -1358,6 +1358,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         );
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: None,
                 observation: None,
                 audio_revision,

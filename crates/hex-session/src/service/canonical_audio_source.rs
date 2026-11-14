@@ -6,6 +6,8 @@
 //! empty graphs; private loaded-sampler sources also stay in their worker-owned path rather than
 //! escaping through an Event owner.
 use super::*;
+mod source_content;
+pub use source_content::RawArrangementContentWitness;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
     context: hex_engine::AudioSourceContext,
@@ -83,6 +85,33 @@ impl CanonicalAudioSourceSnapshot {
             (arrangement || session).then_some((*id, binding))
         })
     }
+    /// Full-source plain-pitch streams required by verified Arrangement clips.
+    /// Repeated clips may yield the same requirement. These are immutable facts,
+    /// not worker leases or native admission; unsupported edits remain excluded.
+    pub fn required_plain_pitch_sources(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            hex_project::AssetId,
+            &crate::VerifiedAudioFile,
+            i16,
+            hex_project::WarpResampler,
+        ),
+    > {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter_map(move |clip| {
+                let pitch = crate::audio_sources::plain_pitch_requirement(&self.project, clip)?;
+                let crate::AudioSourceBinding::VerifiedFile(file) =
+                    self.sources.get(&clip.asset())?
+                else {
+                    return None;
+                };
+                Some((pitch.asset, file, pitch.cents, pitch.law))
+            })
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -91,12 +120,55 @@ impl CanonicalAudioSourceSnapshot {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+        self.candidate_reservation_quote_for(&self.project)
+    }
+    pub(super) fn candidate_reservation_quote_for(
+        &self,
+        project: &Project,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        use hex_engine::AudioStorageError;
+        if hex_engine::native_device_resources::requires_private_sampler_sources(project) {
             return Err(hex_engine::AudioStorageError::UnsupportedGraph);
         }
-        hex_engine::AudioCandidateReservationQuote::for_project(
-            &self.project,
-            self.required_sources().count(),
+        // A sizing-only generation gives raw and derived facts a common identity;
+        // the actual host catalog and its leases are checked at construction.
+        let mut streams = BTreeMap::new();
+        let mut pitch_count = 0usize;
+        for (asset, source) in self.required_sources() {
+            if let crate::AudioSourceBinding::VerifiedFile(file) = source {
+                let metadata = file
+                    .source_metadata(asset, 1)
+                    .map_err(|_| AudioStorageError::SourceMismatch)?;
+                streams.insert(metadata.key(), metadata);
+            }
+        }
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(pitch) = crate::audio_sources::plain_pitch_requirement(project, clip) else {
+                continue;
+            };
+            let Some(crate::AudioSourceBinding::VerifiedFile(file)) =
+                self.sources.get(&pitch.asset)
+            else {
+                continue;
+            };
+            let metadata = file
+                .source_metadata(pitch.asset, 1)
+                .and_then(|raw| raw.with_plain_pitch(pitch.cents, pitch.law))
+                .map_err(|_| AudioStorageError::SourceMismatch)?;
+            if streams.insert(metadata.key(), metadata).is_none() {
+                pitch_count = pitch_count
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        let sources = self
+            .required_sources()
+            .count()
+            .checked_add(pitch_count)
+            .ok_or(AudioStorageError::Overflow)?;
+        let streams: Vec<_> = streams.into_values().collect();
+        hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            project, sources, &streams,
         )
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -177,6 +249,175 @@ impl CanonicalAudioSourceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pitch_requirements_include_only_complete_verified_file_clips() {
+        let files = super::super::verified_source_tests::Files::new();
+        let path = files.wav("pitch.wav", 48_000, 32, 1000);
+        let file = crate::VerifiedAudioFile::inspect(
+            path.clone(),
+            48_000,
+            hex_media::VerifiedWavReaderLimits::new(
+                hex_media::WavReaderLimits::new(1 << 20, 4096, 32, 4096),
+                1 << 20,
+            ),
+            || false,
+        )
+        .unwrap();
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: "source".into(),
+                path,
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("file fixture")
+        };
+        editor
+            .execute(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(first) = editor
+            .execute(hex_project::Command::DuplicateClip(clip))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: first,
+                cents: 700,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(second) = editor
+            .execute(hex_project::Command::DuplicateClip(first))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: second,
+                cents: -300,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(partial) = editor
+            .execute(hex_project::Command::DuplicateClip(second))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: partial,
+                cents: 0,
+            })
+            .unwrap();
+        let start = editor.project().clip(partial).unwrap().start();
+        editor
+            .execute(hex_project::Command::TrimClipEdge {
+                clip: partial,
+                edge: hex_project::TrimEdge::Right,
+                frame: start + 16,
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: partial,
+                cents: 200,
+            })
+            .unwrap();
+        let hex_project::Created::Imported {
+            clip: resident_clip,
+            asset: resident_asset,
+            ..
+        } = editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: "resident".into(),
+                path: "resident.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("resident fixture")
+        };
+        editor
+            .execute(hex_project::Command::SetClipFades {
+                clip: resident_clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: resident_clip,
+                cents: 500,
+            })
+            .unwrap();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(hex_project::Command::MoveClip {
+                clip,
+                track,
+                start: 10_000,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(repeated) = editor
+            .execute(hex_project::Command::DuplicateClip(clip))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: repeated,
+                cents: 700,
+            })
+            .unwrap();
+        let snapshot = CanonicalAudioSourceSnapshot {
+            project: Arc::new(editor.project().clone()),
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            mode: crate::DocumentAudioMode::Resident,
+            sources: BTreeMap::from([
+                (asset, crate::AudioSourceBinding::VerifiedFile(file)),
+                (
+                    resident_asset,
+                    crate::AudioSourceBinding::Resident(
+                        hex_engine::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap(),
+                    ),
+                ),
+            ]),
+        };
+        let mut requirements = snapshot
+            .required_plain_pitch_sources()
+            .map(|(id, _, cents, law)| (id, cents, law))
+            .collect::<Vec<_>>();
+        assert_eq!(requirements.len(), 3);
+        requirements.sort_by_key(|(_, cents, _)| *cents);
+        requirements.dedup();
+        assert_eq!(
+            requirements,
+            vec![
+                (asset, -300, hex_project::WarpResampler::V2),
+                (asset, 700, hex_project::WarpResampler::V2)
+            ]
+        );
+        let quote = snapshot.candidate_reservation_quote().unwrap();
+        assert_eq!(quote.source_capacity, 4);
+        assert!(
+            quote.prepared_pcm_frames >= 32,
+            "resident and partial transforms still reserve pcm"
+        );
+    }
     fn next(service: &Service) -> Event {
         service
             .events

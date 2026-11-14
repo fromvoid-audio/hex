@@ -414,6 +414,7 @@ impl EditorView {
                         && self.audible_playback.as_ref().is_some_and(|audible| {
                             audible.device_preview_identity.is_none()
                                 && audible.tuning_preview_identity.is_none()
+                                && audible.clip_preview_identity.is_none()
                         })
                 }
             }
@@ -507,7 +508,9 @@ impl EditorView {
                 applied_project_revision: self.applied_project_revision,
                 has_prepared_revision: candidate.prepared_revision.is_some(),
                 is_canonical_candidate: candidate.seek_request_id.is_none()
-                    && candidate.device_preview_identity.is_none(),
+                    && candidate.device_preview_identity.is_none()
+                    && candidate.tuning_preview_identity.is_none()
+                    && candidate.clip_preview_identity.is_none(),
             });
         seek_requires_preroll_for_mode(
             self.document_audio_mode,
@@ -740,6 +743,7 @@ impl EditorView {
             if let Some(audible) = self.audible_playback.as_ref().filter(|audible| {
                 audible.device_preview_identity == Some(current)
                     && audible.tuning_preview_identity.is_none()
+                    && audible.clip_preview_identity.is_none()
             }) {
                 intent.prepared_revision = audible.prepared_revision.clone();
                 audio_revision = audible.audio_revision;
@@ -921,14 +925,21 @@ impl EditorView {
         let audible = self.audible_playback.as_ref()?;
         let status = audio.control.status()?;
         let applied = status.applied_revision.load(Acquire);
+        let replaces_refused_loop = intent.prepared_revision.is_none()
+            && intent.device_preview_identity.is_none()
+            && intent
+                .kind
+                .section()
+                .is_some_and(|section| self.section_can_replace_refused_loop(section));
         if (self.mode != super::EditorMode::Arrangement && intent.recovery_generation.is_none())
             || state.revision != intent.project_revision
             || self.project_generation != intent.project_generation
-            || self.applied_project_revision != Some(intent.project_revision)
+            || (!replaces_refused_loop
+                && (self.applied_project_revision != Some(intent.project_revision)
+                    || audible.state.revision != intent.project_revision))
             || audible.audio_revision != audio_revision
             || audible.audio_revision != applied
             || audible.project_generation != intent.project_generation
-            || audible.state.revision != intent.project_revision
             || !seek_source_matches(audible, &intent.prepared_revision)
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
@@ -1166,6 +1177,7 @@ impl EditorView {
             )
             && audible.device_preview_identity == pending.device_preview_identity
             && audible.tuning_preview_identity.is_none()
+            && audible.clip_preview_identity.is_none()
             && (allow_candidate
                 || (self.pending_playback.is_none()
                     && self.pending_resident_publication.is_none()

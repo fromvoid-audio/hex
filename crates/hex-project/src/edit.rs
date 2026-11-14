@@ -20,6 +20,15 @@ pub enum InstrumentLoadPlacement {
     Replace(DeviceId),
 }
 
+/// Owner captured for an atomic original-asset replacement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentAssetOwner {
+    /// The instrument currently owned by this track.
+    Track(TrackId),
+    /// A retained source that is not linked to any track.
+    Source(crate::SourceId),
+}
+
 impl InstrumentLoadPlacement {
     pub fn replacement(self) -> Option<DeviceId> {
         match self {
@@ -430,6 +439,18 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Append a selection from another track in canonical source order as one edit.
+    MoveTrackDevices {
+        source: TrackId,
+        selected: crate::DeviceSelectionIds,
+        destination: TrackId,
+    },
+    /// Move the selected units together to a gap in their current chain.
+    ReorderDevices {
+        owner: crate::DeviceChainOwner,
+        selected: crate::DeviceSelectionIds,
+        before: Option<DeviceId>,
+    },
     /// Move a complete unit within one retained source, keeping its parent.
     /// The designated instrument moves with its children. None appends; invalid
     /// membership placement must stay inside the owning chain.
@@ -825,7 +846,7 @@ pub enum Command {
     /// Atomically import an original source and bind or rebind an existing instrument.
     /// Captured identity/state/provider must still match; no IDs are predicted.
     ImportDeviceAssetReplacingInstrument {
-        track: TrackId,
+        owner: InstrumentAssetOwner,
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
         path: PathBuf,
@@ -2275,6 +2296,8 @@ impl Project {
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
+            | Command::MoveTrackDevices { .. }
+            | Command::ReorderDevices { .. }
             | Command::MoveNativeSourceDevice { .. }
             | Command::ReparentDevice { .. }
             | Command::InsertNestedDevice { .. }
@@ -3011,7 +3034,7 @@ impl Project {
                 Ok(Created::Asset(asset))
             }
             Command::ImportDeviceAssetReplacingInstrument {
-                track,
+                owner,
                 device,
                 expected_state,
                 path,
@@ -3020,9 +3043,22 @@ impl Project {
                 state,
                 source_slot,
             } => {
-                let target = self
-                    .track(track)
-                    .and_then(|track| track.instrument())
+                let instrument = match owner {
+                    InstrumentAssetOwner::Track(track) => {
+                        self.track(track).and_then(|track| track.instrument())
+                    }
+                    InstrumentAssetOwner::Source(source) => {
+                        if self
+                            .tracks()
+                            .iter()
+                            .any(|track| track.source_id() == Some(source))
+                        {
+                            return Err(Invalid("instrument source is already assigned"));
+                        }
+                        self.native_source(source).map(|source| source.instrument())
+                    }
+                };
+                let target = instrument
                     .filter(|target| target.id() == device && target.state() == &expected_state)
                     .ok_or(Invalid("instrument source replacement target changed"))?;
                 if state.type_id() != target.state().type_id()

@@ -375,7 +375,8 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
     }
     let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
                       performance: u64,
-                      frames: usize| {
+                      frames: usize,
+                      retaining_muted: bool| {
         use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
         use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
         let key = signature.key();
@@ -390,7 +391,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
             return Ok(None);
         };
         let track = &revision.arrangement().tracks()[index];
-        if !track.source_input_enabled() {
+        if !track.source_input_enabled() && !retaining_muted {
             return Ok(None);
         }
         let track_id = routes[index].id;

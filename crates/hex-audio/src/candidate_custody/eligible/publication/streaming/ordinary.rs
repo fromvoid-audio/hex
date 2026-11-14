@@ -28,7 +28,7 @@ impl OrdinaryReservation {
         }
         if self
             .extents
-            .checked_mul(2)
+            .checked_mul(4)
             .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<OrdinaryStreams>()))
             .is_none_or(|n| n > self.metadata_bytes)
@@ -46,10 +46,76 @@ pub(crate) struct OrdinaryStreams {
     workspace: Option<Workspace>,
 }
 impl OrdinaryStreams {
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_loan_for<'a>(
+        &self,
+        domains: &'a mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> Option<(&'a mut hex_stream::ConstructorPageLoan, &'a mut u64)> {
+        let token = self.refs.iter().flatten().copied().find(|token| {
+            domains
+                .get(token.slot)
+                .and_then(Option::as_ref)
+                .filter(|pages| pages.inner.token == *token)
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.covers_resource_key(source))
+        })?;
+        let pages = &mut super::demand::envelope(domains, token).ok()?.inner;
+        Some((pages.loan.as_mut()?, &mut pages.epoch))
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_has_extent(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        extent: StreamResourceExtent,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_has_resource_extent(extent))
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_ready_page(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        key: hex_stream::ResourcePageKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_ready_page(key))
+        })
+    }
     pub(crate) fn has_install_pending(&self) -> bool {
         self.workspace.as_ref().is_some_and(|workspace| {
             workspace.role == Some(hex_stream::ProtectionRole::Candidate)
                 && workspace.stamps.iter().any(Option::is_some)
+        })
+    }
+    pub(crate) fn capacity_conflict(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.capacity_conflict)
+    }
+    pub(crate) fn retry_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_capacity_conflict)
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_coalesced_prefetch(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        key: hex_stream::ResourcePageKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_coalesced_prefetch(key))
         })
     }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
@@ -136,6 +202,7 @@ impl OrdinaryStreams {
         pending_play: bool,
         prefix: u64,
         frames: usize,
+        fenced_restart: bool,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let mut empty = None;
         let mut old = previous.map(|(runtime, context, revision)| StateView {
@@ -157,6 +224,7 @@ impl OrdinaryStreams {
                 pending_play,
                 command_prefix: prefix,
                 frames,
+                fenced_restart,
             },
             hex_stream::ProtectionRole::Candidate,
         )
@@ -222,6 +290,21 @@ impl Custody {
         &self,
         reservation: OrdinaryReservation,
     ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, false)
+    }
+
+    pub(in crate::candidate_custody) fn configure_combined_ordinary_streams(
+        &self,
+        reservation: OrdinaryReservation,
+    ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, true)
+    }
+
+    fn configure_ordinary_streams_for_owner(
+        &self,
+        reservation: OrdinaryReservation,
+        combined: bool,
+    ) -> Result<(), &'static str> {
         let reservation = reservation.validate_requested()?;
         let workspace = Workspace::prepare(reservation.extents)?;
         if workspace
@@ -235,7 +318,7 @@ impl Custody {
         if !self.enabled()
             || bank.closing
             || bank.ordinary.is_some()
-            || bank.publication.reservation.is_some()
+            || (bank.publication.reservation.is_some() != combined)
             || bank.domains.iter().any(|d| d.phase != Phase::Vacant)
         {
             return Err("ordinary streams require a vacant source root");

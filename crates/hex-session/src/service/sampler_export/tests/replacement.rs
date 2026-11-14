@@ -108,7 +108,7 @@ fn replacement_history_requires_exact_forward_template_and_shared_catalog_in_bot
         hex_engine::sampler_replacement_template_on_control(&old, 6).unwrap();
     editor
         .execute(Command::ImportDeviceAssetReplacingInstrument {
-            track,
+            owner: hex_project::InstrumentAssetOwner::Track(track),
             device: id,
             expected_state: old,
             path: files.output.clone(),
@@ -150,6 +150,108 @@ fn replacement_history_requires_exact_forward_template_and_shared_catalog_in_bot
             })
             .unwrap();
         assert!(validate_history_pair(unrelated.project(), target).is_err());
+    });
+    editor
+        .undo_prepared_transition::<(), hex_project::Invalid>(|a, b| {
+            assert!(validate_history_pair(a, b).is_ok());
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    assert!(
+        editor
+            .inspect_history(true, validate_history_pair)
+            .unwrap()
+            .is_ok()
+    );
+    editor
+        .redo_prepared_transition::<(), hex_project::Invalid>(|a, b| {
+            assert!(validate_history_pair(a, b).is_ok());
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn first_unassigned_source_binding_is_exact_private_history_in_both_directions() {
+    use super::super::super::sampler_parameter::validate_history_pair;
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let empty = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+    )
+    .unwrap();
+    let create = |name: &str| Command::CreateNativeSource {
+        name: name.into(),
+        devices: vec![empty.clone()],
+        instrument_index: 0,
+    };
+    let hex_project::Created::NativeSource(source) = editor.execute(create("source")).unwrap()
+    else {
+        panic!("source")
+    };
+    let hex_project::Created::NativeSource(other) = editor.execute(create("other")).unwrap() else {
+        panic!("other")
+    };
+    let device = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let other_device = editor
+        .project()
+        .native_source(other)
+        .unwrap()
+        .instrument()
+        .id();
+    let (state, source_slot) =
+        hex_engine::sampler_replacement_template_on_control(&empty, 6).unwrap();
+    editor
+        .execute(Command::ImportDeviceAssetReplacingInstrument {
+            owner: hex_project::InstrumentAssetOwner::Source(source),
+            device,
+            expected_state: empty,
+            path: "first.wav".into(),
+            sample_rate: 48_000,
+            frames: 6,
+            state,
+            source_slot,
+        })
+        .unwrap();
+    editor.inspect_history(false, |current, target| {
+        assert!(validate_history_pair(current, target).is_ok());
+        let mut forged = hex_project::Editor::new(current.clone(), 4).unwrap();
+        let state = hex_engine::patch_sampler_parameter_on_control(
+            hex_engine::SamplerParameter::Gain,
+            current.device(device).unwrap().state(),
+            0.5,
+        )
+        .unwrap();
+        forged
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        assert!(validate_history_pair(forged.project(), target).is_err());
+        let mut unrelated = hex_project::Editor::new(current.clone(), 4).unwrap();
+        unrelated
+            .execute(Command::ImportDeviceAsset {
+                path: "other.wav".into(),
+                sample_rate: 48_000,
+                frames: 3,
+            })
+            .unwrap();
+        assert!(validate_history_pair(unrelated.project(), target).is_err());
+        let mut wrong = hex_project::Editor::new(current.clone(), 4).unwrap();
+        let state = current.device(device).unwrap().state().clone();
+        wrong
+            .execute(Command::ReplaceDeviceState {
+                device: other_device,
+                state,
+            })
+            .unwrap();
+        assert!(validate_history_pair(wrong.project(), target).is_err());
     });
     editor
         .undo_prepared_transition::<(), hex_project::Invalid>(|a, b| {

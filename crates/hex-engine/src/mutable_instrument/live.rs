@@ -16,6 +16,7 @@ pub(super) struct LiveOccurrence {
     pub(super) id: u64,
     pub(super) quiet_age: Option<u64>,
     pub(super) release_requested: bool,
+    pub(super) contributor_fade: Option<ContributorFade>,
 }
 
 pub(super) struct LiveLedger {
@@ -215,7 +216,16 @@ impl MutableInstrumentTrackRuntime {
     /// releases plus the full future authored envelope. Rejections cannot steal
     /// a continuing authored voice or consume its reserved NoteOff capacity.
     pub(crate) fn live_voice_capacity(&self, authored_envelope: usize) -> usize {
-        let authored = self.scratch.len().saturating_add(authored_envelope);
+        self.live_voice_capacity_for_proofs(self.scratch.len(), authored_envelope)
+    }
+    /// Apply the same admission reserve to a donor's committed proofs before
+    /// inheriting its live ledger into a candidate with a new peak envelope.
+    pub(crate) fn live_voice_capacity_for_proofs(
+        &self,
+        authored_proofs: usize,
+        authored_envelope: usize,
+    ) -> usize {
+        let authored = authored_proofs.saturating_add(authored_envelope);
         let voices = self
             .max_active_occurrences()
             .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
@@ -241,6 +251,18 @@ impl MutableInstrumentTrackRuntime {
         self.live
             .as_ref()
             .map_or(0, |live| live.scratch.iter().flatten().count())
+    }
+    /// Live occurrences occupy the same provider capacity as authored proofs.
+    /// Match the transaction selected by the caller's route transition.
+    pub(crate) fn transition_live_count(&self, speculative: bool) -> usize {
+        self.live.as_ref().map_or(0, |live| {
+            let voices = if speculative {
+                &live.scratch
+            } else {
+                &live.primary
+            };
+            voices.iter().flatten().count()
+        })
     }
     /// A scheduling span contains transitions at offset zero only. The first
     /// callback sample and ordered ingress events have a one-frame span; empty
@@ -346,6 +368,7 @@ impl MutableInstrumentTrackRuntime {
                         id,
                         quiet_age: None,
                         release_requested: false,
+                        contributor_fade: None,
                     });
                     live.push(NativeInstrumentEvent::NoteOn {
                         frame_offset,
@@ -486,6 +509,7 @@ impl MutableInstrumentTrackRuntime {
                             .gate_frame
                             .map(|gate| tail.saturating_sub(voice.age_frames.saturating_sub(gate))),
                         release_requested: false,
+                        contributor_fade: None,
                     });
                 }
             }
@@ -528,6 +552,7 @@ mod tests {
             id: 7,
             quiet_age: None,
             release_requested: true,
+            contributor_fade: None,
         });
         assert!(!ledger.committed_gates_released());
         ledger.begin();

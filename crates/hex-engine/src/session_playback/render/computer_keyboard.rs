@@ -248,6 +248,7 @@ impl SessionPlayback {
                     )?;
                     let parameter_block = parameter_context.block();
                     source_live::render_source_live_input(
+                        &self.revision,
                         self.computer_keyboard.as_mut().map(Box::as_mut),
                         self.mutable_instruments[index].as_mut(),
                         &mut self.mutable_onsets,
@@ -421,7 +422,15 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
+            self.render_detached_tails(
+                self.performance_frame,
+                chunk,
+                offset,
+                capture,
+                None,
+                None,
+                foreign,
+            )?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }

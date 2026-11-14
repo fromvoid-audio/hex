@@ -28,7 +28,7 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         Arc::new(SineTable::new()),
         None,
     )?);
-    let playback = Playback::try_from_prepared_with_session(graph)?;
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&graph))?;
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
         .publish(playback)
@@ -38,6 +38,18 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         .map_err(|_| "post-loop start failed")?;
     let mut output = [[0.0; 2]; 6];
     measured_block(&mut callback, &mut output);
+    let observation = control
+        .status
+        .transport_observation()
+        .ok_or("missing transport observation")?;
+    assert_eq!(observation.arrangement_frame, 18);
+    assert!(observation.playing);
+    assert_eq!(
+        observation
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, None))
+    );
     assert_eq!(
         output,
         [
@@ -49,10 +61,38 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         .map_err(|_| "stop failed")?;
     measured_block(&mut callback, &mut output);
     assert_eq!(output, [[0.0; 2]; 6]);
+    let observation = control
+        .status
+        .transport_observation()
+        .ok_or("missing stopped observation")?;
+    // A declicked Stop may still be finishing its fade in this short block.
+    assert_eq!(
+        observation.arrangement_frame,
+        control.status.position.load(Ordering::Relaxed)
+    );
     control
         .command(PlaybackCommand::PlayFrom(2))
         .map_err(|_| "pre-loop start failed")?;
+    measured_block(&mut callback, &mut []);
+    let before_loop = control.status.transport_observation().unwrap();
+    assert_eq!(before_loop.arrangement_frame, 2);
+    assert_eq!(
+        before_loop
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, Some((4, 8))))
+    );
     measured_block(&mut callback, &mut output);
+    let region = (4, 8);
+    assert_eq!(
+        control
+            .status
+            .transport_observation()
+            .unwrap()
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((1, Some(region)))
+    );
     // The loop's last sample fades to zero; its next attack stays unattenuated.
     assert_eq!(
         output,
@@ -60,10 +100,35 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
     );
     measured_block(&mut callback, &mut output);
     assert_eq!(
+        control
+            .status
+            .transport_observation()
+            .unwrap()
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((2, Some(region)))
+    );
+    assert_eq!(
         output,
         [[5.0; 2], [6.0; 2], [7.0; 2], [0.0; 2], [5.0; 2], [6.0; 2]]
     );
+    let replacement = control
+        .publish_with_policy(
+            Playback::try_from_prepared_with_session(graph)?,
+            prepared::PublicationPolicy::InstallFreshRuntime,
+        )
+        .map_err(|_| "replacement publication failed")?;
+    measured_block(&mut callback, &mut output);
+    let observation = control.status.transport_observation().unwrap();
+    assert_eq!(observation.audio_revision, replacement);
+    assert_eq!(
+        observation
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, Some(region)))
+    );
     control.request_shutdown();
+    assert_eq!(control.status.transport_observation(), None);
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
     Ok(())
@@ -114,23 +179,39 @@ fn event_fade_pcm_publication_seek_stop_and_shutdown_allocate_and_free_nothing_i
     control
         .command(PlaybackCommand::PlayFrom(12))
         .map_err(|_| "fade seek failed")?;
+    // The queued seek first fades the old position over 128 frames. Only
+    // eight source frames remain there; their clip fade and transport fade
+    // both apply before the target begins its independent fade-in.
+    let mut transition = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut transition);
+    for (index, frame) in transition.iter().enumerate() {
+        let clip_gain = match index {
+            0..=4 => 1.0,
+            5 => 2.0 / 3.0,
+            6 => 1.0 / 3.0,
+            _ => 0.0,
+        };
+        let gain = clip_gain * (127 - index) as f32 / 128.0;
+        assert_eq!(*frame, [gain; 2], "old frame {index}");
+    }
     measured_block(&mut callback, &mut output);
-    assert_eq!(
-        output,
-        [
-            [1.0; 2],
-            [2.0 / 3.0; 2],
-            [1.0 / 3.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2]
-        ]
-    );
+    for (index, frame) in output.iter().enumerate() {
+        let clip_gain = match index {
+            0 => 1.0,
+            1 => 2.0 / 3.0,
+            2 => 1.0 / 3.0,
+            _ => 0.0,
+        };
+        assert_eq!(
+            *frame,
+            [clip_gain * (index + 1) as f32 / 128.0; 2],
+            "target frame {index}"
+        );
+    }
     control
         .command(PlaybackCommand::Stop)
         .map_err(|_| "fade stop failed")?;
+    measured_block(&mut callback, &mut transition);
     measured_block(&mut callback, &mut output);
     assert_eq!(output, [[0.0; 2]; 8]);
     control.request_shutdown();

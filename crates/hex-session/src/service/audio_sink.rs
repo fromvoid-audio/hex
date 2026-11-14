@@ -5,8 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
@@ -221,8 +221,10 @@ impl<'a> ResidentEffectPreparation<'a> {
         Ok(selected)
     }
 
-    /// An authored program is immutable for one native worker epoch. An
-    /// instrument loop edit may keep that epoch when the run budget matches.
+    /// Whether the authored program can stay on its original native worker.
+    /// Effect loop activation and deactivation use the prepared origin budget
+    /// for delayed audio and partial worker quanta. Instruments also need to
+    /// preserve their transport and MIDI gate continuity.
     pub fn same_authored_plugin_program(
         &self,
         previous: &Self,
@@ -252,18 +254,28 @@ impl<'a> ResidentEffectPreparation<'a> {
         }
         let next_loop = self.project.loop_region();
         let previous_loop = previous.project.loop_region();
-        let same_loop_budget = next_loop == previous_loop
-            || quantum_frames.is_some_and(|frames| {
-                self.project
-                    .native_sources()
-                    .iter()
-                    .any(|source| source.instrument().id().value() == device)
-                    && hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+        let same_loop_budget = next_loop == previous_loop || {
+            let instrument = self
+                .project
+                .native_sources()
+                .iter()
+                .any(|source| source.instrument().id().value() == device);
+            if instrument {
+                quantum_frames.is_some_and(|frames| {
+                    hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
                         frames,
                         previous_loop,
                         next_loop,
                     )
-            });
+                })
+            } else {
+                hex_engine::foreign_automation::QuantumProfile::keeps_effect_epoch(
+                    quantum_frames,
+                    previous_loop,
+                    next_loop,
+                )
+            }
+        };
         self.project.tempo_map() == previous.project.tempo_map()
             && same_loop_budget
             && current.eq(old)
@@ -357,11 +369,29 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
         .any(is_plugin_effect)
 }
 
+/// Reported preparation origin, not proof of canonical state or source custody.
+/// A canonical candidate may be prepared and applied before its edit commits;
+/// unknown also covers preparations whose context was subsequently rebased.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentSourceOrigin {
+    Unknown,
+    CanonicalCandidate,
+    DevicePreview,
+    TuningPreview,
+    ClipMovePreview,
+    ClipStretchPreview,
+    ClipPlayStartPreview,
+}
+
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
 /// nor a requested freshness fence grants source custody or acknowledges callback application.
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentPublicationMetadata {
+    /// Producer-reported origin; this is not an admission or source proof.
+    pub source_origin: ResidentSourceOrigin,
     pub context: hex_engine::AudioSourceContext,
+    /// Identity of a clip-move preview, not proof of callback application.
+    pub clip_preview: Option<ClipMovePreviewIdentity>,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
     pub seek_request: Option<u64>,
@@ -387,6 +417,8 @@ pub struct ResidentRuntimeLoop {
     pub output_identity: u64,
     pub audio_revision: u64,
     pub source_context: Option<hex_engine::AudioSourceContext>,
+    /// Origin reported for this exact submission, not authority to use its source.
+    pub source_origin: ResidentSourceOrigin,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
 /// Read-only, output-bound observation of the one admitted resident graph.
@@ -482,13 +514,23 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// Reason category for a refused resident publication. The unavailable
+/// category describes source custody only; it does not imply a deadline fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationFailure {
+    NativeSourceUnavailable,
+    Other,
+}
+
 pub struct ResidentPublicationRefusal {
+    pub kind: ResidentPublicationFailure,
     pub playback: Playback,
     pub error: String,
 }
 impl std::fmt::Debug for ResidentPublicationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResidentPublicationRefusal")
+            .field("kind", &self.kind)
             .field("error", &self.error)
             .finish_non_exhaustive()
     }
@@ -835,6 +877,7 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         Err(ResidentPublicationRefusal {
+            kind: crate::service::ResidentPublicationFailure::Other,
             playback,
             error: "ordinary worker publication is unavailable".into(),
         })
@@ -858,6 +901,7 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         if playback.contains_streamed_sources() {
             return Err(ResidentPublicationRefusal {
+                kind: crate::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "ordinary file-backed publication is unavailable for this output".into(),
             });
@@ -906,6 +950,11 @@ pub trait WorkerAudioSink: Send {
     /// A consumer uses its existing reserved builder; this grants no source,
     /// output or callback owner. Offline/default sinks retain model editing.
     fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
+    /// Accept source-bound clip intent on control. This is not graph admission
+    /// or callback acknowledgement; false retains no worker-side delivery claim.
+    fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -1331,7 +1380,7 @@ impl WorkerEvents {
             .ok_or_else(|| "audio adapter unavailable".to_owned())?
             .restart_audio(project_generation, request_id)
     }
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
             audio.poll();
         }
@@ -1962,14 +2011,8 @@ mod tests {
             crate::test_wait::pause();
         }
     }
-    #[test]
-    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
-        use hex_project::{
-            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
-        };
-        let class = [1; 16];
-        let state = hex_plugin_state::encode(hex_plugin_state::State {
+    fn saved_effect_state(class: [u8; 16]) -> NativeDeviceState {
+        hex_plugin_state::encode(hex_plugin_state::State {
             identity: hex_plugin_state::Identity {
                 class: hex_plugin_state::ClassId::new(class).unwrap(),
                 binary: hex_plugin_state::BinaryIdentity {
@@ -1980,12 +2023,99 @@ mod tests {
             component: Some(&[4]),
             controller: None,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn toggling_a_compatible_loop_keeps_the_authored_effect_worker() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+            DeviceAutomationTarget, Editor,
+        };
+
+        fn prepare(project: &Project) -> ResidentEffectPreparation<'_> {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: true,
+            }
+        }
+
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Device(device) = editor
             .execute(Command::InsertMainDevice {
                 before: None,
-                state,
+                state: saved_effect_state([1; 16]),
+            })
+            .unwrap()
+        else {
+            panic!("plugin fixture");
+        };
+        let automation = |value| Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        };
+        editor.execute(automation(0.5)).unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 1024,
+                end: 4096,
+                enabled: true,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+
+        editor.execute(Command::ToggleLoopRegion).unwrap();
+        let keeps_worker = |old: &Project, new: &Project| {
+            prepare(new).same_authored_plugin_program(&prepare(old), device.value(), Some(256))
+        };
+        let disabled = editor.project().clone();
+        assert!(keeps_worker(&before, &disabled));
+        assert!(keeps_worker(&disabled, &before));
+
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(keeps_worker(&disabled, editor.project()));
+
+        editor.execute(automation(0.75)).unwrap();
+        assert!(!keeps_worker(&disabled, editor.project()));
+        assert!(editor.undo());
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1025,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(!keeps_worker(&disabled, editor.project()));
+    }
+
+    #[test]
+    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
+        };
+        let class = [1; 16];
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: saved_effect_state(class),
             })
             .unwrap()
         else {

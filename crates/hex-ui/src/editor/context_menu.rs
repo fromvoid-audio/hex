@@ -40,6 +40,8 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    SourcePicker(device_panel::SourcePickerChoice),
+    SourceManager(device_panel::SourceManagerAction),
     HistoryPlayback(super::history_playback::MenuAction),
     Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
@@ -615,6 +617,8 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::SourcePicker(choice) => choice.perform(self, window, cx),
+            EditorContextAction::SourceManager(action) => action.perform(self, window, cx),
             EditorContextAction::HistoryPlayback(action) => {
                 self.history_playback_menu_action(action, cx)
             }
@@ -938,6 +942,8 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::SourcePicker(choice) => !choice.current(self),
+                EditorContextAction::SourceManager(action) => !action.current(self),
                 EditorContextAction::HistoryPlayback(action) => {
                     !self.history_playback_menu_current(action)
                 }
@@ -1059,11 +1065,14 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            if !menu
-                .items
-                .iter()
-                .any(|item| matches!(item.action, EditorContextAction::Automation(_)))
-            {
+            if !menu.items.iter().any(|item| {
+                matches!(
+                    item.action,
+                    EditorContextAction::Automation(_)
+                        | EditorContextAction::SourcePicker(_)
+                        | EditorContextAction::SourceManager(_)
+                )
+            }) {
                 return crate::context_menu::popup(
                     menu,
                     window,
@@ -1088,6 +1097,8 @@ impl EditorView {
 
 pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
     match &item.action {
+        EditorContextAction::SourcePicker(choice) => choice.label.clone(),
+        EditorContextAction::SourceManager(action) => action.label.clone(),
         EditorContextAction::Tags(action) => action.label(),
         EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
             if item.label == "parameter" =>

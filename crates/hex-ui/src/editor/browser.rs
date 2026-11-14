@@ -2630,6 +2630,69 @@ impl EditorView {
             )
     }
 
+    fn with_browser_audio_drag(
+        row: gpui::Stateful<Div>,
+        payload: drag::BrowserAudioDrag,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let drag_entity = cx.entity();
+        let mut row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
+            let position = window.mouse_position();
+            payload.snap_modifier.set(window.modifiers().platform);
+            payload.copy_modifier.set(window.modifiers().alt);
+            cx.set_active_drag_cursor_style(drag::copy_cursor(payload.copy_modifier.get()), window);
+            payload
+                .last_pointer
+                .set(Some((f32::from(position.x), f32::from(position.y))));
+            let (preview, lane_hovered) = drag_entity.update(cx, |view, cx| {
+                view.begin_browser_audio_drag(payload);
+                if payload.project_asset.is_none() {
+                    view.request_browser_audio_preview_for_drag(payload, cx);
+                }
+                view.browser_audio_drop_position(
+                    payload,
+                    f32::from(position.x),
+                    f32::from(position.y),
+                )
+            });
+            payload.preview.set(preview);
+            payload.lane_hovered.set(lane_hovered);
+            drag_entity.update(cx, |_, cx| cx.notify());
+            cx.new(|_| BrowserAudioDragGhost)
+        });
+        let move_entity = cx.entity();
+        row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, window, cx| {
+            let Some(payload) = event
+                .dragged_item()
+                .downcast_ref::<drag::BrowserAudioDrag>()
+            else {
+                return;
+            };
+            let pointer = event.event.position;
+            let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
+            payload.last_pointer.set(Some(pointer_xy));
+            payload.snap_modifier.set(event.event.modifiers.platform);
+            payload.copy_modifier.set(event.event.modifiers.alt);
+            cx.set_active_drag_cursor_style(drag::copy_cursor(payload.copy_modifier.get()), window);
+            let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
+                view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
+            });
+            payload.preview.set(preview);
+            payload.lane_hovered.set(lane_hovered);
+            move_entity.update(cx, |_, cx| cx.notify());
+        });
+        let release_entity = cx.entity();
+        let release_payload = payload.clone();
+        row = row.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+            release_entity.update(cx, |view, cx| {
+                view.clear_browser_audio_drag(&release_payload);
+                cx.notify();
+            });
+        });
+        row
+    }
+
     fn browser_project_sample_row(
         &mut self,
         index: usize,
@@ -2640,7 +2703,32 @@ impl EditorView {
     ) -> gpui::Stateful<Div> {
         let key = BrowserItemKey::ProjectSample(generation, revision, row.asset);
         let selected = self.project_sample_current(&key);
-        result_row(selected)
+        let payload = self.state.as_ref().and_then(|state| {
+            if generation != self.project_generation || revision != state.revision {
+                return None;
+            }
+            let asset = state.project.asset(row.asset)?;
+            let frames = state.project.existing_import_frames(row.asset).ok()?;
+            let metadata = Rc::new(RefCell::new(state.waveforms.get(&row.asset).map(
+                |waveform| {
+                    Rc::new(AudioPreview {
+                        playback_frames: frames,
+                        sample_rate: state.project.sample_rate(),
+                        waveform: waveform.clone(),
+                    })
+                },
+            )));
+            let mut payload = self.audio_file_drag_payload(
+                asset.path().to_path_buf(),
+                row.name.clone(),
+                None,
+                metadata,
+                Default::default(),
+            )?;
+            payload.project_asset = Some(row.asset);
+            Some(payload)
+        });
+        let row = result_row(selected)
             .id(("browser-project-sample", row.asset.value()))
             .debug_selector(move || format!("browser-project-sample-{index}"))
             .cursor_pointer()
@@ -2659,7 +2747,12 @@ impl EditorView {
                     cx.notify();
                 }),
             )
-            .child(result_label(row.name, selected, theme::PaletteRole::Text))
+            .child(result_label(row.name, selected, theme::PaletteRole::Text));
+        if let Some(payload) = payload {
+            Self::with_browser_audio_drag(row, payload, cx)
+        } else {
+            row
+        }
     }
 
     fn browser_row(
@@ -2788,65 +2881,7 @@ impl EditorView {
                     });
                 }
             });
-            let drag_entity = cx.entity();
-            row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
-                let position = window.mouse_position();
-                payload.snap_modifier.set(window.modifiers().platform);
-                payload.copy_modifier.set(window.modifiers().alt);
-                cx.set_active_drag_cursor_style(
-                    drag::copy_cursor(payload.copy_modifier.get()),
-                    window,
-                );
-                payload
-                    .last_pointer
-                    .set(Some((f32::from(position.x), f32::from(position.y))));
-                let (preview, lane_hovered) = drag_entity.update(cx, |view, cx| {
-                    view.begin_browser_audio_drag(payload);
-                    view.request_browser_audio_preview_for_drag(payload, cx);
-                    view.browser_audio_drop_position(
-                        payload,
-                        f32::from(position.x),
-                        f32::from(position.y),
-                    )
-                });
-                payload.preview.set(preview);
-                payload.lane_hovered.set(lane_hovered);
-                drag_entity.update(cx, |_, cx| cx.notify());
-                cx.new(|_| BrowserAudioDragGhost)
-            });
-            let move_entity = cx.entity();
-            row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, window, cx| {
-                let Some(payload) = event
-                    .dragged_item()
-                    .downcast_ref::<drag::BrowserAudioDrag>()
-                else {
-                    return;
-                };
-                let pointer = event.event.position;
-                let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
-                payload.last_pointer.set(Some(pointer_xy));
-                payload.snap_modifier.set(event.event.modifiers.platform);
-                payload.copy_modifier.set(event.event.modifiers.alt);
-                cx.set_active_drag_cursor_style(
-                    drag::copy_cursor(payload.copy_modifier.get()),
-                    window,
-                );
-                let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
-                    view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
-                });
-                payload.preview.set(preview);
-                payload.lane_hovered.set(lane_hovered);
-                move_entity.update(cx, |_, cx| cx.notify());
-            });
-            let release_entity = cx.entity();
-            let release_payload = payload.clone();
-            row = row.on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-                release_entity.update(cx, |view, cx| {
-                    view.clear_browser_audio_drag(&release_payload);
-                    cx.notify();
-                });
-            });
+            row = Self::with_browser_audio_drag(row, payload, cx);
         }
         if entry.kind == EntryKind::Directory && !self.browser_place_unavailable() {
             let payload = self.browser_folder_drag(path.clone(), name);

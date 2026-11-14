@@ -3,9 +3,9 @@ use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
 use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Files(PathBuf);
+pub(super) struct Files(PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-verified-service-{}-{}",
             std::process::id(),
@@ -14,7 +14,7 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
+    pub(super) fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
         let path = self.0.join(name);
         let mut bytes = Vec::from(*b"RIFF");
         bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
@@ -40,7 +40,7 @@ impl Drop for Files {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn reservation(count: usize) -> SourcePlanReservation {
+pub(super) fn reservation(count: usize) -> SourcePlanReservation {
     SourcePlanReservation {
         reader: hex_media::VerifiedWavReaderLimits {
             reader: hex_media::WavReaderLimits {
@@ -56,13 +56,13 @@ fn reservation(count: usize) -> SourcePlanReservation {
         max_manifest_bytes: 4 * 1024 * 1024,
     }
 }
-fn next(service: &Service) -> Event {
+pub(super) fn next(service: &Service) -> Event {
     service
         .events
         .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap()
 }
-fn run(service: &Service, request: Request) -> Event {
+pub(super) fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
     let event = next(service);
     assert!(event.error.is_none(), "{:?}", event.error);
@@ -495,8 +495,8 @@ fn project_sample_request_refuses_verified_streaming_without_history_change() {
         project_generation: snapshot.context().project_generation,
         revision: imported.state.revision,
         asset,
-        track,
-        start: 64,
+        destination: crate::import_batch::AudioBatchDestination::Track { track, start: 64 },
+        new_track_gain: None,
         warp: hex_project::AudioImportWarp::Off,
         audition_timing: None,
     };
@@ -1119,6 +1119,13 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
             cents: 137,
         }),
     );
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipMusical {
+            clip: processed,
+            enabled: true,
+        }),
+    );
     let imported = run(
         &service,
         Request::ImportToNewTrack {
@@ -1136,6 +1143,14 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
         .find(|clip| clip.id() != processed)
         .unwrap()
         .id();
+    run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip: plain,
+            fade_in: 2,
+            fade_out: 2,
+        }),
+    );
     let path = files.0.join("processed-and-file.hex");
     run(&service, Request::SaveNew(path.clone()));
     let expected = hex_storage::load(&path).unwrap();
@@ -1186,4 +1201,78 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
         panic!("verified facts")
     };
     assert_eq!(before, after);
+}
+
+#[test]
+fn plain_reverse_file_backed_clip_commits_and_reopens_without_resident_pcm() {
+    let files = Files::new();
+    let media = files.wav("reverse.wav", 48_000, 8_000, 4096);
+    let media_bytes = fs::read(&media).unwrap();
+    let service = Service::new(48_000, 16, 16).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(media.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let reversed = run(&service, Request::Edit(Command::ReverseClips(vec![clip])));
+    let expected = reversed.state.project.snapshot();
+    let asset = reversed.state.project.clip(clip).unwrap().asset();
+    assert!(matches!(
+        reversed
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    assert!(
+        reversed
+            .state
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .content_view
+            .unwrap()
+            .window
+            .reversed
+    );
+    let path = files.0.join("reverse.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let reopened = run(&service, Request::Open(path));
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert!(matches!(
+        reopened
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    assert_eq!(fs::read(media).unwrap(), media_bytes);
 }

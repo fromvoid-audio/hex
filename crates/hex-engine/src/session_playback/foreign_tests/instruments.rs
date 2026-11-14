@@ -249,11 +249,13 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
         let crate::signal_graph::TrackOutput::Main { edge } = donor.graph.tracks[1].output else {
             panic!("direct main route");
         };
-        assert!(target.can_copy_from(donor, Some(track)));
+        assert!(target.can_copy_from(donor, Some(crate::signal_graph::FreshHistory::Track(track))));
         donor.delays.begin_transaction().unwrap();
         donor.edge(edge, [1.0, 0.0]).unwrap();
         donor.delays.commit_transaction().unwrap();
-        assert!(!target.can_copy_from(donor, Some(track)));
+        assert!(
+            !target.can_copy_from(donor, Some(crate::signal_graph::FreshHistory::Track(track)))
+        );
         donor.delays.begin_transaction().unwrap();
         let mut pending = [[0.0; 2]; 19];
         donor.edge_block(edge, &mut pending).unwrap();
@@ -910,6 +912,158 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     assert_eq!(queue.snapshot().unwrap().events(), &[on]);
 }
 
+fn session_held_note_fixture() -> (Arc<PreparedRevision>, hex_project::ClipId) {
+    let (mut editor, identity) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "session".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "notes".into(),
+            source_length: BeatTime::from_ratio(1, 32).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 64).unwrap(),
+            pitch: 64,
+            channel: 3,
+            velocity: 98,
+        })
+        .unwrap();
+    let revision = prepare(&editor, identity, true).unwrap();
+    (revision, clip)
+}
+
+#[test]
+fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
+    let (revision, clip) = session_held_note_fixture();
+
+    for block in [1, 7, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        endpoint.render(&mut playback, &mut [[0.0; 2]; 16]).unwrap();
+        let [(0, original)] = endpoint.notes.as_slice() else {
+            panic!("expected the original Session onset: {:?}", endpoint.notes)
+        };
+        let original = *original;
+        assert!(original.on && original.pitch == 64 && original.channel == 3);
+
+        playback.play_from(12_000).unwrap();
+        let mut events = Vec::new();
+        let mut output = [[0.0; 2]; 400];
+        let mut elapsed = 0;
+        for chunk in output.chunks_mut(block) {
+            endpoint.render(&mut playback, chunk).unwrap();
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (elapsed + offset, *note)),
+            );
+            elapsed += chunk.len();
+        }
+        let [(0, released), (0, restarted), (375, ended)] = events.as_slice() else {
+            panic!("block {block}: unexpected events {events:?}")
+        };
+        assert!(
+            !released.on && released.note_id == original.note_id,
+            "block {block}"
+        );
+        assert!(
+            restarted.on && restarted.note_id != original.note_id,
+            "block {block}"
+        );
+        assert_eq!(
+            (restarted.pitch, restarted.channel, restarted.velocity),
+            (64, 3, 98)
+        );
+        assert!(
+            !ended.on && ended.note_id == restarted.note_id,
+            "block {block}"
+        );
+    }
+}
+
+#[test]
+fn timed_play_from_releases_and_restarts_a_held_session_note() {
+    use crate::TimedTransportCommand;
+    use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
+
+    let (revision, clip) = session_held_note_fixture();
+
+    for block in [1, 7, 64, 128, 256, 512] {
+        let mut playback = Playback::from_prepared(Arc::clone(&revision));
+        playback
+            .try_apply_action(PlaybackAction::LaunchAndPlay(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        let mut output = [[0.0; 2]; 512];
+        let mut events = Vec::new();
+        for (index, part) in output.chunks_mut(block).enumerate() {
+            let start = index * block;
+            let end = start + part.len();
+            let commands = if start <= 16 && 16 < end {
+                vec![TimedTransportCommand {
+                    offset: 16 - start,
+                    command: PlaybackCommand::PlayFrom(12_000),
+                }]
+            } else {
+                Vec::new()
+            };
+            endpoint.next_offset = 0;
+            endpoint.notes.clear();
+            playback
+                .render_with_timed_transport_and_foreign_processors(part, &commands, &mut endpoint)
+                .unwrap();
+            assert!(!endpoint.rejected, "block {block}");
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (start + offset, *note)),
+            );
+        }
+        let [(0, original), (16, released), (16, restarted), (391, ended)] = events.as_slice()
+        else {
+            panic!("block {block}: unexpected events {events:?}")
+        };
+        assert!(original.on && original.pitch == 64 && original.channel == 3);
+        assert!(!released.on && released.note_id == original.note_id);
+        assert!(restarted.on && restarted.note_id != original.note_id);
+        assert_eq!(
+            (restarted.pitch, restarted.channel, restarted.velocity),
+            (64, 3, 98)
+        );
+        assert!(!ended.on && ended.note_id == restarted.note_id);
+    }
+}
+
 #[test]
 fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
     use crate::LaunchQuantization::Immediate;
@@ -1404,47 +1558,461 @@ fn incompatible_edits_wait_for_the_original_note_off() {
 }
 
 #[test]
-fn loop_and_pause_release_notes_with_the_identity_of_the_current_pass() {
+fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
+    for partition in [1, 7, 64, 128, 256, 512] {
+        for stop in [false, true] {
+            let (mut editor, identity) = fixture();
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 11,
+                    enabled: true,
+                })
+                .unwrap();
+            let revision = prepare(&editor, identity, true).unwrap();
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            let mut endpoint = NoteEndpoint::default();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut frames = [[0.0; 2]; 1025];
+            let mut events = Vec::new();
+            let mut origin = 0;
+            for chunk in frames.chunks_mut(partition) {
+                endpoint.render(&mut playback, chunk).unwrap();
+                events.extend(
+                    endpoint
+                        .notes
+                        .iter()
+                        .map(|(offset, note)| (origin + offset, *note)),
+                );
+                origin += chunk.len();
+            }
+            let (frame, first) = events.first().copied().expect("initial onset");
+            assert_eq!(frame, 0);
+            assert!(first.on && first.pitch == 60 && first.channel == 2 && first.velocity == 101);
+            let wraps = (frames.len() - 1) / 11;
+            assert_eq!(
+                events.len(),
+                1 + 2 * wraps,
+                "partition={partition} stop={stop}"
+            );
+            let mut current = first;
+            let mut ids = std::collections::HashSet::from([first.note_id]);
+            for wrap in 1..=wraps {
+                let (off_frame, off) = events[2 * wrap - 1];
+                let (on_frame, on) = events[2 * wrap];
+                assert_eq!((off_frame, on_frame), (11 * wrap, 11 * wrap));
+                assert!(
+                    !off.on
+                        && off.note_id == current.note_id
+                        && off.pitch == 60
+                        && off.channel == 2
+                );
+                assert!(on.on && on.pitch == 60 && on.channel == 2 && on.velocity == 101);
+                assert!(ids.insert(on.note_id), "reused note ID at wrap {wrap}");
+                current = on;
+            }
+            playback
+                .apply(if stop {
+                    SessionPlaybackCommand::Stop
+                } else {
+                    SessionPlaybackCommand::Pause
+                })
+                .unwrap();
+            endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
+            assert_eq!(
+                endpoint.notes,
+                [(
+                    0,
+                    hex_lattice::ForeignNote {
+                        on: false,
+                        velocity: 0,
+                        ..current
+                    }
+                )],
+                "partition={partition} stop={stop}"
+            );
+        }
+    }
+}
+
+#[test]
+fn timed_transport_preserves_foreign_note_offsets_and_rejects_the_staged_callback() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use crate::{TimedTransportCommand as Timed, TimedTransportError};
+    let (editor, identity) = fixture();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let commands = [
+        Timed {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        Timed {
+            offset: 5,
+            command: PlaybackCommand::Pause,
+        },
+        Timed {
+            offset: 5,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        Timed {
+            offset: 10,
+            command: PlaybackCommand::Pause,
+        },
+    ];
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    let mut endpoint = NoteEndpoint {
+        instrument_sample: 0.25,
+        ..Default::default()
+    };
+    let mut output = [[0.0; 2]; 16];
+    playback
+        .render_with_timed_transport_and_foreign_processors(&mut output, &commands, &mut endpoint)
+        .unwrap();
+    assert!(!endpoint.rejected);
+    let events = &endpoint.notes;
+    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!((events[0].0, events[0].1.on), (0, true));
+    assert_eq!((events[1].0, events[1].1.on), (5, false));
+    assert_eq!((events[2].0, events[2].1.on), (5, true));
+    assert_eq!((events[3].0, events[3].1.on), (10, false));
+    assert_eq!(events[0].1.note_id, events[1].1.note_id);
+    assert_eq!(events[2].1.note_id, events[3].1.note_id);
+    assert_ne!(events[0].1.note_id, events[2].1.note_id);
+
+    let mut invalid = Playback::from_prepared(Arc::clone(&revision));
+    let mut endpoint = NoteEndpoint::default();
+    let mut untouched = [[9.0; 2]; 16];
+    assert_eq!(
+        invalid.render_with_timed_transport_and_foreign_processors(
+            &mut untouched,
+            &[Timed {
+                offset: 17,
+                command: PlaybackCommand::Play
+            }],
+            &mut endpoint
+        ),
+        Err(TimedTransportError::InvalidOffset { index: 0 })
+    );
+    assert_eq!(untouched, [[9.0; 2]; 16]);
+    assert!(!endpoint.rejected && endpoint.notes.is_empty());
+    assert!(!invalid.playing());
+
+    let mut failing = Playback::from_prepared(Arc::clone(&revision));
+    let mut endpoint = NoteEndpoint {
+        fail_at: Some(6),
+        ..Default::default()
+    };
+    let mut output = [[9.0; 2]; 16];
+    assert!(matches!(
+        failing.render_with_timed_transport_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut endpoint
+        ),
+        Err(TimedTransportError::Render { offset: 5, .. })
+    ));
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 16]);
+
+    let mut failing = Playback::from_prepared(revision);
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[9.0; 2]; 16];
+    let commands = [
+        commands[0],
+        Timed {
+            offset: 5,
+            command: PlaybackCommand::PlayFrom(u64::MAX),
+        },
+    ];
+    assert!(matches!(
+        failing.render_with_timed_transport_and_foreign_processors(
+            &mut output,
+            &commands,
+            &mut endpoint
+        ),
+        Err(TimedTransportError::Action { index: 1, .. })
+    ));
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 16]);
+}
+
+#[test]
+fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
+    use crate::compile::PreparedAudioSource;
+    use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use crate::playback::{Playback, PlaybackCommand};
+    use crate::{
+        BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
+        TimedTransportCommand as Timed, TimedTransportError,
+    };
+    use std::sync::atomic::AtomicBool;
+
+    struct Pages {
+        key: StreamSourceKey,
+        data: Vec<Frame>,
+        missing: bool,
+        requests: Vec<(StreamSourceKey, u64)>,
+    }
+    impl MediaPages for Pages {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            if self.missing || key != self.key {
+                return None;
+            }
+            let start = usize::try_from(index)
+                .ok()?
+                .checked_mul(STREAM_PAGE_FRAMES)?;
+            let end = start.checked_add(STREAM_PAGE_FRAMES)?.min(self.data.len());
+            (start < end).then_some(BorrowedMediaPage {
+                page_index: index,
+                frames: &self.data[start..end],
+            })
+        }
+        fn request_page(&mut self, key: StreamSourceKey, index: u64) {
+            self.requests.push((key, index));
+        }
+    }
     let (mut editor, identity) = fixture();
+    let Created::Imported { asset, track, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "stream".into(),
+            path: "stream.wav".into(),
+            sample_rate: 48_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("stream")
+    };
     editor
-        .execute(Command::SetLoopRegion {
-            start: 0,
-            end: 4,
-            enabled: true,
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: crate::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
         })
         .unwrap();
-    let revision = prepare(&editor, identity, true).unwrap();
-    let mut playback = SessionPlayback::new(revision).unwrap();
-    let mut endpoint = NoteEndpoint::default();
-    playback.apply(SessionPlaybackCommand::Play).unwrap();
-    endpoint.render(&mut playback, &mut [[0.0; 2]; 9]).unwrap();
-    let [
-        (0, first),
-        (4, first_off),
-        (4, second),
-        (8, second_off),
-        (8, third),
-    ] = endpoint.notes.as_slice()
-    else {
-        panic!("each wrap releases and retriggers the note");
+    let key = StreamSourceKey::new(23, asset);
+    let source =
+        StreamedSourceMetadata::new(key, 48_000, 48_000, 8192, 8192, 0, [0x48; 32]).unwrap();
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(source)),
+    )]);
+    let cancelled = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1_000_000,
+        &cancelled,
+    )
+    .unwrap();
+    let definition = InstrumentDefinition {
+        identity,
+        second: None,
+        instrument_profile: true,
+        epoch: 1,
     };
-    assert!(first.on && second.on && third.on && !first_off.on && !second_off.on);
-    assert_eq!(first_off.note_id, first.note_id);
-    assert_eq!(second_off.note_id, second.note_id);
-    assert_ne!(first.note_id, second.note_id);
-    assert_ne!(second.note_id, third.note_id);
-    let third = *third;
-    playback.apply(SessionPlaybackCommand::Pause).unwrap();
-    endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
-    assert_eq!(
-        endpoint.notes,
-        [(
-            0,
-            hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
-                ..third
-            }
-        )]
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::utility::UTILITY_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+            editor.project(),
+            &media,
+            23,
+            Arc::new(SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            100_000,
+            &cancelled,
+            &registry,
+            None,
+        )
+        .unwrap(),
     );
+    assert_eq!(revision.arrangement().main_latency_frames(), 19);
+    let playback = || {
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&revision), &resources)
+            .unwrap()
+    };
+    let pcm: Vec<_> = (0..8192)
+        .map(|frame| {
+            let value = frame as f32 / 16384.0;
+            [value, -value]
+        })
+        .collect();
+    let mut pages = Pages {
+        key,
+        data: pcm.clone(),
+        missing: false,
+        requests: Vec::new(),
+    };
+    let commands = [
+        Timed {
+            offset: 0,
+            command: PlaybackCommand::PlayFrom(0),
+        },
+        Timed {
+            offset: 32,
+            command: PlaybackCommand::PlayFrom(4093),
+        },
+        Timed {
+            offset: 64,
+            command: PlaybackCommand::Pause,
+        },
+    ];
+    let mut runtime = playback();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[0.0; 2]; 80];
+    let mut master = [[0.0; 2]; 80];
+    let mut track_output = [[0.0; 2]; 80];
+    let mut clock = [None; 80];
+    let mut node_calls = Vec::new();
+    {
+        let mut observe = |signal, offset, frames: &[Frame]| {
+            let target = match signal {
+                crate::ProjectSignal::Master => &mut master,
+                crate::ProjectSignal::Track(id) if id == track.value() => &mut track_output,
+                other => panic!("unexpected signal {other:?}"),
+            };
+            target[offset..offset + frames.len()].copy_from_slice(frames);
+        };
+        let mut timing = |offset, frame, len, _: &crate::PreparedTempoMap| {
+            for i in 0..len {
+                clock[offset + i] = Some(frame + i as u64);
+            }
+        };
+        let tracks = [track.value()];
+        let mut tap = crate::ProjectOutputTap::new(&tracks, &mut observe)
+            .unwrap()
+            .with_timing(&mut timing);
+        runtime
+            .render_with_timed_transport_foreign_and_signal_observers(
+                &mut output,
+                &commands,
+                Some(&mut pages),
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    node_calls.push((identity, phase, offset, frames.len()))
+                }),
+                Some(&mut tap),
+                &mut endpoint,
+            )
+            .unwrap();
+    }
+    assert_eq!(master, output);
+    assert!(track_output.iter().flatten().any(|value| *value != 0.0));
+    assert!(!node_calls.is_empty());
+    assert!(
+        node_calls
+            .iter()
+            .all(|(_, _, offset, len)| offset + len <= 80)
+    );
+    for offset in [0, 32] {
+        assert!(node_calls.iter().any(|(_, _, at, _)| *at == offset));
+    }
+    assert_eq!(clock[0], Some(0));
+    assert_eq!(clock[32], Some(4093));
+    assert_eq!(clock[64], None);
+    let events = &endpoint.notes;
+    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!((events[0].0, events[0].1.on), (0, true));
+    assert_eq!((events[1].0, events[1].1.on), (32, false));
+    assert_eq!((events[2].0, events[2].1.on), (32, true));
+    assert_eq!((events[3].0, events[3].1.on), (64, false));
+    assert_eq!(events[0].1.note_id, events[1].1.note_id);
+    assert_eq!(events[2].1.note_id, events[3].1.note_id);
+    assert_ne!(events[0].1.note_id, events[2].1.note_id);
+    assert!(pages.requests.is_empty());
+    assert_eq!(&output[19..32], &pcm[..13]);
+    assert_eq!(&output[51..64], &pcm[4093..4106]);
+
+    let mut missing = Pages {
+        key,
+        data: pcm.clone(),
+        missing: true,
+        requests: Vec::new(),
+    };
+    let mut runtime = playback();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[9.0; 2]; 80];
+    let mut missing_node_calls = 0;
+    let mut missing_project_calls = 0;
+    let mut project = |_, _, _: &[Frame]| missing_project_calls += 1;
+    let mut tap = crate::ProjectOutputTap::new(&[], &mut project).unwrap();
+    runtime
+        .render_with_timed_transport_foreign_and_signal_observers(
+            &mut output,
+            &commands,
+            Some(&mut missing),
+            Some(&mut |_, _, _, _: &[Frame]| missing_node_calls += 1),
+            Some(&mut tap),
+            &mut endpoint,
+        )
+        .unwrap();
+    assert!(missing_node_calls > 0 && missing_project_calls > 0);
+    assert_eq!(output, [[0.0; 2]; 80]);
+    assert_eq!(&endpoint.notes, events);
+    assert!(missing.requests.contains(&(key, 0)));
+    assert!(missing.requests.contains(&(key, 1)));
+    assert!(missing.requests.iter().all(|(source, _)| *source == key));
+
+    let mut invalid = playback();
+    let mut endpoint = NoteEndpoint::default();
+    let mut untouched = [[9.0; 2]; 80];
+    let mut untouched_pages = Pages {
+        key,
+        data: pcm.clone(),
+        missing: true,
+        requests: Vec::new(),
+    };
+    let mut invalid_calls = 0;
+    assert_eq!(
+        invalid.render_with_timed_transport_foreign_and_signal_observers(
+            &mut untouched,
+            &[Timed {
+                offset: 81,
+                command: PlaybackCommand::Play
+            }],
+            Some(&mut untouched_pages),
+            Some(&mut |_, _, _, _: &[Frame]| invalid_calls += 1),
+            None,
+            &mut endpoint,
+        ),
+        Err(TimedTransportError::InvalidOffset { index: 0 })
+    );
+    assert_eq!(untouched, [[9.0; 2]; 80]);
+    assert!(untouched_pages.requests.is_empty() && endpoint.notes.is_empty() && !endpoint.rejected);
+    assert!(!invalid.playing());
+    assert_eq!(invalid_calls, 0);
+
+    let mut runtime = playback();
+    let mut endpoint = NoteEndpoint {
+        fail_at: Some(33),
+        ..Default::default()
+    };
+    let mut output = [[9.0; 2]; 80];
+    let mut prefix_calls = 0;
+    let mut project_calls = 0;
+    let mut project = |_, _, _: &[Frame]| project_calls += 1;
+    let mut tap = crate::ProjectOutputTap::new(&[], &mut project).unwrap();
+    assert!(matches!(
+        runtime.render_with_timed_transport_foreign_and_signal_observers(
+            &mut output,
+            &commands,
+            Some(&mut pages),
+            Some(&mut |_, _, offset, frames: &[Frame]| {
+                assert!(offset + frames.len() <= 80);
+                prefix_calls += 1;
+            }),
+            Some(&mut tap),
+            &mut endpoint
+        ),
+        Err(TimedTransportError::Render { offset: 32, .. })
+    ));
+    assert!(endpoint.rejected);
+    assert!(prefix_calls > 0 && project_calls > 0);
+    assert_eq!(output, [[0.0; 2]; 80]);
 }

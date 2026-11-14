@@ -209,6 +209,8 @@ pub(super) struct Sections {
     clipboard: Option<clipboard::Reference>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
+    // At most one keyboard duplicate may follow a committed pending copy.
+    ahead: Option<Pending>,
     // One keyboard/menu follow-up typed while an edit is in flight (latest
     // wins). It is validated and submitted against the acknowledged revision.
     queued: Option<Queued>,
@@ -501,10 +503,17 @@ impl EditorView {
     pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
         let state = self.state.as_ref()?;
         self.sections
-            .pending
+            .ahead
             .as_ref()
             .filter(|p| p.generation == self.project_generation)
             .and_then(|p| p.layout.clone())
+            .or_else(|| {
+                self.sections
+                    .pending
+                    .as_ref()
+                    .filter(|p| p.generation == self.project_generation)
+                    .and_then(|p| p.layout.clone())
+            })
             .or_else(|| self.arrangement_duplicate_view().cloned())
             .or_else(|| self.arrangement_paste_view().cloned())
             .or_else(|| self.time_range_copy_view().cloned())
@@ -521,7 +530,35 @@ impl EditorView {
         let Some(current) = self.state.as_ref() else {
             return false;
         };
-        let Some(pending) = self.sections.pending.as_mut() else {
+        let Some(primary) = self.sections.pending.as_ref() else {
+            return false;
+        };
+        let base = if primary.revision == observation.previous_revision {
+            Arc::clone(current)
+        } else if self
+            .sections
+            .ahead
+            .as_ref()
+            .is_some_and(|p| p.revision == observation.previous_revision)
+            && current.revision == primary.revision
+        {
+            let Some(base) = primary
+                .layout
+                .as_ref()
+                .filter(|base| base.revision == observation.previous_revision)
+            else {
+                return false;
+            };
+            Arc::clone(base)
+        } else {
+            return false;
+        };
+        let pending = if primary.revision == observation.previous_revision {
+            self.sections.pending.as_mut()
+        } else {
+            self.sections.ahead.as_mut()
+        };
+        let Some(pending) = pending else {
             return false;
         };
         if self.mode != EditorMode::Arrangement
@@ -529,8 +566,9 @@ impl EditorView {
             || pending.receipt.is_queued()
             || pending.generation != self.project_generation
             || observation.project_generation != pending.generation
+            || observation.first_previous_revision != observation.previous_revision
             || observation.previous_revision != pending.revision
-            || current.revision != pending.revision
+            || base.revision != pending.revision
             || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
                 || copied_section_source(&pending.command).is_some())
         {
@@ -538,7 +576,7 @@ impl EditorView {
         }
         let Some(state) = observation.state.upgrade().filter(|state| {
             pending.revision.checked_add(1) == Some(state.revision)
-                && current.project.arrangement_section(copy).is_none()
+                && base.project.arrangement_section(copy).is_none()
                 && state.project.arrangement_section(copy).is_some()
         }) else {
             return false;
@@ -559,19 +597,105 @@ impl EditorView {
             .collect();
         pending.display.tempo = state.project.tempo_map().clone();
         pending.layout = Some(state);
+        self.start_ahead_section_duplicate();
         true
     }
 
     pub(super) fn committed_section_copy_view(&self) -> Option<&Arc<ViewState>> {
         let pending = self.sections.pending.as_ref()?;
-        pending.layout.as_ref().filter(|layout| {
-            pending.generation == self.project_generation
-                && pending.revision.checked_add(1) == Some(layout.revision)
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == pending.revision)
-        })
+        if pending.generation != self.project_generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != pending.revision)
+        {
+            return None;
+        }
+        if let Some(ahead) = self.sections.ahead.as_ref()
+            && ahead.generation == self.project_generation
+            && pending.revision.checked_add(1) == Some(ahead.revision)
+            && let Some(layout) = ahead
+                .layout
+                .as_ref()
+                .filter(|layout| ahead.revision.checked_add(1) == Some(layout.revision))
+        {
+            return Some(layout);
+        }
+        pending
+            .layout
+            .as_ref()
+            .filter(|layout| pending.revision.checked_add(1) == Some(layout.revision))
+    }
+
+    /// An early keyboard-copy start is safe only for the exact installed graph
+    /// and its own non-preroll metadata. The ordinary receipt still owns the view.
+    pub(super) fn section_copy_play_source(
+        &self,
+    ) -> Option<hex_audio::prepared::AppliedAudioSource> {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let pending = self.sections.pending.as_ref()?;
+        let Command::DuplicateArrangementSection(section) = &pending.command else {
+            return None;
+        };
+        let section = *section;
+        let current = self.state.as_ref()?;
+        let committed = self.committed_section_copy_view()?;
+        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.selected_clip.is_some()
+            || self.sections.selected_ids() != [section]
+            || pending.selection_intent_epoch != self.selection_intent_epoch
+            || current.project.tempo_map() != committed.project.tempo_map()
+            || current.project.loop_region() != committed.project.loop_region()
+            || current
+                .project
+                .arrangement_section(section)
+                .map(|s| s.start())
+                != committed
+                    .project
+                    .arrangement_section(section)
+                    .map(|s| s.start())
+        {
+            return None;
+        }
+        let audio = self.audio.as_ref()?;
+        let status = audio.control.status()?;
+        if status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+            || status.stopped_edit_pending()
+        {
+            return None;
+        }
+        let observation = self.pending_publication_observation.as_ref()?;
+        let crate::EditorPublicationState::ResidentSubmitted {
+            audio_revision,
+            metadata,
+            ..
+        } = &observation.state
+        else {
+            return None;
+        };
+        let source = status.recording_source()?;
+        if observation.output_identity != source.output_identity
+            || audio.control.output_identity() != Some(source.output_identity)
+            || observation.context != source.context
+            || metadata.context != source.context
+            || committed.audio_authoring_revision(source.context) != Some(committed.revision)
+            || *audio_revision != source.audio_revision
+            || metadata.requires_preroll
+            || metadata.clip_preview.is_some()
+            || metadata.device_preview.is_some()
+            || metadata.tuning_preview.is_some()
+            || metadata.seek_request.is_some()
+            || metadata.stopped_restore
+            || metadata.computer_keyboard_request.is_some()
+            || metadata.gain_recording_track.is_some()
+            || status.recording_source() != Some(source)
+        {
+            return None;
+        }
+        Some(source)
     }
 
     pub(super) fn section_install_pending(&self) -> bool {
@@ -1406,9 +1530,6 @@ impl EditorView {
         }
     }
     pub(super) fn pending_section_matches(&self, request: &Request) -> bool {
-        let Some(pending) = self.sections.pending.as_ref() else {
-            return false;
-        };
         let Request::EditArrangementSection {
             project_generation,
             revision,
@@ -1417,20 +1538,63 @@ impl EditorView {
         else {
             return false;
         };
-        pending.receipt.is_queued()
-            && *project_generation == pending.generation
-            && *revision == pending.revision
-            && same_command(command, &pending.command)
+        self.sections
+            .pending
+            .iter()
+            .chain(self.sections.ahead.iter())
+            .any(|pending| {
+                pending.receipt.is_queued()
+                    && *project_generation == pending.generation
+                    && *revision == pending.revision
+                    && same_command(command, &pending.command)
+            })
     }
     pub(super) fn section_submitted(&mut self) {
-        if let Some(p) = self.sections.pending.as_mut() {
+        if let Some(p) = self
+            .sections
+            .ahead
+            .as_mut()
+            .filter(|p| p.receipt.is_queued())
+            .or_else(|| {
+                self.sections
+                    .pending
+                    .as_mut()
+                    .filter(|p| p.receipt.is_queued())
+            })
+        {
             p.receipt.submitted(self.worker_requests_pending);
         }
     }
     pub(super) fn retire_pending_section(&mut self) -> bool {
-        self.sections.pending.take().is_some()
+        let pending = self.sections.pending.take().is_some();
+        self.sections.ahead.take().is_some() || pending
+    }
+    pub(super) fn refuse_section(&mut self, request: &Request) -> bool {
+        if let Some(ahead) = self.sections.ahead.as_ref()
+            && let Request::EditArrangementSection {
+                project_generation,
+                revision,
+                command,
+            } = request
+            && ahead.receipt.is_queued()
+            && *project_generation == ahead.generation
+            && *revision == ahead.revision
+            && same_command(command, &ahead.command)
+        {
+            return self.sections.ahead.take().is_some();
+        }
+        self.retire_pending_section()
     }
     pub(super) fn section_request_complete(&mut self, event: &Event) {
+        if self.sections.ahead.as_mut().is_some_and(|ahead| {
+            ahead.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            ) == Disposition::Invalidated
+        }) {
+            self.sections.ahead = None;
+        }
         if self.sections.pending.as_mut().is_some_and(|p| {
             p.receipt.observe(
                 self.project_generation,
@@ -1500,7 +1664,7 @@ impl EditorView {
                 // to different content. The terminal error stays visible.
                 self.status = "queued section edit dropped".into();
             }
-            self.retire_pending_section();
+            self.sections.pending = self.sections.ahead.take();
         }
         if event.project_replaced {
             self.sections = Sections::default();
@@ -1910,6 +2074,7 @@ impl EditorView {
                 command,
             });
             self.status = "section edit queued · applies after the current edit".into();
+            self.start_ahead_section_duplicate();
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1985,6 +2150,66 @@ impl EditorView {
             _ => return,
         }
         self.submit_section(command, display, self.project_generation, state.revision);
+    }
+
+    /// Admit one queued keyboard duplicate only against the exact committed
+    /// predecessor. Both FIFO receipts retain their own terminal custody.
+    fn start_ahead_section_duplicate(&mut self) {
+        if self.sections.ahead.is_some()
+            || self.worker_requests_pending != 1
+            || !self.pending_requests.is_empty()
+            || !self.device_gesture_barriers.is_empty()
+            || !self.section_input_open()
+        {
+            return;
+        }
+        let Some(primary) = self.sections.pending.as_ref() else {
+            return;
+        };
+        let Command::DuplicateArrangementSection(section) = primary.command else {
+            return;
+        };
+        let Some(queued) = self.sections.queued.as_ref() else {
+            return;
+        };
+        if queued.generation != self.project_generation
+            || !matches!(queued.command, Command::DuplicateArrangementSection(id) if id == section)
+            || primary.generation != self.project_generation
+            || primary.selection_intent_epoch != self.selection_intent_epoch
+            || self.sections.selected_ids() != [section]
+        {
+            return;
+        }
+        let Some(view) = primary.layout.as_ref().filter(|view| {
+            primary.revision.checked_add(1) == Some(view.revision)
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == primary.revision)
+        }) else {
+            return;
+        };
+        let revision = view.revision;
+        let command = queued.command.clone();
+        self.sections.ahead = Some(Pending {
+            generation: self.project_generation,
+            revision,
+            command: command.clone(),
+            display: primary.display.clone(),
+            layout: None,
+            receipt: Receipt::new(self.project_generation),
+            selection_intent_epoch: primary.selection_intent_epoch,
+        });
+        self.sections.queued = None;
+        if !self.enqueue(Request::EditArrangementSection {
+            project_generation: self.project_generation,
+            revision,
+            command,
+        }) {
+            self.sections.ahead = None;
+        } else {
+            self.status = "applying consecutive section copy".into();
+        }
     }
     pub(super) fn section_menu(
         &mut self,
@@ -2155,7 +2380,13 @@ impl EditorView {
             return Vec::new();
         };
         let canonical;
-        let display = if let Some(p) = self.sections.pending.as_ref() {
+        let display = if let Some(p) = self
+            .sections
+            .ahead
+            .as_ref()
+            .filter(|p| p.layout.is_some())
+            .or(self.sections.pending.as_ref())
+        {
             &p.display
         } else if let Some(g) = self
             .sections
@@ -3770,7 +4001,11 @@ pub(super) mod tests {
                 assert_eq!(v.sections.selection.len(), if start == 0 { 2 } else { 1 });
                 v.state.as_ref().unwrap().project.clone()
             });
-            visual.simulate_keystrokes(key);
+            if key == "l" {
+                crate::editor::section_launch::test_tap_loop_key(&mut visual);
+            } else {
+                visual.simulate_keystrokes(key);
+            }
             editor.read_with(cx, |v, _| assert!(matches!(v.last_enqueued_edit,
                 Some(Command::SetLoopRegion { start: a, end: b, enabled: true }) if (a,b)==(start,end)),
                 "selected sections must dispatch a loop request"));
@@ -4356,6 +4591,7 @@ pub(super) mod tests {
             let state = Arc::clone(view.state.as_ref().unwrap());
             view.applied_project_revision = Some(state.revision);
             view.audible_playback = Some(super::super::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: Some(false),
                 observation: None,
                 audio_revision,
@@ -6219,6 +6455,831 @@ pub(super) mod tests {
             visual.debug_bounds("arrangement-section-1"),
             Some(marker_bounds)
         );
+    }
+
+    #[gpui::test]
+    fn consecutive_keyboard_section_copies_keep_both_receipts_and_latest_rows(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, _ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let source = editor.read_with(cx, |view, _| position(view, 2));
+        visual.simulate_click(source, Modifiers::default());
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        let initial = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+        visual.simulate_keystrokes("cmd-d cmd-d");
+        let deadline = crate::test_wait::hang_deadline();
+        let first_view = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first committed section view");
+            std::thread::yield_now();
+        };
+        let mut first_terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        let first_state = first_view.state.upgrade().unwrap();
+        editor.update(&mut visual, |view, cx| {
+            // A refused, still-queued successor must not retire its predecessor.
+            let primary = view.sections.pending.as_ref().unwrap();
+            let command = primary.command.clone();
+            view.sections.ahead = Some(Pending {
+                generation: primary.generation,
+                revision: initial + 1,
+                command: command.clone(),
+                display: primary.display.clone(),
+                layout: None,
+                receipt: Receipt::new(primary.generation),
+                selection_intent_epoch: primary.selection_intent_epoch,
+            });
+            assert!(view.refuse_section(&Request::EditArrangementSection {
+                project_generation: view.project_generation,
+                revision: initial + 1,
+                command,
+            }));
+            assert!(view.sections.pending.is_some());
+            assert!(view.sections.ahead.is_none());
+            assert!(view.observe_duplicate_view(first_view));
+            assert!(view.sections.pending.is_some());
+            assert!(
+                view.sections.ahead.is_some(),
+                "successor admitted before first terminal"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let second_view = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "second committed section view");
+            std::thread::yield_now();
+        };
+        let second_terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        assert!(first_terminal.error.is_none());
+        assert!(second_terminal.error.is_none());
+        let second_state = second_view.state.upgrade().unwrap();
+        assert_eq!(second_state.revision, initial + 2);
+        let Some(Created::ArrangementSection(copy)) = second_terminal.created else {
+            panic!("second section copy");
+        };
+        let copy_start = second_state
+            .project
+            .arrangement_section(copy)
+            .unwrap()
+            .start();
+        let midi = second_state.project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .find(|clip| {
+                clip.start() == copy_start && first_state.project.midi_clip(clip.id()).is_none()
+            })
+            .unwrap()
+            .id();
+        let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
+        editor.update(&mut visual, |view, cx| {
+            for (generation, revision) in [
+                (
+                    second_view.project_generation + 1,
+                    second_view.previous_revision,
+                ),
+                (
+                    second_view.project_generation,
+                    second_view.previous_revision + 1,
+                ),
+            ] {
+                assert!(
+                    !view.observe_duplicate_view(ArrangementEditViewObservation {
+                        project_generation: generation,
+                        first_previous_revision: revision,
+                        previous_revision: revision,
+                        kind: second_view.kind,
+                        state: Arc::downgrade(&second_state),
+                    })
+                );
+            }
+            assert!(view.observe_duplicate_view(second_view));
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &second_state
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before = visual
+            .debug_bounds(selector)
+            .expect("second committed copy paints");
+        let marker = visual.debug_bounds("arrangement-section-2").unwrap();
+        editor.update(&mut visual, |view, cx| {
+            view.history_action(Request::Undo, cx)
+        });
+        first_terminal.error = Some("automatic recovery: test warning".into());
+        editor.update(&mut visual, |view, cx| {
+            view.receive(first_terminal);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &second_state
+            ));
+            assert!(
+                view.sections.pending.is_some(),
+                "warning cannot retire an admitted successor"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before));
+        assert_eq!(visual.debug_bounds("arrangement-section-2"), Some(marker));
+        editor.update(&mut visual, |view, cx| {
+            view.receive(second_terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &second_state));
+            assert!(view.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(before));
+        assert_eq!(visual.debug_bounds("arrangement-section-2"), Some(marker));
+        settle(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, initial + 3);
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .len(),
+                first_state.project.arrangement_sections().len(),
+                "undo follows both admitted copies"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn unrelated_worker_completion_preserves_existing_status(cx: &mut TestAppContext) {
+        let (_handle, editor, _ids) = fixture(cx);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "other".into()
+            })));
+        });
+        let mut event = editor.read_with(cx, |view, _| next(&view.service));
+        assert!(event.error.is_none());
+        event.status = None;
+        editor.update(cx, |view, _| {
+            view.status = "existing status".into();
+            view.receive(event);
+            assert_eq!(&*view.status, "existing status");
+        });
+    }
+
+    #[gpui::test]
+    fn newer_selection_does_not_admit_an_ahead_section_copy(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, _| {
+            view.select_section_metadata(Some(ids[0]));
+            view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
+            view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let first = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first section view");
+            std::thread::yield_now();
+        };
+        let terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        editor.update(&mut visual, |view, _| {
+            view.select_section_metadata(Some(ids[1]));
+            assert!(view.observe_duplicate_view(first));
+            assert!(
+                view.sections.ahead.is_none(),
+                "newer selection must not admit a successor"
+            );
+            view.receive(terminal);
+            assert_eq!(view.sections.selected, Some(ids[1]));
+            // The already requested command remains in the ordinary queue.
+            assert!(view.sections.queued.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn project_replacement_retires_both_section_receipts(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, _| {
+            view.select_section_metadata(Some(ids[0]));
+            view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
+            view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let first = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first section view");
+            std::thread::yield_now();
+        };
+        let _first_terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        editor.update(&mut visual, |view, _| {
+            assert!(view.observe_duplicate_view(first))
+        });
+        let second = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "second section view");
+            std::thread::yield_now();
+        };
+        let _second_terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        let stale_state = second.state.upgrade().unwrap();
+        let stale_kind = second.kind;
+        let stale_generation = second.project_generation;
+        let stale_revision = second.previous_revision;
+        editor.update(&mut visual, |view, _| {
+            assert!(view.observe_duplicate_view(second));
+            assert!(view.sections.pending.is_some() && view.sections.ahead.is_some());
+            view.service
+                .submit(Request::NewWithAudioMode {
+                    mode: hex_session::DocumentAudioMode::Resident,
+                    reservation: None,
+                })
+                .unwrap();
+        });
+        let replacement = editor.read_with(&visual, |view, _| next(&view.service));
+        assert!(replacement.project_replaced && replacement.error.is_none());
+        editor.update(&mut visual, |view, _| {
+            view.receive(replacement);
+            assert!(view.sections.pending.is_none() && view.sections.ahead.is_none());
+            assert!(
+                !view.observe_duplicate_view(ArrangementEditViewObservation {
+                    project_generation: stale_generation,
+                    first_previous_revision: stale_revision,
+                    previous_revision: stale_revision,
+                    kind: stale_kind,
+                    state: Arc::downgrade(&stale_state),
+                })
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn play_uses_applied_successor_while_both_section_receipts_wait(cx: &mut TestAppContext) {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        let mut fixture =
+            super::super::worker_ui_fixture::open_with_section_support(cx, commands, false, true);
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let (revision, expected) = editor.update(&mut visual, |view, _| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let expected = view.playback_start_frame();
+            let revision = view.state.as_ref().unwrap().revision;
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            (revision, expected)
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let first = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first section view");
+            std::thread::yield_now();
+        };
+        let first_terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "first section terminal");
+            std::thread::yield_now();
+        };
+        assert!(first_terminal.error.is_none(), "{:?}", first_terminal.error);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.read_with(&visual, |view, _| {
+                view.audio_status().is_some_and(|status| {
+                    !status.stopped_edit_pending()
+                        && status
+                            .recording_source()
+                            .is_some_and(|source| source.context.editor_revision == revision + 1)
+                })
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "first source and released fence");
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(first));
+            assert!(view.sections.ahead.is_some());
+            cx.notify();
+        });
+        let second = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "second section view");
+            std::thread::yield_now();
+        };
+        let second_terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "second section terminal");
+            std::thread::yield_now();
+        };
+        assert!(
+            second_terminal.error.is_none(),
+            "{:?}",
+            second_terminal.error
+        );
+        let committed = second.state.upgrade().unwrap();
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(second));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.section_copy_play_source()
+                    .is_some_and(|source| source.context.editor_revision == revision + 2)
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "applied successor source");
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.audio_status().unwrap().playing.load(Acquire))
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.receive(first_terminal);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            view.receive(second_terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
+            cx.notify();
+        });
+        fixture.finish(cx);
+    }
+
+    #[gpui::test]
+    fn held_recovery_allows_next_section_copy_and_applied_play(cx: &mut TestAppContext) {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let environment = super::super::test_environment::Environment::new().unwrap();
+        let recovery = environment.root().join("held-section.hex-journal");
+        let commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
+            cx,
+            commands,
+            false,
+            true,
+            Some(recovery.clone()),
+        );
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let mut gate = hex_session::service::hold_next_checkpoint(recovery).unwrap();
+        let (revision, expected) = editor.update(&mut visual, |view, _| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let expected = view.playback_start_frame();
+            let revision = view.state.as_ref().unwrap().revision;
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            (revision, expected)
+        });
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut entered_at = None;
+        let mut first = None;
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if entered_at.is_none() {
+                match gate.try_entered() {
+                    Ok(()) => entered_at = Some(Instant::now()),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(error) => panic!("checkpoint gate failed: {error}"),
+                }
+            }
+            if first.is_none() {
+                first = editor.read_with(&visual, |view, _| {
+                    view.service.try_arrangement_edit_view().ok()
+                });
+            }
+            let applied = editor.read_with(&visual, |view, _| {
+                view.audio_status().is_some_and(|status| {
+                    !status.stopped_edit_pending()
+                        && status
+                            .recording_source()
+                            .is_some_and(|source| source.context.editor_revision == revision + 1)
+                })
+            });
+            if entered_at.is_some() && first.is_some() && applied {
+                break;
+            }
+            assert!(
+                entered_at.is_none_or(|time| time.elapsed() < Duration::from_millis(1500)),
+                "first source did not arrive within the held checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "held first checkpoint and applied source"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.service.try_event().is_err(),
+                "first terminal waits for recovery"
+            );
+            assert!(view.observe_duplicate_view(first.take().unwrap()));
+            assert!(view.sections.ahead.is_some());
+            cx.notify();
+        });
+        let second = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(
+                entered_at.is_some_and(|time| time.elapsed() < Duration::from_millis(1500)),
+                "second copy missed the held checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "second copy while recovery is held"
+            );
+            std::thread::yield_now();
+        };
+        let committed = second.state.upgrade().unwrap();
+        assert_eq!(committed.revision, revision + 2);
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.service.try_event().is_err(),
+                "ordered terminals still wait for recovery"
+            );
+            assert!(view.observe_duplicate_view(second));
+            cx.notify();
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.section_copy_play_source()
+                    .is_some_and(|source| source.context.editor_revision == revision + 2)
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                entered_at.is_some_and(|time| time.elapsed() < Duration::from_millis(1500)),
+                "applied source missed the held checkpoint"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "applied second source while recovery is held"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.audio_status().unwrap().playing.load(Acquire))
+        });
+        visual.run_until_parked();
+        let marker = visual.debug_bounds("arrangement-section-1").unwrap();
+        gate.release()
+            .expect("checkpoint must still be held after the second copy and Play");
+        let first_terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "first durable terminal");
+            std::thread::yield_now();
+        };
+        let second_terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "second durable terminal");
+            std::thread::yield_now();
+        };
+        assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+        editor.update(&mut visual, |view, cx| {
+            view.receive(first_terminal);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("arrangement-section-1"), Some(marker));
+        editor.update(&mut visual, |view, cx| {
+            view.receive(second_terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
+            view.toggle_play();
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 512]).unwrap();
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("arrangement-section-1"), Some(marker));
+        editor.update(&mut visual, |view, cx| {
+            view.history_action(Request::Undo, cx)
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let undone = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision + 3)
+            });
+            if undone {
+                break;
+            }
+            assert!(Instant::now() < deadline, "undo after durable copies");
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .len(),
+                2
+            )
+        });
+        fixture.finish(cx);
+        drop(environment);
+    }
+
+    #[gpui::test]
+    fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppContext) {
+        use std::sync::atomic::Ordering::Acquire;
+
+        let commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        let mut fixture =
+            super::super::worker_ui_fixture::open_with_section_support(cx, commands, false, true);
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let (source_revision, expected) = editor.update(&mut visual, |view, cx| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let expected = view.playback_start_frame();
+            let revision = view.state.as_ref().unwrap().revision;
+            view.section_metadata(Command::DuplicateArrangementSection(section));
+            view.toggle_play();
+            assert!(
+                view.last_transport_command.is_none(),
+                "unapplied source cannot start"
+            );
+            cx.notify();
+            (revision, expected)
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let observation = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(observation) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break observation;
+            }
+            assert!(Instant::now() < deadline, "committed section view");
+            std::thread::yield_now();
+        };
+        let terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "section terminal");
+            std::thread::yield_now();
+        };
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let committed = observation.state.upgrade().unwrap();
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(observation));
+            assert_eq!(view.state.as_ref().unwrap().revision, source_revision);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.section_copy_play_source().is_some()
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "exact applied source and released fence"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(view.state.as_ref().unwrap().revision, source_revision);
+            assert!(Arc::ptr_eq(
+                &view.arrangement_rows_state().unwrap(),
+                &committed
+            ));
+            let pending = view.pending_publication_observation.as_mut().unwrap();
+            pending.output_identity += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong output must not start"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity -= 1;
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .project_generation += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong generation must not start"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .project_generation -= 1;
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .editor_revision += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong revision must not start"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .context
+                .editor_revision -= 1;
+            let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
+                &mut view.pending_publication_observation.as_mut().unwrap().state
+            else {
+                panic!("resident metadata")
+            };
+            metadata.requires_preroll = true;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "preroll must not be bypassed"
+            );
+            let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
+                &mut view.pending_publication_observation.as_mut().unwrap().state
+            else {
+                panic!("resident metadata")
+            };
+            metadata.requires_preroll = false;
+            view.audio_status()
+                .unwrap()
+                .device_fault
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "faulted output must not start"
+            );
+            view.audio_status()
+                .unwrap()
+                .device_fault
+                .store(false, std::sync::atomic::Ordering::Release);
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.audio_status().unwrap().playing.load(Acquire))
+        });
+        editor.update(&mut visual, |view, _| {
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity += 1;
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::Pause)
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity -= 1;
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 512]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.audio_status().unwrap().playing.load(Acquire))
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        fixture.finish(cx);
     }
 
     #[gpui::test]

@@ -517,6 +517,7 @@ return headers offer the same picker for their effects.
 **show used automation lanes** reveals lanes with authored points. **show all
 automation lanes** also restores empty lanes you have already shown and the
 current parameter preview; it does not assign every available parameter.
+press **shift+a** to show all these lanes across the arranger at once.
 
 device parameters are not assigned automatically. the main row follows the last
 supported parameter you touch or show. a dashed line previews its base value
@@ -1037,7 +1038,7 @@ the complete edit.
 | set loop from selection / toggle matching loop | l / w |
 | toggle active transport loop | command+l |
 | import audio | command+i |
-| add track | command+t |
+| add track | t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser | command+option+b |
@@ -1050,6 +1051,7 @@ the complete edit.
 | bounce a time selection to one mixed track and deactivate the sources | command+shift+b |
 | drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
+| show all arrangement automation lanes | shift+a |
 | contextual activation | c / 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |

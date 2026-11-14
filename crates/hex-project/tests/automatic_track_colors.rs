@@ -11,15 +11,19 @@ fn created_track(result: Created) -> TrackId {
 fn execute(editor: &mut Editor, command: Command) -> TrackId {
     created_track(editor.execute(command).expect("valid creation"))
 }
-fn palette_counts(project: &Project) -> [usize; 9] {
-    let mut counts = [0; 9];
+fn palette_counts(project: &Project) -> [usize; 8] {
+    let mut counts = [0; 8];
     for track in project.tracks() {
         assert_ne!(
             track.color(),
             ElementColor::Gray,
             "new track must have a hue"
         );
-        counts[track.color() as usize - 1] += 1;
+        let index = ElementColor::TRACK_CHOICES
+            .iter()
+            .position(|color| *color == track.color())
+            .expect("new track must use an available hue");
+        counts[index] += 1;
     }
     counts
 }
@@ -111,9 +115,10 @@ fn all_creation_routes_choose_unused_hues_and_keep_history() {
         assert_eq!(editor.project().snapshot(), after);
         assert_eq!(editor.project().track(track).unwrap().color(), color);
         assert_eq!(Project::from_snapshot(after).unwrap(), *editor.project());
-        assert!(palette_counts(editor.project()).into_iter().all(|n| n <= 1));
+        let counts = palette_counts(editor.project());
+        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1);
     }
-    assert_eq!(palette_counts(editor.project()), [1; 9]);
+    assert_eq!(palette_counts(editor.project()).iter().sum::<usize>(), 9);
     // Exhausted palette remains balanced through actual move-to-new-track paths.
     for command in [
         Command::MoveClipToNewTrack {
@@ -200,7 +205,7 @@ fn explicit_existing_gray_and_hues_are_preserved_and_ignored_only_for_assignment
     let before = editor.project().snapshot();
     let loaded = Project::from_snapshot(before.clone()).unwrap();
     assert_eq!(loaded.snapshot(), before);
-    for i in 0..8 {
+    for i in 0..7 {
         let id = execute(
             &mut editor,
             Command::AddMidiTrack {
