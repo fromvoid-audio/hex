@@ -1428,6 +1428,7 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         before_track: None,
         start: 0,
     });
+    let original_waveform = imported.state.waveforms.values().next().unwrap().clone();
     (applied, _) = h.applied(applied);
     let clip = imported.state.project.tracks()[0].clips()[0].id();
     let neutral = h.run(Request::Edit(Command::SetClipFades {
@@ -1532,6 +1533,10 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let reopened = h.run(Request::Open(saved_path));
     assert!(reopened.open_complete);
+    assert!(std::sync::Arc::ptr_eq(
+        &original_waveform,
+        reopened.state.waveforms.values().next().unwrap()
+    ));
     assert_eq!(
         reopened.state.project.snapshot(),
         stretched.state.project.snapshot()

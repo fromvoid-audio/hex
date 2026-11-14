@@ -199,8 +199,15 @@ impl Session {
         &self,
         path: PathBuf,
         asset: &hex_project::Asset,
+        previous: Option<&VerifiedAudioFile>,
     ) -> Result<VerifiedAudioFile, SessionError> {
-        self.verify_with(path, &[], Some(asset.conversion_version()), || false)
+        self.verify_with(
+            path,
+            &[],
+            Some(asset.conversion_version()),
+            previous,
+            || false,
+        )
     }
     pub(crate) fn verify_import_with_pending(
         &self,
@@ -208,13 +215,14 @@ impl Session {
         pending: &[VerifiedAudioFile],
         canceled: impl FnMut() -> bool,
     ) -> Result<VerifiedAudioFile, SessionError> {
-        self.verify_with(path, pending, None, canceled)
+        self.verify_with(path, pending, None, None, canceled)
     }
     fn verify_with(
         &self,
         path: PathBuf,
         pending: &[VerifiedAudioFile],
         conversion: Option<u32>,
+        previous: Option<&VerifiedAudioFile>,
         mut canceled: impl FnMut() -> bool,
     ) -> Result<VerifiedAudioFile, SessionError> {
         let limits = self.remaining_source_reservation(path.capacity(), pending)?;
@@ -227,9 +235,18 @@ impl Session {
             }
         };
         if self.audio_mode() == DocumentAudioMode::Resident {
-            source.prepare_waveform_on_control(|| {
-                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
-            })?;
+            let reused = if let Some(previous) = previous {
+                source.reuse_waveform_on_control(previous, || {
+                    self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+                })?
+            } else {
+                false
+            };
+            if !reused {
+                source.prepare_waveform_on_control(|| {
+                    self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+                })?;
+            }
         }
         Ok(source)
     }
