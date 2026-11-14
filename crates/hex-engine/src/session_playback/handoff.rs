@@ -4,6 +4,17 @@ use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
+// Detached Return tails are summed directly at Main, outside graph edges.
+// Both the old and new graphs must therefore have the same flat origin.
+fn direct_return_tail_graph(graph: &crate::signal_graph::SignalGraph) -> bool {
+    graph.main_input_arrival() == 0
+        && !graph.needs_upstream_frame_routing()
+        && graph
+            .returns
+            .iter()
+            .all(|bus| bus.feeds.is_empty() && bus.audio_feeds.is_empty())
+}
+
 /// A control-prepared, source-bound tempo restart at one exact running cut.
 ///
 /// Weak identities keep the two Arc allocations from being reused, but do not
@@ -1156,7 +1167,8 @@ impl SessionPlayback {
         let removed_return = compensation_pair
             .and_then(|(candidate, old)| old.graph.added_isolated_return_from(&candidate.graph));
         // A retained Return tail still owns audible output outside the current
-        // graph. Do not let the fallback reset it while removing a cold bus.
+        // graph. An isolated removal may proceed only on the same proven flat
+        // clock as a direct-to-Main Return tail; reset remains forbidden.
         if removed_return.is_some()
             && previous
                 .return_effect_tails
@@ -1165,7 +1177,35 @@ impl SessionPlayback {
                 .flatten()
                 .any(|tail| tail.output_active)
         {
-            return Err(SessionPlaybackError::LatencyLayoutChanged);
+            let safe = !force_restart
+                && previous.playing
+                && same_base_timing
+                && old_loop_region == new_loop_region
+                && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame)
+                && donor_epoch_matches
+                && previous
+                    .compensation
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.delays.history_ready())
+                && self.revision.arrangement().main_latency_frames()
+                    == previous.revision.arrangement().main_latency_frames()
+                && previous
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .filter(|tail| tail.output_active)
+                    .all(|tail| {
+                        tail.return_id()
+                            .is_some_and(|id| Some(id) != removed_return)
+                    })
+                && compensation_pair.is_some_and(|(candidate, old)| {
+                    direct_return_tail_graph(&candidate.graph)
+                        && direct_return_tail_graph(&old.graph)
+                });
+            if !safe {
+                return Err(SessionPlaybackError::LatencyLayoutChanged);
+            }
         }
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
@@ -4924,14 +4964,7 @@ impl SessionPlayback {
                 && self.revision.arrangement().main_latency_frames()
                     == previous.revision.arrangement().main_latency_frames()
                 && old_graph.zip(new_graph).is_some_and(|(old, new)| {
-                    [old, new].into_iter().all(|graph| {
-                        graph.main_input_arrival() == 0
-                            && !graph.needs_upstream_frame_routing()
-                            && graph
-                                .returns
-                                .iter()
-                                .all(|bus| bus.feeds.is_empty() && bus.audio_feeds.is_empty())
-                    })
+                    direct_return_tail_graph(old) && direct_return_tail_graph(new)
                 })
         };
         if (self.revision.arrangement().main_latency_frames() > 0
