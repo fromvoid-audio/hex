@@ -684,6 +684,19 @@ fn two_source_small_pool_refusal_after_commit_preserves_pcm_clock_and_applied_pr
 
 #[test]
 fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_cancellable() {
+    ready_candidate_group_retry_case(false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn eligible_candidate_retries_smaller_window_at_two_page_boundary() {
+    crate::candidate_window_probe::begin();
+    ready_candidate_group_retry_case(true);
+    let (failed, next, _) = crate::candidate_window_probe::finish().unwrap();
+    assert_eq!((failed, next), (256, 128));
+}
+
+fn ready_candidate_group_retry_case(cross_page: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -732,7 +745,11 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
     })
     .unwrap();
     let a_wav = stream_fixture::Wav::with_frames(8192);
-    let b_wav = stream_fixture::Wav::with_frames(8192);
+    let b_wav = if cross_page {
+        stream_fixture::Wav::with_samples(8192, |_| 16_384)
+    } else {
+        stream_fixture::Wav::with_frames(8192)
+    };
     let a_def = a_wav.definition(a_asset, 11);
     let b_def = b_wav.definition(b_asset, 11);
     let context = Some(hex_engine::AudioSourceContext {
@@ -755,8 +772,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
                 extents_per_role: 2,
             },
         )
-        .ok()
-        .unwrap();
+        .unwrap_or_else(|error| panic!("domain registration refused: {}", error.reason));
     data.owner_mut().unwrap().run(|c, _| c.begin_block());
     let a_ticket = control
         .stage_eligible_audio_candidate(a, vec![domain], PublicationPolicy::InheritRuntime, 0)
@@ -823,10 +839,105 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
         (0, 0, 0, 0)
     );
     assert!(observed.into_iter().flatten().all(|seen| seen));
+    if cross_page {
+        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while control.status.position.load(Acquire) != 3968 {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|c, _| {
+                    c.begin_block();
+                    c.render(&mut output[..128]).unwrap();
+                })
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "seek to candidate boundary"
+            );
+            std::thread::yield_now();
+        }
+    }
     let b_ticket = control
         .stage_eligible_audio_candidate(b, vec![domain], PublicationPolicy::InheritRuntime, 0)
         .ok()
         .unwrap();
+    if cross_page {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while control.status.applied_revision.load(Acquire) != 2 {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|c, _| {
+                    c.begin_block();
+                    c.render(&mut output).unwrap();
+                });
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(control.status.rejected_revision().is_none());
+            assert!(!control.status.stream_buffering.load(Acquire));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "eligible successor did not install"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            output
+                .iter()
+                .all(|frame| frame[0].is_finite() && frame[0] > 0.0 && frame[0] == frame[1])
+        );
+        // The predecessor's retained Utility tail overlaps the louder successor.
+        // Require audible successor contribution without discarding that tail.
+        assert!(output.iter().any(|frame| frame[0] > 0.30));
+        let mut backend = Some(());
+        let mut pending = false;
+        let mut disposed = false;
+        crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap();
+        drop(data);
+        drop(errors);
+        let _ = retirement.advance().unwrap();
+        let ready_a = recover(&mut control, &a_ticket);
+        let ready_b = recover(&mut control, &b_ticket);
+        drop(ready_a);
+        drop(ready_b);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "eligible domain did not retire"
+            );
+            std::thread::yield_now();
+        }
+        drop(control);
+        finish(&mut retirement);
+        return;
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     // Real Utility tail movement cannot fit the deliberately full destination
     // runtime allowance. The old runtime must still reach its next actual page.

@@ -4001,7 +4001,7 @@ impl Callback {
                             && next
                                 .streams
                                 .as_mut()
-                                .is_some_and(|streams| streams.retry_capacity_conflict())
+                                .is_some_and(|streams| streams.retry_candidate_capacity_conflict())
                         {
                             if let Some(streams) = next.streams.as_mut() {
                                 streams.cancel_install(&mut self.domain_pages);

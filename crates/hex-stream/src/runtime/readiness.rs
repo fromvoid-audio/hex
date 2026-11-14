@@ -859,6 +859,17 @@ impl ConstructorPageLoan {
     pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
         self.pages.endpoint.has_extent(extent)
     }
+
+    /// Test-only observation that a role has no pending or installed custody.
+    #[cfg(feature = "test-support")]
+    pub fn test_role_is_idle(&self, role: ProtectionRole) -> bool {
+        let slot = &self.readiness.roles[role.index()];
+        slot.pending.is_none()
+            && slot.installed.is_none()
+            && !slot.unread
+            && slot.wanted.is_empty()
+            && slot.protected.is_empty()
+    }
     /// Test-only observation of a speculative request coalesced with readiness.
     #[cfg(feature = "test-support")]
     pub fn test_coalesced_prefetch(&self, key: crate::ResourcePageKey) -> bool {

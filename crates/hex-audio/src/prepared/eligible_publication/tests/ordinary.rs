@@ -1623,58 +1623,81 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
 
 #[test]
 fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
-    pending_replacement_case(true, false, None, false, false, false, false);
+    pending_replacement_case(true, false, None, (false, false), false, false, false);
 }
 
 #[test]
 fn ordinary_short_one_shot_replacement_at_device_cadence() {
-    pending_replacement_case(false, false, None, false, false, false, false);
+    pending_replacement_case(false, false, None, (false, false), false, false, false);
 }
 
 #[test]
 fn fenced_retained_restart_waits_for_missing_pages_without_displacing_current_audio() {
-    pending_replacement_case(false, true, None, false, false, false, false);
+    pending_replacement_case(false, true, None, (false, false), false, false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_loop_seek_keeps_resident_destination_while_prefetching() {
-    pending_replacement_case(true, false, Some(false), false, false, false, false);
-    pending_replacement_case(true, false, Some(true), false, false, false, false);
+    pending_replacement_case(
+        true,
+        false,
+        Some(false),
+        (false, false),
+        false,
+        false,
+        false,
+    );
+    pending_replacement_case(true, false, Some(true), (false, false), false, false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_pending_replacement_preserves_resident_loop_page_in_same_callback() {
-    pending_replacement_case(true, false, None, true, false, false, false);
+    pending_replacement_case(true, false, None, (true, false), false, false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn ordinary_pending_replacement_preserves_resident_loop_pages_in_long_callback() {
-    pending_replacement_case(true, false, None, true, true, false, false);
+    crate::candidate_window_probe::begin();
+    pending_replacement_case(true, false, None, (true, true), false, false, false);
+    let (_, _, smallest) = crate::candidate_window_probe::finish().unwrap();
+    assert_eq!(
+        smallest, 1,
+        "candidate must actually try a one-frame window"
+    );
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn oversized_current_demand_refuses_successor_after_bounded_attempts() {
-    pending_replacement_case(false, false, None, false, false, true, false);
+    pending_replacement_case(false, false, None, (false, false), true, false, false);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn quantized_streamed_handoff_releases_old_page_before_new_suffix() {
-    pending_replacement_case(true, false, None, false, false, false, true);
+    pending_replacement_case(true, false, None, (false, false), false, true, false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_candidate_retries_smaller_window_at_two_page_boundary() {
+    crate::candidate_window_probe::begin();
+    pending_replacement_case(true, false, None, (false, false), false, false, true);
+    let (failed, next, _) = crate::candidate_window_probe::finish().unwrap();
+    assert_eq!((failed, next), (256, 128));
 }
 
 fn pending_replacement_case(
     looping: bool,
     retained_restart: bool,
     lookahead: Option<bool>,
-    _short_loop: bool,
-    _long_callback: bool,
+    (_short_loop, _long_callback): (bool, bool),
     _oversized: bool,
     _quantized: bool,
+    _cross_page: bool,
 ) {
     use hex_project::{Command, Created, Editor};
 
@@ -2258,6 +2281,7 @@ fn pending_replacement_case(
     };
     #[cfg(feature = "stream-test-support")]
     if looping && !retained_restart && !_short_loop && !_quantized {
+        let boundary = if _cross_page { 3968 } else { 4096 };
         // Exercise A1 once so it can remain resident after returning to A0.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while control.status.position.load(Acquire) == 4096 {
@@ -2270,8 +2294,10 @@ fn pending_replacement_case(
         }
         assert_eq!(control.status.position.load(Acquire), 4352);
         assert_eq!(output, [[0.25; 2]; 256], "baseline A1 PCM");
-        control.command(PlaybackCommand::Seek(3840)).unwrap();
-        while control.status.position.load(Acquire) != 4096 {
+        control
+            .command(PlaybackCommand::Seek(boundary - 256))
+            .unwrap();
+        while control.status.position.load(Acquire) != boundary {
             measured_render(&mut data, &mut output[..128]);
             assert!(
                 std::time::Instant::now() < deadline,
@@ -2296,10 +2322,12 @@ fn pending_replacement_case(
         assert!(cached, "A1 must be resident before candidate publication");
         measured_render(&mut data, &mut output);
         assert!(!control.status.stream_buffering.load(Acquire));
-        assert_eq!(control.status.position.load(Acquire), 4352);
-        assert_eq!(output, [[0.25; 2]; 256], "resident A1 baseline PCM");
-        control.command(PlaybackCommand::Seek(3840)).unwrap();
-        while control.status.position.load(Acquire) != 4096 {
+        assert_eq!(control.status.position.load(Acquire), boundary + 256);
+        assert_eq!(output, [[0.25; 2]; 256], "resident baseline PCM");
+        control
+            .command(PlaybackCommand::Seek(boundary - 256))
+            .unwrap();
+        while control.status.position.load(Acquire) != boundary {
             measured_render(&mut data, &mut output[..128]);
             assert!(std::time::Instant::now() < deadline, "restore A0 boundary");
             std::thread::yield_now();
@@ -2570,7 +2598,9 @@ fn pending_replacement_case(
                 long_output, long_baseline,
                 "successor changed long callback PCM"
             );
-            for _ in 0..7 {
+            // The candidate gets one final one-frame admission attempt; the
+            // protected predecessor must remain audible through that attempt.
+            for _ in 0..8 {
                 let before = control.status.position.load(Acquire);
                 measured_render(&mut data, &mut long_output);
                 assert!(!control.status.stream_buffering.load(Acquire));
@@ -2640,7 +2670,6 @@ fn pending_replacement_case(
                 std::thread::sleep(std::time::Duration::from_micros(micros));
             }
         }
-        assert_eq!(output, [[0.5; 2]; 256]);
     }
 
     if let Some(fence) = fence {
@@ -2703,6 +2732,342 @@ fn prepared_audio_cold_seek_waits_for_destination_after_old_page() {
 #[test]
 fn stop_cancels_cold_seek_while_an_old_stream_page_is_held() {
     prepared_audio_domain_gate(GatedPageAction::SeekColdStop);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn candidate_capacity_in_second_domain_rolls_back_first_domain_and_installs() {
+    candidate_two_domain_capacity_case(TwoDomainAfterPressure::Install);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn stop_remains_effective_after_candidate_window_shrinks() {
+    candidate_two_domain_capacity_case(TwoDomainAfterPressure::Stop);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn changed_source_after_candidate_window_shrinks_refuses_without_losing_current_audio() {
+    candidate_two_domain_capacity_case(TwoDomainAfterPressure::ChangeSource);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn seek_during_candidate_pressure_is_refused_and_can_be_retried() {
+    candidate_two_domain_capacity_case(TwoDomainAfterPressure::Seek);
+}
+
+#[cfg(feature = "stream-test-support")]
+enum TwoDomainAfterPressure {
+    Install,
+    Stop,
+    ChangeSource,
+    Seek,
+}
+
+#[cfg(feature = "stream-test-support")]
+fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
+    use hex_project::{Command, Created, Editor};
+    let _serial = serial();
+    let frames = 8192_u64;
+    let original = super::readiness::project_with_frames(frames);
+    let first_asset = original.assets().next().unwrap().id();
+    let mut editor = Editor::new(original, 16).unwrap();
+    let mut tracks = Vec::new();
+    let mut assets = Vec::new();
+    for name in ["old second", "new second"] {
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: name.into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: format!("{name}.wav").into(),
+                sample_rate: 48_000,
+                frames,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: frames,
+                source_offset: 0,
+                source_length: frames,
+                looping: false,
+            })
+            .unwrap();
+        tracks.push(track);
+        assets.push(asset);
+    }
+    editor
+        .execute(Command::Mute {
+            track: tracks[1],
+            muted: true,
+        })
+        .unwrap();
+    let old = editor.project().clone();
+    editor
+        .execute(Command::Mute {
+            track: tracks[0],
+            muted: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::Mute {
+            track: tracks[1],
+            muted: false,
+        })
+        .unwrap();
+    let next = editor.project().clone();
+    let first_wav = stream_fixture::Wav::with_frames(8192);
+    let old_wav = stream_fixture::Wav::with_frames(8192);
+    let new_wav = stream_fixture::Wav::with_samples(8192, |_| 16_384);
+    let first = first_wav.definition(first_asset, 11);
+    let first_key = first.metadata.key();
+    let old_second = old_wav.definition(assets[0], 11);
+    let new_second = new_wav.definition(assets[1], 11);
+    let new_path = new_second.path.clone();
+    let metadata = vec![
+        first.metadata.clone(),
+        old_second.metadata.clone(),
+        new_second.metadata.clone(),
+    ];
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8_000_000,
+                max_construction_peak_data_bytes: 8_000_000,
+            },
+            2,
+            4096,
+        )
+        .unwrap();
+    let first_domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair_with_pool(vec![first], 3),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .unwrap_or_else(|_| panic!("first domain"));
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let second_domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair_with_pool(vec![old_second, new_second], 3),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .unwrap_or_else(|_| panic!("second domain"));
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let old_revision = control
+        .publish_with_admission_and_source_on_control(
+            compile_sources(&old, metadata.clone(), &store),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("old publication"));
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while control.status.applied_revision.load(Acquire) != old_revision {
+        measured_render(&mut data, &mut output);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    control.command(PlaybackCommand::Seek(3840)).unwrap();
+    while control.status.position.load(Acquire) != 3968 {
+        measured_render(&mut data, &mut output[..128]);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "seek to candidate boundary"
+        );
+        std::thread::yield_now();
+    }
+    while control.status.position.load(Acquire) == 3968 {
+        measured_render(&mut data, &mut output);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "warm both current domains"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.position.load(Acquire), 4224);
+    assert_eq!(output, [[0.5; 2]; 256]);
+    control.command(PlaybackCommand::Seek(3840)).unwrap();
+    while control.status.position.load(Acquire) != 3968 {
+        measured_render(&mut data, &mut output[..128]);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "restore candidate boundary"
+        );
+        std::thread::yield_now();
+    }
+    crate::candidate_window_probe::begin();
+    let new_revision = control
+        .publish_with_admission_and_source_on_control(
+            compile_sources(&next, metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("new publication"));
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.status.applied_revision.load(Acquire), old_revision);
+    assert!(!control.status.stream_buffering.load(Acquire));
+    assert_eq!(output, [[0.5; 2]; 256], "old sources remain audible");
+    data.owner_mut().unwrap().run(|c, _| {
+        let deferred = c.deferred.as_ref().expect("candidate remains owned");
+        assert!(
+            !deferred.streams.as_ref().unwrap().has_install_pending(),
+            "partial candidate intents must roll back"
+        );
+        assert!(
+            deferred
+                .streams
+                .as_ref()
+                .unwrap()
+                .test_candidate_role_idle(&mut c.domain_pages, first_key.into()),
+            "first domain's actual candidate role must be idle"
+        );
+    });
+    assert_eq!(
+        crate::candidate_window_probe::domains(),
+        Some((1, 1)),
+        "the first domain must admit its intent before the second refuses capacity"
+    );
+    match action {
+        TwoDomainAfterPressure::Stop => {
+            control.stop();
+            measured_render(&mut data, &mut output);
+            assert!(
+                !control.status.playing.load(Acquire),
+                "priority stop must not wait for candidate readiness"
+            );
+            measured_render(&mut data, &mut output);
+            assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+            let (failed, _, _) = crate::candidate_window_probe::finish().unwrap();
+            assert_eq!(failed, 256);
+        }
+        TwoDomainAfterPressure::ChangeSource => {
+            std::fs::write(&new_path, b"changed source").unwrap();
+            loop {
+                measured_render(&mut data, &mut output);
+                assert_eq!(control.status.applied_revision.load(Acquire), old_revision);
+                assert!(!control.status.stream_buffering.load(Acquire));
+                assert_eq!(output, [[0.5; 2]; 256], "old sources remain audible");
+                if let Some(rejected) = control.status.rejected_revision() {
+                    assert_eq!(
+                        rejected,
+                        (new_revision, PlaybackHandoffRejection::StreamSourceChanged)
+                    );
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "changed source was not refused"
+                );
+                std::thread::yield_now();
+            }
+            let (failed, next_width, _) = crate::candidate_window_probe::finish().unwrap();
+            assert_eq!((failed, next_width), (256, 128));
+        }
+        TwoDomainAfterPressure::Seek => {
+            let seek = control
+                .command_with_ticket(PlaybackCommand::Seek(128))
+                .unwrap();
+            measured_render(&mut data, &mut output);
+            assert_eq!(
+                control.status.rejected_action(),
+                Some((seek, PlaybackActionRejection::StreamActionBusy))
+            );
+            while control.status.applied_revision.load(Acquire) != new_revision {
+                measured_render(&mut data, &mut output);
+                assert!(control.status.rejected_revision().is_none());
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "candidate did not complete"
+                );
+                std::thread::yield_now();
+            }
+            let retry = control
+                .command_with_ticket(PlaybackCommand::Seek(128))
+                .unwrap();
+            while control.status.stream_applied_command_prefix.load(Acquire) < retry {
+                measured_render(&mut data, &mut output);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "seek retry did not complete"
+                );
+                std::thread::yield_now();
+            }
+            assert_ne!(
+                control.status.rejected_action().map(|(ticket, _)| ticket),
+                Some(retry)
+            );
+            assert_eq!(control.status.position.load(Acquire), 384);
+            let (failed, _, _) = crate::candidate_window_probe::finish().unwrap();
+            assert_eq!(failed, 256);
+        }
+        TwoDomainAfterPressure::Install => {
+            while control.status.applied_revision.load(Acquire) != new_revision {
+                measured_render(&mut data, &mut output);
+                assert!(control.status.rejected_revision().is_none());
+                assert!(!control.status.stream_buffering.load(Acquire));
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "candidate never installed"
+                );
+                std::thread::yield_now();
+            }
+            let (failed, next_width, _) = crate::candidate_window_probe::finish().unwrap();
+            assert_eq!((failed, next_width), (256, 128));
+            assert_eq!(output, [[0.75; 2]; 256]);
+        }
+    }
+    assert!(control.retire_audio_candidate_domain(first_domain));
+    assert!(control.retire_audio_candidate_domain(second_domain));
+    control.request_shutdown();
+    let mut recovered = [false; 2];
+    while !recovered.iter().all(|v| *v) {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        for (i, domain) in [first_domain, second_domain].into_iter().enumerate() {
+            if !recovered[i]
+                && let Some(report) = control.recover_audio_candidate_domain(domain)
+            {
+                assert!(report.worker_joined && report.accounting_complete);
+                recovered[i] = true;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "domain retirement");
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
 }
 
 #[cfg(feature = "stream-test-support")]
