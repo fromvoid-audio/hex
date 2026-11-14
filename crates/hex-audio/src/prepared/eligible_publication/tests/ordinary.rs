@@ -2701,6 +2701,12 @@ fn prepared_audio_cold_seek_waits_for_destination_after_old_page() {
 
 #[cfg(feature = "stream-test-support")]
 #[test]
+fn stop_cancels_cold_seek_while_an_old_stream_page_is_held() {
+    prepared_audio_domain_gate(GatedPageAction::SeekColdStop);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
 fn ordinary_partial_domain_readiness_survives_buffering_and_stop() {
     partial_domain_readiness_case(false);
 }
@@ -2994,6 +3000,7 @@ enum GatedPageAction {
     Retire,
     Seek,
     SeekCold,
+    SeekColdStop,
 }
 
 #[cfg(feature = "stream-test-support")]
@@ -3002,7 +3009,10 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
     let project = super::readiness::project_with_frames(frames);
     let asset = project.assets().next().unwrap().id();
-    let wav = if matches!(action, GatedPageAction::Seek | GatedPageAction::SeekCold) {
+    let wav = if matches!(
+        action,
+        GatedPageAction::Seek | GatedPageAction::SeekCold | GatedPageAction::SeekColdStop
+    ) {
         stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |frame| {
             if frame < hex_engine::STREAM_PAGE_FRAMES as u32 {
                 8192
@@ -3190,7 +3200,10 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
             control.status.stream_starved_callbacks.load(Relaxed),
             stopped
         );
-    } else if matches!(action, GatedPageAction::Seek | GatedPageAction::SeekCold) {
+    } else if matches!(
+        action,
+        GatedPageAction::Seek | GatedPageAction::SeekCold | GatedPageAction::SeekColdStop
+    ) {
         let destination = 2 * hex_engine::STREAM_PAGE_FRAMES as u64;
         control
             .command(PlaybackCommand::PlayFrom(destination))
@@ -3206,6 +3219,15 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
                 hex_engine::STREAM_PAGE_FRAMES as u64
             );
         }
+        let stopped_position = if action == GatedPageAction::SeekColdStop {
+            control.stop();
+            measured_render(&mut data, &mut output);
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(output, [[0.0; 2]; 256]);
+            Some(control.status.position.load(Acquire))
+        } else {
+            None
+        };
         release.send(()).unwrap();
         let old_page_is_ready = |data: &mut crate::native_callback_owner::Guard<
             crate::native_callback_owner::NativeCallbackOwner,
@@ -3240,27 +3262,98 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
             !old_page_is_ready(&mut data),
             "callback did not consume the old completion"
         );
-        if action == GatedPageAction::SeekCold {
-            while control.status.position.load(Acquire) < destination {
+        if action == GatedPageAction::SeekColdStop {
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(output, [[0.0; 2]; 256]);
+            data.owner_mut().unwrap().run(|callback, _| {
+                let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+                    panic!("active streamed graph")
+                };
+                let (loan, _) = active
+                    .streams
+                    .as_ref()
+                    .unwrap()
+                    .test_loan_for(&mut callback.domain_pages, source_key.into())
+                    .unwrap();
+                loan.test_prefetch_audio_page(source_key, 2);
+            });
+            loop {
+                let mut available = false;
+                data.owner_mut().unwrap().run(|callback, _| {
+                    let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+                        panic!("active streamed graph")
+                    };
+                    let (loan, _) = active
+                        .streams
+                        .as_ref()
+                        .unwrap()
+                        .test_loan_for(&mut callback.domain_pages, source_key.into())
+                        .unwrap();
+                    available =
+                        loan.test_ready_page(hex_stream::ResourcePageKey {
+                            source: source_key.into(),
+                            page_index: 2,
+                        }) || loan.test_has_resource_extent(hex_engine::StreamResourceExtent {
+                            source: source_key.into(),
+                            page_index: 2,
+                            start: 0,
+                            end: hex_engine::STREAM_PAGE_FRAMES,
+                        });
+                });
+                if available {
+                    break;
+                }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "cold seek did not apply"
+                    "destination page not delivered"
                 );
                 std::thread::yield_now();
-                measured_render(&mut data, &mut output);
             }
-        }
-        assert_eq!(
-            output, [[0.75; 2]; 256],
-            "old page must not play after the seek"
-        );
-        if action == GatedPageAction::Seek {
-            assert_eq!(control.status.position.load(Acquire), destination + 512);
-        } else {
-            assert!(control.status.position.load(Acquire) >= destination + 256);
             for _ in 0..3 {
                 measured_render(&mut data, &mut output);
-                assert_eq!(output, [[0.75; 2]; 256]);
+                assert!(!control.status.playing.load(Acquire));
+                assert_eq!(output, [[0.0; 2]; 256]);
+                assert_eq!(
+                    Some(control.status.position.load(Acquire)),
+                    stopped_position
+                );
+            }
+            control.command(PlaybackCommand::Play).unwrap();
+            loop {
+                measured_render(&mut data, &mut output);
+                assert!(output.iter().all(|frame| *frame != [0.75; 2]));
+                if output.iter().all(|frame| *frame == [0.5; 2]) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "stopped position did not resume"
+                );
+                std::thread::yield_now();
+            }
+        } else {
+            if action == GatedPageAction::SeekCold {
+                while control.status.position.load(Acquire) < destination {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "cold seek did not apply"
+                    );
+                    std::thread::yield_now();
+                    measured_render(&mut data, &mut output);
+                }
+            }
+            assert_eq!(
+                output, [[0.75; 2]; 256],
+                "old page must not play after the seek"
+            );
+            if action == GatedPageAction::Seek {
+                assert_eq!(control.status.position.load(Acquire), destination + 512);
+            } else {
+                assert!(control.status.position.load(Acquire) >= destination + 256);
+                for _ in 0..3 {
+                    measured_render(&mut data, &mut output);
+                    assert_eq!(output, [[0.75; 2]; 256]);
+                }
             }
         }
     } else {
