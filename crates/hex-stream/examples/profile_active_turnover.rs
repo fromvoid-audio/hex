@@ -1,4 +1,6 @@
 //! Measure real-worker page turnover during a finite 100-track headless render.
+//! `--sustained` renders 128 pages per source, excluding the first four pages
+//! from the render distribution; page requests remain serial at each boundary.
 //! Headless timings do not establish physical audio-device deadlines.
 use hex_engine::{
     Clip, MediaPages, Project as EngineProject, Renderer, StreamSourceKey, StreamedSourceMetadata,
@@ -19,7 +21,9 @@ use std::{
 };
 
 const SOURCES: usize = 100;
-const PAGES: usize = 4;
+const DEFAULT_PAGES: usize = 4;
+const SUSTAINED_PAGES: usize = 128;
+const SUSTAINED_WARMUP_PAGES: usize = 4;
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 const PAGE: usize = hex_engine::STREAM_PAGE_FRAMES;
@@ -34,6 +38,20 @@ fn percentile(sorted: &[u128], percent: usize) -> u128 {
     sorted[(sorted.len() * percent).div_ceil(100).max(1) - 1]
 }
 fn main() -> Result<(), Box<dyn Error>> {
+    let mut arguments = std::env::args_os().skip(1);
+    let pages_count = match arguments.next().as_deref() {
+        None => DEFAULT_PAGES,
+        Some(argument) if argument == "--sustained" => SUSTAINED_PAGES,
+        _ => return Err("usage: profile_active_turnover [--sustained]".into()),
+    };
+    if arguments.next().is_some() {
+        return Err("usage: profile_active_turnover [--sustained]".into());
+    }
+    let warmup_pages = if pages_count == SUSTAINED_PAGES {
+        SUSTAINED_WARMUP_PAGES
+    } else {
+        0
+    };
     let setup = Instant::now();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let root = std::env::temp_dir().join(format!(
@@ -42,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ));
     fs::create_dir(&root)?;
     let fixture = Fixture(root);
-    let frames = PAGES * PAGE;
+    let frames = pages_count * PAGE;
     let mut wav = Vec::with_capacity(44 + frames * 4);
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&u32::try_from(36 + frames * 4)?.to_le_bytes());
@@ -71,7 +89,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         oracle.push(sum);
     }
     let limits = VerifiedWavReaderLimits::new(
-        WavReaderLimits::new(1024 * 1024, frames as u64, 128, 8192),
+        WavReaderLimits::new(
+            (1024 * 1024).max(u64::try_from(wav.len())?),
+            frames as u64,
+            128,
+            8192,
+        ),
         1024 * 1024,
     );
     let mut editor = Editor::new(Project::new(RATE)?, SOURCES + 1)?;
@@ -138,7 +161,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             })
             .collect()
     };
-    let pages: Vec<_> = (0..PAGES).map(page_keys).collect();
+    let pages: Vec<_> = (0..pages_count).map(page_keys).collect();
     let mut request_time = Duration::ZERO;
     let mut wait_time = Duration::ZERO;
     let mut capacity_retries = 0_usize;
@@ -153,7 +176,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let project = EngineProject::new(RATE, tracks)?;
     let mut renderer = Renderer::new(&project);
     renderer.play();
-    for page in 0..PAGES {
+    let turnover_start = Instant::now();
+    for page in 0..pages_count {
         let deadline = Instant::now() + Duration::from_secs(30);
         for key in &pages[page] {
             let t = Instant::now();
@@ -194,30 +218,36 @@ fn main() -> Result<(), Box<dyn Error>> {
             let t = Instant::now();
             runtime.pump_ready(128);
             renderer.render_with_pages(block, &mut runtime)?;
-            render_times.push(t.elapsed().as_nanos());
+            let elapsed = t.elapsed();
+            if page >= warmup_pages {
+                render_times.push(elapsed.as_nanos());
+            }
         }
         runtime.unpin_all();
     }
+    let turnover_time = turnover_start.elapsed();
     if output != oracle {
         return Err("full rendered PCM differed from independent oracle".into());
     }
     let stats = runtime.stats();
     if stats.misses != 0
         || stats.rejected_requests != 0
-        || stats.queued_requests != (SOURCES * PAGES + capacity_retries) as u64
+        || stats.queued_requests != (SOURCES * pages_count + capacity_retries) as u64
     {
         return Err(format!("unexpected page demand statistics: {stats:?}").into());
     }
     render_times.sort_unstable();
     println!(
-        "sources={SOURCES} pages_each={PAGES} frames={frames} rate={RATE} block={BLOCK} warmup=none request_policy=serial_page_boundary pool_pages={} cache_capacity={} full_pcm=exact",
+        "sources={SOURCES} pages_each={pages_count} frames={frames} rate={RATE} block={BLOCK} warmup_pages={warmup_pages} measured_blocks={} request_policy=serial_page_boundary pool_pages={} cache_capacity={} full_pcm=exact",
+        render_times.len(),
         config.page_buffers,
         runtime.page_capacity()
     );
     println!(
-        "fixture_ms={:.3} catalog_ms={:.3} request_and_wake_ms={:.3} page_wait_ms={:.3} render_block_ns_p50={} p95={} p99={} max={} misses={} rejected={} queued={} capacity_retries={}",
+        "fixture_ms={:.3} catalog_ms={:.3} turnover_ms={:.3} request_and_wake_ms={:.3} page_wait_ms={:.3} render_block_ns_p50={} p95={} p99={} max={} misses={} rejected={} queued={} capacity_retries={}",
         setup_time.as_secs_f64() * 1000.0,
         catalog_time.as_secs_f64() * 1000.0,
+        turnover_time.as_secs_f64() * 1000.0,
         request_time.as_secs_f64() * 1000.0,
         wait_time.as_secs_f64() * 1000.0,
         percentile(&render_times, 50),
