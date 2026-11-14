@@ -4,6 +4,153 @@ use crate::service::verified_source_tests::{
     Files as VerifiedFiles, reservation as file_reservation,
 };
 
+#[test]
+fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
+    use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_project::{Command, Created, Editor, Project, WarpResampler};
+    let files = VerifiedFiles::new();
+    let path = files.wav("pitch.wav", 16_000, 8192, 1024);
+    let other_path = files.wav("other.wav", 16_000, 8192, 2048);
+    let reader = file_reservation(2).reader;
+    let file = crate::VerifiedAudioFile::inspect(path.clone(), 16_000, reader, || false).unwrap();
+    let other = crate::VerifiedAudioFile::inspect(other_path, 16_000, reader, || false).unwrap();
+    let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "file".into(),
+            path,
+            sample_rate: 16_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("file fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+        .unwrap();
+    let raw = file.source_metadata(asset, 7).unwrap();
+    let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+    let sources = BTreeMap::from([(asset, Arc::new(raw.clone()))]);
+    let wrong = other
+        .source_metadata(asset, 7)
+        .unwrap()
+        .with_plain_pitch(700, WarpResampler::V2)
+        .unwrap();
+    assert!(
+        ResidentFileMetadata::new_with_pitched(
+            7,
+            sources.clone(),
+            BTreeMap::from([(pitched.key(), Arc::new(wrong))])
+        )
+        .is_err()
+    );
+    assert!(
+        ResidentFileMetadata::new_with_pitched(
+            7,
+            sources.clone(),
+            BTreeMap::from([(raw.key(), Arc::new(raw.clone()))])
+        )
+        .is_err()
+    );
+    let other_pitch = raw.with_plain_pitch(-300, WarpResampler::V2).unwrap();
+    assert!(
+        ResidentFileMetadata::new_with_pitched(
+            7,
+            sources.clone(),
+            BTreeMap::from([(pitched.key(), Arc::new(other_pitch))]),
+        )
+        .is_err()
+    );
+    let missing = ResidentFileMetadata::new(7, sources.clone()).unwrap();
+    let catalog = ResidentFileMetadata::new_with_pitched(
+        7,
+        sources,
+        BTreeMap::from([(pitched.key(), Arc::new(pitched.clone()))]),
+    )
+    .unwrap();
+    let rows = [(asset, &file)];
+    let input = ResidentFileInput {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        },
+        semantic_source_epoch: 1,
+        files: &rows,
+    };
+    catalog.validate_for(&input).unwrap();
+    let wrong_rows = [(asset, &other)];
+    assert!(
+        catalog
+            .validate_for(&ResidentFileInput {
+                files: &wrong_rows,
+                ..input
+            })
+            .is_err()
+    );
+    let media = crate::audio_sources::MediaBank {
+        epoch: 1,
+        device_only: Default::default(),
+        resident: BTreeMap::new(),
+        verified: BTreeMap::from([(asset, file)]),
+    };
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let transforms = hex_engine::audio_transform::AudioTransformPreparation::default();
+    let prepare = |catalog, effects| {
+        media.prepare_with_device_resources_and_catalog(
+            editor.project(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancel,
+            Some(catalog),
+            effects,
+            None,
+        )
+    };
+    assert!(prepare(&missing, None).is_err());
+    let builtins = prepare(&catalog, None).unwrap();
+    assert_eq!(
+        builtins.arrangement_stream_sources().next().unwrap(),
+        &pitched
+    );
+    let hosted = hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        media.prepare_with_device_resources_and_catalog(
+            editor.project(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancel,
+            Some(&catalog),
+            Some(effects),
+            None,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        hosted.arrangement_stream_sources().next().unwrap(),
+        &pitched
+    );
+}
+
 struct CatalogSink {
     reject: bool,
 }

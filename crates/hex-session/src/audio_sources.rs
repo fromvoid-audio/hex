@@ -336,10 +336,7 @@ impl MediaBank {
         resources: &hex_engine::native_device_resources::PreparedDeviceResources,
         scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
-        catalog: Option<(
-            u64,
-            &BTreeMap<AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
-        )>,
+        catalog: Option<&crate::service::ResidentFileMetadata>,
         effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
         native_input: Option<hex_engine::NativeParameterInputTarget>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
@@ -385,7 +382,8 @@ impl MediaBank {
                 cancel,
             );
         }
-        let (generation, sources) = if let Some((generation, metadata)) = catalog {
+        let (generation, sources) = if let Some(catalog) = catalog {
+            let generation = catalog.catalog_generation();
             if generation == 0 {
                 return Err(hex_engine::Invalid(
                     "ordinary native catalog generation unavailable",
@@ -396,7 +394,7 @@ impl MediaBank {
                 .iter()
                 .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
                 .collect();
-            for (id, actual) in metadata {
+            for (id, actual) in catalog.sources() {
                 let file = self.verified.get(id).ok_or(hex_engine::Invalid(
                     "ordinary native source is not captured",
                 ))?;
@@ -410,6 +408,38 @@ impl MediaBank {
         } else {
             (self.epoch, self.prepared_sources()?)
         };
+        if let Some(pitched) = catalog
+            .map(|catalog| catalog.pitched_sources())
+            .filter(|map| !map.is_empty())
+        {
+            if let Some(effects) = effects {
+                return effects.prepare_registered_pitch_source_revision(
+                    project,
+                    &sources,
+                    pitched,
+                    generation,
+                    table,
+                    previous,
+                    transforms,
+                    resources,
+                    scan_frames,
+                    cancel,
+                    native_input,
+                );
+            }
+            return PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+                project,
+                &sources,
+                pitched,
+                generation,
+                table,
+                previous,
+                transforms,
+                resources,
+                scan_frames,
+                cancel,
+            );
+        }
         if let Some(effects) = effects {
             return effects.prepare_registered_source_revision(
                 project,
