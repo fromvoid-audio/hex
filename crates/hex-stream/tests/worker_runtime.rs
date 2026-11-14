@@ -2011,11 +2011,14 @@ fn repitch_worker_publishes_mapped_pages_at_the_derived_extent() {
 fn canonical_repitch_projection_drives_actual_worker_pages() {
     use hex_project::{BeatTime, WarpMarker, WarpMode, default_audio_warp};
     use hex_warp::{Input, Mode, Request, render_with_resampler};
-    use std::sync::atomic::AtomicBool;
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, atomic::AtomicBool},
+    };
 
     let (wav, pcm) = TestWav::stereo_pcm16(48_000, 8_000);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-    let Created::Imported { clip, asset, .. } = editor
+    let Created::Imported { track, clip, asset } = editor
         .execute(Command::ImportAudioTrack {
             name: "canonical".into(),
             path: wav.path().to_path_buf(),
@@ -2051,6 +2054,29 @@ fn canonical_repitch_projection_drives_actual_worker_pages() {
         .execute(Command::SetAudioClipWarp {
             clip,
             settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "raw".into() })
+        .unwrap()
+    else {
+        panic!("scene fixture")
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "raw".into(),
+            asset,
+            source_start: 0,
+            source_end: 4096,
         })
         .unwrap();
     let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
@@ -2097,10 +2123,59 @@ fn canonical_repitch_projection_drives_actual_worker_pages() {
         *verified.fingerprint(),
     )
     .unwrap();
-    let definition = SourceDefinition::new(wav.path().to_path_buf(), raw, limits)
+    let definition = SourceDefinition::new(wav.path().to_path_buf(), raw.clone(), limits)
         .with_repitch(map, law)
         .unwrap();
     let key = definition.key;
+    let derived = definition.metadata.clone();
+    let sources = BTreeMap::from([(
+        asset,
+        hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(raw)),
+    )]);
+    let prepare = |derived_sources: &BTreeMap<_, _>| {
+        hex_engine::PreparedRevision::prepare_with_prepared_pitch_sources(
+            editor.project(),
+            &sources,
+            derived_sources,
+            811,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+    };
+    assert!(prepare(&BTreeMap::new()).is_err());
+    let wrong = StreamedSourceMetadata::new(
+        StreamSourceKey::new(811, asset),
+        48_000,
+        48_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [42; 32],
+    )
+    .unwrap();
+    assert!(prepare(&BTreeMap::from([(key, Arc::new(wrong))])).is_err());
+    let prepared = prepare(&BTreeMap::from([(key, Arc::new(derived))])).unwrap();
+    assert_eq!(
+        prepared
+            .arrangement_stream_sources()
+            .map(|source| source.key())
+            .collect::<Vec<_>>(),
+        vec![key]
+    );
+    let hex_engine::compile::PreparedAudioSource::Streamed(session_source) =
+        prepared.session().audio_clips()[0].source()
+    else {
+        panic!("session source")
+    };
+    assert_eq!(session_source.key(), StreamSourceKey::new(811, asset));
+    let resident = hex_engine::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        &BTreeMap::from([(asset, Audio::new(48_000, pcm.clone()).unwrap())]),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+    )
+    .unwrap();
     let mut runtime =
         StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).unwrap();
     runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
@@ -2118,5 +2193,20 @@ fn canonical_repitch_projection_drives_actual_worker_pages() {
         let start = index as usize * 4096;
         assert_eq!(page.frames, &expected[start..start + page.frames.len()]);
     }
+    let mut actual = vec![[0.0; 2]; output_frames as usize];
+    let mut expected_playback = vec![[0.0; 2]; output_frames as usize];
+    let mut streamed = Renderer::new(prepared.arrangement());
+    let mut resident_renderer = Renderer::new(resident.arrangement());
+    streamed.play();
+    resident_renderer.play();
+    for (out, reference) in actual
+        .chunks_mut(512)
+        .zip(expected_playback.chunks_mut(512))
+    {
+        streamed.render_with_pages(out, &mut runtime).unwrap();
+        resident_renderer.render(reference).unwrap();
+    }
+    assert!(expected_playback.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(actual, expected_playback);
     assert!(runtime.shutdown().unwrap().accounting_complete);
 }
