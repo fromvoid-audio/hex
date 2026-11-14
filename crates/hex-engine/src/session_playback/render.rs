@@ -815,6 +815,7 @@ impl SessionPlayback {
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
+        let mut passthrough = [false; MAX_TRACKS];
         let mut stamps = [None; 256];
         let mut projected_history = None;
 
@@ -913,6 +914,27 @@ impl SessionPlayback {
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
+                passthrough.fill(false);
+                if observer.is_none()
+                    && capture.is_none()
+                    && scalar.is_none()
+                    && self
+                        .native_parameter_state
+                        .as_deref()
+                        .is_none_or(|state| state.processing.is_none())
+                    && !self.tail_output_scratch.iter().any(|active| *active)
+                    && !self
+                        .return_effect_tails
+                        .slots()
+                        .iter()
+                        .flatten()
+                        .any(|tail| tail.output_active)
+                {
+                    self.classify_resident_return_tracks(
+                        &resident_source_eligible,
+                        &mut passthrough,
+                    );
+                }
                 resident_source_index = 0;
                 resident_source_end = count;
             }
@@ -1010,6 +1032,7 @@ impl SessionPlayback {
                         analytic: &resident_analytic_eligible,
                         stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
+                        passthrough: &passthrough,
                     }),
                 )?;
                 if use_resident_sources {
