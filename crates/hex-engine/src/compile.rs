@@ -37,6 +37,11 @@ pub enum PreparedAudioSource {
 pub(crate) enum SourceBank<'a> {
     Resident(&'a BTreeMap<AssetId, Audio>),
     Mixed(&'a BTreeMap<AssetId, PreparedAudioSource>, u64),
+    MixedWithPitch(
+        &'a BTreeMap<AssetId, PreparedAudioSource>,
+        &'a BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+        u64,
+    ),
 }
 impl<'a> SourceBank<'a> {
     pub(crate) fn resolve(
@@ -47,6 +52,14 @@ impl<'a> SourceBank<'a> {
         match self {
             Self::Resident(media) => resolve_resident(asset, rate, media),
             Self::Mixed(sources, generation) => resolve_prepared(asset, rate, sources, generation),
+            Self::MixedWithPitch(sources, pitched, generation) => {
+                match resolve_prepared(asset, rate, sources, generation)? {
+                    PreparedAudioSourceRef::Streamed(raw) => {
+                        Ok(PreparedAudioSourceRef::StreamedWithPitch(raw, pitched))
+                    }
+                    resident => Ok(resident),
+                }
+            }
         }
     }
 }
@@ -337,12 +350,7 @@ pub fn project_with_prepared_pitch_sources(
         .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_project(
         snapshot,
-        |asset, rate| match resolve_prepared(asset, rate, sources, generation)? {
-            PreparedAudioSourceRef::Streamed(raw) => {
-                Ok(PreparedAudioSourceRef::StreamedWithPitch(raw, pitched))
-            }
-            resident => Ok(resident),
-        },
+        |asset, rate| SourceBank::MixedWithPitch(sources, pitched, generation).resolve(asset, rate),
         None,
         None,
         &registry,
