@@ -259,6 +259,11 @@ carries a doc example (a fenced block in `///` or `//!` comments). A reviewed ru
 consumer that is itself the changed owner (for example hex-storage) is
 module-scoped like any owner.
 
+For a module-scoped `hex-session` automation-take adoption change, the
+planner also runs the `automation_take_density` integration target when it is
+present. It exercises the real durable overflow boundary and must run at least
+one test. Whole-package checks already include it; unrelated modules stay scoped.
+
 Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.

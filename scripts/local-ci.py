@@ -417,6 +417,23 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for package in tested:
             if package in module_filters and package not in single:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
+        # The durable dense-take regression lives in the integration tier. A
+        # scoped adoption change must still exercise that public boundary.
+        adoption = "service::automation_take::adoption::"
+        session_filters = module_filters.get("hex-session", ())
+        if "hex-session" in tested and any(
+            adoption.startswith(name) or name.startswith(adoption) for name in session_filters
+        ):
+            targets = [target for target in by_name["hex-session"]["targets"]
+                       if target.get("name") == "automation_take_density"]
+            if targets:
+                if (len(targets) != 1 or targets[0].get("kind") != ["test"]
+                        or targets[0].get("src_path") != "tests/automation_take_density.rs"
+                        or targets[0].get("required-features")):
+                    raise ValueError("automation take density integration target is malformed")
+                steps.append(Step("session-automation-take-density",
+                                  ("cargo", "test", "-p", "hex-session", "--test",
+                                   "automation_take_density", "--locked"), requires_tests=True))
         if standalone_ui:
             if tested != ["hex-ui"] or single.get("hex-ui") != "ui-test-support" or module_filters:
                 raise ValueError("standalone UI unit targets require an exclusively test-only hex-ui boundary")
