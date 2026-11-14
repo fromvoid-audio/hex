@@ -10,21 +10,39 @@ const MAX_BINS: usize = 1024;
 const WINDOW: usize = 4096;
 const MAX_SCRATCH: usize = 4096;
 impl VerifiedAudioFile {
+    /// Reuse display data only after the replacement file has been freshly
+    /// inspected and every page has been verified again against that capture.
+    pub(crate) fn reuse_waveform_on_control(
+        &mut self,
+        previous: &Self,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<bool, SessionError> {
+        let Some(waveform) = previous
+            .waveform
+            .as_ref()
+            .filter(|_| self.facts == previous.facts)
+        else {
+            return Ok(false);
+        };
+        let mut reader = self.open_waveform_reader(&mut cancelled)?;
+        reader
+            .track_complete_verification(self.reader_limits().max_manifest_bytes)?
+            .finish(&mut cancelled)?;
+        self.waveform = Some(Arc::clone(waveform));
+        Ok(true)
+    }
     pub(crate) fn cached_waveform(&self) -> Option<&Arc<Waveform>> {
         self.waveform.as_ref()
     }
-    pub(crate) fn prepare_waveform_on_control(
-        &mut self,
-        mut cancelled: impl FnMut() -> bool,
-    ) -> Result<(), SessionError> {
-        if self.waveform.is_some() {
-            return Ok(());
-        }
-        let mut reader = match VerifiedWavReader::open_verified_with_cancel(
+    fn open_waveform_reader(
+        &self,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<VerifiedWavReader, SessionError> {
+        let reader = match VerifiedWavReader::open_verified_with_cancel(
             self.path(),
             self.reader_limits(),
             self.verified_manifest().clone(),
-            &mut cancelled,
+            &mut *cancelled,
         ) {
             Ok(reader) => reader,
             // An unchanged file may have a new mtime. Preserve the existing
@@ -32,7 +50,7 @@ impl VerifiedAudioFile {
             Err(hex_media::ImportError::SourceChanged) => VerifiedWavReader::open_with_cancel(
                 self.path(),
                 self.reader_limits(),
-                &mut cancelled,
+                &mut *cancelled,
             )?,
             Err(error) => return Err(error.into()),
         };
@@ -44,6 +62,16 @@ impl VerifiedAudioFile {
                 "waveform file differs from captured source",
             ));
         }
+        Ok(reader)
+    }
+    pub(crate) fn prepare_waveform_on_control(
+        &mut self,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<(), SessionError> {
+        if self.waveform.is_some() {
+            return Ok(());
+        }
+        let mut reader = self.open_waveform_reader(&mut cancelled)?;
         let frames = usize::try_from(self.playback_frames())
             .map_err(|_| SessionError::Invalid("file waveform extent exceeds platform"))?;
         let count = frames.min(MAX_BINS);
@@ -110,20 +138,34 @@ impl VerifiedAudioFile {
                 &mut output[..take],
                 &mut scratch,
             )?;
-            for frame in &output[..take] {
-                identical_channels &= frame[0].to_bits() == frame[1].to_bits();
-                if let Some(peaks) = peaks.as_mut() {
-                    for (peak, value) in peaks.iter_mut().zip(frame) {
-                        peak.min = peak.min.min(*value);
-                        peak.max = peak.max.max(*value);
-                    }
-                } else {
-                    peaks = Some(frame.map(|value| Peak {
+            let mut offset = 0;
+            while offset < take {
+                let len = (end - cursor).min(take - offset);
+                let segment = &output[offset..offset + len];
+                let rest = if peaks.is_none() {
+                    let Some((first, rest)) = segment.split_first() else {
+                        return Err(SessionError::Invalid("empty file waveform bin"));
+                    };
+                    identical_channels &= first[0].to_bits() == first[1].to_bits();
+                    peaks = Some(first.map(|value| Peak {
                         min: value,
                         max: value,
                     }));
+                    rest
+                } else {
+                    segment
+                };
+                if let Some(peaks) = peaks.as_mut() {
+                    for frame in rest {
+                        identical_channels &= frame[0].to_bits() == frame[1].to_bits();
+                        for (peak, value) in peaks.iter_mut().zip(frame) {
+                            peak.min = peak.min.min(*value);
+                            peak.max = peak.max.max(*value);
+                        }
+                    }
                 }
-                cursor += 1;
+                cursor += len;
+                offset += len;
                 if cursor == end {
                     bins.push(
                         peaks

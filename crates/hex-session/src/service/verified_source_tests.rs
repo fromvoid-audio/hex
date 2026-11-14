@@ -984,6 +984,243 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
 }
 
 #[test]
+fn file_waveform_peaks_cover_short_bins_and_window_boundaries() {
+    let files = Files::new();
+    for frames in [1_usize, 1023, 1024, 1025, 4097] {
+        let path = files.0.join(format!("segment-{frames}.wav"));
+        let values: Vec<[f32; 2]> = (0..frames)
+            .map(|i| {
+                [
+                    ((i % 31) as f32 - 15.0) / 16.0,
+                    ((i % 17) as f32 - 8.0) / 8.0,
+                ]
+            })
+            .collect();
+        let mut written = 0;
+        hex_export::write_float_wav_new(
+            &path,
+            48_000,
+            frames as u64,
+            &AtomicBool::new(false),
+            |output| {
+                output.copy_from_slice(&values[written..written + output.len()]);
+                written += output.len();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut source =
+            crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false)
+                .unwrap();
+        source.prepare_waveform_on_control(|| false).unwrap();
+        let bins = source.cached_waveform().unwrap().bins();
+        let count = frames.min(1024);
+        assert_eq!(bins.len(), count);
+        let mut start = 0;
+        for (index, bin) in bins.iter().enumerate() {
+            let end = start + frames / count + usize::from(index < frames % count);
+            for (channel, peak) in bin.iter().enumerate() {
+                let expected_min = values[start..end]
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::INFINITY, f32::min);
+                let expected_max = values[start..end]
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                assert_eq!((peak.min, peak.max), (expected_min, expected_max));
+            }
+            start = end;
+        }
+    }
+}
+
+#[test]
+fn ordinary_reopen_reuses_only_the_same_verified_waveform() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let files = Files::new();
+    let path = files.wav("reopen-cache.wav", 48_000, 64, 1000);
+    let service = Service::new(48_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let imported = run(&service, Request::Import(path.clone()));
+    let original = Arc::clone(imported.state.waveforms.values().next().unwrap());
+    let saved = files.0.join("reopen-cache.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    let reopened = run(&service, Request::Open(saved.clone()));
+    assert!(Arc::ptr_eq(
+        &original,
+        reopened.state.waveforms.values().next().unwrap()
+    ));
+
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&(-12_000_i16).to_le_bytes()).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    drop(file);
+    let changed = run(&service, Request::Open(saved));
+    let new_waveform = changed.state.waveforms.values().next().unwrap();
+    assert!(!Arc::ptr_eq(&original, new_waveform));
+    assert_ne!(original.bins(), new_waveform.bins());
+}
+
+#[test]
+fn verified_waveform_reuse_requires_matching_facts_and_complete_reverification() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::time::Duration;
+
+    let files = Files::new();
+    let path = files.wav("reused.wav", 48_000, 4097, 1000);
+    let limits = reservation(1).reader;
+    let mut original =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    original.prepare_waveform_on_control(|| false).unwrap();
+    let mut same =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    assert!(same.reuse_waveform_on_control(&original, || false).unwrap());
+    assert!(Arc::ptr_eq(
+        same.cached_waveform().unwrap(),
+        original.cached_waveform().unwrap()
+    ));
+
+    let other_path = files.0.join("copy.wav");
+    fs::copy(&path, &other_path).unwrap();
+    let mut other =
+        crate::VerifiedAudioFile::inspect(other_path, 48_000, limits, || false).unwrap();
+    assert!(
+        !other
+            .reuse_waveform_on_control(&original, || false)
+            .unwrap()
+    );
+    assert!(other.cached_waveform().is_none());
+    let mut rate =
+        crate::VerifiedAudioFile::inspect(path.clone(), 44_100, limits, || false).unwrap();
+    assert!(!rate.reuse_waveform_on_control(&original, || false).unwrap());
+    let mut v1 = crate::VerifiedAudioFile::inspect_for_conversion(
+        path.clone(),
+        44_100,
+        hex_project::SINC_CONVERSION_V1,
+        limits,
+        || false,
+    )
+    .unwrap();
+    v1.prepare_waveform_on_control(|| false).unwrap();
+    let mut v2 = crate::VerifiedAudioFile::inspect_for_conversion(
+        path.clone(),
+        44_100,
+        hex_project::SINC_CONVERSION_V2,
+        limits,
+        || false,
+    )
+    .unwrap();
+    assert!(!v2.reuse_waveform_on_control(&v1, || false).unwrap());
+    let mut cancelled =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    assert!(
+        cancelled
+            .reuse_waveform_on_control(&original, || true)
+            .is_err()
+    );
+    assert!(cancelled.cached_waveform().is_none());
+
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let original_modified = file.metadata().unwrap().modified().unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(original_modified + Duration::from_secs(2)))
+        .unwrap();
+    let mut metadata_only =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    assert!(
+        !metadata_only
+            .reuse_waveform_on_control(&original, || false)
+            .unwrap()
+    );
+    metadata_only.prepare_waveform_on_control(|| false).unwrap();
+    assert_eq!(
+        metadata_only.cached_waveform().unwrap().bins(),
+        original.cached_waveform().unwrap().bins()
+    );
+    file.set_times(fs::FileTimes::new().set_modified(original_modified))
+        .unwrap();
+    drop(file);
+
+    let mut changed =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(48)).unwrap();
+    file.write_all(&[0x12]).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(
+        changed
+            .reuse_waveform_on_control(&original, || false)
+            .is_err()
+    );
+    assert!(changed.cached_waveform().is_none());
+    file.set_times(fs::FileTimes::new().set_modified(modified + Duration::from_secs(2)))
+        .unwrap();
+    let mut fresh = crate::VerifiedAudioFile::inspect(path, 48_000, limits, || false).unwrap();
+    assert!(
+        !fresh
+            .reuse_waveform_on_control(&original, || false)
+            .unwrap()
+    );
+    assert!(fresh.cached_waveform().is_none());
+}
+
+#[test]
+fn verified_waveform_reuse_refuses_changed_unread_pages_and_missing_files() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let files = Files::new();
+    let path = files.wav("reuse-trailing.wav", 48_000, 64, 1234);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"JUNK");
+    bytes.extend_from_slice(&131_072_u32.to_le_bytes());
+    bytes.resize(bytes.len() + 131_072, 0x5a);
+    let riff_len = u32::try_from(bytes.len() - 8).unwrap();
+    bytes[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    fs::write(&path, bytes).unwrap();
+    let limits = reservation(1).reader;
+    let mut original =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    original.prepare_waveform_on_control(|| false).unwrap();
+    let mut changed =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    let mut missing = changed.clone();
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(65_536 + 16)).unwrap();
+    file.write_all(&[0x99]).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(
+        changed
+            .reuse_waveform_on_control(&original, || false)
+            .is_err()
+    );
+    assert!(changed.cached_waveform().is_none());
+    drop(file);
+    fs::remove_file(path).unwrap();
+    assert!(
+        missing
+            .reuse_waveform_on_control(&original, || false)
+            .is_err()
+    );
+    assert!(missing.cached_waveform().is_none());
+    assert!(original.cached_waveform().is_some());
+}
+
+#[test]
 fn identical_file_extrema_do_not_hide_independent_channels() {
     let files = Files::new();
     let path = files.0.join("independent.wav");
