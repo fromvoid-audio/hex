@@ -822,6 +822,26 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok((map, law)) =
+                streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)
+        {
+            let expected = raw.with_repitch(&map, law)?;
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == &expected)
+                .ok_or(Invalid("matching repitch stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, pitched) = source
             && edit.is_plain_pitch_capture(clip)
             && clip.source_length() == asset.playback_frames()
