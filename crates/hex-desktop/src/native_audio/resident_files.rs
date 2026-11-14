@@ -75,6 +75,7 @@ impl NativeAudioSink {
             semantic_source_epoch: files.semantic_source_epoch(),
             files: &refs,
             pitches: files.pitches(),
+            repitches: files.repitches().requirements(),
         };
         let policy = self.policy.as_ref().map_err(Clone::clone)?;
         let control = self

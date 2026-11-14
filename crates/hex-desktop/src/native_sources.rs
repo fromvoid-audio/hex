@@ -90,6 +90,9 @@ impl DomainSources {
         input: &hex_session::service::ResidentFileInput<'_>,
         catalog_generation: u64,
     ) -> Result<Self, String> {
+        if !input.repitches.is_empty() {
+            return Err("ordinary repitch source catalog unavailable".into());
+        }
         if catalog_generation == 0
             || input.files.len() > hex_stream::StreamConfig::initial().max_sources
         {
@@ -121,7 +124,8 @@ impl DomainSources {
         &self,
         input: &hex_session::service::ResidentFileInput<'_>,
     ) -> bool {
-        self.project_generation == input.context.project_generation
+        input.repitches.is_empty()
+            && self.project_generation == input.context.project_generation
             && input.files.iter().all(|(id, file)| {
                 self.members.iter().any(|member| {
                     member.metadata.key()
