@@ -261,6 +261,7 @@ impl SessionPlayback {
                         parameter_block
                             .as_ref()
                             .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
+                        None,
                     )?;
                 } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
@@ -422,7 +423,15 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
+            self.render_detached_tails(
+                self.performance_frame,
+                chunk,
+                offset,
+                capture,
+                None,
+                None,
+                foreign,
+            )?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }

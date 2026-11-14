@@ -94,6 +94,14 @@ pub enum SessionRouteTarget {
     Silence,
 }
 
+/// The Session Arrangement loop law and its current iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArrangementLoopState {
+    pub pass: u64,
+    /// Active half-open Arrangement frame interval, when looping applies.
+    pub active_region: Option<(u64, u64)>,
+}
+
 /// One stable-track route as displayed at a Session route snapshot cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionRouteStatus {
@@ -456,11 +464,18 @@ pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 600;
 pub struct SessionHandoffReport {
     cancelled_pending: [Option<TrackId>; MAX_TRACKS],
     cancelled_pending_len: usize,
+    running_audio_restart: bool,
 }
 
 impl SessionHandoffReport {
     pub fn cancelled_pending_tracks(&self) -> &[Option<TrackId>] {
         &self.cancelled_pending[..self.cancelled_pending_len]
+    }
+
+    /// Whether this plan resets or relocates audio while the predecessor plays.
+    /// A preview observes one predecessor and does not authorize a later commit.
+    pub fn running_audio_restart(&self) -> bool {
+        self.running_audio_restart
     }
 }
 
@@ -474,6 +489,18 @@ thread_local! {
 /// Routes and release storage are allocated at construction. Rendering uses
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
+#[derive(Clone, Copy)]
+struct PendingSharedChase {
+    signature: crate::mutable_instrument::MutableOccurrenceSignature,
+    frame: u64,
+}
+#[derive(Clone, Copy)]
+struct PendingSharedLive {
+    input: crate::mutable_instrument::LiveInputId,
+    token: u64,
+    frame: u64,
+}
+
 pub struct SessionPlayback {
     pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
     pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
@@ -501,6 +528,9 @@ pub struct SessionPlayback {
     anchor: Option<SessionClockAnchor>,
     /// Reset-and-chase frontier, retained until a successful nonempty render.
     interactive_start_frame: Option<u64>,
+    // One exact muted-onset chase, retained until a successful render.
+    pending_shared_chase: Option<PendingSharedChase>,
+    pending_shared_live: Option<PendingSharedLive>,
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     source_voice_envelopes: [u16; MAX_TRACKS],
@@ -529,6 +559,12 @@ pub struct SessionPlayback {
     // Immutable original ownership, including effect-only suffixes. Inline
     // slots are charged by size_of::<Self>() in actual and paired preflight.
     tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
+    // Only tails admitted against the identical compensated group graph may
+    // contribute to that graph's current send and feed edges.
+    tail_route_sends: [bool; SESSION_TAIL_GROUP_CAPACITY],
+    has_tail_route_sends: bool,
+    // A pure foreign suffix admitted with an unchanged grouped clock and graph.
+    tail_proven_grouped: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
@@ -834,6 +870,23 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    /// Observation for headless profiling only. The first value is the existing
+    /// runtime ledger charge; the second is the charge for detached track-tail
+    /// chains already included in that total. Shared revision and source owners,
+    /// native resources, allocator overhead and process memory are not included.
+    #[cfg(feature = "instrument-test-support")]
+    pub fn profile_runtime_storage_bytes(&self) -> Option<(usize, usize)> {
+        let total = self.accounted_runtime_storage_bytes()?;
+        let tails = self
+            .tail_groups
+            .iter()
+            .flatten()
+            .try_fold(0_usize, |sum, chain| {
+                sum.checked_add(chain.accounted_storage_bytes()?)
+            })?;
+        Some((total, tails))
+    }
+
     #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_track_boxes(
         &self,
@@ -918,6 +971,8 @@ impl SessionPlayback {
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            pending_shared_chase: _,
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             stream_miss_fades: _,
@@ -941,6 +996,9 @@ impl SessionPlayback {
             current_route_cut_scratch: _,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes: _,
             tail_suffix_starts: _,
@@ -2142,6 +2200,8 @@ impl SessionPlayback {
             periodic_tempo,
             anchor: None,
             interactive_start_frame: None,
+            pending_shared_chase: None,
+            pending_shared_live: None,
             historical_floor: None,
             route_historical_floors: [None; MAX_TRACKS],
             source_voice_envelopes,
@@ -2165,6 +2225,9 @@ impl SessionPlayback {
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
+            tail_route_sends: [false; SESSION_TAIL_GROUP_CAPACITY],
+            has_tail_route_sends: false,
+            tail_proven_grouped: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
@@ -2260,6 +2323,15 @@ impl SessionPlayback {
 
     pub fn arrangement_frame(&self) -> u64 {
         self.arrangement_frame
+    }
+
+    /// Current pass and active loop law at the Arrangement cursor. The pass
+    /// distinguishes loop wraps but can reset on a seek; this is not a fence.
+    pub fn arrangement_loop_state(&self) -> ArrangementLoopState {
+        ArrangementLoopState {
+            pass: self.arrangement_loop_pass,
+            active_region: self.active_loop_region().map(|r| (r.start(), r.end())),
+        }
     }
 
     pub fn playing(&self) -> bool {
@@ -2496,8 +2568,9 @@ impl SessionPlayback {
 
     /// The live publication handoff: as `try_inherit_state_from`, except an
     /// unproven mutable chase restarts audio at the cursor instead of
-    /// refusing (Pulse #3770). Allocation-free; nothing is committed before
-    /// the strict planner's refusal.
+    /// refusing (Pulse #3770). An ordinary reset refuses while an active
+    /// detached Return tail cannot be preserved. Allocation-free; nothing is
+    /// committed before the strict planner's refusal.
     pub fn try_inherit_state_live_from(
         &mut self,
         previous: &mut Self,
@@ -2670,6 +2743,7 @@ mod clip_gain;
 mod commands;
 mod current_sampler_routes;
 mod handoff;
+pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
 mod preroll;
 mod render;

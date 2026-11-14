@@ -1083,7 +1083,8 @@ impl PreparedSessionInventory {
                                 false,
                             )
                         }
-                        PreparedAudioSourceRef::Streamed(source) => (
+                        PreparedAudioSourceRef::Streamed(source)
+                        | PreparedAudioSourceRef::StreamedWithPitch(source, _) => (
                             PreparedAudioSource::Streamed(Arc::clone(source)),
                             source.playback_frames(),
                             true,

@@ -56,8 +56,8 @@ pub struct ProjectOutputTap<'a, 'observer> {
     returns: &'a [ReturnId],
     observer: &'a mut ProjectSignalObserver<'observer>,
     timing: Option<&'a mut ProjectTimingObserver<'observer>>,
-    // Callback-relative start of the current render part. `Playback` splits a
-    // callback only at a transport declick boundary and restores zero after.
+    // Callback-relative start of the current render part. Nested playback
+    // splits add their offsets and restore the enclosing part afterward.
     part_offset: usize,
 }
 impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
@@ -102,8 +102,11 @@ impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
         self.timing = Some(timing);
         self
     }
-    pub(crate) fn set_part_offset(&mut self, offset: usize) {
-        self.part_offset = offset;
+    pub(crate) fn replace_part_offset(&mut self, offset: usize) -> usize {
+        std::mem::replace(&mut self.part_offset, offset)
+    }
+    pub(crate) fn part_offset(&self) -> usize {
+        self.part_offset
     }
     pub(crate) fn main(&mut self, frames: &[Frame]) {
         (self.observer)(ProjectSignal::Master, self.part_offset, frames);

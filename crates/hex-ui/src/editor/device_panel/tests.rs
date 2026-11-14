@@ -53,7 +53,8 @@ mod rattle_ui_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
-mod source_picker_ui_tests;
+mod source_housing_tests;
+pub(in crate::editor) mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {
@@ -9170,7 +9171,9 @@ fn assert_modulation_mapping(
 }
 
 #[gpui::test]
-fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppContext) {
+fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
+    cx: &mut TestAppContext,
+) {
     use hex_project::{DeviceAutomationTarget, DeviceOwner, ModulationDestination};
 
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -9238,6 +9241,12 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
         hex_lattice_contract::ParameterId::from_static(11),
     ));
 
+    let bound = edit(Command::InsertDevice {
+        track: contributor,
+        before: None,
+        state: base.clone(),
+    });
+
     let (handle, editor) = actor_editor_window(cx, service, bound.state, receiver);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -9275,7 +9284,57 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
     pump_until(&editor, cx, |view| source_slot(view).is_some());
     let slot = editor.read_with(cx, |view, _| source_slot(view).unwrap());
     visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let device = project.device(device).unwrap();
+        assert!(!super::modulators::source_utility_gain_available(
+            project, device
+        ));
+    });
+    let gain_control = Box::leak(
+        format!("device-{}-parameter-{}-value", device.value(), gain.value()).into_boxed_str(),
+    );
+    assert!(visual.debug_bounds(gain_control).is_none());
+    let balance_control =
+        Box::leak(format!("device-{}-parameter-2-value", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(balance_control).is_none());
+    let width_control =
+        Box::leak(format!("device-{}-parameter-3-value", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(width_control).is_none());
+    let mid_side_control =
+        Box::leak(format!("device-{}-parameter-10-value", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(mid_side_control).is_none());
     click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
+    let mut mapping_targets = 0;
+    for parameter in 1..=10 {
+        let key = Box::leak(format!("map-target-{}-{parameter}", device.value()).into_boxed_str());
+        if let Some(target) = visual.debug_bounds(key) {
+            mapping_targets += 1;
+            if !bounds.contains(&target.center()) {
+                visual.simulate_event(gpui::ScrollWheelEvent {
+                    position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+                    delta: gpui::ScrollDelta::Pixels(point(
+                        px(0.0),
+                        bounds.center().y - target.center().y,
+                    )),
+                    ..Default::default()
+                });
+                visual.run_until_parked();
+            }
+            let target = visual.debug_bounds(key).unwrap();
+            assert!(
+                bounds.contains(&target.center()),
+                "mapping target {parameter} unreachable: {target:?} vs {bounds:?}"
+            );
+        }
+    }
+    assert!(mapping_targets > 1);
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
     click_modulator_control(
         &mut visual,
         format!("map-output-gain-{}", device.value()),
@@ -9341,10 +9400,89 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
     pump_until(&editor, cx, |view| route_count(view) == 1);
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(&editor, cx, |view| route_count(view) == 2);
+    visual.run_until_parked();
+    let last_target = Box::leak(format!("map-target-{}-10", device.value()).into_boxed_str());
+    let target = visual
+        .debug_bounds(last_target)
+        .expect("last supported Utility target");
+    if !bounds.contains(&target.center()) {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - target.center().y)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    let target = visual.debug_bounds(last_target).unwrap();
+    assert!(bounds.contains(&target.center()));
+    visual.simulate_click(target.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| route_count(view) == 3);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| route_count(view) == 2);
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.selected_track = Some(contributor);
         cx.notify();
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds(selector).is_none());
+    visual
+        .debug_bounds(selector)
+        .expect("shared source effect on contributor");
+    let (receiver_local, contributor_local) = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.track(receiver).unwrap().devices().to_vec(),
+            project.track(contributor).unwrap().devices().to_vec(),
+        )
+    });
+    assert!(!contributor_local.is_empty());
+    add_modulator_from_menu(&mut visual, device, "lfo");
+    let sources = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .sources()
+            .len()
+    };
+    pump_until(&editor, cx, |view| sources(view) == 2);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project.device_location(device).unwrap().owner,
+            DeviceOwner::Source(source)
+        );
+        assert_eq!(project.track(receiver).unwrap().source_id(), Some(source));
+        assert_eq!(
+            project.track(contributor).unwrap().source_id(),
+            Some(source)
+        );
+        assert_eq!(project.track(receiver).unwrap().devices(), receiver_local);
+        assert_eq!(
+            project.track(contributor).unwrap().devices(),
+            contributor_local
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| sources(view) == 1);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| sources(view) == 2);
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(receiver);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual
+        .debug_bounds(selector)
+        .expect("same source effect on receiver");
+    editor.read_with(cx, |view, _| assert_eq!(sources(view), 2));
 }

@@ -20,22 +20,44 @@ pub(super) fn prepare_map(
     tempo: &hex_project::TempoMap,
     cancel: &AtomicBool,
 ) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
+    prepare_map_with_extent(edit, tempo, cancel, false)
+}
+
+pub(super) fn prepare_streamed_map(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
+    prepare_map_with_extent(edit, tempo, cancel, true)
+}
+
+fn prepare_map_with_extent(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+    streamed: bool,
+) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
     let tempo = edit.processing_tempo(tempo);
     let (first, length, _, _) = edit.projected_domain(tempo)?;
-    let length_usize = usize::try_from(length)
-        .map_err(|_| Invalid("audio domain length exceeds addressable range"))?;
+    let make_map = |segments| {
+        if streamed {
+            hex_warp::TimeMap::new_streamed(segments, length)
+        } else {
+            let length = usize::try_from(length).map_err(|_| {
+                hex_warp::Error::Invalid("audio domain length exceeds addressable range")
+            })?;
+            hex_warp::TimeMap::new(segments, length)
+        }
+    };
     let domain = &edit.domain;
     if !domain.warp_enabled {
         return Ok((
-            hex_warp::TimeMap::new(
-                vec![hex_warp::MapSegment {
-                    output_start: 0,
-                    output_end: length,
-                    source_start_q32: 0,
-                    source_end_q32: i128::from(length) * Q32,
-                }],
-                length_usize,
-            )
+            make_map(vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: length,
+                source_start_q32: 0,
+                source_end_q32: i128::from(length) * Q32,
+            }])
             .map_err(warp_error)?,
             Vec::new(),
         ));
@@ -197,10 +219,7 @@ pub(super) fn prepare_map(
                 .ok_or(Invalid("beat division overflow"))?;
         }
     }
-    Ok((
-        hex_warp::TimeMap::new(segments, length_usize).map_err(warp_error)?,
-        attacks,
-    ))
+    Ok((make_map(segments).map_err(warp_error)?, attacks))
 }
 pub(super) fn apply_fade(
     frames: &mut [crate::Frame],

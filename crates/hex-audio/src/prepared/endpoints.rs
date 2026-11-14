@@ -163,12 +163,18 @@ impl Client {
         }
     }
 
-    pub(crate) fn activate(&mut self) {
+    pub(crate) fn activate(&mut self) -> bool {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            self.worker_owned_publication = endpoints
+            let Some(worker_owned) = endpoints
                 .resident_forwarding
-                .expose_client_on_control(&endpoints.status);
+                .expose_client_on_control(&endpoints.status)
+            else {
+                return false;
+            };
+            self.worker_owned_publication = worker_owned;
+            return true;
         }
+        false
     }
     /// Immutable publication policy captured under the existing exposure lock. Every graph on
     /// this output belongs to its control worker; transport and shared input clients remain
@@ -302,7 +308,22 @@ impl Client {
         frame: u64,
         expected: AppliedAudioSource,
     ) -> Result<u64, PlaybackCommand> {
-        let command = PlaybackCommand::PlayFrom(frame);
+        self.command_from_source_with_ticket(PlaybackCommand::PlayFrom(frame), expected)
+    }
+    /// Enqueue a strict seek only for the exact callback-applied source.
+    /// A later replacement is reported through the ordinary action receipt.
+    pub fn seek_from_source_with_ticket(
+        &mut self,
+        frame: u64,
+        expected: AppliedAudioSource,
+    ) -> Result<u64, PlaybackCommand> {
+        self.command_from_source_with_ticket(PlaybackCommand::Seek(frame), expected)
+    }
+    fn command_from_source_with_ticket(
+        &mut self,
+        command: PlaybackCommand,
+        expected: AppliedAudioSource,
+    ) -> Result<u64, PlaybackCommand> {
         let Some(endpoints) = self.endpoints.owner_mut() else {
             return Err(command);
         };

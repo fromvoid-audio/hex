@@ -1,5 +1,6 @@
 //! Actual Session/desktop/native Root workflow; no device or app execution.
 mod automation;
+mod capture_source_guard;
 mod editor_recording;
 mod first_effect_take;
 mod installed_edits;

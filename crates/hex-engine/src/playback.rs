@@ -12,8 +12,43 @@ mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
 pub(crate) use transport_fade::fade_frames;
+mod timed_transport;
 mod tuning_audition;
 use metronome::Metronome;
+pub use timed_transport::{
+    MAX_TIMED_TRANSPORT_COMMANDS, TimedTransportCommand, TimedTransportError,
+};
+
+/// Why a bounded current-stream projection could not be completed.
+/// Visitor refusal may leave partial caller-owned observations speculative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamQuantumProjectionError {
+    Unsupported,
+    ClockOverflow,
+    Visitor(Invalid),
+    Projection(Invalid),
+}
+
+impl From<StreamQuantumProjectionError> for Invalid {
+    fn from(error: StreamQuantumProjectionError) -> Self {
+        match error {
+            StreamQuantumProjectionError::Unsupported => {
+                Self("stream demand requires a closed audio runtime")
+            }
+            StreamQuantumProjectionError::ClockOverflow => {
+                Self("stream callback projection overflow")
+            }
+            StreamQuantumProjectionError::Visitor(error)
+            | StreamQuantumProjectionError::Projection(error) => error,
+        }
+    }
+}
+impl std::fmt::Display for StreamQuantumProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&Invalid::from(self.clone()), f)
+    }
+}
+impl std::error::Error for StreamQuantumProjectionError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
@@ -258,6 +293,7 @@ pub enum PlaybackHandoffRejection {
     SourceHistoryUnavailable = 11,
     StreamSourceChanged = 12,
     SharedSourceVoiceCapacity = 13,
+    StreamedPageCapacity = 14,
 }
 
 impl PlaybackHandoffRejection {
@@ -307,6 +343,7 @@ impl PlaybackHandoffRejection {
             11 => Some(Self::SourceHistoryUnavailable),
             12 => Some(Self::StreamSourceChanged),
             13 => Some(Self::SharedSourceVoiceCapacity),
+            14 => Some(Self::StreamedPageCapacity),
             _ => None,
         }
     }
@@ -334,6 +371,7 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::StreamedPageCapacity => "stream cache capacity is full · stop playback or retry",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::SharedSourceVoiceCapacity => {
                 "shared source voice capacity is full · release notes or wait for tails, then retry"
@@ -1504,6 +1542,13 @@ impl Playback {
             .map_or(self.position, |runtime| runtime.arrangement_frame())
     }
 
+    /// Session-owned Arrangement loop state, unavailable for legacy playback.
+    pub fn arrangement_loop_state(&self) -> Option<crate::session_playback::ArrangementLoopState> {
+        self.session_runtime
+            .as_ref()
+            .map(|runtime| runtime.arrangement_loop_state())
+    }
+
     /// Frames by which Main output trails the scheduled content frame: the
     /// graph's pre-Main compensation plus declared Main processor latency.
     pub fn main_output_latency_frames(&self) -> u32 {
@@ -2000,7 +2045,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false)
+        self.try_inherit_runtime_impl(previous, false, false, None)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -2017,7 +2062,29 @@ impl Playback {
             previous,
             generation.is_some() && generation == previous_generation,
             false,
+            None,
         )
+    }
+
+    /// Borrow a control-prepared tempo anchor through the ordinary Playback
+    /// lifecycle. Both graphs must have the same known control generation.
+    /// The publication owner must validate the output, command,
+    /// route, fault and cancellation fence and reclaim the plan on control.
+    pub fn try_inherit_runtime_with_tempo_anchor(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none()
+            || generation != previous_generation
+            || self.session_runtime.is_none()
+            || previous.session_runtime.is_none()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, false, Some(anchor))
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -2036,7 +2103,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true)
+        self.try_inherit_runtime_impl(previous, true, true, None)
     }
 
     fn try_inherit_runtime_impl(
@@ -2044,6 +2111,7 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
         fenced_restart: bool,
+        tempo_anchor: Option<&crate::session_playback::PreparedTempoAnchor>,
     ) -> Result<(), PlaybackHandoffError> {
         if previous
             .session_runtime
@@ -2122,6 +2190,8 @@ impl Playback {
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
+            } else if let Some(anchor) = tempo_anchor {
+                next.try_inherit_state_with_tempo_anchor(old, anchor)
             } else {
                 next.try_inherit_state_live_from(old)
             })
@@ -2551,47 +2621,57 @@ impl Playback {
             .ok_or(Invalid("ordinary session runtime unavailable"))?
             .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
     }
-    pub(crate) fn preview_stream_handoff(
+    pub(crate) fn visit_current_stream_quantum(
         &mut self,
-        previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
+        ordinary: bool,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
-        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
-        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff(old, maximum_frames, playing, visit)
-            .map_err(PlaybackHandoffError::Session)
+    ) -> Result<usize, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("session runtime unavailable"))?
+            .visit_current_stream_quantum(maximum_frames, playing, ordinary, visit)
     }
-    pub(crate) fn preview_ordinary_stream_handoff(
+    pub(crate) fn visit_current_stream_quantum_at(
         &mut self,
-        previous: &mut Self,
+        start_offset: u64,
         maximum_frames: usize,
         playing: Option<bool>,
+        ordinary: bool,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
-        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
-        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff_with_scope(old, maximum_frames, playing, visit, true)
-            .map_err(PlaybackHandoffError::Session)
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(crate::playback::StreamQuantumProjectionError::Projection(
+                Invalid("session runtime unavailable"),
+            ))?
+            .visit_current_stream_quantum_at(start_offset, maximum_frames, playing, ordinary, visit)
     }
-    pub(crate) fn preview_ordinary_fenced_restart(
+    pub(crate) fn preview_stream_handoff_with_report(
         &mut self,
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        if !self.live_restart_requested() {
+        ordinary: bool,
+        fenced_restart: bool,
+    ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
+        if fenced_restart && !self.live_restart_requested() {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff_with_policy(old, maximum_frames, playing, visit, true, true)
-            .map_err(PlaybackHandoffError::Session)
+        next.preview_stream_handoff_with_policy_and_report(
+            old,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+        )
+        .map_err(PlaybackHandoffError::Session)
     }
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
@@ -2920,9 +3000,10 @@ fn with_part_offset<'a, 'observer, R>(
 ) -> R {
     match project {
         Some(tap) => {
-            tap.set_part_offset(offset);
+            let previous = tap.part_offset();
+            tap.replace_part_offset(previous.saturating_add(offset));
             let result = render(Some(&mut *tap));
-            tap.set_part_offset(0);
+            tap.replace_part_offset(previous);
             result
         }
         None => render(None),

@@ -256,6 +256,7 @@ impl NativeAudioSink {
                 output_identity: output,
                 audio_revision: 0,
                 source_context: None,
+                source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
                 section_loop: None,
             }));
         }
@@ -361,10 +362,16 @@ impl NativeAudioSink {
                 .pending
                 .as_ref()
                 .map_or(DeviceResourceAdmission::default(), |pending| {
-                    DeviceResourceAdmission::unpublished_on_control(
+                    let view = DeviceResourceAdmission::unpublished_on_control(
                         &pending.playback,
                         pending.resources.as_ref(),
-                    )
+                    );
+                    match pending.file_sources.as_ref() {
+                        Some(files) if !files.repitches().requirements().is_empty() => {
+                            view.with_repitch_requirements(files.repitches())
+                        }
+                        _ => view,
+                    }
                 }),
         ]
     }
@@ -383,6 +390,8 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let parameter_source = self.plugins.override_publication_source(metadata.context);
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
         let edit_cancellation = self
@@ -607,6 +616,17 @@ impl NativeAudioSink {
                 }
                 ResidentPublicationPolicy::InheritRuntime
                 | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some((source, transport_epoch, playing)) = parameter_source {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        }
+                    } else {
+                        hex_audio::prepared::PublicationPolicy::InheritRuntime
+                    }
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
@@ -767,6 +787,7 @@ impl NativeAudioSink {
                         output_identity,
                         audio_revision,
                         source_context: Some(metadata.context),
+                        source_origin: metadata.source_origin,
                         section_loop,
                     });
                     self.resident.capture_target = observation.native_parameter_input_target();
@@ -978,6 +999,7 @@ mod publication_readiness_tests {
             output_identity: 7,
             audio_revision: 12,
             source_context: None,
+            source_origin: hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview,
             section_loop: None,
         };
         assert_eq!(

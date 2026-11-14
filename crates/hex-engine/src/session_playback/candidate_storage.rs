@@ -33,6 +33,8 @@ impl SessionPlayback {
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            pending_shared_chase: _, // inline and charged by size_of::<Self>()
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
@@ -56,6 +58,9 @@ impl SessionPlayback {
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,

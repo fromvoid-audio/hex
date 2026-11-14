@@ -8,6 +8,154 @@ use crate::{
     SessionPlaybackCommand, StreamSourceKey, StreamedSourceMetadata,
 };
 use std::collections::BTreeMap;
+
+#[test]
+fn pitch_revision_keeps_session_source_raw_and_refuses_mismatched_pages() {
+    use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_project::{Command, Created, Editor, Project, WarpResampler};
+    use std::sync::atomic::AtomicBool;
+
+    const FRAMES: u64 = 20_000_000;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, clip, asset } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: FRAMES,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene fixture")
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "raw".into(),
+            asset,
+            source_start: 0,
+            source_end: 4096,
+        })
+        .unwrap();
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(7, asset),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [7; 32],
+    )
+    .unwrap();
+    let derived = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+    let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw.clone())))]);
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let effects = hex_devices::native_registry().unwrap();
+    let transforms = crate::audio_transform::AudioTransformPreparation::default();
+    let prepare = |pitched: &BTreeMap<_, _>| {
+        PreparedRevision::prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+            editor.project(),
+            &sources,
+            pitched,
+            7,
+            Arc::new(SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancel,
+            &effects,
+            None,
+        )
+    };
+    assert!(prepare(&BTreeMap::new()).is_err());
+    let wrong = StreamedSourceMetadata::new(
+        raw.key(),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [8; 32],
+    )
+    .unwrap()
+    .with_plain_pitch(700, WarpResampler::V2)
+    .unwrap();
+    assert!(prepare(&BTreeMap::from([(derived.key(), Arc::new(wrong))])).is_err());
+    let revision = prepare(&BTreeMap::from([(
+        derived.key(),
+        Arc::new(derived.clone()),
+    )]))
+    .unwrap();
+    assert_eq!(
+        revision
+            .arrangement_stream_sources()
+            .map(|s| s.key())
+            .collect::<Vec<_>>(),
+        vec![derived.key()]
+    );
+    let PreparedAudioSource::Streamed(session_source) =
+        revision.session().audio_clips()[0].source()
+    else {
+        panic!("streamed session source")
+    };
+    assert_eq!(session_source.as_ref(), &raw);
+    let semantic = |pitched: &BTreeMap<_, _>| {
+        PreparedRevision::prepare_with_prepared_pitch_sources(
+            editor.project(),
+            &sources,
+            pitched,
+            7,
+            Arc::new(SineTable::new()),
+            None,
+        )
+    };
+    assert!(semantic(&BTreeMap::new()).is_err());
+    let semantic = semantic(&BTreeMap::from([(
+        derived.key(),
+        Arc::new(derived.clone()),
+    )]))
+    .unwrap();
+    assert_eq!(
+        semantic
+            .arrangement_stream_sources()
+            .map(|source| source.key())
+            .collect::<Vec<_>>(),
+        vec![derived.key()]
+    );
+    let PreparedAudioSource::Streamed(session_source) =
+        semantic.session().audio_clips()[0].source()
+    else {
+        panic!("streamed session source")
+    };
+    assert_eq!(session_source.as_ref(), &raw);
+}
 struct Pages<'a> {
     samples: &'a [Frame],
     key: StreamSourceKey,
@@ -119,6 +267,16 @@ fn fenced_retained_restart_preview_matches_committed_stream_demand() {
         )
         .unwrap();
     let mut next = Playback::from_prepared(prepare(&retained));
+    assert!(matches!(
+        next.stream_playback(context)
+            .preview_ordinary_fenced_restart_with_report(
+                &mut old.stream_playback(context),
+                32,
+                None,
+                &mut |_| Ok(())
+            ),
+        Err(crate::PlaybackHandoffError::RuntimeFenceChanged)
+    ));
     assert!(next.request_live_restart());
     assert!(
         next.stream_playback(context)
@@ -127,9 +285,9 @@ fn fenced_retained_restart_preview_matches_committed_stream_demand() {
     );
     let position = old.position();
     let mut predicted = Vec::new();
-    let window = next
+    let (window, report) = next
         .stream_playback(context)
-        .preview_ordinary_fenced_restart(
+        .preview_ordinary_fenced_restart_with_report(
             &mut old.stream_playback(context),
             32,
             None,
@@ -139,6 +297,7 @@ fn fenced_retained_restart_preview_matches_committed_stream_demand() {
             },
         )
         .unwrap();
+    assert!(report.running_audio_restart());
     assert_eq!(old.position(), position);
     assert_eq!(window.frames, 32);
     assert!(!predicted.is_empty());
@@ -229,23 +388,62 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
         editor_revision: 2,
     };
     for count in [64, 63, 17, 257, 512] {
+        let before_projection = (actual.position(), actual.performance_frame());
+        let mut projected_windows = Vec::new();
+        let mut ahead = 0;
+        while ahead < count {
+            let mut demand = Vec::new();
+            let width = actual
+                .stream_playback(context)
+                .visit_current_stream_quantum_at(ahead as u64, count - ahead, None, &mut |row| {
+                    demand.push(row);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(width, (count - ahead).min(256));
+            projected_windows.push(demand);
+            ahead += width;
+        }
+        assert_eq!(
+            (actual.position(), actual.performance_frame()),
+            before_projection
+        );
         let mut expected = vec![[0.0; 2]; count];
         oracle.render(&mut expected).unwrap();
         let mut observed = vec![[0.0; 2]; count];
         let mut offset = 0;
+        let mut projected_end = 0;
+        let mut predicted = Vec::new();
+        let mut committed = Vec::new();
+        let mut projected_index = 0;
         while offset < count {
+            if offset == projected_end {
+                predicted.clear();
+                committed.clear();
+                let before = (actual.position(), actual.performance_frame());
+                let projected = actual
+                    .stream_playback(context)
+                    .visit_current_stream_quantum(count - offset, None, &mut |extent| {
+                        predicted.push(extent);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(projected, (count - offset).min(256));
+                assert_eq!((actual.position(), actual.performance_frame()), before);
+                projected_end = offset + projected;
+            }
             let position = actual.position();
             let mut extents = Vec::new();
             let window = actual
                 .stream_playback(context)
-                .visit_next_stream_chunk(count - offset, None, &mut |extent| {
+                .visit_next_stream_chunk(projected_end - offset, None, &mut |extent| {
                     extents.push(extent);
                     Ok(())
                 })
                 .unwrap();
             assert_eq!(
                 window.frames,
-                (count - offset).min(256).min(127 - position as usize)
+                (projected_end - offset).min(127 - position as usize)
             );
             assert_eq!(
                 extents,
@@ -256,6 +454,7 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
                     end: position as usize + window.frames,
                 }]
             );
+            committed.extend_from_slice(&extents);
             actual
                 .stream_playback(context)
                 .render_with_pages_and_signal_observers(
@@ -270,6 +469,14 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
                 )
                 .unwrap();
             offset += window.frames;
+            if offset == projected_end {
+                assert_eq!(
+                    predicted, committed,
+                    "callback projection differs from committed chunks"
+                );
+                assert_eq!(projected_windows[projected_index], committed);
+                projected_index += 1;
+            }
         }
         assert_eq!(observed, expected);
         assert_eq!(
@@ -498,12 +705,16 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
     let mut successor = Playback::from_prepared(streamed);
     let mut resident_successor = Playback::from_prepared(resident);
     let clock = (actual.position(), actual.performance_frame());
-    let window = successor
+    let (window, report) = successor
         .stream_playback(context)
-        .preview_stream_handoff(&mut actual.stream_playback(context), 32, None, &mut |_| {
-            Ok(())
-        })
+        .preview_stream_handoff_with_report(
+            &mut actual.stream_playback(context),
+            32,
+            None,
+            &mut |_| Ok(()),
+        )
         .unwrap();
+    assert!(!report.running_audio_restart());
     assert_eq!(window.frames, 32);
     assert_eq!((actual.position(), actual.performance_frame()), clock);
     successor.try_inherit_runtime_from(&mut actual).unwrap();

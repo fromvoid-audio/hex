@@ -5,8 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
@@ -369,10 +369,26 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
         .any(is_plugin_effect)
 }
 
+/// Reported preparation origin, not proof of canonical state or source custody.
+/// A canonical candidate may be prepared and applied before its edit commits;
+/// unknown also covers preparations whose context was subsequently rebased.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentSourceOrigin {
+    Unknown,
+    CanonicalCandidate,
+    DevicePreview,
+    TuningPreview,
+    ClipMovePreview,
+    ClipStretchPreview,
+    ClipPlayStartPreview,
+}
+
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
 /// nor a requested freshness fence grants source custody or acknowledges callback application.
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentPublicationMetadata {
+    /// Producer-reported origin; this is not an admission or source proof.
+    pub source_origin: ResidentSourceOrigin,
     pub context: hex_engine::AudioSourceContext,
     /// Identity of a clip-move preview, not proof of callback application.
     pub clip_preview: Option<ClipMovePreviewIdentity>,
@@ -401,6 +417,8 @@ pub struct ResidentRuntimeLoop {
     pub output_identity: u64,
     pub audio_revision: u64,
     pub source_context: Option<hex_engine::AudioSourceContext>,
+    /// Origin reported for this exact submission, not authority to use its source.
+    pub source_origin: ResidentSourceOrigin,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
 /// Read-only, output-bound observation of the one admitted resident graph.

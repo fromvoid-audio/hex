@@ -47,10 +47,7 @@ impl Preview {
         self.clip_target()?.move_identity()
     }
     pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
-        DeviceResourceAdmission::prepared_on_control(
-            &self.snapshot.resources,
-            &self.snapshot.prepared,
-        )
+        self.snapshot.admission()
     }
     /// Native accounting covers the resource/factory union and conservative
     /// input/control capture, including a retained clip selection. The shared
@@ -71,12 +68,28 @@ impl Preview {
             .ok_or_else(|| "preview metadata overflow".into())
     }
 }
+impl Identity {
+    pub(super) fn source_origin(&self) -> ResidentSourceOrigin {
+        match self {
+            Self::Device(_) => ResidentSourceOrigin::DevicePreview,
+            Self::Tuning(_) => ResidentSourceOrigin::TuningPreview,
+            Self::Clip(clip_audition::Target::Move(_)) => ResidentSourceOrigin::ClipMovePreview,
+            Self::Clip(clip_audition::Target::Stretch(_)) => {
+                ResidentSourceOrigin::ClipStretchPreview
+            }
+            Self::Clip(clip_audition::Target::PlayStart(_)) => {
+                ResidentSourceOrigin::ClipPlayStartPreview
+            }
+        }
+    }
+}
 fn metadata(
     context: hex_engine::AudioSourceContext,
     identity: Option<Identity>,
     prepared: &PreparedRevision,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
+        source_origin: crate::service::ResidentSourceOrigin::Unknown,
         clip_preview: identity.as_ref().and_then(|id| match id {
             Identity::Clip(target) => target.move_identity(),
             _ => None,
@@ -356,9 +369,7 @@ pub(super) fn publish_inputs(
         .registered
         .iter()
         .copied()
-        .chain(std::iter::once(
-            DeviceResourceAdmission::prepared_on_control(&canonical.resources, &canonical.prepared),
-        ))
+        .chain(std::iter::once(canonical.admission()))
         .collect::<Vec<_>>();
     let runtime_bytes = admission
         .runtime_bytes

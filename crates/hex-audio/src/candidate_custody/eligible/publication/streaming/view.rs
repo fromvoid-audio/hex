@@ -19,7 +19,124 @@ pub(super) struct StateView<'a> {
 pub(crate) struct ActiveView<'a> {
     pub(super) state: StateView<'a>,
 }
+pub(crate) struct QuantumPins {
+    complete: bool,
+    entries: [Option<(
+        AudioCandidateDomainToken,
+        hex_stream::CurrentQuantumReservation,
+    )>; 2],
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuantumFailure {
+    PendingAction,
+    Capacity,
+    Invalid,
+}
+impl QuantumPins {
+    pub(crate) fn complete(&self) -> bool {
+        self.complete
+    }
+    pub(crate) fn release(self, domains: &mut [Option<DomainEnvelope>; 2]) {
+        for (token, reservation) in self.entries.into_iter().flatten() {
+            if let Ok(pages) = super::demand::envelope(domains, token)
+                && let Some(loan) = pages.inner.loan.as_mut()
+            {
+                let _ = loan.release_current_quantum(&reservation);
+            }
+        }
+    }
+}
 impl ActiveView<'_> {
+    /// Protect the exact already-resident demand for the complete output buffer.
+    pub(crate) fn reserve_current_quantum(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        frames: usize,
+        pending_play: bool,
+    ) -> Result<QuantumPins, QuantumFailure> {
+        let refs = self.state.domain_refs;
+        let workspace = self
+            .state
+            .streaming
+            .as_mut()
+            .filter(|workspace| workspace.valid())
+            .ok_or(QuantumFailure::Invalid)?;
+        if workspace.pending_action.is_some() {
+            return Err(QuantumFailure::PendingAction);
+        }
+        for rows in &mut workspace.quantum_extents {
+            rows.clear();
+        }
+        let runtime = self.state.runtime.as_mut().ok_or(QuantumFailure::Invalid)?;
+        let mut offset = 0usize;
+        while offset < frames {
+            let rows = &mut workspace.quantum_extents;
+            let visit_failure = std::cell::Cell::new(QuantumFailure::Invalid);
+            let covered = runtime
+                .visit_current_stream_quantum_at(
+                    u64::try_from(offset).map_err(|_| QuantumFailure::Invalid)?,
+                    frames - offset,
+                    pending_play.then_some(true),
+                    &mut |extent| {
+                        let index = refs
+                            .iter()
+                            .flatten()
+                            .find_map(|token| {
+                                domains
+                                    .get(token.slot)
+                                    .and_then(Option::as_ref)
+                                    .filter(|pages| pages.inner.token == *token)
+                                    .and_then(|pages| pages.inner.loan.as_ref())
+                                    .is_some_and(|loan| loan.covers_resource_key(extent.source))
+                                    .then_some(token.slot)
+                            })
+                            .ok_or(hex_engine::Invalid(
+                                "stream demand source lacks actual domain",
+                            ))?;
+                        Workspace::insert(rows, workspace.limit, index, extent).inspect_err(|_| {
+                            visit_failure.set(QuantumFailure::Capacity);
+                        })
+                    },
+                )
+                .map_err(|error| match error {
+                    hex_engine::playback::StreamQuantumProjectionError::Visitor(_) => {
+                        visit_failure.get()
+                    }
+                    _ => QuantumFailure::Invalid,
+                })?;
+            if covered == 0 {
+                break;
+            }
+            offset = offset.checked_add(covered).ok_or(QuantumFailure::Invalid)?;
+        }
+        let mut pins = QuantumPins {
+            complete: true,
+            entries: std::array::from_fn(|_| None),
+        };
+        for token in refs.into_iter().flatten() {
+            let result = super::demand::envelope(domains, token)
+                .map_err(|_| QuantumFailure::Invalid)
+                .and_then(|pages| pages.inner.loan.as_mut().ok_or(QuantumFailure::Invalid))
+                .and_then(|loan| {
+                    loan.reserve_resident_current_quantum(&workspace.quantum_extents[token.slot])
+                        .map_err(|error| match error {
+                            hex_stream::CurrentQuantumRefusal::Capacity => QuantumFailure::Capacity,
+                            _ => QuantumFailure::Invalid,
+                        })
+                });
+            match result {
+                Ok((reservation, complete)) => {
+                    pins.complete &= complete;
+                    pins.entries[token.slot] = Some((token, reservation));
+                }
+                Err(error) => {
+                    pins.release(domains);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(pins)
+    }
     pub(crate) fn capacity_conflict(&self) -> bool {
         self.state
             .streaming
@@ -103,6 +220,10 @@ impl Active {
         domains: &mut [Option<DomainEnvelope>; 2],
     ) {
         self.stream_view().publication_replaces_prewarm(domains);
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn publication_abandoned(&mut self) {
+        self.stream_view().publication_abandoned();
     }
     pub(crate) fn inherit_schedule_observation(&mut self, previous: &mut Active) -> Option<u64> {
         self.stream_view()

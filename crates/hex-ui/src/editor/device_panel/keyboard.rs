@@ -131,6 +131,9 @@ fn clipboard(
     if selected_owner(view, state) != Some(owner) {
         return;
     }
+    let Some(project_owner) = project_owner(owner) else {
+        return;
+    };
     let order = chain_ids(&state.project, owner);
     let selected: Vec<_> = order
         .iter()
@@ -153,18 +156,18 @@ fn clipboard(
             };
             match intent {
                 ClipboardIntent::Copy => Action::Copy {
-                    owner: project_owner(owner),
+                    owner: project_owner,
                     selected,
                 },
                 ClipboardIntent::Cut => Action::Cut {
-                    owner: project_owner(owner),
+                    owner: project_owner,
                     selected,
                 },
                 ClipboardIntent::Paste => return,
             }
         }
         ClipboardIntent::Paste => Action::Paste {
-            owner: project_owner(owner),
+            owner: project_owner,
             before,
         },
     };
@@ -291,20 +294,18 @@ fn duplicate(
                 .is_some_and(|device| device.parent().is_none())
         })
     });
-    let action = match duplicate_device_action(
-        &state.project,
-        stamp.owner,
-        selected,
-        project_owner(stamp.owner),
-        before,
-    ) {
-        Ok(action) => action,
-        Err(reason) => {
-            view.error = Some(reason.into());
-            cx.notify();
-            return;
-        }
+    let Some(destination) = project_owner(stamp.owner) else {
+        return;
     };
+    let action =
+        match duplicate_device_action(&state.project, stamp.owner, selected, destination, before) {
+            Ok(action) => action,
+            Err(reason) => {
+                view.error = Some(reason.into());
+                cx.notify();
+                return;
+            }
+        };
     view.device_panel.pending_duplicate = Some(PendingDuplicate {
         stamp,
         action: action.clone(),
@@ -577,6 +578,7 @@ fn owned_device(
             .devices()
             .iter()
             .find(|item| item.id() == device),
+        DevicePanelOwner::Source(_) => None,
     }
 }
 

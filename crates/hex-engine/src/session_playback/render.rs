@@ -815,6 +815,7 @@ impl SessionPlayback {
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
+        let mut passthrough = [false; MAX_TRACKS];
         let mut stamps = [None; 256];
         let mut projected_history = None;
 
@@ -913,6 +914,26 @@ impl SessionPlayback {
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
+                passthrough.fill(false);
+                if observer.is_none()
+                    && scalar.is_none()
+                    && self
+                        .native_parameter_state
+                        .as_deref()
+                        .is_none_or(|state| state.processing.is_none())
+                    && !self.tail_output_scratch.iter().any(|active| *active)
+                    && !self
+                        .return_effect_tails
+                        .slots()
+                        .iter()
+                        .flatten()
+                        .any(|tail| tail.output_active)
+                {
+                    self.classify_resident_return_tracks(
+                        &resident_source_eligible,
+                        &mut passthrough,
+                    );
+                }
                 resident_source_index = 0;
                 resident_source_end = count;
             }
@@ -1010,6 +1031,7 @@ impl SessionPlayback {
                         analytic: &resident_analytic_eligible,
                         stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
+                        passthrough: &passthrough,
                     }),
                 )?;
                 if use_resident_sources {
@@ -1194,6 +1216,8 @@ impl SessionPlayback {
         self.arrangement_frame = arrangement_frame;
         self.arrangement_loop_pass = arrangement_loop_pass;
         self.interactive_start_frame = None;
+        self.pending_shared_chase = None;
+        self.pending_shared_live = None;
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -1606,6 +1630,7 @@ impl SessionPlayback {
                             &timing,
                             true,
                             None,
+                            self.pending_shared_live,
                         )?;
                     }
                     render_mutable_instrument_chunk(
@@ -1627,6 +1652,7 @@ impl SessionPlayback {
                             arrangement_loop_pass,
                             transient: None,
                             chase_at_start: self.interactive_start_frame == Some(performance_frame),
+                            pending_shared_chase: self.pending_shared_chase,
                             loop_region: if self.linear_arrangement_export {
                                 None
                             } else {
@@ -1974,7 +2000,15 @@ impl SessionPlayback {
             }
             self.render_work.finish(work_start);
         }
-        self.render_detached_tails(performance_frame, output, frame_offset, capture, None)?;
+        self.render_detached_tails(
+            performance_frame,
+            output,
+            frame_offset,
+            capture,
+            None,
+            None,
+            foreign,
+        )?;
         self.render_return_buses(
             output,
             frame_offset,
@@ -2128,6 +2162,7 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)] // Both bounded routing buffers share the render context.
     fn render_detached_tails(
         &mut self,
         performance_frame: u64,
@@ -2135,6 +2170,8 @@ impl SessionPlayback {
         frame_offset: usize,
         capture: &mut Option<&mut dyn CaptureSink>,
         mut routed: Option<&mut [Frame]>,
+        mut routed_sends: Option<&mut [Frame]>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
@@ -2263,7 +2300,14 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let effect_count = chain.len();
                 chain
-                    .process_range(suffix_start..effect_count, tail_output)
+                    .process_range_with_foreign(
+                        suffix_start..effect_count,
+                        tail_output,
+                        frame_offset,
+                        None,
+                        None,
+                        foreign,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
                 *self
@@ -2305,6 +2349,8 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 &mut routed,
+                &mut routed_sends,
+                self.tail_route_sends[group_index],
             )?;
         }
         for group_index in 0..self.tail_mutable_instruments.len() {
@@ -2349,7 +2395,14 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let effect_count = chain.len();
                 chain
-                    .process_range(suffix_start..effect_count, tail_output)
+                    .process_range_with_foreign(
+                        suffix_start..effect_count,
+                        tail_output,
+                        frame_offset,
+                        None,
+                        None,
+                        foreign,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
                 *self
@@ -2389,6 +2442,8 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 &mut routed,
+                &mut routed_sends,
+                self.tail_route_sends[group_index],
             )?;
         }
         // Once an old source has stopped, its committed effect history still
@@ -2424,7 +2479,14 @@ impl SessionPlayback {
             let mut tail_buffer = [[0.0; 2]; 256];
             let tail_output = &mut tail_buffer[..output.len()];
             chain
-                .process_range(suffix_start..effect_count, tail_output)
+                .process_range_with_foreign(
+                    suffix_start..effect_count,
+                    tail_output,
+                    frame_offset,
+                    None,
+                    None,
+                    foreign,
+                )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
             *self
@@ -2453,6 +2515,8 @@ impl SessionPlayback {
                 frame_offset,
                 capture,
                 &mut routed,
+                &mut routed_sends,
+                self.tail_route_sends[group_index],
             )?;
         }
         Ok(())
@@ -2485,8 +2549,8 @@ fn add_detached_source_sends(
     Ok(())
 }
 
-/// A retained suffix is already post-fader. Grouped rendering adds it to its
-/// original track's default route once, without refeeding current sends.
+/// A retained suffix is post-fader. Grouped rendering adds it to its original
+/// default route and, only with a retained graph proof, its sends and feeds.
 #[allow(clippy::too_many_arguments)]
 fn emit_detached_tail(
     graph: Option<&crate::signal_graph::SignalGraph>,
@@ -2497,6 +2561,8 @@ fn emit_detached_tail(
     offset: usize,
     capture: &mut Option<&mut dyn CaptureSink>,
     routed: &mut Option<&mut [Frame]>,
+    routed_sends: &mut Option<&mut [Frame]>,
+    allow_sends: bool,
 ) -> Result<(), SessionPlaybackError> {
     if let Some(destinations) = routed.as_deref_mut() {
         if tail.len() != 1 {
@@ -2510,6 +2576,13 @@ fn emit_detached_tail(
             .get_mut(index)
             .ok_or(SessionPlaybackError::UnknownTrack)?;
         mix.add_frame(destination, tail[0]);
+        if allow_sends {
+            let send_destination = routed_sends
+                .as_deref_mut()
+                .and_then(|destinations| destinations.get_mut(index))
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            mix.add_frame(send_destination, tail[0]);
+        }
     } else {
         for (destination, source) in output.iter_mut().zip(tail.iter().copied()) {
             mix.add_frame(destination, source);
@@ -2596,6 +2669,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     arrangement_loop_pass: u64,
     transient: Option<hex_lattice::NativeTransientInput>,
     chase_at_start: bool,
+    pending_shared_chase: Option<super::PendingSharedChase>,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
 }
@@ -2644,6 +2718,7 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
                 pitch: span.pitch,
                 channel: span.channel,
                 velocity: span.velocity,
+                contributor_fade_in: false,
             })
             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
     }
@@ -2708,6 +2783,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         arrangement_loop_pass,
         transient,
         chase_at_start,
+        pending_shared_chase: _,
         loop_region,
         timing,
     } = context;
@@ -2784,6 +2860,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: false,
                             })
                             .is_err();
                     },
@@ -3467,6 +3544,7 @@ fn render_session_audio_clip<P: MediaPages + ?Sized>(
                     source,
                     StreamedPageSpan {
                         source_frame,
+                        reversed: false,
                         timeline_frame,
                         output_offset,
                         count,
