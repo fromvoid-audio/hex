@@ -2,6 +2,49 @@
 use super::*;
 
 #[test]
+fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
+    for muted in [false, true] {
+        let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+        snapshot.tracks[0].muted = muted;
+        snapshot.return_tracks[0].devices[0].state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 32,
+                enabled: true,
+            })
+            .unwrap();
+        let project = editor.project();
+        let revision = prepare_audio(project);
+        for partition in [1, 17, 256] {
+            let mut actual = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            actual.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut expected = [[0.0; 2]; 512];
+            reference
+                .render_with_post_node_observer(&mut expected, Some(&mut |_, _, _| {}))
+                .unwrap();
+            let mut output = [[0.0; 2]; 512];
+            for chunk in output.chunks_mut(partition) {
+                actual.render(chunk).unwrap();
+            }
+            assert_eq!(output, expected, "muted={muted}, partition={partition}");
+            assert_eq!(
+                (actual.performance_frame(), actual.arrangement_frame()),
+                (reference.performance_frame(), reference.arrangement_frame())
+            );
+            assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+        }
+    }
+}
+
+#[test]
 fn final_main_observer_reads_both_channels_after_main_device_and_fader() {
     for gain in [0.0, 0.25, 1.0, 2.0] {
         let mut snapshot = audio_fixture_project(false, false, false).snapshot();
