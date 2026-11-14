@@ -1892,6 +1892,16 @@ fn main_only_latency_preserves_real_return_reverb_and_captures() {
         .try_inherit_state_live_from(&mut original)
         .unwrap();
     assert!(!report.running_audio_restart);
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        1
+    );
     let id = OutputCaptureId::Return(bus);
     let actual_plan = candidate.output_capture_plan(&[id], 257).unwrap();
     let expected_plan = reference.output_capture_plan(&[id], 257).unwrap();
@@ -1919,6 +1929,26 @@ fn main_only_latency_preserves_real_return_reverb_and_captures() {
     let mut later = SessionPlayback::new(Arc::clone(&removed)).unwrap();
     let report = later.try_inherit_state_live_from(&mut candidate).unwrap();
     assert!(!report.running_audio_restart);
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        0
+    );
+    assert_eq!(
+        later
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        1
+    );
     let mut actual = [[0.0; 2]; 257];
     let mut expected = actual;
     later.render(&mut actual).unwrap();

@@ -161,18 +161,27 @@ fn active_return_removal_keeps_tail_without_callback_allocations() -> Result<(),
         assert_eq!(actual, expected);
     }
     editor.execute(Command::RemoveDevice(device))?;
-    control
+    let accepted_revision = control
         .publish(Playback::try_from_prepared_with_session(prepare(
             editor.project(),
         )?)?)
         .map_err(|_| "removed return publication")?;
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        accepted_revision
+    );
     assert!(control.status.rejected_revision().is_none());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);
-    control.reclaim();
+    let mut reclaimed = 0;
+    let retired = measure(|| reclaimed = control.reclaim());
+    assert!(reclaimed >= 1);
+    assert_eq!(retired.count_total, 0);
+    assert!(retired.count_current < 0);
+    assert!(retired.bytes_current < 0);
     Ok(())
 }
