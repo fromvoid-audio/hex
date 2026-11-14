@@ -108,6 +108,12 @@ pub enum ExportError {
         path: PathBuf,
         recovery_path: PathBuf,
     },
+    /// Copy failed after exclusive destination creation. The current pathname
+    /// may contain a partial export or a file substituted by another writer.
+    IncompleteDestination {
+        path: PathBuf,
+        source: io::Error,
+    },
     Invalid(&'static str),
     Render(hex_engine::Invalid),
     SessionRender(hex_engine::SessionPlaybackError),
@@ -152,6 +158,11 @@ impl fmt::Display for ExportError {
                 path.display(),
                 recovery_path.display()
             ),
+            Self::IncompleteDestination { path, source } => write!(
+                f,
+                "could not complete the wav copy: {source}; the destination path at {} may contain a partial export or another file; inspect it before removing anything",
+                path.display()
+            ),
             Self::Cancelled => write!(f, "export cancelled"),
             Self::Media(reason) => write!(f, "could not prepare export media: {reason}"),
             Self::Invalid(reason) => write!(f, "invalid wav export: {reason}"),
@@ -192,7 +203,9 @@ impl Error for ExportError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::StagingRetained { cause, .. } => Some(cause.as_ref()),
-            Self::Io { source, .. } | Self::PublishedButNotDurable { source, .. } => Some(source),
+            Self::Io { source, .. }
+            | Self::IncompleteDestination { source, .. }
+            | Self::PublishedButNotDurable { source, .. } => Some(source),
             Self::Render(source) => Some(source),
             Self::SessionRender(source) => Some(source),
             Self::Invalid(_)
@@ -503,14 +516,20 @@ fn publish_encoded<R: BlockRenderer>(
     let (staging_remains, recovery_path) = match publication {
         Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
             Ok(published) => (published.staging_remains(), None),
-            Err(source) => {
-                return Err(retained_stage(
-                    temporary_path,
-                    ExportError::Io {
+            Err(error) => {
+                let cause = match error {
+                    publication::NewPublicationError::BeforeCopy(source) => ExportError::Io {
                         operation: "publish the wav without replacing the destination",
                         source,
                     },
-                ));
+                    publication::NewPublicationError::IncompleteCopy(source) => {
+                        ExportError::IncompleteDestination {
+                            path: path.to_owned(),
+                            source,
+                        }
+                    }
+                };
+                return Err(retained_stage(temporary_path, cause));
             }
         },
         Publication::Replace(consent) => {
@@ -1289,6 +1308,74 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_copy_preserves_a_substituted_destination() {
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        let moved = dir.0.join("incomplete-output.wav");
+        let moved_for_hook = moved.clone();
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Write);
+        let _hook = after_exchange_hook::install(move |destination| {
+            fs::rename(destination, &moved_for_hook).unwrap();
+            fs::write(destination, b"unrelated user data").unwrap();
+        });
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected copy failure");
+        assert_eq!(fs::read(moved).unwrap(), b"partial");
+        assert_eq!(fs::read(&target).unwrap(), b"unrelated user data");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_copy_reports_partial_destination_and_retained_stage() {
+        let dir = TestDir::new();
+        let target = dir.0.join("PartialOutput.wav");
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Write);
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected copy failure");
+        assert_eq!(fs::read(target).unwrap(), b"partial");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_copy_sync_preserves_a_substituted_destination() {
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        let moved = dir.0.join("completed-copy.wav");
+        let moved_for_hook = moved.clone();
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Sync);
+        let _hook = after_exchange_hook::install(move |destination| {
+            fs::rename(destination, &moved_for_hook).unwrap();
+            fs::write(destination, b"unrelated user data").unwrap();
+        });
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected sync failure");
+        assert_eq!(&fs::read(moved).unwrap()[..4], b"RIFF");
+        assert_eq!(fs::read(&target).unwrap(), b"unrelated user data");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn assert_incomplete_copy(
+        result: Result<ExportReport, ExportError>,
+        target: &Path,
+        message: &str,
+    ) {
+        let Err(ExportError::StagingRetained { path, cause }) = result else {
+            panic!("failed copy must report a retained stage");
+        };
+        assert_eq!(&fs::read(path).unwrap()[..4], b"RIFF");
+        let ExportError::IncompleteDestination { path, source } = *cause else {
+            panic!("failed copy must report the destination and cause");
+        };
+        assert_eq!(path, target);
+        assert_eq!(source.kind(), io::ErrorKind::Other);
+        assert_eq!(source.to_string(), message);
+    }
+
     #[test]
     fn substituted_stage_survives_render_failure() {
         struct SubstitutingRenderer {
@@ -1694,7 +1781,9 @@ mod tests {
             let staging = dir.0.join("staging");
             fs::write(&staging, b"newer").unwrap();
             let error = publication::publish_new(&staging, &path).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert!(
+                matches!(error, publication::NewPublicationError::BeforeCopy(error) if error.kind() == io::ErrorKind::AlreadyExists)
+            );
             assert_eq!(fs::read(&path).unwrap(), expected);
             assert_eq!(fs::read(&staging).unwrap(), b"newer");
         }
