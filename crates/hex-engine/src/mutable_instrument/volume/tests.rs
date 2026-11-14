@@ -627,6 +627,226 @@ fn contributor_fade_length_tracks_supported_sample_rates() {
 }
 
 #[test]
+fn admitted_live_onset_fades_without_attenuating_a_sounding_peer() {
+    for partition in [1, 7, 64] {
+        let pcm = [1.0; 256];
+        let views = [view(&pcm)];
+        let resources = BorrowedDeviceResources(&views);
+        let (track, mut onsets) = onsets();
+        onsets.len = 1;
+        onsets.spans[0].as_mut().unwrap().source_gate_end = 128;
+        let input = crate::mutable_instrument::LiveInputId {
+            track,
+            generation: 1,
+        };
+        let mut runtime = runtime(views[0]);
+        runtime.enable_source_live();
+        let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+        runtime.begin_block();
+        runtime
+            .process_source_segment(
+                0,
+                &mut [[0.0; 2]; 7],
+                &mut onsets,
+                &[],
+                &mut events,
+                None,
+                &resources,
+                None,
+                None,
+            )
+            .unwrap();
+        runtime.commit_block();
+        onsets.clear();
+        runtime.begin_block();
+        runtime
+            .stage_live_events(
+                input,
+                &[NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                    pitch: 60,
+                    velocity: 127,
+                }],
+                Some(1),
+            )
+            .unwrap();
+        let mut output = [[0.0; 2]; 64];
+        let mut start = 7;
+        for chunk in output.chunks_mut(partition) {
+            runtime
+                .process_source_segment(
+                    start,
+                    chunk,
+                    &mut onsets,
+                    &[],
+                    &mut events,
+                    None,
+                    &resources,
+                    None,
+                    None,
+                )
+                .unwrap();
+            start += chunk.len() as u64;
+        }
+        runtime.commit_block();
+        for (i, frame) in output.iter().enumerate() {
+            let expected = 1.0 + i.min(40) as f32 / 40.0;
+            assert!(
+                (frame[0] - expected).abs() < 0.000_002,
+                "frame {i}: {frame:?} expected {expected}"
+            );
+        }
+        runtime.begin_block();
+        runtime
+            .stage_live_events(
+                input,
+                &[NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                }],
+                None,
+            )
+            .unwrap();
+        let voice = runtime
+            .live
+            .as_ref()
+            .unwrap()
+            .scratch
+            .iter()
+            .flatten()
+            .next()
+            .unwrap();
+        assert!(
+            voice.quiet_age.is_some(),
+            "key-up must reach its source-owned voice"
+        );
+    }
+}
+
+#[test]
+fn marked_live_onset_refuses_bad_offset_and_rolls_back_cleanly() {
+    let pcm = [1.0; 128];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let (track, mut onsets) = onsets();
+    onsets.clear();
+    let input = crate::mutable_instrument::LiveInputId {
+        track,
+        generation: 1,
+    };
+    let mut runtime = runtime(views[0]);
+    runtime.enable_source_live();
+    let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+    let note = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 7,
+        pitch: 60,
+        velocity: 127,
+    };
+    runtime.begin_block();
+    let late = NativeInstrumentEvent::NoteOn {
+        frame_offset: 1,
+        occurrence_id: 7,
+        pitch: 60,
+        velocity: 127,
+    };
+    assert!(matches!(
+        runtime.stage_live_events(input, &[late], Some(7)),
+        Err(MutableInstrumentRuntimeError::InvalidSourceSpan)
+    ));
+    assert!(matches!(
+        runtime.stage_live_events(input, &[note, note], Some(7)),
+        Err(MutableInstrumentRuntimeError::InvalidSourceSpan)
+    ));
+    let off = NativeInstrumentEvent::NoteOff {
+        frame_offset: 0,
+        occurrence_id: 7,
+    };
+    assert!(matches!(
+        runtime.stage_live_events(input, &[note, off], Some(7)),
+        Err(MutableInstrumentRuntimeError::InvalidSourceSpan)
+    ));
+    assert!(
+        runtime
+            .live
+            .as_ref()
+            .unwrap()
+            .scratch
+            .iter()
+            .all(Option::is_none)
+    );
+    runtime.stage_live_events(input, &[note], Some(7)).unwrap();
+    let mut first = [[0.0; 2]; 64];
+    runtime
+        .process_source_segment(
+            0,
+            &mut first,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            None,
+            None,
+        )
+        .unwrap();
+    runtime.rollback_block();
+    runtime.begin_block();
+    runtime.stage_live_events(input, &[note], Some(7)).unwrap();
+    let mut retry = [[0.0; 2]; 64];
+    runtime
+        .process_source_segment(
+            0,
+            &mut retry,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(first, retry);
+}
+
+#[test]
+fn marked_live_onset_refuses_a_provider_without_occurrence_gain() {
+    let (track, _) = onsets();
+    let input = crate::mutable_instrument::LiveInputId {
+        track,
+        generation: 1,
+    };
+    let mut runtime = MutableInstrumentTrackRuntime::new(
+        &crate::computer_keyboard::clock_admission_tests::ClockRequiredInstrument,
+        8000,
+    )
+    .unwrap();
+    runtime.enable_source_live();
+    runtime.begin_block();
+    let note = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 127,
+    };
+    assert!(matches!(
+        runtime.stage_live_events(input, &[note], Some(1)),
+        Err(MutableInstrumentRuntimeError::InvalidSourceSpan)
+    ));
+    assert!(
+        runtime
+            .live
+            .as_ref()
+            .unwrap()
+            .scratch
+            .iter()
+            .all(Option::is_none)
+    );
+}
+
+#[test]
 fn faded_onset_without_volume_crosses_the_fade_end_in_one_segment() {
     let pcm = [1.0; 128];
     let views = [view(&pcm)];
