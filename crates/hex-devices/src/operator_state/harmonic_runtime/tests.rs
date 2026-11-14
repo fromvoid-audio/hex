@@ -406,6 +406,8 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
         let proof = Target(target.configuration.configuration_id());
         let mut next = target.create_runtime();
         assert!(!next.can_copy_history_from(old.as_ref()));
+        let wrong_proof = Target(target.configuration.configuration_id() ^ 1);
+        assert!(!next.can_retarget_history_from(old.as_ref(), &wrong_proof));
         assert!(next.can_retarget_history_from(old.as_ref(), &proof));
         next.retarget_history_from(old.as_ref(), &proof);
         let a = old.as_any().downcast_ref::<Runtime>().unwrap();
