@@ -1370,7 +1370,7 @@ impl MutableInstrumentRuntime for Runtime {
             .as_any()
             .downcast_ref::<Target>()
             .is_some_and(|t| t.0 == self.factory.configuration.configuration_id())
-            && Legacy::read(previous).is_some_and(|p| {
+            && Admission::read(previous).is_some_and(|p| {
                 self.factory.rate == p.rate
                     && (p.admission_voices().all(|(id, _)| id == 0)
                         || self.factory.settings.companion == p.companion)
@@ -1527,6 +1527,46 @@ pub(super) struct Legacy<'a> {
     pub companion: companion::Settings,
     pub local_frame: u64,
 }
+
+struct Admission<'a> {
+    fine_offsets: [f32; 4],
+    pitch_keytrack: [f32; 4],
+    tuning: Option<&'a hex_lattice::TuningTable>,
+    rate: u32,
+    base: [u8; ENABLE_PAYLOAD_BYTES],
+    voices: &'a dyn VoiceHistory,
+    companion: companion::Settings,
+}
+
+impl<'a> Admission<'a> {
+    fn admission_voices(&self) -> impl Iterator<Item = (u64, PreparedOperatorNote)> + '_ {
+        (0..VOICES).filter_map(|index| self.voices.admission_voice(index))
+    }
+
+    fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
+        if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
+            return Some(Self {
+                fine_offsets: p.factory.settings.fine.values(),
+                pitch_keytrack: p.factory.settings.pitch_keytrack.values(),
+                tuning: p.factory.tuning.as_ref(),
+                rate: p.factory.rate,
+                base: p.factory.base,
+                voices: p,
+                companion: p.factory.settings.companion,
+            });
+        }
+        let p = Legacy::read(previous)?;
+        Some(Self {
+            fine_offsets: p.fine_offsets,
+            pitch_keytrack: p.pitch_keytrack,
+            tuning: p.tuning,
+            rate: p.rate,
+            base: p.base,
+            voices: p.voices,
+            companion: p.companion,
+        })
+    }
+}
 pub(super) fn builtin_spectrum(base: &[u8; ENABLE_PAYLOAD_BYTES]) -> Option<Spectrum> {
     let mut out = Spectrum {
         coefficients: [[0.0; 64]; 4],
@@ -1554,9 +1594,6 @@ pub(super) fn parameter_words(p: crate::fm4::OperatorFeedbackParameters) -> [f64
 impl<'a> Legacy<'a> {
     fn voices(&self) -> impl Iterator<Item = Voice> + '_ {
         (0..VOICES).filter_map(|index| self.voices.voice(index))
-    }
-    fn admission_voices(&self) -> impl Iterator<Item = (u64, PreparedOperatorNote)> + '_ {
-        (0..VOICES).filter_map(|index| self.voices.admission_voice(index))
     }
     fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
