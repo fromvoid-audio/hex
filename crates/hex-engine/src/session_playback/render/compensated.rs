@@ -18,7 +18,7 @@ pub(super) struct BatchedSources<'a> {
 
 impl SessionPlayback {
     /// Prepare only device-free resident tracks whose zero-latency inputs have
-    /// no graph consumers. Main and send edges remain in scalar graph order.
+    /// no upstream graph feeds. Main and send edges remain in scalar graph order.
     pub(super) fn premix_resident_return_tracks(
         &mut self,
         frames: usize,
