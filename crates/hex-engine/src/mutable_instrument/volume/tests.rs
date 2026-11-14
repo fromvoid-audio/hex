@@ -455,8 +455,9 @@ fn admitted_new_contributor_fades_in_without_changing_peer() {
     faded.source_gate_end = 64;
     faded.source_start = 0;
     faded.contributor_fade_in = true;
+    onsets.has_contributor_fade_in = true;
     let mut outputs = Vec::new();
-    for partitions in [&[8][..], &[1, 3, 2][..]] {
+    for partitions in [&[64][..], &[8][..], &[1, 3, 2][..]] {
         let mut runtime = runtime(views[0]);
         runtime.enable_source_live();
         let mut onsets = onsets.clone();
@@ -508,6 +509,7 @@ fn admitted_new_contributor_fades_in_without_changing_peer() {
         outputs.push(output);
     }
     assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(outputs[0], outputs[2]);
 }
 
 #[test]
@@ -523,6 +525,7 @@ fn faded_onset_refuses_without_source_age_or_at_mid_segment() {
         let onset = onsets.spans[0].as_mut().unwrap();
         onset.source_start = onset_start;
         onset.contributor_fade_in = true;
+        onsets.has_contributor_fade_in = true;
         let mut scratch = Vec::with_capacity(MAX_MUTABLE_OCCURRENCE_PROOFS);
         let mut next_id = 0;
         let mut emitted = 0;
@@ -566,6 +569,7 @@ fn faded_onset_rollback_keeps_its_source_age_and_identity() {
     let (track, mut onsets) = onsets();
     onsets.len = 1;
     onsets.spans[0].as_mut().unwrap().contributor_fade_in = true;
+    onsets.has_contributor_fade_in = true;
     let mut runtime = runtime(views[0]);
     runtime.enable_source_live();
     let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
@@ -620,4 +624,86 @@ fn contributor_fade_length_tracks_supported_sample_rates() {
     }
     assert!(ContributorFadeIn::new(7_999).is_none());
     assert!(ContributorFadeIn::new(192_001).is_none());
+}
+
+#[test]
+fn faded_onset_without_volume_crosses_the_fade_end_in_one_segment() {
+    let pcm = [1.0; 128];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let (track, mut onsets) = onsets();
+    onsets.len = 1;
+    let onset = onsets.spans[0].as_mut().unwrap();
+    onset.source_gate_end = 64;
+    onset.contributor_fade_in = true;
+    onsets.has_contributor_fade_in = true;
+    let mut runtime = runtime(views[0]);
+    runtime.enable_source_live();
+    let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+    let mut output = [[0.0; 2]; 64];
+    runtime.begin_block();
+    runtime
+        .process_segment_with_resources(
+            track,
+            0,
+            0,
+            &mut output,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            None,
+        )
+        .unwrap();
+    runtime.commit_block();
+    for (i, frame) in output.iter().enumerate() {
+        let expected = i.min(40) as f32 / 40.0;
+        assert!(
+            (frame[0] - expected).abs() < 0.000_001,
+            "frame {i}: {frame:?}"
+        );
+        assert_eq!(frame[0], frame[1]);
+    }
+}
+
+#[test]
+fn marked_mid_segment_onset_refuses_before_render_and_clear_resets_marker() {
+    let pcm = [1.0; 16];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let (track, mut onsets) = onsets();
+    let mut onset = onsets.spans[0].unwrap();
+    onset.source_start = 1;
+    onset.contributor_fade_in = true;
+    onsets.clear();
+    onsets.push(onset).unwrap();
+    let mut runtime = runtime(views[0]);
+    runtime.enable_source_live();
+    let mut output = [[0.25; 2]; 8];
+    let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+    runtime.begin_block();
+    let result = runtime.process_segment_with_resources(
+        track,
+        0,
+        0,
+        &mut output,
+        &mut onsets,
+        &[],
+        &mut events,
+        None,
+        &resources,
+        None,
+    );
+    assert!(matches!(
+        result,
+        Err(MutableInstrumentRuntimeError::InvalidSourceSpan)
+    ));
+    assert_eq!(output, [[0.25; 2]; 8]);
+    assert!(runtime.committed_ledger_is_empty());
+    onsets.clear();
+    assert!(!onsets.has_contributor_fade_in);
+    onset.contributor_fade_in = false;
+    onsets.push(onset).unwrap();
+    assert!(!onsets.has_contributor_fade_in);
 }

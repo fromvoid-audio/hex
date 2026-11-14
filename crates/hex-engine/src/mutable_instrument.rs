@@ -204,6 +204,7 @@ impl ContributorFade {
 pub(crate) struct MutableOnsetBuffer {
     spans: [Option<MutableNoteOnset>; MAX_MUTABLE_SPANS_PER_QUERY],
     len: usize,
+    has_contributor_fade_in: bool,
 }
 
 impl Default for MutableOnsetBuffer {
@@ -211,17 +212,23 @@ impl Default for MutableOnsetBuffer {
         Self {
             spans: [None; MAX_MUTABLE_SPANS_PER_QUERY],
             len: 0,
+            has_contributor_fade_in: false,
         }
     }
 }
 
 impl MutableOnsetBuffer {
     pub(crate) fn candidate_storage_empty(&self) -> bool {
-        let Self { spans, len } = self;
-        *len == 0 && spans.iter().all(Option::is_none)
+        let Self {
+            spans,
+            len,
+            has_contributor_fade_in,
+        } = self;
+        *len == 0 && !has_contributor_fade_in && spans.iter().all(Option::is_none)
     }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
+        self.has_contributor_fade_in = false;
     }
 
     pub(crate) fn push(&mut self, onset: MutableNoteOnset) -> Result<(), ()> {
@@ -230,6 +237,7 @@ impl MutableOnsetBuffer {
         };
         *slot = Some(onset);
         self.len += 1;
+        self.has_contributor_fade_in |= onset.contributor_fade_in;
         Ok(())
     }
 
@@ -1022,6 +1030,7 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
             || self.live.as_ref().is_some_and(|live| {
                 live.scratch
                     .iter()
@@ -1077,6 +1086,7 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
             || self.live.as_ref().is_some_and(|live| {
                 live.scratch
                     .iter()
