@@ -76,6 +76,7 @@ pub(crate) fn bounce_with_config(
                 "verified bounce source binding is missing",
             ))
         },
+        &[],
         Some(request.path()),
         config,
         request.control(),
@@ -158,6 +159,7 @@ impl VerifiedPages {
                     "verified export source binding is missing",
                 )),
             },
+            &[],
             Some(request.path()),
             config,
             request.control(),
@@ -166,6 +168,7 @@ impl VerifiedPages {
     fn capture_files<'a>(
         prepared: &hex_engine::PreparedRevision,
         mut file_for: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
+        repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
         destination: Option<&std::path::Path>,
         config: StreamConfig,
         control: &impl Cancellation,
@@ -199,6 +202,7 @@ impl VerifiedPages {
             .try_reserve_exact(config.max_sources)
             .map_err(media)?;
         files.try_reserve_exact(config.max_sources).map_err(media)?;
+        let mut repitch_map_bytes = 0usize;
         for metadata in prepared.arrangement_stream_sources() {
             check(control)?;
             let file = file_for(metadata.key())?;
@@ -213,11 +217,29 @@ impl VerifiedPages {
             let original = file
                 .source_metadata(metadata.key().asset(), metadata.key().generation())
                 .map_err(ExportError::Render)?;
+            let mut repitch = None;
             let expected = match metadata.key().pitch() {
                 Some((cents, law)) => original
                     .with_plain_pitch(cents, law)
                     .map_err(ExportError::Render)?,
-                None if metadata.key().is_raw() => original,
+                None if metadata.key().is_raw() => original.clone(),
+                None if metadata.key().repitch_identity().is_some() => {
+                    let requirement = repitches
+                        .iter()
+                        .find(|requirement| {
+                            requirement.asset() == metadata.key().asset()
+                                && requirement
+                                    .metadata_for(&original)
+                                    .is_ok_and(|expected| expected == *metadata)
+                        })
+                        .ok_or(ExportError::Invalid(
+                            "verified repitch requirement missing or differs",
+                        ))?;
+                    repitch = Some(requirement);
+                    requirement
+                        .metadata_for(&original)
+                        .map_err(ExportError::Render)?
+                }
                 None => return Err(ExportError::Invalid("unsupported derived export source")),
             };
             if expected != *metadata {
@@ -237,15 +259,36 @@ impl VerifiedPages {
                             "offline export source count exceeds its bound",
                         ));
                     }
-                    definitions.insert(
-                        index,
+                    let definition = if let Some(requirement) = repitch {
+                        repitch_map_bytes = repitch_map_bytes
+                            .checked_add(
+                                requirement
+                                    .map()
+                                    .backing_bytes()
+                                    .ok_or(ExportError::Invalid("repitch map size overflow"))?,
+                            )
+                            .ok_or(ExportError::Invalid("repitch map size overflow"))?;
+                        if repitch_map_bytes > config.max_kernel_table_bytes {
+                            return Err(ExportError::Invalid("repitch map reservation exceeded"));
+                        }
+                        let map = requirement.try_owned_map().map_err(ExportError::Render)?;
+                        check(control)?;
+                        SourceDefinition::new(
+                            file.path().to_path_buf(),
+                            original,
+                            file.reader_limits(),
+                        )
+                        .with_repitch(map, requirement.law())
+                        .map_err(ExportError::Render)?
+                    } else {
                         SourceDefinition::new(
                             file.path().to_path_buf(),
                             metadata.clone(),
                             file.reader_limits(),
                         )
-                        .with_verified_manifest(file.verified_manifest().clone()),
-                    );
+                    }
+                    .with_verified_manifest(file.verified_manifest().clone());
+                    definitions.insert(index, definition);
                     files.insert(index, (metadata.key(), file.clone()));
                 }
             }
@@ -656,6 +699,7 @@ pub(super) fn resident_seek_storage_bytes(
                     "verified seek source binding is missing",
                 ))
         },
+        sources.repitches().requirements(),
         None,
         StreamConfig::initial(),
         &AtomicBool::new(false),
@@ -724,6 +768,7 @@ pub(super) fn prepare_resident_seek(
                     "verified seek source binding is missing",
                 ))
         },
+        request.sources().repitches().requirements(),
         request.cancelled(),
     )?;
     hex_engine::playback::Playback::from_interactive_arrangement_preroll(runtime)
@@ -736,6 +781,7 @@ fn prepare_file_seek_runtime<'a>(
     resources: &hex_engine::native_device_resources::PreparedDeviceResources,
     context: hex_engine::AudioSourceContext,
     resolve: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
+    repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
     cancelled: &AtomicBool,
 ) -> Result<SessionPlayback, hex_engine::ArrangementPrerollError> {
     if context.project_generation != spec.generation {
@@ -758,6 +804,7 @@ fn prepare_file_seek_runtime<'a>(
     let mut pages = VerifiedPages::capture_files(
         &spec.prepared_revision,
         resolve,
+        repitches,
         None,
         StreamConfig::initial(),
         cancelled,
