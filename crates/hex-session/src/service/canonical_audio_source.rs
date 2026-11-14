@@ -85,6 +85,41 @@ impl CanonicalAudioSourceSnapshot {
             (arrangement || session).then_some((*id, binding))
         })
     }
+    /// Full-source plain-pitch streams required by verified Arrangement clips.
+    /// Repeated clips may yield the same requirement. These are immutable facts,
+    /// not worker leases or native admission; unsupported edits remain excluded.
+    pub fn required_plain_pitch_sources(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            hex_project::AssetId,
+            &crate::VerifiedAudioFile,
+            i16,
+            hex_project::WarpResampler,
+        ),
+    > {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter_map(move |clip| {
+                let edit = clip.audio_edit()?;
+                let asset = self.project.asset(clip.asset())?;
+                let crate::AudioSourceBinding::VerifiedFile(file) =
+                    self.sources.get(&clip.asset())?
+                else {
+                    return None;
+                };
+                (edit.is_plain_pitch_capture(clip)
+                    && clip.source_length() == asset.playback_frames())
+                .then_some((
+                    clip.asset(),
+                    file,
+                    edit.domain.pitch_cents,
+                    edit.domain.warp_resampler,
+                ))
+            })
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -179,6 +214,147 @@ impl CanonicalAudioSourceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pitch_requirements_include_only_complete_verified_file_clips() {
+        let files = super::super::verified_source_tests::Files::new();
+        let path = files.wav("pitch.wav", 48_000, 32, 1000);
+        let file = crate::VerifiedAudioFile::inspect(
+            path.clone(),
+            48_000,
+            hex_media::VerifiedWavReaderLimits::new(
+                hex_media::WavReaderLimits::new(1 << 20, 4096, 32, 4096),
+                1 << 20,
+            ),
+            || false,
+        )
+        .unwrap();
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: "source".into(),
+                path,
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("file fixture")
+        };
+        editor
+            .execute(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(first) = editor
+            .execute(hex_project::Command::DuplicateClip(clip))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: first,
+                cents: 700,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(second) = editor
+            .execute(hex_project::Command::DuplicateClip(first))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: second,
+                cents: -300,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(partial) = editor
+            .execute(hex_project::Command::DuplicateClip(second))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: partial,
+                cents: 0,
+            })
+            .unwrap();
+        let start = editor.project().clip(partial).unwrap().start();
+        editor
+            .execute(hex_project::Command::TrimClipEdge {
+                clip: partial,
+                edge: hex_project::TrimEdge::Right,
+                frame: start + 16,
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: partial,
+                cents: 200,
+            })
+            .unwrap();
+        let hex_project::Created::Imported {
+            clip: resident_clip,
+            asset: resident_asset,
+            ..
+        } = editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: "resident".into(),
+                path: "resident.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("resident fixture")
+        };
+        editor
+            .execute(hex_project::Command::SetClipFades {
+                clip: resident_clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: resident_clip,
+                cents: 500,
+            })
+            .unwrap();
+        let snapshot = CanonicalAudioSourceSnapshot {
+            project: Arc::new(editor.project().clone()),
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            mode: crate::DocumentAudioMode::Resident,
+            sources: BTreeMap::from([
+                (asset, crate::AudioSourceBinding::VerifiedFile(file)),
+                (
+                    resident_asset,
+                    crate::AudioSourceBinding::Resident(
+                        hex_engine::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap(),
+                    ),
+                ),
+            ]),
+        };
+        let mut requirements = snapshot
+            .required_plain_pitch_sources()
+            .map(|(id, _, cents, law)| (id, cents, law))
+            .collect::<Vec<_>>();
+        requirements.sort_by_key(|(_, cents, _)| *cents);
+        assert_eq!(
+            requirements,
+            vec![
+                (asset, -300, hex_project::WarpResampler::V2),
+                (asset, 700, hex_project::WarpResampler::V2)
+            ]
+        );
+    }
     fn next(service: &Service) -> Event {
         service
             .events

@@ -23,6 +23,9 @@ impl DomainSources {
             .required_sources()
             .filter(|(_, s)| matches!(s, AudioSourceBinding::VerifiedFile(_)))
             .count();
+        if count > hex_stream::StreamConfig::initial().max_sources {
+            return Err("source projection exceeds its reservation".into());
+        }
         let mut members = Vec::new();
         members
             .try_reserve_exact(count)
@@ -37,11 +40,45 @@ impl DomainSources {
                 });
             }
         }
+        for (asset, file, cents, law) in snapshot.required_plain_pitch_sources() {
+            let metadata = file
+                .source_metadata(asset, catalog_generation)
+                .and_then(|raw| raw.with_plain_pitch(cents, law))
+                .map_err(|e| e.to_string())?;
+            Self::add_pitch_member(&mut members, file, metadata)?;
+        }
         Ok(Self {
             project_generation: snapshot.context().project_generation,
             catalog_generation,
             members,
         })
+    }
+    fn add_pitch_member(
+        members: &mut Vec<Member>,
+        file: &VerifiedAudioFile,
+        metadata: hex_engine::StreamedSourceMetadata,
+    ) -> Result<(), String> {
+        if let Some(existing) = members
+            .iter()
+            .find(|member| member.metadata.key() == metadata.key())
+        {
+            return if existing.file == *file && existing.metadata == metadata {
+                Ok(())
+            } else {
+                Err("conflicting pitched source facts".into())
+            };
+        }
+        if members.len() >= hex_stream::StreamConfig::initial().max_sources {
+            return Err("source projection exceeds its reservation".into());
+        }
+        members
+            .try_reserve(1)
+            .map_err(|_| "could not reserve source projection")?;
+        members.push(Member {
+            file: file.clone(),
+            metadata,
+        });
+        Ok(())
     }
     /// Precommit ordinary projection uses the same source definitions as the
     /// verified constructor; these facts are not a reader or a page loan.
@@ -78,9 +115,11 @@ impl DomainSources {
     ) -> bool {
         self.project_generation == input.context.project_generation
             && input.files.iter().all(|(id, file)| {
-                self.members
-                    .iter()
-                    .any(|member| member.metadata.key().asset() == *id && &member.file == *file)
+                self.members.iter().any(|member| {
+                    member.metadata.key()
+                        == hex_engine::StreamSourceKey::new(self.catalog_generation, *id)
+                        && &member.file == *file
+                })
             })
     }
     pub(super) fn file_metadata(
@@ -158,9 +197,27 @@ impl DomainSources {
                 .all(|(asset, source)| match source {
                     AudioSourceBinding::Resident(_) => true,
                     AudioSourceBinding::VerifiedFile(file) => self.members.iter().any(|member| {
-                        member.metadata.key().asset() == asset && &member.file == file
+                        member.metadata.key()
+                            == hex_engine::StreamSourceKey::new(self.catalog_generation, asset)
+                            && &member.file == file
                     }),
                 })
+            && snapshot
+                .required_plain_pitch_sources()
+                .all(|(asset, file, cents, law)| {
+                    file.source_metadata(asset, self.catalog_generation)
+                        .and_then(|raw| raw.with_plain_pitch(cents, law))
+                        .is_ok_and(|expected| self.contains_member(file, &expected))
+                })
+    }
+    fn contains_member(
+        &self,
+        file: &VerifiedAudioFile,
+        metadata: &hex_engine::StreamedSourceMetadata,
+    ) -> bool {
+        self.members
+            .iter()
+            .any(|member| &member.file == file && &member.metadata == metadata)
     }
     pub(super) fn covers(
         &self,
@@ -182,6 +239,18 @@ impl DomainSources {
                         .is_some_and(|metadata| {
                             control.audio_candidate_domain_covers_source(token, metadata)
                         }),
+                })
+            && snapshot
+                .required_plain_pitch_sources()
+                .all(|(asset, file, cents, law)| {
+                    file.source_metadata(asset, self.catalog_generation)
+                        .and_then(|raw| raw.with_plain_pitch(cents, law))
+                        .is_ok_and(|expected| {
+                            self.metadata_for(expected.key()).is_some_and(|metadata| {
+                                metadata == &expected
+                                    && control.audio_candidate_domain_covers_source(token, metadata)
+                            })
+                        })
                 })
     }
     pub(super) fn metadata_for(
@@ -300,6 +369,43 @@ mod tests {
         assert_eq!(definitions[0].metadata.source_frames(), 16);
         assert_eq!(definitions[0].metadata.playback_frames(), 32);
         assert!(first_plan.metadata_for(definitions[0].key).is_some());
+        // The same captured file can supply multiple distinct pitches; repeated
+        // clips share one definition and another pitch is not falsely covered.
+        let mut pitched_plan = DomainSources::capture(snapshot, 11).unwrap();
+        let file = pitched_plan.members[0].file.clone();
+        let raw = pitched_plan.members[0].metadata.clone();
+        let up = raw
+            .with_plain_pitch(700, hex_project::WarpResampler::V2)
+            .unwrap();
+        let down = raw
+            .with_plain_pitch(-300, hex_project::WarpResampler::V2)
+            .unwrap();
+        DomainSources::add_pitch_member(&mut pitched_plan.members, &file, up.clone()).unwrap();
+        DomainSources::add_pitch_member(&mut pitched_plan.members, &file, up.clone()).unwrap();
+        let other =
+            VerifiedAudioFile::inspect(b.clone(), 48_000, file.reader_limits(), || false).unwrap();
+        assert!(
+            DomainSources::add_pitch_member(&mut pitched_plan.members, &other, up.clone()).is_err()
+        );
+        assert!(!pitched_plan.contains_member(&file, &down));
+        DomainSources::add_pitch_member(&mut pitched_plan.members, &file, down.clone()).unwrap();
+        assert_eq!(pitched_plan.definitions().unwrap().len(), 3);
+        assert!(pitched_plan.contains_member(&file, &down));
+        assert_eq!(pitched_plan.metadata_for(up.key()), Some(&up));
+        assert_eq!(pitched_plan.metadata_for(down.key()), Some(&down));
+        let mut full = DomainSources::capture(snapshot, 11).unwrap();
+        let limit = hex_stream::StreamConfig::initial().max_sources;
+        for cents in 1..limit {
+            let metadata = raw
+                .with_plain_pitch(cents as i16, hex_project::WarpResampler::V2)
+                .unwrap();
+            DomainSources::add_pitch_member(&mut full.members, &file, metadata).unwrap();
+        }
+        let overflow = raw
+            .with_plain_pitch(limit as i16, hex_project::WarpResampler::V2)
+            .unwrap();
+        assert!(DomainSources::add_pitch_member(&mut full.members, &file, overflow).is_err());
+        assert_eq!(full.members.len(), limit);
         assert!(
             first_plan
                 .metadata_for(hex_engine::StreamSourceKey::new(
