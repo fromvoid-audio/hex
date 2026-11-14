@@ -1332,4 +1332,71 @@ fn verified_repitch_edit_commits_and_survives_undo_redo_without_resident_pcm() {
     );
     let redo = run(&service, Request::Redo);
     assert_eq!(redo.state.project.snapshot(), expected);
+    let snapshot = redo.state.canonical_audio_source.as_ref().unwrap();
+    let quote = snapshot.candidate_reservation_quote().unwrap();
+    assert_eq!(quote.source_capacity, 2);
+    assert_eq!(quote.prepared_pcm_frames, 0);
+    let AudioSourceBinding::VerifiedFile(file) = snapshot.sources().get(&asset).unwrap() else {
+        panic!("verified file")
+    };
+    let raw = file.source_metadata(asset, 19).unwrap();
+    let edit = redo.state.project.clip(clip).unwrap().audio_edit().unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        redo.state.project.tempo_map(),
+        raw.playback_frames(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let derived = raw.with_repitch(&map, law).unwrap();
+    let reservation = quote.storage_reservation(4096).unwrap();
+    let mut missing =
+        hex_engine::AudioCandidatePreparation::try_new_on_control(2, reservation).unwrap();
+    missing.add_streamed_source_on_control(raw.clone()).unwrap();
+    assert!(
+        snapshot
+            .prepare_candidate_on_control(19, &mut missing)
+            .is_err()
+    );
+    missing.cleanup_on_control().unwrap();
+    let mut fingerprint = raw.fingerprint();
+    fingerprint[0] ^= 1;
+    let foreign = hex_engine::StreamedSourceMetadata::new(
+        raw.key(),
+        raw.source_rate(),
+        raw.project_rate(),
+        raw.source_frames(),
+        raw.playback_frames(),
+        raw.conversion_version(),
+        fingerprint,
+    )
+    .unwrap()
+    .with_repitch(&map, law)
+    .unwrap();
+    let mut candidate =
+        hex_engine::AudioCandidatePreparation::try_new_on_control(2, reservation).unwrap();
+    candidate.add_streamed_source_on_control(raw).unwrap();
+    assert!(
+        candidate
+            .add_repitch_streamed_source_on_control(foreign)
+            .is_err()
+    );
+    candidate
+        .add_repitch_streamed_source_on_control(derived)
+        .unwrap();
+    snapshot
+        .prepare_candidate_on_control(19, &mut candidate)
+        .unwrap();
+    assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+    candidate.cleanup_on_control().unwrap();
+    let duplicated = run(&service, Request::Edit(Command::DuplicateClip(clip)));
+    let quote = duplicated
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .candidate_reservation_quote()
+        .unwrap();
+    assert_eq!(quote.source_capacity, 2);
+    assert_eq!(quote.prepared_pcm_frames, 0);
 }
