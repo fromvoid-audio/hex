@@ -1953,11 +1953,11 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
     );
     let first = next();
     let second = next();
-    assert!(matches!(
-        first.created,
-        Some(Created::ArrangementLocator(_))
-    ));
+    assert!(matches!(first.created, Some(Created::ArrangementLocator(id)) if id == locator.id()));
+    assert_eq!(first.state.revision, state.revision);
+    assert_eq!(second.state.revision, state.revision);
     assert!(second.created.is_none());
+    assert_eq!(second.error.is_some(), stale || cancelled);
     if conflict {
         assert!(first.recovery_failure.is_some());
         assert!(second.recovery_failure.is_some());
