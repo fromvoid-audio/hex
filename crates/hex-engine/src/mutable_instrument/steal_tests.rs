@@ -103,6 +103,7 @@ fn onsets(spans: &[(u64, u64)]) -> (TrackId, MutableOnsetBuffer) {
                 pitch: 60,
                 channel: 0,
                 velocity: 127,
+                contributor_fade_in: false,
             })
             .unwrap();
     }

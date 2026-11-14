@@ -2713,6 +2713,7 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
                 pitch: span.pitch,
                 channel: span.channel,
                 velocity: span.velocity,
+                contributor_fade_in: false,
             })
             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
     }
@@ -2853,6 +2854,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: false,
                             })
                             .is_err();
                     },

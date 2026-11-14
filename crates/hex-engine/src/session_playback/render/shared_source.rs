@@ -267,6 +267,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: false,
                             })
                             .is_err();
                     })
@@ -311,6 +312,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: false,
                             })
                             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
                     }

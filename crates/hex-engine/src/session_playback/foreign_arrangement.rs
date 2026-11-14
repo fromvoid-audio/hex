@@ -590,6 +590,7 @@ impl ForeignArrangement {
                                     pitch: span.pitch,
                                     channel: span.channel,
                                     velocity: span.velocity,
+                                    contributor_fade_in: false,
                                 })
                                 .is_err();
                         })
@@ -619,6 +620,7 @@ impl ForeignArrangement {
                     source_start,
                     width: 1,
                     source_age: None,
+                    contributor_fade_rate: None,
                     tail_frames: 0,
                     max_active: MAX_FOREIGN_NOTES,
                     steals_releasing: true,
