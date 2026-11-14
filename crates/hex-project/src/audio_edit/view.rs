@@ -6,6 +6,8 @@ mod content_projection;
 mod directed_start;
 #[path = "view_ranges.rs"]
 mod ranges;
+#[path = "view_repeat.rs"]
+mod repeat_spans;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioViewMode {
@@ -892,13 +894,17 @@ impl<'a> AudioViewProjection<'a> {
             .checked_mul(i128::from(self.cycle))
             .ok_or(Invalid("audio occurrence origin overflow"))?;
         let root_origin = self.root_origin() + offset;
-        let begin = if source_index == 0 {
-            self.first_read
-        } else {
-            root_origin + i128::from(self.view_start)
-        };
-        let end =
-            (root_origin + i128::from(self.view_start) + i128::from(self.cycle)).min(self.end);
+        let length = u64::try_from(self.end - self.first_read)
+            .map_err(|_| Invalid("audio repeat window length overflow"))?;
+        let spans = repeat_spans::AudibleRepeats::new(length, self.phase, self.cycle, self.cycle)?;
+        if source_index >= spans.count() {
+            return Err(Invalid("audio occurrence exceeds repeat window"));
+        }
+        let span = spans
+            .span(source_index)
+            .ok_or(Invalid("audio occurrence exceeds repeat window"))?;
+        let begin = self.first_read + i128::from(span.elapsed_start);
+        let end = self.first_read + i128::from(span.elapsed_end);
         let destination_start = u64::try_from(self.frame(begin)?)
             .map_err(|_| Invalid("audio occurrence precedes project"))?;
         let destination_end = u64::try_from(self.frame(end)?)
