@@ -116,6 +116,7 @@ pub struct StreamedSourceMetadata {
     project_rate: u32,
     source_frames: u64,
     playback_frames: u64,
+    source_playback_frames: u64,
     conversion_version: u32,
     fingerprint: [u8; 32],
 }
@@ -157,6 +158,7 @@ impl StreamedSourceMetadata {
             project_rate,
             source_frames,
             playback_frames,
+            source_playback_frames: playback_frames,
             conversion_version,
             fingerprint,
         })
@@ -177,11 +179,34 @@ impl StreamedSourceMetadata {
     pub const fn playback_frames(&self) -> u64 {
         self.playback_frames
     }
+    /// Project-rate length before any derived transform.
+    pub const fn source_playback_frames(&self) -> u64 {
+        self.source_playback_frames
+    }
     pub const fn conversion_version(&self) -> u32 {
         self.conversion_version
     }
     pub const fn fingerprint(&self) -> [u8; 32] {
         self.fingerprint
+    }
+
+    /// Declare the output of an exact Re-Pitch map over this raw source.
+    /// A worker lease is still required before pages can be used.
+    pub fn with_repitch(
+        &self,
+        map: &hex_warp::TimeMap,
+        law: hex_warp::Resampler,
+    ) -> Result<Self, Invalid> {
+        let identity = RepitchStreamIdentity::new(self, map, law)?;
+        let output_frames = map
+            .segments()
+            .last()
+            .ok_or(Invalid("empty repitch map"))?
+            .output_end;
+        let mut derived = self.clone();
+        derived.key = StreamSourceKey::repitch(identity);
+        derived.playback_frames = output_frames;
+        Ok(derived)
     }
 
     /// Declare full-source plain pitch derived from these verified source facts.
@@ -313,6 +338,7 @@ impl StreamedSourceMetadata {
             project_rate: _,
             source_frames: _,
             playback_frames: _,
+            source_playback_frames: _,
             conversion_version: _,
             fingerprint: _,
         } = self;

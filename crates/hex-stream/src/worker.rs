@@ -9,7 +9,7 @@ use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
 use std::collections::VecDeque;
 pub(crate) mod scalar;
 use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion, VerifiedWavReader};
-use hex_warp::{PitchWindow, Resampler};
+use hex_warp::{PitchWindow, RepitchWindow, Resampler};
 use rtrb::{Consumer, Producer, PushError};
 use scalar::ScalarJob;
 use std::{
@@ -34,6 +34,7 @@ struct Source {
     reader: VerifiedWavReader,
     plan: ResamplePlan,
     pitch: Option<PitchWindow>,
+    repitch: Option<RepitchWindow>,
 }
 
 // 4096 output frames at the maximum 16x pitch plus the 512-tap halo.
@@ -65,6 +66,11 @@ pub(crate) fn preparation_data_bound(
         if let Some((_, law)) = definition.key.pitch() {
             table_reservation = table_reservation
                 .checked_add(PitchWindow::filter_reservation_bytes(pitch_law(law)))?;
+        }
+        if let Some((_, map, law)) = &definition.repitch {
+            table_reservation =
+                table_reservation.checked_add(RepitchWindow::filter_reservation_bytes(*law))?;
+            table_reservation = table_reservation.checked_add(map.backing_bytes()?)?;
         }
         let pages = definition
             .reader_limits
@@ -109,7 +115,10 @@ pub(crate) fn preparation_data_bound(
         config
             .source_scratch_frames
             .checked_mul(std::mem::size_of::<hex_engine::Frame>())?,
-        if definitions.iter().any(|d| d.key.pitch().is_some()) {
+        if definitions
+            .iter()
+            .any(|d| d.key.pitch().is_some() || d.repitch.is_some())
+        {
             PITCH_SCRATCH_FRAMES.checked_mul(std::mem::size_of::<hex_engine::Frame>())?
         } else {
             0
@@ -306,7 +315,9 @@ pub(crate) fn run_worker(
         source_scratch.resize(config.source_scratch_frames, [0.0; 2]);
     }
     let mut pitch_scratch = Vec::new();
-    let needs_pitch = definitions.iter().any(|d| d.key.pitch().is_some());
+    let needs_pitch = definitions
+        .iter()
+        .any(|d| d.key.pitch().is_some() || d.repitch.is_some());
     let pitch_scratch_ok = !needs_pitch
         || (pitch_scratch
             .try_reserve_exact(PITCH_SCRATCH_FRAMES)
@@ -718,7 +729,9 @@ fn build_catalog(
     pitch_scratch_capacity: usize,
     stop: &AtomicBool,
 ) -> Result<(Vec<Source>, CatalogFootprint, crate::WorkerData), StreamFailureKind> {
-    if definitions.iter().any(|d| d.key.pitch().is_some())
+    if definitions
+        .iter()
+        .any(|d| d.key.pitch().is_some() || d.repitch.is_some())
         && pitch_scratch_capacity < PITCH_SCRATCH_FRAMES
     {
         return Err(StreamFailureKind::CapacityExhausted);
@@ -774,18 +787,28 @@ fn build_catalog(
             let reservation = d.key.pitch().map_or(0, |(_, law)| {
                 PitchWindow::filter_reservation_bytes(pitch_law(law))
             });
-            sum.checked_add(reservation)
+            let repitch = if let Some((_, map, law)) = &d.repitch {
+                RepitchWindow::filter_reservation_bytes(*law).checked_add(map.backing_bytes()?)?
+            } else {
+                0
+            };
+            sum.checked_add(reservation)?.checked_add(repitch)
         })
         .ok_or(StreamFailureKind::CapacityExhausted)?;
     if kernel_budget_reserved > config.max_kernel_table_bytes {
         return Err(StreamFailureKind::CapacityExhausted);
     }
-    for definition in definitions {
+    for mut definition in definitions {
         if stop.load(Ordering::Acquire) {
             return Err(StreamFailureKind::Cancelled);
         }
         if definition.key != definition.metadata.key()
-            || (!definition.key.is_raw() && definition.key.pitch().is_none())
+            || match &definition.repitch {
+                Some((raw, map, law)) => {
+                    raw.with_repitch(map, *law).ok().as_ref() != Some(&definition.metadata)
+                }
+                None => !definition.key.is_raw() && definition.key.pitch().is_none(),
+            }
         {
             return Err(StreamFailureKind::UnknownSource);
         }
@@ -888,11 +911,11 @@ fn build_catalog(
             kernel,
             reader.source_frames(),
             reader.source_frames(),
-            definition.metadata.playback_frames(),
+            definition.metadata.source_playback_frames(),
             hex_engine::STREAM_PAGE_FRAMES,
         )
         .map_err(map_import_error)?;
-        if plan.output_frames() != definition.metadata.playback_frames() {
+        if plan.output_frames() != definition.metadata.source_playback_frames() {
             return Err(StreamFailureKind::DecodeFailed);
         }
         let window_bound = max_source_window(
@@ -933,11 +956,47 @@ fn build_catalog(
         } else {
             None
         };
+        let repitch = if let Some((_, map, law)) = definition.repitch.take() {
+            let window = RepitchWindow::new(
+                definition.metadata.source_playback_frames(),
+                map,
+                law,
+                &mut || stop.load(Ordering::Acquire),
+            )
+            .map_err(map_pitch_error)?;
+            let filter_bytes = window
+                .filter_backing_bytes()
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            if filter_bytes > RepitchWindow::filter_reservation_bytes(law) {
+                return Err(StreamFailureKind::CapacityExhausted);
+            }
+            let bytes = filter_bytes
+                .checked_add(
+                    window
+                        .map_backing_bytes()
+                        .ok_or(StreamFailureKind::CapacityExhausted)?,
+                )
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            kernel_bytes = kernel_bytes
+                .checked_add(bytes)
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            if kernel_bytes > config.max_kernel_table_bytes {
+                return Err(StreamFailureKind::CapacityExhausted);
+            }
+            data.pitch_filter_weights = data
+                .pitch_filter_weights
+                .checked_add(bytes)
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            Some(window)
+        } else {
+            None
+        };
         sources.push(Source {
             definition,
             reader,
             plan,
             pitch,
+            repitch,
         });
     }
     let scratch_bytes = source_scratch
@@ -955,6 +1014,7 @@ fn build_catalog(
             reader,
             plan,
             pitch: _,
+            repitch: _,
         } = source;
         if !kernels
             .iter()
@@ -968,6 +1028,7 @@ fn build_catalog(
             metadata: _,
             reader_limits: _,
             verified_manifest: _,
+            repitch: _,
         } = definition;
         let layout = reader.control_data_layout();
         data.definition_paths = data
@@ -1107,17 +1168,22 @@ fn render_page(
         .page_index
         .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
         .ok_or(StreamFailureKind::DecodeFailed)?;
-    if output_start >= source.plan.output_frames() {
+    let output_frames = source.definition.metadata.playback_frames();
+    if output_start >= output_frames {
         return Err(StreamFailureKind::DecodeFailed);
     }
-    let count = usize::try_from(
-        (source.plan.output_frames() - output_start).min(hex_engine::STREAM_PAGE_FRAMES as u64),
-    )
-    .map_err(|_| StreamFailureKind::DecodeFailed)?;
-    if let Some(pitch) = &source.pitch {
-        let range = pitch
-            .required_source_range(output_start, count)
-            .map_err(map_pitch_error)?;
+    let count =
+        usize::try_from((output_frames - output_start).min(hex_engine::STREAM_PAGE_FRAMES as u64))
+            .map_err(|_| StreamFailureKind::DecodeFailed)?;
+    if source.pitch.is_some() || source.repitch.is_some() {
+        let range = if let Some(pitch) = &source.pitch {
+            pitch.required_source_range(output_start, count)
+        } else if let Some(repitch) = &source.repitch {
+            repitch.required_source_range(output_start, count)
+        } else {
+            return Err(StreamFailureKind::UnknownSource);
+        }
+        .map_err(map_pitch_error)?;
         let needed = usize::try_from(range.end - range.start)
             .map_err(|_| StreamFailureKind::CapacityExhausted)?;
         if needed > pitch_scratch.len() {
@@ -1164,13 +1230,26 @@ fn render_page(
                 .render_window(first, &source_scratch[..n], start, chunk)
                 .map_err(map_import_error)?;
         }
-        if let Err(error) = pitch.render(
-            output_start,
-            range.start,
-            &pitch_scratch[..needed],
-            &mut page.frames[..count],
-            &mut || stop.load(Ordering::Acquire),
-        ) {
+        let result = if let Some(pitch) = &source.pitch {
+            pitch.render(
+                output_start,
+                range.start,
+                &pitch_scratch[..needed],
+                &mut page.frames[..count],
+                &mut || stop.load(Ordering::Acquire),
+            )
+        } else if let Some(repitch) = &mut source.repitch {
+            repitch.render(
+                output_start,
+                range.start,
+                &pitch_scratch[..needed],
+                &mut page.frames[..count],
+                &mut || stop.load(Ordering::Acquire),
+            )
+        } else {
+            return Err(StreamFailureKind::UnknownSource);
+        };
+        if let Err(error) = result {
             page.frames.fill([0.0; 2]);
             return Err(map_pitch_error(error));
         }
@@ -1468,6 +1547,152 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn repitch_pages_match_resident_with_converted_source_and_distinct_extent() {
+        for project_rate in [48_000, 44_100] {
+            let fixture = Fixture::pcm16();
+            let limits = VerifiedWavReaderLimits::new(
+                WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
+                1024 * 1024,
+            );
+            let reader = VerifiedWavReader::open(&fixture.0, limits).unwrap();
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: fixture.0.clone(),
+                    sample_rate: 48_000,
+                    frames: 4096,
+                })
+                .unwrap()
+            else {
+                panic!("asset fixture")
+            };
+            let input_frames =
+                hex_project::converted_frame_count(4096, 48_000, project_rate).unwrap();
+            let version = if project_rate == 48_000 {
+                IDENTITY_CONVERSION
+            } else {
+                hex_project::SINC_CONVERSION_V2
+            };
+            let raw = StreamedSourceMetadata::new(
+                StreamSourceKey::new(96, asset),
+                48_000,
+                project_rate,
+                4096,
+                input_frames,
+                version,
+                *reader.fingerprint(),
+            )
+            .unwrap();
+            let output_frames = input_frames * 2;
+            let map = hex_warp::TimeMap::new(
+                vec![hex_warp::MapSegment {
+                    output_start: 0,
+                    output_end: output_frames,
+                    source_start_q32: 0,
+                    source_end_q32: i128::from(input_frames) << 32,
+                }],
+                output_frames as usize,
+            )
+            .unwrap();
+            let definition = SourceDefinition::new(fixture.0.clone(), raw, limits)
+                .with_repitch(map.clone(), Resampler::V2)
+                .unwrap();
+            let key = definition.key;
+            let config = StreamConfig::initial();
+            let (bound, _) =
+                preparation_data_bound(config, std::slice::from_ref(&definition), 1).unwrap();
+            let mut source_scratch = vec![[0.0; 2]; config.source_scratch_frames];
+            let mut pitch_scratch = vec![[0.0; 2]; PITCH_SCRATCH_FRAMES];
+            let mut wrong_identity = definition.clone();
+            wrong_identity.repitch.as_mut().unwrap().2 = Resampler::V1;
+            assert!(matches!(
+                build_catalog(
+                    &config,
+                    vec![wrong_identity],
+                    &mut source_scratch,
+                    pitch_scratch.len(),
+                    &AtomicBool::new(false)
+                ),
+                Err(StreamFailureKind::UnknownSource)
+            ));
+            let mut too_small = config;
+            too_small.max_kernel_table_bytes = 0;
+            assert!(
+                preparation_data_bound(too_small, std::slice::from_ref(&definition), 1).is_none()
+            );
+            assert!(matches!(
+                build_catalog(
+                    &too_small,
+                    vec![definition.clone()],
+                    &mut source_scratch,
+                    pitch_scratch.len(),
+                    &AtomicBool::new(false)
+                ),
+                Err(StreamFailureKind::CapacityExhausted)
+            ));
+            let (mut sources, _, data) = build_catalog(
+                &config,
+                vec![definition],
+                &mut source_scratch,
+                pitch_scratch.len(),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert!(data.bytes().unwrap() <= bound);
+            let source = &mut sources[0];
+            let mut native = vec![[0.0; 2]; 4096];
+            source
+                .reader
+                .read_frames_into_with_cancel(0, &mut native, || false)
+                .unwrap();
+            let mut converted = vec![[0.0; 2]; input_frames as usize];
+            source
+                .plan
+                .render_window(0, &native, 0, &mut converted)
+                .unwrap();
+            let request = hex_warp::Request {
+                attacks: &[],
+                input: hex_warp::Input {
+                    frames: &converted,
+                    sample_rate: project_rate,
+                    region_start: 0,
+                    region_length: input_frames,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                map: &map,
+                output_frames: output_frames as usize,
+                pitch_cents: 0,
+                mode: hex_warp::Mode::RePitch,
+            };
+            let expected =
+                hex_warp::render_with_resampler(&request, Resampler::V2, &mut || false).unwrap();
+            for page_index in [1, 0] {
+                let mut page = PageBuffer::new().unwrap();
+                render_page(
+                    source,
+                    PageKey {
+                        source: key,
+                        page_index,
+                    },
+                    &mut page,
+                    &mut source_scratch,
+                    &mut pitch_scratch,
+                    &AtomicBool::new(false),
+                    None,
+                )
+                .unwrap();
+                let start = page_index as usize * hex_engine::STREAM_PAGE_FRAMES;
+                assert_eq!(
+                    &page.frames[..page.valid_frames],
+                    &expected.frames[start..start + page.valid_frames]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn pitched_worker_data_is_covered_by_its_preconstruction_bound() {
         let fixture = Fixture::pcm16();
         let limits = VerifiedWavReaderLimits::new(
@@ -1568,6 +1793,7 @@ pub(crate) mod tests {
             reader,
             plan,
             pitch: None,
+            repitch: None,
         };
         let key = PageKey {
             source: key,

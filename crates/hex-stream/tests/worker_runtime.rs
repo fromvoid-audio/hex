@@ -1658,7 +1658,7 @@ fn pitched_worker_pages_match_resident_for_raw_and_converted_sources() {
 }
 
 #[test]
-fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
+fn transformed_worker_keeps_twenty_million_frame_source_bounded() {
     use hex_warp::{Input, MapSegment, Mode, Request, Resampler, TimeMap, render_with_resampler};
     const FRAMES: u64 = 20_000_000;
     let stamp = SystemTime::now()
@@ -1822,6 +1822,63 @@ fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
     assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
     assert_eq!(page.frames, expected);
     assert!(runtime.shutdown().unwrap().accounting_complete);
+
+    // The same verified long file also supports a distinct Re-Pitch extent.
+    let output_frames = FRAMES * 2;
+    let map = TimeMap::new_streamed(
+        vec![MapSegment {
+            output_start: 0,
+            output_end: output_frames,
+            source_start_q32: 0,
+            source_end_q32: i128::from(FRAMES) << 32,
+        }],
+        output_frames,
+    )
+    .unwrap();
+    let def = SourceDefinition::new(wav.path().to_path_buf(), raw, limits)
+        .with_repitch(map.clone(), Resampler::V2)
+        .unwrap()
+        .with_verified_manifest(reader.manifest().clone());
+    let key = def.key;
+    let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![def]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let footprint = runtime.catalog_footprint().unwrap();
+    assert_eq!(
+        footprint.pitch_scratch_bytes,
+        66_048 * std::mem::size_of::<[f32; 2]>()
+    );
+    assert!(footprint.kernel_table_bytes <= footprint.kernel_peak_bound_bytes);
+    let index = impulse_frame * 2 / 4096;
+    runtime.request_page(key, index);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[PageKey {
+            source: key,
+            page_index: index
+        }],
+        Duration::from_secs(3)
+    ));
+    let page = runtime.page(key, index).unwrap();
+    let mut window =
+        hex_warp::RepitchWindow::new(FRAMES, map, Resampler::V2, &mut || false).unwrap();
+    let range = window
+        .required_source_range(index * 4096, page.frames.len())
+        .unwrap();
+    let mut source = vec![[0.0; 2]; (range.end - range.start) as usize];
+    source[(impulse_frame - range.start) as usize] = [0.5, -0.25];
+    let mut expected = vec![[0.0; 2]; page.frames.len()];
+    window
+        .render(
+            index * 4096,
+            range.start,
+            &source,
+            &mut expected,
+            &mut || false,
+        )
+        .unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(page.frames, expected);
+    assert!(runtime.shutdown().unwrap().accounting_complete);
 }
 
 #[test]
@@ -1849,4 +1906,103 @@ fn pitched_worker_refuses_filter_budget_before_publication() {
         StreamRuntime::new(config, vec![definition]),
         Err(hex_stream::StreamRuntimeError::InvalidConfiguration)
     ));
+}
+
+#[test]
+fn repitch_worker_publishes_mapped_pages_at_the_derived_extent() {
+    use hex_warp::{Input, MapSegment, Mode, Request, Resampler, TimeMap, render_with_resampler};
+    for (source_rate, law) in [(48_000, Resampler::V1), (44_100, Resampler::V2)] {
+        let project_rate = 48_000;
+        let (wav, pcm) = TestWav::stereo_pcm16(source_rate, 6_001);
+        let limits = reader_limits(pcm.len());
+        let verified = VerifiedWavReader::open(wav.path(), limits).unwrap();
+        let input_frames =
+            hex_project::converted_frame_count(pcm.len() as u64, source_rate, project_rate)
+                .unwrap();
+        let conversion = if source_rate == project_rate {
+            hex_project::IDENTITY_CONVERSION
+        } else {
+            hex_project::SINC_CONVERSION_V2
+        };
+        let raw = StreamedSourceMetadata::new(
+            StreamSourceKey::new(503, asset_id(pcm.len(), project_rate)),
+            source_rate,
+            project_rate,
+            pcm.len() as u64,
+            input_frames,
+            conversion,
+            *verified.fingerprint(),
+        )
+        .unwrap();
+        let output_frames = input_frames * 2;
+        let map = TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: output_frames,
+                source_start_q32: 0,
+                source_end_q32: i128::from(input_frames) << 32,
+            }],
+            output_frames as usize,
+        )
+        .unwrap();
+        let definition = SourceDefinition::new(wav.path().to_path_buf(), raw.clone(), limits)
+            .with_repitch(map.clone(), law)
+            .unwrap()
+            .with_verified_manifest(verified.manifest().clone());
+        let metadata = definition.metadata.clone();
+        assert_eq!(metadata.source_playback_frames(), input_frames);
+        assert_eq!(metadata.playback_frames(), output_frames);
+        let mut runtime =
+            StreamRuntime::new(StreamConfig::with_pool_pages(4), vec![definition]).unwrap();
+        runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+        let original = Audio::new(source_rate, pcm).unwrap();
+        let project = if source_rate == project_rate {
+            original
+        } else {
+            resample_with_version(
+                &original,
+                project_rate,
+                ResampleLimits {
+                    max_source_frames: 100_000,
+                    max_output_frames: 100_000,
+                },
+                ResampleVersion::V2,
+            )
+            .unwrap()
+        };
+        let expected = render_with_resampler(
+            &Request {
+                attacks: &[],
+                input: Input {
+                    frames: project.frames(),
+                    sample_rate: project_rate,
+                    region_start: 0,
+                    region_length: input_frames,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                map: &map,
+                output_frames: output_frames as usize,
+                pitch_cents: 0,
+                mode: Mode::RePitch,
+            },
+            law,
+            &mut || false,
+        )
+        .unwrap()
+        .frames;
+        for index in [(output_frames - 1) / 4096, 0, 1] {
+            let key = PageKey {
+                source: metadata.key(),
+                page_index: index,
+            };
+            runtime.request_page(key.source, index);
+            assert!(wait_for_pages(&mut runtime, &[key], Duration::from_secs(3)));
+            let page = runtime.page(key.source, index).unwrap();
+            let start = index as usize * 4096;
+            assert_eq!(page.frames, &expected[start..start + page.frames.len()]);
+        }
+        assert!(runtime.shutdown().unwrap().accounting_complete);
+    }
 }
