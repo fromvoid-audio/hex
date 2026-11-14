@@ -916,7 +916,6 @@ impl SessionPlayback {
                 )?;
                 passthrough.fill(false);
                 if observer.is_none()
-                    && capture.is_none()
                     && scalar.is_none()
                     && self
                         .native_parameter_state
