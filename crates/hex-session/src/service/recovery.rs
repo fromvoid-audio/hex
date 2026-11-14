@@ -790,12 +790,14 @@ fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, 
         .map_err(|error| format!("missing media: {error}"))
 }
 
-/// Keep every materialized processing dependency resident, including retained
-/// grouped roots. File selection must not turn a valid saved edit into an
-/// unsupported streamed transform merely because another plain asset is large.
+/// Keep materialized processing dependencies resident, including retained
+/// grouped roots. Complete plain-pitch captures can use verified worker pages;
+/// other edits still require their existing resident preparation path.
 fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
     let requires = |clip: &hex_project::Clip| {
-        (clip.asset() == asset && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
+        (clip.asset() == asset
+            && crate::audio_sources::plain_pitch_requirement(project, clip).is_none()
+            && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
             || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
                 .is_some_and(|events| events.sources.iter().any(|root| root.clip.asset() == asset))
     };
@@ -979,6 +981,49 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[test]
+    fn ordinary_file_recovery_only_exempts_complete_plain_pitch() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+            .unwrap();
+        assert!(!asset_requires_resident_processing(editor.project(), asset));
+        let mut cropped = hex_project::Editor::new(editor.project().clone(), 8).unwrap();
+        let start = cropped.project().clip(clip).unwrap().start();
+        cropped
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: start + 16,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(cropped.project(), asset));
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(editor.project(), asset));
+    }
     #[cfg(feature = "recovery-checkpoint-test-support")]
     #[test]
     fn test_checkpoint_gate_releases_registration_and_rejects_unentered_release() {

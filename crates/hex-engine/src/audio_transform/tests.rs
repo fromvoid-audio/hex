@@ -2218,6 +2218,66 @@ fn duplicated_warped_audio_keeps_preparable_timing() {
 }
 
 #[test]
+fn streamed_repitch_projects_canonical_map_and_refuses_other_processing() {
+    let (mut editor, clip, _) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let edit = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .clone();
+    let tempo = editor.project().tempo_map();
+    let cancel = AtomicBool::new(false);
+    let (resident, _) = mapping::prepare_map(&edit, tempo, &cancel).unwrap();
+    let (streamed, law) = streamed_repitch_map(&edit, tempo, 8_000, &cancel).unwrap();
+    assert_eq!(streamed, resident);
+    assert_eq!(law, render_resampler(&edit.domain));
+    assert!(streamed_repitch_map(&edit, tempo, 7_999, &cancel).is_err());
+    let mut invalid = edit.clone();
+    Arc::make_mut(&mut invalid.domain).pitch_cents = 100;
+    assert!(streamed_repitch_map(&invalid, tempo, 8_000, &cancel).is_err());
+    Arc::make_mut(&mut invalid.domain).pitch_cents = 0;
+    Arc::make_mut(&mut invalid.domain).looping = true;
+    assert!(streamed_repitch_map(&invalid, tempo, 8_000, &cancel).is_err());
+    let mut long = edit;
+    let beat_length = BeatTime::from_raw(BeatTime::ONE.raw() * 2_500);
+    let domain = Arc::make_mut(&mut long.domain);
+    domain.source_length = 20_000_000;
+    domain.clock = AudioDomainClock::Beats(beat_length);
+    let last = domain.warp.as_mut().unwrap().markers.last_mut().unwrap();
+    last.source_frame = 20_000_000;
+    last.beat = beat_length;
+    long.view_end = beat_length.raw();
+    assert!(mapping::prepare_map(&long, tempo, &cancel).is_err());
+    let (map, _) = streamed_repitch_map(&long, tempo, 20_000_000, &cancel).unwrap();
+    assert_eq!(map.segments().len(), 1);
+    assert_eq!(map.segments()[0].output_end, 20_000_000);
+    assert_eq!(map.segments()[0].source_end_q32, 20_000_000_i128 << 32);
+    assert!(map.backing_bytes().unwrap() < 1024);
+    assert!(streamed_repitch_map(&long, tempo, 20_000_000, &AtomicBool::new(true)).is_err());
+}
+
+#[test]
 fn warp_map_coalesces_partial_cycles_and_tempo_crossings_but_preserves_authored_markers() {
     let (mut editor, clip, _) = fixture(false);
     let settings = default_audio_warp(

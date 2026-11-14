@@ -1099,15 +1099,74 @@ mod tests {
     }
 
     #[test]
-    fn same_asset_pitch_identities_do_not_alias_in_page_cache() {
-        let mut test = endpoint(4, 4, 4);
+    fn same_asset_derived_identities_do_not_alias_in_page_cache() {
+        let mut test = endpoint(8, 8, 8);
         let raw = source();
         let up = StreamSourceKey::plain_pitch(73, raw.asset(), 700, hex_project::WarpResampler::V2)
             .unwrap();
         let down =
             StreamSourceKey::plain_pitch(73, raw.asset(), -700, hex_project::WarpResampler::V2)
                 .unwrap();
-        for (key, value) in [(raw, 1.0), (up, 2.0), (down, 3.0)] {
+        let metadata = hex_engine::StreamedSourceMetadata::new(
+            raw,
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let map = |source_end| {
+            hex_warp::TimeMap::new(
+                vec![hex_warp::MapSegment {
+                    output_start: 0,
+                    output_end: 4096,
+                    source_start_q32: 0,
+                    source_end_q32: source_end,
+                }],
+                4096,
+            )
+            .unwrap()
+        };
+        let a = hex_engine::RepitchStreamIdentity::new(
+            &metadata,
+            &map(4096_i128 << 32),
+            hex_warp::Resampler::V2,
+        )
+        .unwrap();
+        let b = hex_engine::RepitchStreamIdentity::new(
+            &metadata,
+            &map(2048_i128 << 32),
+            hex_warp::Resampler::V2,
+        )
+        .unwrap();
+        let warped = StreamSourceKey::repitch(a);
+        let other_warp = StreamSourceKey::repitch(b);
+        let entries = [
+            (raw, 1.0),
+            (up, 2.0),
+            (down, 3.0),
+            (warped, 4.0),
+            (other_warp, 5.0),
+        ];
+        test.endpoint.source_keys = entries.iter().map(|(key, _)| (*key).into()).collect();
+        test.endpoint.source_keys.sort_unstable();
+        for (key, _) in entries {
+            test.endpoint.request_page(key, 0);
+        }
+        for (key, _) in entries {
+            assert_eq!(
+                test.requests.pop().unwrap().0,
+                PageKey {
+                    source: key,
+                    page_index: 0
+                }
+                .into()
+            );
+        }
+        assert!(test.requests.pop().is_err());
+        for (key, value) in entries {
             let mut buffer = page(PageKey {
                 source: key,
                 page_index: 0,
@@ -1115,7 +1174,7 @@ mod tests {
             buffer.frames[0] = [value, -value];
             assert!(test.endpoint.insert_ready(buffer));
         }
-        for (key, value) in [(raw, 1.0), (up, 2.0), (down, 3.0)] {
+        for (key, value) in entries {
             assert_eq!(
                 test.endpoint.page(key, 0).unwrap().frames,
                 &[[value, -value]]

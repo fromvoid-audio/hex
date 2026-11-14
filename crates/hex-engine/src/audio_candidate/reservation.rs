@@ -127,7 +127,7 @@ impl AudioCandidateReservationQuote {
         let streamed_pitch = |clip: &hex_project::Clip| {
             streams
                 .iter()
-                .find(|raw| raw.key().asset() == clip.asset() && raw.key().pitch().is_none())
+                .find(|raw| raw.key().asset() == clip.asset() && raw.key().is_raw())
                 .is_some_and(|raw| {
                     streams.iter().any(|pitch| {
                         crate::audio_preparation::transformed::matching_streamed_pitch(

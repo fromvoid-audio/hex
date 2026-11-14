@@ -106,6 +106,47 @@ pub fn validate_clip_warp_preview(
         .map_err(warp_error)
 }
 
+/// Project a validated canonical Re-Pitch root for a bounded streaming worker.
+/// The returned map covers the full processed root; view cropping is applied by
+/// the consumer. It owns no audio and does not establish file or page custody.
+/// Unsupported source processing is refused rather than silently omitted.
+pub fn streamed_repitch_map(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    source_frames: u64,
+    cancel: &AtomicBool,
+) -> Result<(hex_warp::TimeMap, hex_warp::Resampler), Invalid> {
+    let domain = &edit.domain;
+    if source_frames == 0
+        || domain.source_offset != 0
+        || domain.source_length != source_frames
+        || domain.source_phase != 0
+        || domain.looping
+        || !domain.fade.is_neutral()
+        || domain.pitch_cents != 0
+        || !domain.source_gain.is_empty()
+        || domain.events.is_some()
+        || !domain.warp_enabled
+        || !domain
+            .warp
+            .as_ref()
+            .is_some_and(|warp| matches!(warp.mode, WarpMode::RePitch))
+        || edit.content_view.is_some()
+        || edit.placement.is_some()
+    {
+        return Err(Invalid(
+            "streamed repitch requires an unlooped neutral full-source warp root",
+        ));
+    }
+    let (map, attacks) = mapping::prepare_streamed_map(edit, tempo, cancel)?;
+    if !attacks.is_empty() {
+        return Err(Invalid("streamed repitch cannot use beat attacks"));
+    }
+    map.validate_stretch(hex_warp::Mode::RePitch, 0)
+        .map_err(warp_error)?;
+    Ok((map, render_resampler(domain)))
+}
+
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
 /// Maximum unique source PCM capacity retained by committed and pending cache entries.
@@ -781,6 +822,26 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok((map, law)) =
+                streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)
+        {
+            let expected = raw.with_repitch(&map, law)?;
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == &expected)
+                .ok_or(Invalid("matching repitch stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, pitched) = source
             && edit.is_plain_pitch_capture(clip)
             && clip.source_length() == asset.playback_frames()

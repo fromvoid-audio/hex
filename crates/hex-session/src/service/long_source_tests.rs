@@ -276,8 +276,8 @@ fn timeline_edits_on_a_streamed_clip_past_the_edit_domain_survive_history_and_re
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
 }
 
-/// A full long plain reverse stays streamed and survives history and storage;
-/// other transforms still refuse outside the bounded resident workspace.
+/// Full long plain pitch and reverse remain streamed across history and storage;
+/// unsupported transforms still refuse outside the bounded resident workspace.
 #[test]
 fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
     let files = Files::new();
@@ -287,6 +287,15 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
     let imported = next(&service);
     assert!(imported.error.is_none(), "{:?}", imported.error);
     let clip = imported.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }))
+        .unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
     let project_path = files.0.join("long-reversed.hex");
     service
         .submit(Request::SaveNew(project_path.clone()))
@@ -295,7 +304,6 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
     assert!(saved_base.error.is_none(), "{:?}", saved_base.error);
     let original_project_bytes = fs::read(&project_path).unwrap();
     for command in [
-        hex_project::Command::SetAudioClipPitch { clip, cents: 100 },
         hex_project::Command::SetAudioClipMusical {
             clip,
             enabled: true,
@@ -309,29 +317,84 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
         service.submit(Request::Edit(command.clone())).unwrap();
         let refused = next(&service);
         let error = refused.error.as_deref().expect("transform refusal");
-        let expected = if matches!(command, hex_project::Command::SetAudioClipPitch { .. }) {
-            "streamed source changes were not committed"
-        } else {
-            "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
-        };
+        let expected = "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first";
         assert!(error.contains(expected), "{command:?}: {error}");
         assert_eq!(refused.state.project, imported.state.project);
     }
-    // Storage can represent this edit before the native streamed source bank
-    // can publish it. Opening must refuse without replacing the live project
-    // or touching the file until that separate integration exists.
-    let mut staged = hex_project::Editor::new((*imported.state.project).clone(), 4).unwrap();
-    staged
-        .execute(hex_project::Command::SetAudioClipPitch { clip, cents: 100 })
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipPitch {
+            clip,
+            cents: 100,
+        }))
         .unwrap();
-    let staged_bytes = hex_storage::encode(staged.project()).unwrap();
-    let staged_path = files.0.join("long-pitch-unavailable.hex");
-    fs::write(&staged_path, &staged_bytes).unwrap();
-    service.submit(Request::Open(staged_path.clone())).unwrap();
-    let refused = next(&service);
-    assert!(refused.error.is_some());
-    assert_eq!(refused.state.project, imported.state.project);
-    assert_eq!(fs::read(staged_path).unwrap(), staged_bytes);
+    let pitched = next(&service);
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    let pitch_snapshot = pitched.state.project.snapshot();
+    assert_eq!(
+        pitched
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_plain_pitch_sources()
+            .count(),
+        1
+    );
+    assert_eq!(streamed_frames(&pitched), 20_000_000);
+    service.submit(Request::Undo).unwrap();
+    let undo_pitch = next(&service);
+    assert!(undo_pitch.error.is_none(), "{:?}", undo_pitch.error);
+    assert_eq!(
+        undo_pitch.state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redo_pitch = next(&service);
+    assert!(redo_pitch.error.is_none(), "{:?}", redo_pitch.error);
+    assert_eq!(redo_pitch.state.project.snapshot(), pitch_snapshot);
+    let pitch_path = files.0.join("long-pitch.hex");
+    service
+        .submit(Request::SaveNew(pitch_path.clone()))
+        .unwrap();
+    let saved_pitch = next(&service);
+    assert!(saved_pitch.error.is_none(), "{:?}", saved_pitch.error);
+    service.submit(Request::Open(pitch_path.clone())).unwrap();
+    let ordinary_pitch = next(&service);
+    assert!(ordinary_pitch.error.is_none(), "{:?}", ordinary_pitch.error);
+    assert_eq!(ordinary_pitch.state.project.snapshot(), pitch_snapshot);
+    assert_eq!(streamed_frames(&ordinary_pitch), 20_000_000);
+    let before = pitched.state.canonical_audio_source.as_ref().unwrap();
+    let after = ordinary_pitch
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap();
+    let (AudioSourceBinding::VerifiedFile(before), AudioSourceBinding::VerifiedFile(after)) = (
+        before.sources().values().next().unwrap(),
+        after.sources().values().next().unwrap(),
+    ) else {
+        panic!("verified file identity")
+    };
+    assert_eq!(before.fingerprint(), after.fingerprint());
+    service
+        .submit(Request::OpenWithAudioMode {
+            source: ProjectSource::Saved(pitch_path),
+            relinks: BTreeMap::new(),
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(streaming_reservation()),
+        })
+        .unwrap();
+    let reopened_pitch = next(&service);
+    assert!(reopened_pitch.error.is_none(), "{:?}", reopened_pitch.error);
+    assert_eq!(reopened_pitch.state.project.snapshot(), pitch_snapshot);
+    assert_eq!(streamed_frames(&reopened_pitch), 20_000_000);
+    service.submit(Request::Open(project_path.clone())).unwrap();
+    let restored = next(&service);
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    assert_eq!(
+        restored.state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
     service
         .submit(Request::Edit(hex_project::Command::ReverseClips(vec![
             clip,
