@@ -210,7 +210,7 @@ impl StreamedSourceMetadata {
     }
 
     /// Match a Re-Pitch value to its original source facts; this grants no page lease.
-    pub(crate) fn is_repitch_of(&self, raw: &Self) -> bool {
+    pub fn is_repitch_of(&self, raw: &Self) -> bool {
         raw.key.is_raw()
             && self
                 .key

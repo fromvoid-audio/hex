@@ -283,7 +283,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         .with_plain_pitch(700, hex_project::WarpResampler::V2)
         .unwrap();
     assert_eq!(
-        metadata.pitched_sources()[&expected.key()].as_ref(),
+        metadata.derived_sources()[&expected.key()].as_ref(),
         &expected
     );
     assert!(metadata.matches_source(&expected));
