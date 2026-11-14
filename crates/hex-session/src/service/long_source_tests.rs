@@ -358,6 +358,24 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
         .unwrap();
     let saved_pitch = next(&service);
     assert!(saved_pitch.error.is_none(), "{:?}", saved_pitch.error);
+    service.submit(Request::Open(pitch_path.clone())).unwrap();
+    let ordinary_pitch = next(&service);
+    assert!(ordinary_pitch.error.is_none(), "{:?}", ordinary_pitch.error);
+    assert_eq!(ordinary_pitch.state.project.snapshot(), pitch_snapshot);
+    assert_eq!(streamed_frames(&ordinary_pitch), 20_000_000);
+    let before = pitched.state.canonical_audio_source.as_ref().unwrap();
+    let after = ordinary_pitch
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap();
+    let (AudioSourceBinding::VerifiedFile(before), AudioSourceBinding::VerifiedFile(after)) = (
+        before.sources().values().next().unwrap(),
+        after.sources().values().next().unwrap(),
+    ) else {
+        panic!("verified file identity")
+    };
+    assert_eq!(before.fingerprint(), after.fingerprint());
     service
         .submit(Request::OpenWithAudioMode {
             source: ProjectSource::Saved(pitch_path),

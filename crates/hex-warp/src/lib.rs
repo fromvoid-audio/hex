@@ -11,12 +11,14 @@ mod beats;
 pub mod fft;
 mod granular;
 mod resample;
-pub use resample::{PitchWindow, Resampler, V2_MAX_TAPS};
+pub use resample::{PitchWindow, RepitchWindow, Resampler, V2_MAX_TAPS};
 mod spectral;
 use std::fmt;
 
 pub type Frame = [f32; 2];
 pub const MAX_OUTPUT_FRAMES: usize = 16_777_216;
+/// Maximum metadata extent of a streamed map; whole-buffer rendering remains capped separately.
+pub const MAX_STREAMED_OUTPUT_FRAMES: u64 = 1_u64 << 36;
 pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
@@ -177,14 +179,31 @@ pub struct TimeMap {
 }
 impl TimeMap {
     pub fn new(segments: Vec<MapSegment>, output_frames: usize) -> Result<Self, Error> {
+        if output_frames > MAX_OUTPUT_FRAMES {
+            return Err(Error::Invalid(
+                "audio map needs bounded explicit output endpoints",
+            ));
+        }
+        Self::validate(segments, output_frames as u64)
+    }
+    /// Construct metadata for bounded streamed rendering without allocating output PCM.
+    /// Whole-buffer rendering still enforces [`MAX_OUTPUT_FRAMES`].
+    pub fn new_streamed(segments: Vec<MapSegment>, output_frames: u64) -> Result<Self, Error> {
+        if output_frames > MAX_STREAMED_OUTPUT_FRAMES || segments.capacity() > MAX_MAP_SEGMENTS {
+            return Err(Error::Invalid(
+                "audio map needs bounded explicit output endpoints",
+            ));
+        }
+        Self::validate(segments, output_frames)
+    }
+    fn validate(segments: Vec<MapSegment>, output_frames: u64) -> Result<Self, Error> {
         if output_frames == 0
-            || output_frames > MAX_OUTPUT_FRAMES
             || segments.is_empty()
             || segments.len() > MAX_MAP_SEGMENTS
             || segments.first().is_none_or(|s| s.output_start != 0)
             || segments
                 .last()
-                .is_none_or(|s| s.output_end != output_frames as u64)
+                .is_none_or(|s| s.output_end != output_frames)
         {
             return Err(Error::Invalid(
                 "audio map needs bounded explicit output endpoints",
