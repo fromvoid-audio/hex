@@ -830,6 +830,7 @@ impl SessionPlayback {
                                         transient: None,
                                         chase_at_start: self.interactive_start_frame
                                             == Some(performance_frame),
+                                        pending_shared_chase: self.pending_shared_chase,
                                         loop_region: if self.linear_arrangement_export {
                                             None
                                         } else {
