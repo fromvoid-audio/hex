@@ -1347,6 +1347,124 @@ mod tests {
     }
 
     #[test]
+    fn unity_return_capture_and_refusal_preserve_pcm_and_transaction() {
+        use crate::session_playback::capture::{OutputCapture, OutputCaptureId};
+        use hex_lattice_contract::NativeDeviceMetadata;
+        use hex_project::{Command, Created};
+
+        struct RefuseAfter(TrackId, bool);
+        impl CaptureSink for RefuseAfter {
+            fn selects(&self, id: OutputCaptureId) -> bool {
+                id == OutputCaptureId::Track(self.0)
+            }
+            fn add(
+                &mut self,
+                id: OutputCaptureId,
+                offset: usize,
+                _: &[Frame],
+            ) -> Result<(), SessionPlaybackError> {
+                if self.selects(id) && offset == 13 {
+                    Err(SessionPlaybackError::DeviceRuntime)
+                } else {
+                    Ok(())
+                }
+            }
+            fn invalidate(&mut self) {
+                self.1 = true;
+            }
+        }
+
+        let mut f = fixture(&[&[]], 1024);
+        let track = f.tracks[0];
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return fixture")
+        };
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut actual =
+            SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut actual, &mut scalar] {
+            runtime.set_device_metering(true);
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let ids = [OutputCaptureId::Track(track), OutputCaptureId::Return(bus)];
+        let actual_plan = actual.output_capture_plan(&ids, 256).unwrap();
+        let scalar_plan = scalar.output_capture_plan(&ids, 256).unwrap();
+        let capture =
+            |runtime: &mut SessionPlayback,
+             plan: &crate::session_playback::capture::OutputCapturePlan| {
+                let mut main = [[0.0; 2]; 256];
+                let mut track_frames = [[0.0; 2]; 256];
+                let mut return_frames = [[0.0; 2]; 256];
+                let mut buffers = [&mut track_frames[..], &mut return_frames[..]];
+                let mut captured = OutputCapture::new(plan, &mut buffers);
+                runtime
+                    .render_with_capture(&mut main, &mut captured)
+                    .unwrap();
+                assert_eq!(captured.valid_frames(), 256);
+                (main, track_frames, return_frames)
+            };
+        let expected = capture(&mut scalar, &scalar_plan);
+        let captured = capture(&mut actual, &actual_plan);
+        assert_eq!(captured, expected);
+        assert!(captured.1.iter().flatten().any(|sample| *sample != 0.0));
+        assert!(captured.2.iter().flatten().any(|sample| *sample != 0.0));
+
+        let position = (actual.performance_frame(), actual.arrangement_frame());
+        let mut refused_output = [[9.0; 2]; 256];
+        let mut refusal = RefuseAfter(track, false);
+        assert_eq!(
+            actual.render_internal::<dyn MediaPages>(
+                &mut refused_output,
+                None,
+                None,
+                Some(&mut refusal),
+                None
+            ),
+            Err(SessionPlaybackError::DeviceRuntime),
+        );
+        assert!(refusal.1);
+        assert_eq!(refused_output, [[0.0; 2]; 256]);
+        assert_eq!(
+            (actual.performance_frame(), actual.arrangement_frame()),
+            position
+        );
+        assert_eq!(
+            capture(&mut actual, &actual_plan),
+            capture(&mut scalar, &scalar_plan)
+        );
+    }
+
+    #[test]
     fn compensated_clock_keeps_meter_and_cycle_across_the_actual_loop_wrap() {
         use hex_project::{BeatTime, Command, Meter};
 
