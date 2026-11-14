@@ -1190,7 +1190,7 @@ impl PreparedRevision {
         )
     }
 
-    /// Prepare semantic Arrangement pitch sources while Session slots keep raw
+    /// Prepare semantic Arrangement derived sources while Session slots keep raw
     /// bindings. The supplied metadata does not grant worker or page custody.
     pub fn prepare_with_prepared_pitch_sources(
         project: &Project,
