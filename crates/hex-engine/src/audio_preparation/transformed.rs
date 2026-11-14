@@ -8,6 +8,59 @@ use crate::{
 };
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
 
+pub(crate) fn matching_streamed_pitch(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+    pitched: &crate::StreamedSourceMetadata,
+) -> bool {
+    let Some(asset) = project.asset(clip.asset()) else {
+        return false;
+    };
+    let Some(edit) = clip.audio_edit() else {
+        return false;
+    };
+    raw.key().pitch().is_none()
+        && raw.key().asset() == asset.id()
+        && raw.project_rate() == project.sample_rate()
+        && raw.playback_frames() == asset.playback_frames()
+        && raw.source_rate() == asset.source_sample_rate()
+        && raw.source_frames() == asset.source_frames()
+        && raw.conversion_version() == asset.conversion_version()
+        && edit.is_plain_pitch_capture(clip)
+        && clip.source_length() == asset.playback_frames()
+        && raw
+            .with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)
+            .is_ok_and(|expected| expected == *pitched)
+}
+
+pub(super) fn pitched_source_index(
+    project: &hex_project::Project,
+    bank: &OwnedAudioInputs,
+    clip: &hex_project::Clip,
+) -> Option<usize> {
+    if !clip
+        .audio_edit()
+        .is_some_and(|edit| edit.is_plain_pitch_capture(clip))
+    {
+        return None;
+    }
+    let raw = bank.sources.iter().find_map(|(asset, source)| {
+        if *asset != clip.asset() {
+            return None;
+        }
+        match &source.kind {
+            SourceKind::Streamed(metadata) if metadata.key().pitch().is_none() => Some(metadata),
+            _ => None,
+        }
+    })?;
+    bank.sources.iter().position(|(asset, source)| {
+        *asset == clip.asset()
+            && matches!(&source.kind, SourceKind::Streamed(pitch)
+                if matching_streamed_pitch(project, clip, raw, pitch))
+    })
+}
+
 pub(crate) fn transformed_count(project: &hex_project::Project) -> usize {
     project
         .tracks()
@@ -118,12 +171,24 @@ fn clip_quote(
 pub(crate) fn prepared_pcm_frames(
     project: &hex_project::Project,
 ) -> Result<u64, AudioStorageError> {
+    prepared_pcm_frames_for(project, &|_| false)
+}
+
+pub(crate) fn prepared_pcm_frames_for(
+    project: &hex_project::Project,
+    streamed_pitch: &impl Fn(&hex_project::Clip) -> bool,
+) -> Result<u64, AudioStorageError> {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
         .try_fold(0u64, |n, clip| {
-            n.checked_add(clip_quote(clip, project.tempo_map())?.0)
+            let frames = if streamed_pitch(clip) {
+                0
+            } else {
+                clip_quote(clip, project.tempo_map())?.0
+            };
+            n.checked_add(frames)
                 .filter(|frames| {
                     *frames
                         <= (crate::audio_transform::MAX_RETAINED_DERIVED_BYTES
@@ -141,10 +206,20 @@ pub(crate) fn prepared_pcm_frames(
 pub(crate) fn transformed_audio_quote(
     project: &hex_project::Project,
 ) -> Result<(usize, usize), AudioStorageError> {
-    prepared_pcm_frames(project)?;
+    transformed_audio_quote_for(project, &|_| false)
+}
+
+pub(crate) fn transformed_audio_quote_for(
+    project: &hex_project::Project,
+    streamed_pitch: &impl Fn(&hex_project::Clip) -> bool,
+) -> Result<(usize, usize), AudioStorageError> {
+    prepared_pcm_frames_for(project, streamed_pitch)?;
     let mut retained = 0usize;
     let mut workspace = 0usize;
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+        if streamed_pitch(clip) {
+            continue;
+        }
         let (frames, work, layout_bytes) = clip_quote(clip, project.tempo_map())?;
         if frames == 0 {
             continue;
