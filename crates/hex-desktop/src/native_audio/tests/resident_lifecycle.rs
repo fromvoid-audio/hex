@@ -1501,7 +1501,32 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         }
     }
     audible(&mut h, 0);
-    audible(&mut h, 9_500_000);
+    let before_seek = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire);
+    let mut intent = h.seek_intent(91, redo_tempo.state.revision, None, None);
+    intent.destination_frame = 9_500_000;
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    let admitted = h.next();
+    assert!(admitted.error.is_none(), "{:?}", admitted.error);
+    let result = h.seek_result();
+    let hex_session::service::ResidentPublicationAcceptance::Submitted { audio_revision, .. } =
+        result.result.unwrap()
+    else {
+        panic!("actual seek publication required")
+    };
+    let (applied_seek, _) = h.applied(before_seek);
+    assert_eq!(applied_seek, audio_revision);
+    assert!(
+        h.render()
+            .iter()
+            .all(|frame| (frame[0] - 0.25).abs() < 0.0001)
+    );
     let saved_path = files.0.join("repitch.hex");
     assert!(h.run(Request::SaveNew(saved_path.clone())).save_complete);
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
