@@ -1222,18 +1222,26 @@ impl MutableInstrumentRuntime for Runtime {
                         sample
                     };
                     voice.previous = previous;
-                    for (i, step) in steps.iter().enumerate() {
-                        let step = if law.active() && law.selected(i) {
-                            (*step as f64 * multiplier).round() as u64
-                        } else {
-                            *step
-                        };
-                        let step = if quality {
-                            step / 2 + if subframe == 1 { step % 2 } else { 0 }
-                        } else {
-                            step
-                        };
-                        voice.phases[i] = voice.phases[i].wrapping_add(step);
+                    if quality && !law.active() {
+                        // Both subframes must sum to the original step, including odd steps.
+                        for (phase, step) in voice.phases.iter_mut().zip(steps) {
+                            let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
+                            *phase = phase.wrapping_add(step);
+                        }
+                    } else {
+                        for (i, step) in steps.iter().enumerate() {
+                            let step = if law.active() && law.selected(i) {
+                                (*step as f64 * multiplier).round() as u64
+                            } else {
+                                *step
+                            };
+                            let step = if quality {
+                                step / 2 + if subframe == 1 { step % 2 } else { 0 }
+                            } else {
+                                step
+                            };
+                            voice.phases[i] = voice.phases[i].wrapping_add(step);
+                        }
                     }
                 }
                 let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
