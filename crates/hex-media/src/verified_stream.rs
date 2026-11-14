@@ -535,6 +535,14 @@ impl VerifiedWavReader {
 }
 
 impl VerifiedWavCoverage<'_> {
+    pub(crate) fn reader_metadata(&self) -> (u32, u64, usize) {
+        (
+            self.reader.sample_rate(),
+            self.reader.source_frames(),
+            self.reader.max_window_frames(),
+        )
+    }
+
     /// Decode under the captured manifest, recording only pages whose digest
     /// matched. On failure the entire caller buffer is cleared, as for ordinary reads.
     pub fn read_frames_into_with_cancel(

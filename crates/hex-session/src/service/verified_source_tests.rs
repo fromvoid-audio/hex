@@ -1097,6 +1097,116 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
 }
 
 #[test]
+fn waveform_reuses_manifest_but_preserves_full_file_and_metadata_fallback() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::time::Duration;
+
+    let files = Files::new();
+    let path = files.wav("coverage.wav", 48_000, 64, 1234);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"JUNK");
+    bytes.extend_from_slice(&(131_072_u32).to_le_bytes());
+    bytes.resize(bytes.len() + 131_072, 0x5a);
+    let riff_len = u32::try_from(bytes.len() - 8).unwrap();
+    bytes[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, reservation(1).reader, || false)
+            .unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified + Duration::from_secs(2)))
+        .unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    assert!(
+        source.cached_waveform().is_some(),
+        "same bytes with a new mtime must fall back"
+    );
+
+    let mut changed =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, reservation(1).reader, || false)
+            .unwrap();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(65_536 + 16)).unwrap();
+    file.write_all(&[0x99]).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(changed.prepare_waveform_on_control(|| false).is_err());
+    assert!(
+        changed.cached_waveform().is_none(),
+        "unread changed pages cannot publish peaks"
+    );
+}
+
+#[test]
+fn tracked_file_waveform_matches_independent_stereo_peaks_across_windows() {
+    let files = Files::new();
+    let path = files.0.join("stereo-coverage.wav");
+    let mut index = 0u32;
+    hex_export::write_float_wav_new(&path, 48_000, 5_003, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = [
+                ((index % 73) as f32 - 36.0) / 40.0,
+                ((index % 41) as f32 - 20.0) / 24.0,
+            ];
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    for project_rate in [48_000, 44_100] {
+        let decoded = hex_media::decode_wav_file(
+            path.clone(),
+            hex_media::Limits::new(64 * 1024 * 1024, 8_192),
+        )
+        .unwrap();
+        let resident = crate::PreparedImport::at_rate(
+            decoded,
+            project_rate,
+            hex_media::ResampleLimits {
+                max_source_frames: 8_192,
+                max_output_frames: 16_384,
+            },
+        )
+        .unwrap();
+        let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
+        for window in [1024, 4096] {
+            let mut reader_limits = reservation(1).reader;
+            reader_limits.reader.max_window_frames = window;
+            let mut source = crate::VerifiedAudioFile::inspect(
+                path.clone(),
+                project_rate,
+                reader_limits,
+                || false,
+            )
+            .unwrap();
+            source.prepare_waveform_on_control(|| false).unwrap();
+            let actual = source.cached_waveform().unwrap();
+            assert_eq!(
+                actual.bins(),
+                expected.bins(),
+                "rate {project_rate}, window {window}"
+            );
+            assert!(!actual.has_identical_channels());
+        }
+        if project_rate == 44_100 {
+            let mut limits = reservation(1).reader;
+            limits.reader.max_window_frames = 128;
+            let mut source =
+                crate::VerifiedAudioFile::inspect(path.clone(), project_rate, limits, || false)
+                    .unwrap();
+            assert!(source.prepare_waveform_on_control(|| false).is_err());
+            assert!(source.cached_waveform().is_none());
+        }
+    }
+}
+
+#[test]
 fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_refusal() {
     let files = Files::new();
     let processed_path = files.wav("processed.wav", 48_000, 8, 8192);
