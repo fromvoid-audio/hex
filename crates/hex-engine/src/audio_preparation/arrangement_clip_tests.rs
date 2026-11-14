@@ -105,7 +105,27 @@ fn long_plain_pitch_uses_its_verified_stream_and_keeps_raw_clip() {
         crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
             project,
             2,
-            &[raw.clone()]
+            std::slice::from_ref(&raw)
+        )
+        .is_err()
+    );
+    let foreign = crate::StreamedSourceMetadata::new(
+        raw.key(),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [8; 32],
+    )
+    .unwrap()
+    .with_plain_pitch(700, WarpResampler::V2)
+    .unwrap();
+    assert!(
+        crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            project,
+            2,
+            &[raw.clone(), foreign]
         )
         .is_err()
     );
