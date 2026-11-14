@@ -2595,7 +2595,7 @@ mod pitch_domain_tests {
 
 #[cfg(test)]
 #[path = "computer_keyboard_clock_admission_tests.rs"]
-mod clock_admission_tests;
+pub(crate) mod clock_admission_tests;
 
 #[cfg(test)]
 #[path = "computer_keyboard/tuning_tests.rs"]
