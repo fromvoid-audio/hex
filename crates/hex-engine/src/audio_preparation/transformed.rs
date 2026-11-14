@@ -20,7 +20,7 @@ pub(crate) fn matching_streamed_pitch(
     let Some(edit) = clip.audio_edit() else {
         return false;
     };
-    raw.key().pitch().is_none()
+    raw.key().is_raw()
         && raw.key().asset() == asset.id()
         && raw.project_rate() == project.sample_rate()
         && raw.playback_frames() == asset.playback_frames()
@@ -50,7 +50,7 @@ pub(super) fn pitched_source_index(
             return None;
         }
         match &source.kind {
-            SourceKind::Streamed(metadata) if metadata.key().pitch().is_none() => Some(metadata),
+            SourceKind::Streamed(metadata) if metadata.key().is_raw() => Some(metadata),
             _ => None,
         }
     })?;

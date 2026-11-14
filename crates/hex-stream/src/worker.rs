@@ -784,7 +784,9 @@ fn build_catalog(
         if stop.load(Ordering::Acquire) {
             return Err(StreamFailureKind::Cancelled);
         }
-        if definition.key != definition.metadata.key() {
+        if definition.key != definition.metadata.key()
+            || (!definition.key.is_raw() && definition.key.pitch().is_none())
+        {
             return Err(StreamFailureKind::UnknownSource);
         }
         let remaining_manifest = config.max_manifest_bytes.saturating_sub(manifest_bytes);
@@ -1409,6 +1411,60 @@ pub(crate) mod tests {
         let mut config = StreamConfig::initial();
         config.max_kernel_table_bytes = 2 * ResampleKernel::max_table_payload_bytes() - 1;
         assert!(preparation_data_bound(config, &definitions, definitions.capacity()).is_none());
+    }
+
+    #[test]
+    fn catalog_refuses_repitch_key_before_opening_a_raw_file() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "missing.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let raw = StreamedSourceMetadata::new(
+            StreamSourceKey::new(96, asset),
+            48_000,
+            48_000,
+            4096,
+            4096,
+            IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let map = hex_warp::TimeMap::new(
+            vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: 4096,
+                source_start_q32: 0,
+                source_end_q32: 4096_i128 << 32,
+            }],
+            4096,
+        )
+        .unwrap();
+        let identity = hex_engine::RepitchStreamIdentity::new(&raw, &map, Resampler::V2).unwrap();
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
+            1024 * 1024,
+        );
+        let mut definition = SourceDefinition::new("missing.wav".into(), raw, limits);
+        definition.key = StreamSourceKey::repitch(identity);
+        let config = StreamConfig::initial();
+        let mut scratch = vec![[0.0; 2]; config.source_scratch_frames];
+        assert!(matches!(
+            build_catalog(
+                &config,
+                vec![definition],
+                &mut scratch,
+                0,
+                &AtomicBool::new(false)
+            ),
+            Err(StreamFailureKind::UnknownSource)
+        ));
     }
 
     #[test]

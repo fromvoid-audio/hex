@@ -1563,7 +1563,7 @@ pub(crate) fn resolve_prepared<'a>(
             Ok(PreparedAudioSourceRef::Resident(audio))
         }
         PreparedAudioSource::Streamed(source) => {
-            if source.key().pitch().is_some()
+            if !source.key().is_raw()
                 || source.key().generation() != generation
                 || source.key().asset() != asset.id()
                 || source.source_rate() != asset.source_sample_rate()

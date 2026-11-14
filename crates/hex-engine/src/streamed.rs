@@ -20,6 +20,7 @@ pub struct StreamSourceKey {
 enum StreamContent {
     Source,
     PlainPitch { cents: i16, law: PitchLaw },
+    Repitch { digest: [u8; 32] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -63,7 +64,7 @@ impl StreamSourceKey {
 
     pub const fn pitch(self) -> Option<(i16, WarpResampler)> {
         match self.content {
-            StreamContent::Source => None,
+            StreamContent::Source | StreamContent::Repitch { .. } => None,
             StreamContent::PlainPitch { cents, law } => Some((
                 cents,
                 match law {
@@ -71,6 +72,31 @@ impl StreamSourceKey {
                     PitchLaw::V2 => WarpResampler::V2,
                 },
             )),
+        }
+    }
+
+    /// A Re-Pitch content key is correlation only; it does not admit pages.
+    pub const fn repitch(identity: RepitchStreamIdentity) -> Self {
+        Self {
+            generation: identity.raw_key.generation,
+            asset: identity.raw_key.asset,
+            content: StreamContent::Repitch {
+                digest: identity.digest,
+            },
+        }
+    }
+
+    pub const fn is_raw(self) -> bool {
+        matches!(self.content, StreamContent::Source)
+    }
+
+    pub const fn repitch_identity(self) -> Option<RepitchStreamIdentity> {
+        match self.content {
+            StreamContent::Repitch { digest } => Some(RepitchStreamIdentity {
+                raw_key: Self::new(self.generation, self.asset),
+                digest,
+            }),
+            _ => None,
         }
     }
 
@@ -105,8 +131,8 @@ impl StreamedSourceMetadata {
         conversion_version: u32,
         fingerprint: [u8; 32],
     ) -> Result<Self, Invalid> {
-        if key.pitch().is_some() {
-            return Err(Invalid("pitched stream sources are not yet supported"));
+        if !key.is_raw() {
+            return Err(Invalid("derived stream sources are not accepted as raw"));
         }
         validate_conversion_metadata(
             source_frames,
@@ -161,8 +187,8 @@ impl StreamedSourceMetadata {
     /// Declare full-source plain pitch derived from these verified source facts.
     /// A catalog lease still has to establish that its worker can produce it.
     pub fn with_plain_pitch(&self, cents: i16, law: WarpResampler) -> Result<Self, Invalid> {
-        if self.key.pitch().is_some() {
-            return Err(Invalid("pitched stream source is already derived"));
+        if !self.key.is_raw() {
+            return Err(Invalid("stream source is already derived"));
         }
         let mut derived = self.clone();
         derived.key =
@@ -189,7 +215,7 @@ impl RepitchStreamIdentity {
     ) -> Result<Self, Invalid> {
         use sha2::{Digest, Sha256};
 
-        if raw.key().pitch().is_some()
+        if !raw.key().is_raw()
             || raw.playback_frames() > hex_warp::MAX_STREAMED_OUTPUT_FRAMES
             || map
                 .segments()
