@@ -1119,6 +1119,13 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
             cents: 137,
         }),
     );
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipMusical {
+            clip: processed,
+            enabled: true,
+        }),
+    );
     let imported = run(
         &service,
         Request::ImportToNewTrack {
@@ -1136,6 +1143,14 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
         .find(|clip| clip.id() != processed)
         .unwrap()
         .id();
+    run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip: plain,
+            fade_in: 2,
+            fade_out: 2,
+        }),
+    );
     let path = files.0.join("processed-and-file.hex");
     run(&service, Request::SaveNew(path.clone()));
     let expected = hex_storage::load(&path).unwrap();
