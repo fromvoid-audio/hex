@@ -1180,6 +1180,26 @@ impl PreparedRevision {
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
+        Self::prepare_with_prepared_pitch_sources(
+            project,
+            sources,
+            &BTreeMap::new(),
+            expected_generation,
+            sine_table,
+            previous_session,
+        )
+    }
+
+    /// Prepare semantic Arrangement pitch sources while Session slots keep raw
+    /// bindings. The supplied metadata does not grant worker or page custody.
+    pub fn prepare_with_prepared_pitch_sources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+    ) -> Result<Self, Invalid> {
         crate::gain_envelope::validate_project(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let instruments = hex_devices::native_instrument_registry()
@@ -1197,9 +1217,10 @@ impl PreparedRevision {
             ));
         }
         let (mut arrangement, midi_preview) =
-            crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
+            crate::compile::project_with_pitch_sources_and_midi_preview_and_contexts(
                 project,
                 sources,
+                pitched,
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
                 Some(Arc::clone(&shared_contexts)),
