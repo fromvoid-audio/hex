@@ -54,6 +54,61 @@ fn begin(
 }
 
 #[test]
+fn raw_clip_keeps_raw_source_when_pitch_owner_shares_its_asset() {
+    if !super::session_source_tests::supported("arrangement_pitch_bank") {
+        return;
+    }
+    let (project, original, _) = fixture(true, false, 1);
+    let asset = project.assets().next().unwrap().id();
+    let SourceKind::Streamed(raw) = &original.sources[0].1.kind else {
+        panic!("stream fixture")
+    };
+    let raw = raw.arc().as_ref().clone();
+    let pitched = raw
+        .with_plain_pitch(700, hex_project::WarpResampler::V2)
+        .unwrap();
+    let reservation = original.reservation;
+    drop(original);
+    let bank = OwnedAudioInputs::try_new_with_pitched(
+        vec![
+            (
+                asset,
+                OwnedAudioSource::try_streamed(raw.clone()).ok().unwrap(),
+            ),
+            (
+                asset,
+                OwnedAudioSource::try_pitched_streamed(pitched.clone())
+                    .ok()
+                    .unwrap(),
+            ),
+        ],
+        reservation,
+    )
+    .ok()
+    .unwrap();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = begin(&mut custody, &project, bank).ok().unwrap();
+    let clip = custody.arrangement_clips.clips().next().unwrap();
+    assert_eq!(
+        clip.metadata.as_ref().unwrap().streamed.as_deref(),
+        Some(&raw)
+    );
+    assert!(custody.cancel(&token));
+    custody.cleanup_on_control();
+    let bank = custody.recover_on_control(&token).unwrap();
+    let raw_token = bank.source_token(asset).unwrap();
+    let pitch_token = bank.pitched_source_token(pitched.key()).unwrap();
+    assert_eq!(
+        bank.source_view(&raw_token).unwrap().streamed_metadata(),
+        Some(&raw)
+    );
+    assert_eq!(
+        bank.source_view(&pitch_token).unwrap().streamed_metadata(),
+        Some(&pitched)
+    );
+}
+
+#[test]
 fn retained_receiver_refuses_closed_preparation_without_losing_inputs() {
     let (project, bank, token) = fixture(false, false, 1);
     let track = project.tracks()[0].id();

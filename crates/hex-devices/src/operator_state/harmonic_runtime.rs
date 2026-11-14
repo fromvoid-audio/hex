@@ -1362,37 +1362,42 @@ impl MutableInstrumentRuntime for Runtime {
             .is_some_and(|t| t.0 == self.factory.configuration.configuration_id())
             && Legacy::read(previous).is_some_and(|p| {
                 self.factory.rate == p.rate
-                    && (p.voices().all(|voice| voice.id == 0)
+                    && (p.admission_voices().all(|(id, _)| id == 0)
                         || self.factory.settings.companion == p.companion)
                     && compatible_base(
                         &self.factory.base,
                         &p.base,
                         self.factory.settings.global.active,
                     )
-                    && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
+                    && p.admission_voices().filter(|(id, _)| *id != 0).count()
+                        <= self.factory.capacity()
                     && ((p.tuning == self.factory.tuning.as_ref()
                         && p.fine_offsets == self.factory.settings.fine.values()
                         && p.pitch_keytrack == self.factory.settings.pitch_keytrack.values())
-                        || p.voices().filter(|v| v.id != 0).all(|v| {
-                            self.factory.retuned_note(v.note).is_ok_and(|note| {
-                                (!self.factory.settings.lfo.active()
-                                    || PreparedOperatorConfiguration::lfo_steps(&note)
-                                        .iter()
-                                        .all(|step| *step < (1u64 << 62)))
-                                    && (!self.factory.settings.global.active
-                                        || self
-                                            .factory
-                                            .effective(note, expression)
-                                            .and_then(|e| self.factory.modulated_filter(e))
-                                            .is_ok())
-                            })
-                        }))
+                        || p.admission_voices()
+                            .filter(|(id, _)| *id != 0)
+                            .all(|(_, note)| {
+                                self.factory.retuned_note(note).is_ok_and(|note| {
+                                    (!self.factory.settings.lfo.active()
+                                        || PreparedOperatorConfiguration::lfo_steps(&note)
+                                            .iter()
+                                            .all(|step| *step < (1u64 << 62)))
+                                        && (!self.factory.settings.global.active
+                                            || self
+                                                .factory
+                                                .effective(note, expression)
+                                                .and_then(|e| self.factory.modulated_filter(e))
+                                                .is_ok())
+                                })
+                            }))
                     && (!self.factory.settings.lfo.active()
-                        || p.voices().filter(|v| v.id != 0).all(|v| {
-                            PreparedOperatorConfiguration::lfo_steps(&v.note)
-                                .iter()
-                                .all(|step| *step < (1u64 << 62))
-                        }))
+                        || p.admission_voices()
+                            .filter(|(id, _)| *id != 0)
+                            .all(|(_, note)| {
+                                PreparedOperatorConfiguration::lfo_steps(&note)
+                                    .iter()
+                                    .all(|step| *step < (1u64 << 62))
+                            }))
             })
     }
     fn retarget_history_from(
@@ -1481,10 +1486,16 @@ impl MutableInstrumentRuntime for Runtime {
 // one voice at a time, so no adapter materializes a 64-machine-bank temporary.
 pub(super) trait VoiceHistory {
     fn voice(&self, index: usize) -> Option<Voice>;
+    fn admission_voice(&self, index: usize) -> Option<(u64, PreparedOperatorNote)> {
+        self.voice(index).map(|voice| (voice.id, voice.note))
+    }
 }
 impl VoiceHistory for Runtime {
     fn voice(&self, index: usize) -> Option<Voice> {
         self.voices.get(index).copied()
+    }
+    fn admission_voice(&self, index: usize) -> Option<(u64, PreparedOperatorNote)> {
+        self.voices.get(index).map(|voice| (voice.id, voice.note))
     }
 }
 
@@ -1533,6 +1544,9 @@ pub(super) fn parameter_words(p: crate::fm4::OperatorFeedbackParameters) -> [f64
 impl<'a> Legacy<'a> {
     fn voices(&self) -> impl Iterator<Item = Voice> + '_ {
         (0..VOICES).filter_map(|index| self.voices.voice(index))
+    }
+    fn admission_voices(&self) -> impl Iterator<Item = (u64, PreparedOperatorNote)> + '_ {
+        (0..VOICES).filter_map(|index| self.voices.admission_voice(index))
     }
     fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
