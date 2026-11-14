@@ -38,6 +38,95 @@ const ALIGNED: [u64; 4] = [
 /// Not on a Q32 frame boundary once converted to beats.
 const UNALIGNED: u64 = 20 * BEAT_FRAMES + 1;
 
+#[test]
+fn musical_left_extension_renders_silence_then_retained_audio_through_history() {
+    let (mut editor, clip, media) = fixture(false);
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 2 * BEAT_FRAMES,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let context = isolated(64 * 1024 * 1024, 32 * 1024 * 1024, 64);
+    let original_state = editor.project().snapshot();
+    let original_media = media.values().next().unwrap().frames().to_vec();
+    let original = render(
+        &prepare(&editor, &media, &context),
+        2 * BEAT_FRAMES,
+        8_000,
+        127,
+    );
+    assert!(
+        original
+            .iter()
+            .any(|frame| frame[0] != 0.0 || frame[1] != 0.0)
+    );
+
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: BEAT_FRAMES,
+        })
+        .unwrap();
+    let extended_state = editor.project().snapshot();
+    let edited = editor.project().clip(clip).unwrap();
+    assert_eq!((edited.start(), edited.duration()), (BEAT_FRAMES, 16_000));
+    assert!(matches!(
+        edited.audio_edit().unwrap().placement.unwrap().mode,
+        AudioViewMode::OnceWithLead(_)
+    ));
+    let prepared = prepare(&editor, &media, &context);
+    for block in [1, 127, 512] {
+        let rendered = render(&prepared, BEAT_FRAMES, 16_000, block);
+        assert!(rendered[..8_000].iter().all(|frame| *frame == [0.0; 2]));
+        assert_eq!(&rendered[8_000..], original);
+    }
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), original_state);
+    assert_eq!(
+        render(
+            &prepare(&editor, &media, &context),
+            2 * BEAT_FRAMES,
+            8_000,
+            127
+        ),
+        original
+    );
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), extended_state);
+    let restored = render(
+        &prepare(&editor, &media, &context),
+        BEAT_FRAMES,
+        16_000,
+        127,
+    );
+    assert!(restored[..8_000].iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(&restored[8_000..], original);
+    assert_eq!(media.values().next().unwrap().frames(), original_media);
+}
+
 /// A warped musical clip, optionally a Repeat placement `outer` beats long,
 /// pasted at aligned and unaligned onsets.
 fn copies(
