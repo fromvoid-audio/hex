@@ -177,6 +177,9 @@ impl ParameterPage {
 pub enum ParameterPageProgress {
     Pending,
     Editor(PluginEditorState),
+    /// The exact original controller sealed editor admission, or did not
+    /// seal and remains responsible for its input. Neither result drains receipts.
+    EditorSeal(EditorSealState),
     /// One bounded control-side allocation; never decoded on the callback.
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
@@ -200,6 +203,9 @@ pub enum ControllerRequest {
     },
     ToggleEditor,
     CloseEditor,
+    /// Seal editor callback admission on the stopped original worker. Accepted
+    /// callbacks and their receipts remain owned until separately drained.
+    SealEditorEdits,
     /// Detach the predecessor and capture the latest AppKit placement.
     DetachEditor,
     /// Reopen on the successor without activating its helper application.
@@ -225,9 +231,11 @@ impl ControllerRequest {
                 }
                 Ok(())
             }
-            Self::ToggleEditor | Self::CloseEditor | Self::DetachEditor | Self::ReopenEditor(_) => {
-                Ok(())
-            }
+            Self::ToggleEditor
+            | Self::CloseEditor
+            | Self::SealEditorEdits
+            | Self::DetachEditor
+            | Self::ReopenEditor(_) => Ok(()),
         }
     }
 }
@@ -249,6 +257,12 @@ impl PluginEditorPosition {
             y: y.to_bits(),
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorSealState {
+    Sealed,
+    NotSealed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,6 +295,7 @@ pub fn parameter_page_request(
         }
         ControllerRequest::ToggleEditor => out[82] = 6,
         ControllerRequest::CloseEditor => out[82] = 7,
+        ControllerRequest::SealEditorEdits => out[82] = 13,
         // New kinds prevent a pre-placement helper from closing the old
         // window and returning a positionless legacy acknowledgement.
         ControllerRequest::DetachEditor => out[82] = 11,
@@ -327,6 +342,18 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::Pending);
     }
+    if request == ControllerRequest::SealEditorEdits {
+        if status != 5 {
+            return Err(Error::Protocol("missing editor seal acknowledgement"));
+        }
+        let result = match reader.byte()? {
+            0 => EditorSealState::NotSealed,
+            1 => EditorSealState::Sealed,
+            _ => return Err(Error::Protocol("invalid editor seal acknowledgement")),
+        };
+        reader.end()?;
+        return Ok(ParameterPageProgress::EditorSeal(result));
+    }
     let query = match request {
         ControllerRequest::Parameters(query) => Some(query),
         ControllerRequest::SelectedParameters { first } => Some(ParameterPageQuery {
@@ -336,6 +363,7 @@ pub fn parameter_page(
         }),
         ControllerRequest::ToggleEditor
         | ControllerRequest::CloseEditor
+        | ControllerRequest::SealEditorEdits
         | ControllerRequest::DetachEditor
         | ControllerRequest::ReopenEditor(_) => None,
     };

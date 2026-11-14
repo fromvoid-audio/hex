@@ -524,6 +524,9 @@ public:
     void consume_parameter_edit() { if(host) host->consume_edit(); }
     uint32 ready_parameter_edits() const { return host?host->ready_parameter_edits():0; }
     uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }
+    bool seal_editor_edits_on_control() {
+        return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
+    }
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     uint64 editor_frontier_on_worker() const { return host?host->editor_frontier_on_worker():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
