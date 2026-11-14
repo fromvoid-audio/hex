@@ -2006,3 +2006,117 @@ fn repitch_worker_publishes_mapped_pages_at_the_derived_extent() {
         assert!(runtime.shutdown().unwrap().accounting_complete);
     }
 }
+
+#[test]
+fn canonical_repitch_projection_drives_actual_worker_pages() {
+    use hex_project::{BeatTime, WarpMarker, WarpMode, default_audio_warp};
+    use hex_warp::{Input, Mode, Request, render_with_resampler};
+    use std::sync::atomic::AtomicBool;
+
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, 8_000);
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "canonical".into(),
+            path: wav.path().to_path_buf(),
+            sample_rate: 48_000,
+            frames: 8_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let mut settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let midpoint = settings.markers.last().unwrap().beat.raw() / 2;
+    settings.markers.insert(
+        1,
+        WarpMarker {
+            source_frame: 3_000,
+            beat: BeatTime::from_raw(midpoint),
+        },
+    );
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        editor.project().tempo_map(),
+        8_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(map.segments().len(), 2);
+    let output_frames = map.segments().last().unwrap().output_end;
+    let expected = render_with_resampler(
+        &Request {
+            attacks: &[],
+            input: Input {
+                frames: &pcm,
+                sample_rate: 48_000,
+                region_start: 0,
+                region_length: 8_000,
+                phase: 0,
+                looping: false,
+                envelope: &[],
+            },
+            map: &map,
+            output_frames: output_frames as usize,
+            pitch_cents: 0,
+            mode: Mode::RePitch,
+        },
+        law,
+        &mut || false,
+    )
+    .unwrap()
+    .frames;
+    let limits = reader_limits(pcm.len());
+    let verified = VerifiedWavReader::open(wav.path(), limits).unwrap();
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(811, asset),
+        48_000,
+        48_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let definition = SourceDefinition::new(wav.path().to_path_buf(), raw, limits)
+        .with_repitch(map, law)
+        .unwrap();
+    let key = definition.key;
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    for index in [1, 0] {
+        runtime.request_page(key, index);
+        assert!(wait_for_pages(
+            &mut runtime,
+            &[PageKey {
+                source: key,
+                page_index: index
+            }],
+            Duration::from_secs(3)
+        ));
+        let page = runtime.page(key, index).unwrap();
+        let start = index as usize * 4096;
+        assert_eq!(page.frames, &expected[start..start + page.frames.len()]);
+    }
+    assert!(runtime.shutdown().unwrap().accounting_complete);
+}
