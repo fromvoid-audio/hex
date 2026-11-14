@@ -310,7 +310,10 @@ impl SharedSourceHandoff {
                 .tuning_identity()
                 == revision.arrangement().shared_contexts().tuning_identity()
                 || previous.revision.tuning_family() == revision.tuning_family();
-            let retarget = !timing_changed
+            // Exact history uses the separate inheritance preflight below;
+            // a retarget proof cannot affect that choice.
+            let retarget = !exact
+                && !timing_changed
                 && tuning_continuity
                 && previous
                     .revision
@@ -3800,6 +3803,30 @@ mod tests {
             .join()
             .unwrap();
     }
+    #[test]
+    fn exact_shared_handoff_preserves_held_and_released_pcm() {
+        on_control(|| {
+            let f = fixture();
+            let mut previous = playback(&f);
+            let mut oracle = playback(&f);
+            for runtime in [&mut previous, &mut oracle] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut vec![[0.0; 2]; 3999]).unwrap();
+            }
+            let mut next = playback(&f);
+            next.try_inherit_state_from(&mut previous).unwrap();
+            assert_eq!(next.mutable_instruments.iter().flatten().count(), 1);
+            for frames in [1, 257] {
+                let mut actual = vec![[0.0; 2]; frames];
+                let mut expected = actual.clone();
+                next.render(&mut actual).unwrap();
+                oracle.render(&mut expected).unwrap();
+                assert_eq!(actual, expected);
+                assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+            }
+        });
+    }
+
     #[test]
     fn shared_handoff_receiver_change_preserves_held_phase_and_single_kernel() {
         on_control(|| {
