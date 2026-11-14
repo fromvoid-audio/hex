@@ -103,6 +103,10 @@ impl DomainSources {
                     .map_err(|e| e.to_string())?,
             });
         }
+        for pitch in input.pitches {
+            let (file, metadata) = Self::pitch_for(input, pitch, catalog_generation)?;
+            Self::add_pitch_member(&mut members, file, metadata)?;
+        }
         Ok(Self {
             project_generation: input.context.project_generation,
             catalog_generation,
@@ -121,6 +125,27 @@ impl DomainSources {
                         && &member.file == *file
                 })
             })
+            && input.pitches.iter().all(|pitch| {
+                Self::pitch_for(input, pitch, self.catalog_generation)
+                    .is_ok_and(|(file, expected)| self.contains_member(file, &expected))
+            })
+    }
+    fn pitch_for<'a>(
+        input: &hex_session::service::ResidentFileInput<'a>,
+        pitch: &hex_session::service::ResidentFilePitch,
+        generation: u64,
+    ) -> Result<(&'a VerifiedAudioFile, hex_engine::StreamedSourceMetadata), String> {
+        let file = input
+            .files
+            .iter()
+            .find(|(asset, _)| *asset == pitch.asset)
+            .map(|(_, file)| *file)
+            .ok_or("ordinary pitch file missing")?;
+        let metadata = file
+            .source_metadata(pitch.asset, generation)
+            .and_then(|raw| raw.with_plain_pitch(pitch.cents, pitch.law))
+            .map_err(|error| error.to_string())?;
+        Ok((file, metadata))
     }
     pub(super) fn file_metadata(
         &self,
@@ -140,7 +165,23 @@ impl DomainSources {
                     .ok_or_else(|| "ordinary source metadata missing".to_owned())
             })
             .collect::<Result<_, _>>()?;
-        hex_session::service::ResidentFileMetadata::new(self.catalog_generation, sources)
+        let pitched = input
+            .pitches
+            .iter()
+            .map(|pitch| {
+                let (_, expected) = Self::pitch_for(input, pitch, self.catalog_generation)?;
+                self.metadata_for(expected.key())
+                    .filter(|actual| *actual == &expected)
+                    .cloned()
+                    .map(|metadata| (expected.key(), std::sync::Arc::new(metadata)))
+                    .ok_or_else(|| "ordinary pitch metadata missing".to_owned())
+            })
+            .collect::<Result<_, _>>()?;
+        hex_session::service::ResidentFileMetadata::new_with_pitched(
+            self.catalog_generation,
+            sources,
+            pitched,
+        )
     }
     pub(super) fn covers_files(
         &self,
@@ -157,6 +198,14 @@ impl DomainSources {
                 ))
                 .is_some_and(|metadata| {
                     control.audio_candidate_domain_covers_source(token, metadata)
+                })
+            })
+            && input.pitches.iter().all(|pitch| {
+                Self::pitch_for(input, pitch, self.catalog_generation).is_ok_and(|(_, expected)| {
+                    self.metadata_for(expected.key()).is_some_and(|actual| {
+                        actual == &expected
+                            && control.audio_candidate_domain_covers_source(token, actual)
+                    })
                 })
             })
     }
