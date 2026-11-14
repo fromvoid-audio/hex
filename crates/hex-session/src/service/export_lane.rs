@@ -25,7 +25,8 @@ pub(super) struct ExportLane {
     pub(super) native_hold: NativeSamplerReservationHold,
     /// Control of the most recently dispatched cancellable job. Teardown
     /// cancels it before joining, so an in-flight render stops at its next
-    /// block and removes its temporary file instead of running to completion.
+    /// block instead of running to completion. A staged file is retained for
+    /// inspection if cancellation happens after staging begins.
     dispatched_control: Option<hex_export::ExportControl>,
 }
 impl ExportLane {

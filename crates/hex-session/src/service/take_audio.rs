@@ -162,7 +162,7 @@ pub fn prepare_excerpt(
         }
         Ok(())
     })
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| super::export_error_text(&error))?;
     let waveform = match Waveform::from_peaks(size, bins).and_then(|waveform| {
         if identical_channels {
             waveform.with_identical_channels()

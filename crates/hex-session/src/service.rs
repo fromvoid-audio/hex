@@ -3,6 +3,7 @@ use crate::arrangement_seek::{
     ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
 };
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
+pub use crate::export_error::export_error_text;
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
 use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT, decode_resident_import};
@@ -1501,7 +1502,7 @@ fn canonical_exporter() -> Exporter {
                 control,
                 publication,
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| export_error_text(&error))
         },
     )
 }
@@ -10578,7 +10579,7 @@ fn run_export_worker(
                             control: &controlled.control,
                             publication: &publication,
                         }),
-                        Err(error) => Err(error.to_string()),
+                        Err(error) => Err(export_error_text(&error)),
                     }
                 }
             } else if job.sources.is_some() && job.resources.is_some() {
@@ -10600,7 +10601,7 @@ fn run_export_worker(
                                 &policy,
                             )
                         })
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| export_error_text(&error))
                 } else {
                     hex_export::render_prepared_new_with_device_resources(
                         &job.path,
@@ -10609,7 +10610,7 @@ fn run_export_worker(
                         0,
                         job.frames,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| export_error_text(&error))
                 }
             } else if let Some(sources) = job.sources.take() {
                 let controlled = job
@@ -10631,7 +10632,7 @@ fn run_export_worker(
                             &policy,
                         )
                     })
-                    .map_err(|e| e.to_string())
+                    .map_err(|error| export_error_text(&error))
             } else {
                 // Every service request carries controlled parts; a bare job
                 // renders as the automatic whole-project Main export.
