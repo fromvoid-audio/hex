@@ -984,6 +984,58 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
 }
 
 #[test]
+fn file_waveform_peaks_cover_short_bins_and_window_boundaries() {
+    let files = Files::new();
+    for frames in [1_usize, 1023, 1024, 1025, 4097] {
+        let path = files.0.join(format!("segment-{frames}.wav"));
+        let values: Vec<[f32; 2]> = (0..frames)
+            .map(|i| {
+                [
+                    ((i % 31) as f32 - 15.0) / 16.0,
+                    ((i % 17) as f32 - 8.0) / 8.0,
+                ]
+            })
+            .collect();
+        let mut written = 0;
+        hex_export::write_float_wav_new(
+            &path,
+            48_000,
+            frames as u64,
+            &AtomicBool::new(false),
+            |output| {
+                output.copy_from_slice(&values[written..written + output.len()]);
+                written += output.len();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut source =
+            crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false)
+                .unwrap();
+        source.prepare_waveform_on_control(|| false).unwrap();
+        let bins = source.cached_waveform().unwrap().bins();
+        let count = frames.min(1024);
+        assert_eq!(bins.len(), count);
+        let mut start = 0;
+        for (index, bin) in bins.iter().enumerate() {
+            let end = start + frames / count + usize::from(index < frames % count);
+            for (channel, peak) in bin.iter().enumerate() {
+                let expected_min = values[start..end]
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::INFINITY, f32::min);
+                let expected_max = values[start..end]
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                assert_eq!((peak.min, peak.max), (expected_min, expected_max));
+            }
+            start = end;
+        }
+    }
+}
+
+#[test]
 fn identical_file_extrema_do_not_hide_independent_channels() {
     let files = Files::new();
     let path = files.0.join("independent.wav");

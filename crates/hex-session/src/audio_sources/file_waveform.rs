@@ -110,20 +110,34 @@ impl VerifiedAudioFile {
                 &mut output[..take],
                 &mut scratch,
             )?;
-            for frame in &output[..take] {
-                identical_channels &= frame[0].to_bits() == frame[1].to_bits();
-                if let Some(peaks) = peaks.as_mut() {
-                    for (peak, value) in peaks.iter_mut().zip(frame) {
-                        peak.min = peak.min.min(*value);
-                        peak.max = peak.max.max(*value);
-                    }
-                } else {
-                    peaks = Some(frame.map(|value| Peak {
+            let mut offset = 0;
+            while offset < take {
+                let len = (end - cursor).min(take - offset);
+                let segment = &output[offset..offset + len];
+                let rest = if peaks.is_none() {
+                    let Some((first, rest)) = segment.split_first() else {
+                        return Err(SessionError::Invalid("empty file waveform bin"));
+                    };
+                    identical_channels &= first[0].to_bits() == first[1].to_bits();
+                    peaks = Some(first.map(|value| Peak {
                         min: value,
                         max: value,
                     }));
+                    rest
+                } else {
+                    segment
+                };
+                if let Some(peaks) = peaks.as_mut() {
+                    for frame in rest {
+                        identical_channels &= frame[0].to_bits() == frame[1].to_bits();
+                        for (peak, value) in peaks.iter_mut().zip(frame) {
+                            peak.min = peak.min.min(*value);
+                            peak.max = peak.max.max(*value);
+                        }
+                    }
                 }
-                cursor += 1;
+                cursor += len;
+                offset += len;
                 if cursor == end {
                     bins.push(
                         peaks
