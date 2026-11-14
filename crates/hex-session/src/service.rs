@@ -3284,7 +3284,8 @@ fn run_worker(
         },
     ) {
         // One later edit of the same kind may commit while a checkpoint owns
-        // the journal. Other requests fence it first, including mixed edit kinds.
+        // the journal. One resident seek may also overlap a locator checkpoint;
+        // all other requests fence it first, including mixed edit kinds.
         let seek_during_locator_recovery = pending_locator_seek_outcome.is_none()
             && matches!(
                 pending_recovery_outcome.as_ref(),
