@@ -8,6 +8,125 @@ use crate::{
     SessionPlaybackCommand, StreamSourceKey, StreamedSourceMetadata,
 };
 use std::collections::BTreeMap;
+
+#[test]
+fn pitch_revision_keeps_session_source_raw_and_refuses_mismatched_pages() {
+    use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_project::{Command, Created, Editor, Project, WarpResampler};
+    use std::sync::atomic::AtomicBool;
+
+    const FRAMES: u64 = 20_000_000;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, clip, asset } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: FRAMES,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene fixture")
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "raw".into(),
+            asset,
+            source_start: 0,
+            source_end: 4096,
+        })
+        .unwrap();
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(7, asset),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [7; 32],
+    )
+    .unwrap();
+    let derived = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+    let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw.clone())))]);
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let effects = hex_devices::native_registry().unwrap();
+    let transforms = crate::audio_transform::AudioTransformPreparation::default();
+    let prepare = |pitched: &BTreeMap<_, _>| {
+        PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+            editor.project(),
+            &sources,
+            pitched,
+            7,
+            Arc::new(SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancel,
+            &effects,
+            None,
+        )
+    };
+    assert!(prepare(&BTreeMap::new()).is_err());
+    let wrong = StreamedSourceMetadata::new(
+        raw.key(),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [8; 32],
+    )
+    .unwrap()
+    .with_plain_pitch(700, WarpResampler::V2)
+    .unwrap();
+    assert!(prepare(&BTreeMap::from([(derived.key(), Arc::new(wrong))])).is_err());
+    let revision = prepare(&BTreeMap::from([(
+        derived.key(),
+        Arc::new(derived.clone()),
+    )]))
+    .unwrap();
+    assert_eq!(
+        revision
+            .arrangement_stream_sources()
+            .map(|s| s.key())
+            .collect::<Vec<_>>(),
+        vec![derived.key()]
+    );
+    let PreparedAudioSource::Streamed(session_source) =
+        revision.session().audio_clips()[0].source()
+    else {
+        panic!("streamed session source")
+    };
+    assert_eq!(session_source.as_ref(), &raw);
+}
 struct Pages<'a> {
     samples: &'a [Frame],
     key: StreamSourceKey,

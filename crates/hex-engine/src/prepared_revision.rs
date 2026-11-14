@@ -1024,6 +1024,50 @@ impl PreparedRevision {
         )
     }
 
+    /// Prepare Arrangement and Session together with separately verified
+    /// full-source pitch metadata. Session clips retain their raw asset source.
+    /// The host must retain matching worker and native source custody; these
+    /// metadata bindings alone grant neither readiness nor publication.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_prepared_pitch_sources_and_device_resources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<Self, Invalid> {
+        if expected_generation == 0 {
+            return Err(Invalid("stream source generation must be positive"));
+        }
+        resources.validate_project(project)?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        let preparation = crate::native_device_resources::CompilerDeviceResources::new(
+            resources,
+            max_scan_frames,
+            cancel,
+        );
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::MixedWithPitch(sources, pitched, expected_generation),
+            sine_table,
+            previous_session,
+            effects,
+            &instruments,
+            transforms,
+            Some(&preparation),
+            native_input,
+            &[],
+        )
+    }
+
     /// Control-only scalar compilation against an exact sealed source sidecar.
     /// The returned graph owns no source bank; generic runtime constructors
     /// refuse it without the matching sidecar. Applications must keep it private.
