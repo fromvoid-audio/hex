@@ -47,6 +47,8 @@ fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
         for partition in [1, 17, 256] {
             let mut actual = SessionPlayback::new(Arc::clone(&revision)).unwrap();
             let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            actual.track_faders[0].retarget([0.0; 2], 48_000);
+            reference.track_faders[0].retarget([0.0; 2], 48_000);
             actual.apply(SessionPlaybackCommand::Play).unwrap();
             reference.apply(SessionPlaybackCommand::Play).unwrap();
             let mut expected = [[0.0; 2]; 512];
