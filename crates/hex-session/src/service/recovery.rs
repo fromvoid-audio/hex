@@ -791,12 +791,28 @@ fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, 
 }
 
 /// Keep materialized processing dependencies resident, including retained
-/// grouped roots. Complete plain-pitch captures can use verified worker pages;
-/// other edits still require their existing resident preparation path.
+/// grouped roots. Complete plain pitch and supported long Re-Pitch roots can
+/// use verified worker pages; other edits retain resident preparation.
 fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
     let requires = |clip: &hex_project::Clip| {
+        let streamed_repitch = clip.asset() == asset
+            && clip
+                .audio_edit()
+                .zip(project.asset(clip.asset()))
+                .is_some_and(|(edit, source)| {
+                    (clip.duration() > hex_project::MAX_AUDIO_DOMAIN_FRAMES
+                        || source.playback_frames() > hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+                        && hex_engine::audio_transform::streamed_repitch_map(
+                            edit,
+                            project.tempo_map(),
+                            source.playback_frames(),
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                        .is_ok()
+                });
         (clip.asset() == asset
             && crate::audio_sources::plain_pitch_requirement(project, clip).is_none()
+            && !streamed_repitch
             && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
             || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
                 .is_some_and(|events| events.sources.iter().any(|root| root.clip.asset() == asset))
@@ -1020,6 +1036,41 @@ mod tests {
             .execute(Command::SetAudioClipMusical {
                 clip,
                 enabled: true,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(editor.project(), asset));
+    }
+    #[test]
+    fn ordinary_recovery_preserves_short_repitch_resident_path() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let warp = hex_project::default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            hex_project::WarpMode::RePitch,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
             })
             .unwrap();
         assert!(asset_requires_resident_processing(editor.project(), asset));
