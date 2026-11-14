@@ -7,6 +7,7 @@ using namespace hex_instance;
 class Controller final : public IEditController {
 public:
     ParamValue value=0.25;
+    Host* late_edit_host=nullptr;
     tresult PLUGIN_API queryInterface(const TUID,void**) override { return kNoInterface; }
     uint32 PLUGIN_API addRef() override { return 1; }
     uint32 PLUGIN_API release() override { return 1; }
@@ -25,7 +26,10 @@ public:
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue v) override { return v; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue v) override { return v; }
     ParamValue PLUGIN_API getParamNormalized(ParamID) override { return value; }
-    tresult PLUGIN_API setParamNormalized(ParamID,ParamValue v) override { value=v; return kResultOk; }
+    tresult PLUGIN_API setParamNormalized(ParamID,ParamValue v) override {
+        if(late_edit_host) assert(late_edit_host->beginEdit(7)==kResultFalse);
+        value=v; return kResultOk;
+    }
     tresult PLUGIN_API setComponentHandler(IComponentHandler*) override { return kResultOk; }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 };
@@ -67,5 +71,84 @@ int main() { @autoreleasepool {
     assert(host.synchronize_parameter_feedback(&controller));
     assert(controller.value==0.875);
     assert(host.endEdit(7)==kResultOk);
+
+    // A closed input boundary must keep already accepted work in both main
+    // and worker queues and refuse later SDK calls without faulting the host.
+    Host retiring;
+    assert(retiring.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+    assert(retiring.beginEdit(7)==kResultOk);
+    assert(retiring.performEdit(7,0.5)==kResultOk);
+    assert(!retiring.seal_editor_edits_on_control()); // An open gesture still owns its End.
+    assert(retiring.endEdit(7)==kResultOk);
+    for(int n=0;n<3;++n) {
+        assert(retiring.beginEdit(7)==kResultOk);
+        assert(retiring.performEdit(7,0.5)==kResultOk);
+        assert(retiring.endEdit(7)==kResultOk);
+    }
+    for(int n=0;n<8;++n)
+        assert(retiring.dispatch(&controller).disposition==HostDisposition::EditQueued);
+    const auto revision=retiring.callback_revision_on_control();
+    assert(retiring.pending_parameter_edits()==12 && retiring.ready_parameter_edits()==8);
+    assert(retiring.seal_editor_edits_on_control());
+    assert(retiring.seal_editor_edits_on_control()); // Idempotent for the same owner.
+    assert(retiring.apply_saved_state([&] {
+        assert(retiring.beginEdit(7)==kResultOk);
+        assert(retiring.performEdit(7,0.25)==kResultOk);
+        assert(retiring.endEdit(7)==kResultOk);
+        return kResultOk;
+    })==kResultOk);
+    assert(retiring.beginEdit(7)==kResultFalse);
+    assert(retiring.performEdit(7,0.75)==kResultFalse);
+    assert(retiring.endEdit(7)==kResultFalse);
+    assert(retiring.refusal_flags()==0);
+    assert(retiring.callback_revision_on_control()==revision);
+    assert(retiring.pending_parameter_edits()==12 && retiring.ready_parameter_edits()==8);
+    // Sealing editor input must not discard later latency restart intent.
+    retiring.observe_latency_restarts();
+    assert(retiring.restartComponent(kLatencyChanged)==kResultOk);
+    assert(retiring.latency_restart()>revision);
+    uint64 last=0;
+    for(int n=0;n<12;++n) {
+        EditEvent event{};
+        assert(retiring.peek_edit(event));
+        assert(event.sequence>last && event.id==7);
+        assert(event.kind==(n%3==0?Begin:(n%3==1?Perform:End)));
+        last=event.sequence;
+        retiring.consume_edit();
+        retiring.complete_parameter_edit();
+        if(n>=4 && n<8)
+            assert(retiring.dispatch(&controller).disposition==HostDisposition::EditQueued);
+    }
+    assert(retiring.pending_parameter_edits()==0 && retiring.ready_parameter_edits()==0);
+    // Refusing a late editor callback during feedback must not poison the
+    // accepted feedback operation as a recursive restart.
+    controller.late_edit_host=&retiring;
+    assert(pending.put(7,0.125,retiring.editor_frontier_on_worker(),true));
+    assert(retiring.publish_parameter_feedback(pending));
+    assert(retiring.synchronize_parameter_feedback(&controller));
+    assert(controller.value==0.125 && retiring.refusal_flags()==0);
+    controller.late_edit_host=nullptr;
+
+    Host grouped(false,true);
+    assert(grouped.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+    assert(grouped.startGroupEdit()==kResultOk);
+    assert(grouped.beginEdit(7)==kResultOk && grouped.performEdit(7,0.5)==kResultOk);
+    assert(!grouped.seal_editor_edits_on_control()); // An unfinished cohort is not discarded.
+    assert(grouped.endEdit(7)==kResultOk && grouped.finishGroupEdit()==kResultOk);
+    assert(grouped.seal_editor_edits_on_control());
+    assert(grouped.apply_saved_state([&] {
+        assert(grouped.startGroupEdit()==kResultOk);
+        assert(grouped.finishGroupEdit()==kResultOk);
+        return kResultOk;
+    })==kResultOk);
+    assert(grouped.startGroupEdit()==kResultFalse && grouped.finishGroupEdit()==kResultFalse);
+    assert(grouped.refusal_flags()==0 && grouped.pending_parameter_edits()==5);
+    assert(grouped.dispatch(&controller).disposition==HostDisposition::EditQueued);
+    const uint32 expected[]={GroupBegin,Begin,Perform,End,GroupEnd};
+    for(auto kind:expected) {
+        EditEvent event{}; assert(grouped.peek_edit(event) && event.kind==kind);
+        grouped.consume_edit(); grouped.complete_parameter_edit();
+    }
+    assert(grouped.pending_parameter_edits()==0);
     return 0;
 }}

@@ -860,6 +860,81 @@ fn real_worker_keeps_simultaneous_generations_of_an_asset_separate() {
     assert_eq!(report.page_buffers, 3);
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn late_old_generation_page_does_not_satisfy_new_generation() {
+    let frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (old_wav, old_pcm) = TestWav::stereo_pcm16(48_000, frames);
+    let (new_wav, mut new_pcm) = TestWav::stereo_pcm16(48_000, frames);
+    let mut file = OpenOptions::new().write(true).open(new_wav.path()).unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&16_384_i16.to_le_bytes()).unwrap();
+    file.sync_all().unwrap();
+    new_pcm[0][0] = 0.5;
+    assert_ne!(old_pcm, new_pcm);
+
+    let asset = asset_id(frames, 48_000);
+    let [old_key, new_key] = [41, 42].map(|generation| StreamSourceKey::new(generation, asset));
+    let definitions = [(&old_wav, old_key), (&new_wav, new_key)]
+        .into_iter()
+        .map(|(wav, key)| {
+            let reader = VerifiedWavReader::open(wav.path(), reader_limits(frames)).unwrap();
+            let metadata = StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                frames as u64,
+                frames as u64,
+                hex_project::IDENTITY_CONVERSION,
+                *reader.fingerprint(),
+            )
+            .unwrap();
+            SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(frames))
+        })
+        .collect();
+    let old_page = PageKey {
+        source: old_key,
+        page_index: 0,
+    };
+    let new_page = PageKey {
+        source: new_key,
+        page_index: 0,
+    };
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(old_page);
+    let mut runtime =
+        StreamRuntime::new_with_page_gate(StreamConfig::with_pool_pages(3), definitions, gate)
+            .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let (control, mut endpoint) = runtime.split().ok().unwrap();
+    endpoint.request_page(old_key, 0);
+    control.wake_worker();
+    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    endpoint.request_page(new_key, 0);
+    control.wake_worker();
+    assert!(endpoint.page(new_key, 0).is_none());
+
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        endpoint.pump_ready(1);
+        if let Some(page) = endpoint.page(old_key, 0) {
+            assert_eq!(page.frames, old_pcm);
+            assert!(
+                endpoint.page(new_key, 0).is_none(),
+                "old completion cannot satisfy the new key"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "old completion did not arrive");
+        thread::yield_now();
+    }
+    assert!(wait_for_split_page(&mut endpoint, new_page));
+    assert_eq!(endpoint.page(new_key, 0).unwrap().frames, new_pcm);
+    let report = control.shutdown(endpoint).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
 #[test]
 fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_page() {
     let (wav, expected) = TestWav::stereo_pcm16(48_000, 4096);
@@ -1658,7 +1733,7 @@ fn pitched_worker_pages_match_resident_for_raw_and_converted_sources() {
 }
 
 #[test]
-fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
+fn transformed_worker_keeps_twenty_million_frame_source_bounded() {
     use hex_warp::{Input, MapSegment, Mode, Request, Resampler, TimeMap, render_with_resampler};
     const FRAMES: u64 = 20_000_000;
     let stamp = SystemTime::now()
@@ -1822,6 +1897,63 @@ fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
     assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
     assert_eq!(page.frames, expected);
     assert!(runtime.shutdown().unwrap().accounting_complete);
+
+    // The same verified long file also supports a distinct Re-Pitch extent.
+    let output_frames = FRAMES * 2;
+    let map = TimeMap::new_streamed(
+        vec![MapSegment {
+            output_start: 0,
+            output_end: output_frames,
+            source_start_q32: 0,
+            source_end_q32: i128::from(FRAMES) << 32,
+        }],
+        output_frames,
+    )
+    .unwrap();
+    let def = SourceDefinition::new(wav.path().to_path_buf(), raw, limits)
+        .with_repitch(map.clone(), Resampler::V2)
+        .unwrap()
+        .with_verified_manifest(reader.manifest().clone());
+    let key = def.key;
+    let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![def]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let footprint = runtime.catalog_footprint().unwrap();
+    assert_eq!(
+        footprint.pitch_scratch_bytes,
+        66_048 * std::mem::size_of::<[f32; 2]>()
+    );
+    assert!(footprint.kernel_table_bytes <= footprint.kernel_peak_bound_bytes);
+    let index = impulse_frame * 2 / 4096;
+    runtime.request_page(key, index);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[PageKey {
+            source: key,
+            page_index: index
+        }],
+        Duration::from_secs(3)
+    ));
+    let page = runtime.page(key, index).unwrap();
+    let mut window =
+        hex_warp::RepitchWindow::new(FRAMES, map, Resampler::V2, &mut || false).unwrap();
+    let range = window
+        .required_source_range(index * 4096, page.frames.len())
+        .unwrap();
+    let mut source = vec![[0.0; 2]; (range.end - range.start) as usize];
+    source[(impulse_frame - range.start) as usize] = [0.5, -0.25];
+    let mut expected = vec![[0.0; 2]; page.frames.len()];
+    window
+        .render(
+            index * 4096,
+            range.start,
+            &source,
+            &mut expected,
+            &mut || false,
+        )
+        .unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(page.frames, expected);
+    assert!(runtime.shutdown().unwrap().accounting_complete);
 }
 
 #[test]
@@ -1849,4 +1981,307 @@ fn pitched_worker_refuses_filter_budget_before_publication() {
         StreamRuntime::new(config, vec![definition]),
         Err(hex_stream::StreamRuntimeError::InvalidConfiguration)
     ));
+}
+
+#[test]
+fn repitch_worker_publishes_mapped_pages_at_the_derived_extent() {
+    use hex_warp::{Input, MapSegment, Mode, Request, Resampler, TimeMap, render_with_resampler};
+    for (source_rate, law) in [(48_000, Resampler::V1), (44_100, Resampler::V2)] {
+        let project_rate = 48_000;
+        let (wav, pcm) = TestWav::stereo_pcm16(source_rate, 6_001);
+        let limits = reader_limits(pcm.len());
+        let verified = VerifiedWavReader::open(wav.path(), limits).unwrap();
+        let input_frames =
+            hex_project::converted_frame_count(pcm.len() as u64, source_rate, project_rate)
+                .unwrap();
+        let conversion = if source_rate == project_rate {
+            hex_project::IDENTITY_CONVERSION
+        } else {
+            hex_project::SINC_CONVERSION_V2
+        };
+        let raw = StreamedSourceMetadata::new(
+            StreamSourceKey::new(503, asset_id(pcm.len(), project_rate)),
+            source_rate,
+            project_rate,
+            pcm.len() as u64,
+            input_frames,
+            conversion,
+            *verified.fingerprint(),
+        )
+        .unwrap();
+        let output_frames = input_frames * 2;
+        let map = TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: output_frames,
+                source_start_q32: 0,
+                source_end_q32: i128::from(input_frames) << 32,
+            }],
+            output_frames as usize,
+        )
+        .unwrap();
+        let definition = SourceDefinition::new(wav.path().to_path_buf(), raw.clone(), limits)
+            .with_repitch(map.clone(), law)
+            .unwrap()
+            .with_verified_manifest(verified.manifest().clone());
+        let metadata = definition.metadata.clone();
+        assert_eq!(metadata.source_playback_frames(), input_frames);
+        assert_eq!(metadata.playback_frames(), output_frames);
+        let mut runtime =
+            StreamRuntime::new(StreamConfig::with_pool_pages(4), vec![definition]).unwrap();
+        runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+        let original = Audio::new(source_rate, pcm).unwrap();
+        let project = if source_rate == project_rate {
+            original
+        } else {
+            resample_with_version(
+                &original,
+                project_rate,
+                ResampleLimits {
+                    max_source_frames: 100_000,
+                    max_output_frames: 100_000,
+                },
+                ResampleVersion::V2,
+            )
+            .unwrap()
+        };
+        let expected = render_with_resampler(
+            &Request {
+                attacks: &[],
+                input: Input {
+                    frames: project.frames(),
+                    sample_rate: project_rate,
+                    region_start: 0,
+                    region_length: input_frames,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                map: &map,
+                output_frames: output_frames as usize,
+                pitch_cents: 0,
+                mode: Mode::RePitch,
+            },
+            law,
+            &mut || false,
+        )
+        .unwrap()
+        .frames;
+        for index in [(output_frames - 1) / 4096, 0, 1] {
+            let key = PageKey {
+                source: metadata.key(),
+                page_index: index,
+            };
+            runtime.request_page(key.source, index);
+            assert!(wait_for_pages(&mut runtime, &[key], Duration::from_secs(3)));
+            let page = runtime.page(key.source, index).unwrap();
+            let start = index as usize * 4096;
+            assert_eq!(page.frames, &expected[start..start + page.frames.len()]);
+        }
+        assert!(runtime.shutdown().unwrap().accounting_complete);
+    }
+}
+
+#[test]
+fn canonical_repitch_projection_drives_actual_worker_pages() {
+    use hex_project::{BeatTime, WarpMarker, WarpMode, default_audio_warp};
+    use hex_warp::{Input, Mode, Request, render_with_resampler};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, atomic::AtomicBool},
+    };
+
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, 8_000);
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, clip, asset } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "canonical".into(),
+            path: wav.path().to_path_buf(),
+            sample_rate: 48_000,
+            frames: 8_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let mut settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let midpoint = settings.markers.last().unwrap().beat.raw() / 2;
+    settings.markers.insert(
+        1,
+        WarpMarker {
+            source_frame: 3_000,
+            beat: BeatTime::from_raw(midpoint),
+        },
+    );
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "raw".into() })
+        .unwrap()
+    else {
+        panic!("scene fixture")
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "raw".into(),
+            asset,
+            source_start: 0,
+            source_end: 4096,
+        })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        editor.project().tempo_map(),
+        8_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(map.segments().len(), 2);
+    let output_frames = map.segments().last().unwrap().output_end;
+    let expected = render_with_resampler(
+        &Request {
+            attacks: &[],
+            input: Input {
+                frames: &pcm,
+                sample_rate: 48_000,
+                region_start: 0,
+                region_length: 8_000,
+                phase: 0,
+                looping: false,
+                envelope: &[],
+            },
+            map: &map,
+            output_frames: output_frames as usize,
+            pitch_cents: 0,
+            mode: Mode::RePitch,
+        },
+        law,
+        &mut || false,
+    )
+    .unwrap()
+    .frames;
+    let limits = reader_limits(pcm.len());
+    let verified = VerifiedWavReader::open(wav.path(), limits).unwrap();
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(811, asset),
+        48_000,
+        48_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let definition = SourceDefinition::new(wav.path().to_path_buf(), raw.clone(), limits)
+        .with_repitch(map, law)
+        .unwrap();
+    let key = definition.key;
+    let derived = definition.metadata.clone();
+    let sources = BTreeMap::from([(
+        asset,
+        hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(raw)),
+    )]);
+    let prepare = |derived_sources: &BTreeMap<_, _>| {
+        hex_engine::PreparedRevision::prepare_with_prepared_pitch_sources(
+            editor.project(),
+            &sources,
+            derived_sources,
+            811,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+    };
+    assert!(prepare(&BTreeMap::new()).is_err());
+    let wrong = StreamedSourceMetadata::new(
+        StreamSourceKey::new(811, asset),
+        48_000,
+        48_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [42; 32],
+    )
+    .unwrap();
+    assert!(prepare(&BTreeMap::from([(key, Arc::new(wrong))])).is_err());
+    let prepared = prepare(&BTreeMap::from([(key, Arc::new(derived))])).unwrap();
+    assert_eq!(
+        prepared
+            .arrangement_stream_sources()
+            .map(|source| source.key())
+            .collect::<Vec<_>>(),
+        vec![key]
+    );
+    let hex_engine::compile::PreparedAudioSource::Streamed(session_source) =
+        prepared.session().audio_clips()[0].source()
+    else {
+        panic!("session source")
+    };
+    assert_eq!(session_source.key(), StreamSourceKey::new(811, asset));
+    let resident = hex_engine::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        &BTreeMap::from([(asset, Audio::new(48_000, pcm.clone()).unwrap())]),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+    )
+    .unwrap();
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    for index in [1, 0] {
+        runtime.request_page(key, index);
+        assert!(wait_for_pages(
+            &mut runtime,
+            &[PageKey {
+                source: key,
+                page_index: index
+            }],
+            Duration::from_secs(3)
+        ));
+        let page = runtime.page(key, index).unwrap();
+        let start = index as usize * 4096;
+        assert_eq!(page.frames, &expected[start..start + page.frames.len()]);
+    }
+    let mut actual = vec![[0.0; 2]; output_frames as usize];
+    let mut expected_playback = vec![[0.0; 2]; output_frames as usize];
+    let mut streamed = Renderer::new(prepared.arrangement());
+    let mut resident_renderer = Renderer::new(resident.arrangement());
+    streamed.play();
+    resident_renderer.play();
+    for (out, reference) in actual
+        .chunks_mut(512)
+        .zip(expected_playback.chunks_mut(512))
+    {
+        streamed.render_with_pages(out, &mut runtime).unwrap();
+        resident_renderer.render(reference).unwrap();
+    }
+    assert!(expected_playback.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(actual, expected_playback);
+    assert!(runtime.shutdown().unwrap().accounting_complete);
 }

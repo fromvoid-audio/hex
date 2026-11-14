@@ -362,10 +362,16 @@ impl NativeAudioSink {
                 .pending
                 .as_ref()
                 .map_or(DeviceResourceAdmission::default(), |pending| {
-                    DeviceResourceAdmission::unpublished_on_control(
+                    let view = DeviceResourceAdmission::unpublished_on_control(
                         &pending.playback,
                         pending.resources.as_ref(),
-                    )
+                    );
+                    match pending.file_sources.as_ref() {
+                        Some(files) if !files.repitches().requirements().is_empty() => {
+                            view.with_repitch_requirements(files.repitches())
+                        }
+                        _ => view,
+                    }
                 }),
         ]
     }

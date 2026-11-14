@@ -258,6 +258,15 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
         });
     assert!(matches!(result, Err("witness reservation refused")));
     assert!(!signal.parameter_change_requested.load(Acquire));
+    let ordinal = std::num::NonZeroU64::new(refused.unwrap().1).unwrap();
+    assert!(
+        owner
+            .reaper
+            .control
+            .observe_parameter_input_on_control(ordinal)
+            .is_none(),
+        "a refused input must not publish its generation"
+    );
     let (request, reserved) = owner
         .parameter_change_with_before(0, 0.5, false, |request| {
             assert!(!signal.parameter_change_requested.load(Acquire));
@@ -267,6 +276,15 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     assert_eq!(Some(reserved), refused);
     assert_eq!(reserved.2, 0);
     assert_eq!(Some(reserved), request.delivery_identity());
+    let source = owner
+        .reaper
+        .control
+        .observe_parameter_input_on_control(ordinal)
+        .expect("the accepted input publishes its paired generation");
+    let fence = endpoint
+        .reserve_observed_parameter_input_on_callback(&source)
+        .expect("the original callback accepts its paired generation");
+    drop(fence);
     for sequence in 0..3 {
         callback(&owner, &mut endpoint, sequence, 2.0, &[]);
     }

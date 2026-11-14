@@ -75,6 +75,7 @@ impl NativeAudioSink {
             semantic_source_epoch: files.semantic_source_epoch(),
             files: &refs,
             pitches: files.pitches(),
+            repitches: files.repitches().requirements(),
         };
         let policy = self.policy.as_ref().map_err(Clone::clone)?;
         let control = self
@@ -131,7 +132,8 @@ impl NativeAudioSink {
                 let token = control
                     .begin_audio_candidate_domain_preparation(
                         policy.stream,
-                        sources.definitions()?,
+                        sources
+                            .definitions_for_files(&input, policy.stream.max_kernel_table_bytes)?,
                         policy.readiness,
                     )
                     .map_err(|error| format!("ordinary source preparation refused: {error:?}"))?;

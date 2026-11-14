@@ -524,6 +524,9 @@ public:
     void consume_parameter_edit() { if(host) host->consume_edit(); }
     uint32 ready_parameter_edits() const { return host?host->ready_parameter_edits():0; }
     uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }
+    bool seal_editor_edits_on_control() {
+        return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
+    }
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     uint64 editor_frontier_on_worker() const { return host?host->editor_frontier_on_worker():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
@@ -546,8 +549,8 @@ public:
     // RetainedHost means all component/controller teardown and stream disposal
     // succeeded. The isolated worker may then retire by process exit while
     // keeping the stopped Host and module alive.
-    CloseResult close_for_retirement() {
-        if (!close_objects()) return CloseResult::Refused;
+    CloseResult close_for_retirement(bool clean_stop=false) {
+        if (!close_objects(clean_stop)) return CloseResult::Refused;
         if (host) {
             if (host->reference_count()!=1) return CloseResult::RetainedHost;
             host->release(); host=nullptr;
@@ -556,7 +559,7 @@ public:
     }
 
 private:
-    bool close_objects() {
+    bool close_objects(bool clean_stop) {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;
         if (host) host->stop_accepting();
         // Stop/join is the caller's prerequisite. Never release/unload past a
@@ -565,17 +568,26 @@ private:
             if (component->setActive(false) != kResultOk) return refuse_cleanup();
             active = false;
         }
-        if (input_active) {
-            if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
+        // After a clean STOP, the joined worker and inactive component need no
+        // further bus reconfiguration before checked termination. Partial or
+        // failed setup retains the existing conservative cleanup path.
+        if (clean_stop) {
             input_active = false;
-        }
-        if (event_input_channels_) {
-            if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
-            event_input_channels_=0;
-        }
-        if (output_active) {
-            if (component->activateBus(kAudio, kOutput, 0, false) != kResultOk) return refuse_cleanup();
+            event_input_channels_ = 0;
             output_active = false;
+        } else {
+            if (input_active) {
+                if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
+                input_active = false;
+            }
+            if (event_input_channels_) {
+                if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
+                event_input_channels_=0;
+            }
+            if (output_active) {
+                if (component->activateBus(kAudio, kOutput, 0, false) != kResultOk) return refuse_cleanup();
+                output_active = false;
+            }
         }
         if (connected_controller) {
             if (controller_connection->disconnect(component_connection) != kResultOk) return refuse_cleanup();

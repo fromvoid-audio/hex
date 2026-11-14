@@ -2,10 +2,37 @@
 use super::*;
 
 #[test]
-fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
-    for muted in [false, true] {
+fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
+    for (muted, automated, unity) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+        if unity {
+            for track in &mut snapshot.tracks {
+                track.gain = 1.0;
+                track.balance = 0.0;
+            }
+        }
         snapshot.tracks[0].muted = muted;
+        if automated {
+            snapshot.tracks[0].gain_envelope = vec![
+                hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 0.25,
+                    outgoing: hex_project::GainInterpolation::Linear,
+                },
+                hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: hex_project::BeatTime::ONE,
+                    gain: 1.25,
+                    outgoing: hex_project::GainInterpolation::Step,
+                },
+            ];
+        }
         snapshot.return_tracks[0].devices[0].state = crate::default_native_device_state_for_class(
             crate::NativeDeviceClass::Effect,
             hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
@@ -43,12 +70,22 @@ fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
             })
             .unwrap();
         let project = editor.project();
-        let revision = prepare_audio(project);
         for partition in [1, 17, 256] {
-            let mut actual = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-            let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-            actual.track_faders[0].retarget([0.0; 2], 48_000);
-            reference.track_faders[0].retarget([0.0; 2], 48_000);
+            let actual_revision = prepare_audio(project);
+            let reference_revision = prepare_audio(project);
+            let actual_observation =
+                crate::PreparedPlaybackObservation::prepare_on_control(&actual_revision).unwrap();
+            let reference_observation =
+                crate::PreparedPlaybackObservation::prepare_on_control(&reference_revision)
+                    .unwrap();
+            let mut actual = SessionPlayback::new(actual_revision).unwrap();
+            let mut reference = SessionPlayback::new(reference_revision).unwrap();
+            actual.set_device_metering(true);
+            reference.set_device_metering(true);
+            if !unity {
+                actual.track_faders[0].retarget([0.0; 2], 48_000);
+                reference.track_faders[0].retarget([0.0; 2], 48_000);
+            }
             actual.apply(SessionPlaybackCommand::Play).unwrap();
             reference.apply(SessionPlaybackCommand::Play).unwrap();
             let mut expected = [[0.0; 2]; 512];
@@ -74,8 +111,33 @@ fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
                 for chunk in actual_block.chunks_mut(partition) {
                     actual.render(chunk).unwrap();
                 }
+                for track in project.tracks() {
+                    let actual_meter = actual_observation.track_output_meter(track.id()).unwrap();
+                    let reference_meter = reference_observation
+                        .track_output_meter(track.id())
+                        .unwrap();
+                    assert_eq!(actual_meter.take_peaks(), reference_meter.take_peaks());
+                    assert_eq!(
+                        actual_meter.take_track_output_stereo(),
+                        reference_meter.take_track_output_stereo()
+                    );
+                }
+                let bus = project.return_tracks()[0].id();
+                assert_eq!(
+                    actual_observation
+                        .return_output_meter(bus)
+                        .unwrap()
+                        .take_track_output_stereo(),
+                    reference_observation
+                        .return_output_meter(bus)
+                        .unwrap()
+                        .take_track_output_stereo()
+                );
             }
-            assert_eq!(output, expected, "muted={muted}, partition={partition}");
+            assert_eq!(
+                output, expected,
+                "muted={muted}, automated={automated}, unity={unity}, partition={partition}"
+            );
             assert_eq!(
                 (actual.performance_frame(), actual.arrangement_frame()),
                 (reference.performance_frame(), reference.arrangement_frame())

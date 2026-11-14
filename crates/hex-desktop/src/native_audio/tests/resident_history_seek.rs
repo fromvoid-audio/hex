@@ -7,6 +7,175 @@ use hex_session::device_gesture::{ParameterId, ParameterValue};
 use hex_session::service::ResidentSeekHistory;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
+enum HeldLocatorSeek {
+    Accepted,
+    StaleRevision,
+    WrongOutput,
+    Cancelled,
+}
+
+#[test]
+fn held_locator_checkpoint_allows_actual_resident_seek_publication() {
+    held_locator_seek(HeldLocatorSeek::Accepted);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_stale_revision() {
+    held_locator_seek(HeldLocatorSeek::StaleRevision);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_wrong_output() {
+    held_locator_seek(HeldLocatorSeek::WrongOutput);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_cancelled_seek() {
+    held_locator_seek(HeldLocatorSeek::Cancelled);
+}
+
+fn held_locator_seek(case: HeldLocatorSeek) {
+    use std::time::{Duration, Instant};
+    let _native = native_fixture();
+    let files = Files::new();
+    let journal = files.0.join("held-locator.hex-journal");
+    let mut h = ResidentHarness::with_recovery(8192, journal.clone());
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let imported = h.run(Request::ImportToNewTrack {
+        path: files.wav(48_000, 8192),
+        before_track: None,
+        start: 0,
+    });
+    applied = h.applied(applied).0;
+    let track = imported.state.project.tracks()[0].id();
+    let reverb = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.reverb",
+    ))
+    .unwrap();
+    h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: reverb,
+    }));
+    applied = h.applied(applied).0;
+    let mut gate = hex_session::service::hold_next_checkpoint(journal.clone()).unwrap();
+    h.service
+        .submit(Request::Edit(Command::AddArrangementLocator { frame: 129 }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match gate.try_entered() {
+            Ok(()) => break,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(error) => panic!("checkpoint gate: {error}"),
+        }
+        assert!(Instant::now() < deadline, "checkpoint did not enter");
+        std::thread::yield_now();
+    }
+    let view = loop {
+        if let Ok(view) = h.service.try_arrangement_edit_view() {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "committed locator view missing");
+        std::thread::yield_now();
+    };
+    let state = view.state.upgrade().unwrap();
+    let locator = state.project.arrangement_locators().first().unwrap();
+    assert_eq!(locator.frame(), 129);
+    let (locator_audio, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, state.revision);
+    assert!(
+        metadata.requires_preroll,
+        "fixture must require a stateful seek"
+    );
+    assert!(
+        h.service.try_event().is_err(),
+        "checkpoint terminal is still held"
+    );
+    let mut intent = h.seek_intent(1, state.revision, None, None);
+    let expected_output = intent.fence.output_identity;
+    intent.destination_frame = locator.frame();
+    match case {
+        HeldLocatorSeek::Accepted => {}
+        HeldLocatorSeek::StaleRevision => intent.project_revision += 1,
+        HeldLocatorSeek::WrongOutput => intent.fence.output_identity += 1,
+        HeldLocatorSeek::Cancelled => intent
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release),
+    }
+    let requested_revision = intent.project_revision;
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    let result = h.seek_result();
+    assert_eq!(result.request_id, 1);
+    assert_eq!(result.project_generation, view.project_generation);
+    assert_eq!(result.project_revision, requested_revision);
+    assert!(
+        h.service.try_event().is_err(),
+        "seek terminal must remain ordered"
+    );
+    match case {
+        HeldLocatorSeek::Accepted => {
+            let hex_session::service::ResidentPublicationAcceptance::Submitted {
+                audio_revision,
+                output_identity,
+            } = result.result.unwrap()
+            else {
+                panic!("seek must submit to the real resident callback");
+            };
+            assert_eq!(output_identity, expected_output);
+            let (installed, metadata) = h.applied(locator_audio);
+            assert_eq!(installed, audio_revision);
+            assert_eq!(metadata.context.project_generation, view.project_generation);
+            assert_eq!(metadata.context.editor_revision, state.revision);
+            assert_eq!(metadata.seek_request, Some(1));
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(
+                h.audio.as_ref().unwrap().control.output_identity(),
+                Some(expected_output)
+            );
+            assert_eq!(status.applied_revision.load(Acquire), audio_revision);
+            assert!(status.playing.load(Acquire));
+            assert!(status.position.load(Acquire) >= locator.frame());
+        }
+        _ => {
+            let error = result.result.unwrap_err();
+            let expected = match case {
+                HeldLocatorSeek::StaleRevision | HeldLocatorSeek::Cancelled => {
+                    "seek target changed or was cancelled"
+                }
+                HeldLocatorSeek::WrongOutput => "runtime changed",
+                HeldLocatorSeek::Accepted => unreachable!("accepted case handled above"),
+            };
+            assert!(error.contains(expected), "unexpected refusal: {error}");
+            h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.applied_revision.load(Acquire), locator_audio);
+            assert!(!status.playing.load(Acquire));
+        }
+    }
+    assert!(
+        h.service.try_event().is_err(),
+        "checkpoint terminal remains held after seek"
+    );
+    gate.release().unwrap();
+    let locator_terminal = h.next();
+    assert!(
+        matches!(locator_terminal.created, Some(Created::ArrangementLocator(id)) if id == locator.id())
+    );
+    assert_eq!(locator_terminal.state.revision, state.revision);
+    let seek_terminal = h.next();
+    assert_eq!(
+        seek_terminal.error.is_some(),
+        matches!(
+            case,
+            HeldLocatorSeek::StaleRevision | HeldLocatorSeek::Cancelled
+        )
+    );
+    assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
+}
+
 #[test]
 fn explicit_native_history_matches_linear_pcm_and_keeps_refused_old_owner() {
     std::thread::Builder::new()

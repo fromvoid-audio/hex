@@ -112,6 +112,66 @@ impl CanonicalAudioSourceSnapshot {
                 Some((pitch.asset, file, pitch.cents, pitch.law))
             })
     }
+    /// Verified-file Re-Pitch roots in this exact snapshot. The caller must
+    /// validate and project each root before treating it as a worker source.
+    pub fn required_repitch_sources(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            hex_project::AssetId,
+            &crate::VerifiedAudioFile,
+            &hex_project::AudioClipEdit,
+            &hex_project::TempoMap,
+        ),
+    > {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter_map(move |clip| {
+                let edit = clip.audio_edit()?;
+                if !edit.domain.warp_enabled
+                    || !edit
+                        .domain
+                        .warp
+                        .as_ref()
+                        .is_some_and(|warp| matches!(warp.mode, hex_project::WarpMode::RePitch))
+                {
+                    return None;
+                }
+                let crate::AudioSourceBinding::VerifiedFile(file) =
+                    self.sources.get(&clip.asset())?
+                else {
+                    return None;
+                };
+                Some((clip.asset(), file, edit, self.project.tempo_map()))
+            })
+    }
+    /// Validated derived facts for each Re-Pitch root. These are not worker leases.
+    pub fn required_repitch_metadata(
+        &self,
+        generation: u64,
+    ) -> impl Iterator<
+        Item = Result<
+            (
+                &crate::VerifiedAudioFile,
+                hex_engine::StreamedSourceMetadata,
+            ),
+            hex_engine::Invalid,
+        >,
+    > {
+        self.required_repitch_sources()
+            .map(move |(asset, file, edit, tempo)| {
+                let raw = file.source_metadata(asset, generation)?;
+                let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+                    edit,
+                    tempo,
+                    raw.playback_frames(),
+                    &std::sync::atomic::AtomicBool::new(false),
+                )?;
+                Ok((file, raw.with_repitch(&map, law)?))
+            })
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -120,12 +180,73 @@ impl CanonicalAudioSourceSnapshot {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+        self.candidate_reservation_quote_for(&self.project)
+    }
+    pub(super) fn candidate_reservation_quote_for(
+        &self,
+        project: &Project,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        use hex_engine::AudioStorageError;
+        if hex_engine::native_device_resources::requires_private_sampler_sources(project) {
             return Err(hex_engine::AudioStorageError::UnsupportedGraph);
         }
-        hex_engine::AudioCandidateReservationQuote::for_project(
-            &self.project,
-            self.required_sources().count(),
+        // A sizing-only generation gives raw and derived facts a common identity;
+        // the actual host catalog and its leases are checked at construction.
+        let mut streams = BTreeMap::new();
+        let mut derived_count = 0usize;
+        for (asset, source) in self.required_sources() {
+            if let crate::AudioSourceBinding::VerifiedFile(file) = source {
+                let metadata = file
+                    .source_metadata(asset, 1)
+                    .map_err(|_| AudioStorageError::SourceMismatch)?;
+                streams.insert(metadata.key(), metadata);
+            }
+        }
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(pitch) = crate::audio_sources::plain_pitch_requirement(project, clip) else {
+                continue;
+            };
+            let Some(crate::AudioSourceBinding::VerifiedFile(file)) =
+                self.sources.get(&pitch.asset)
+            else {
+                continue;
+            };
+            let metadata = file
+                .source_metadata(pitch.asset, 1)
+                .and_then(|raw| raw.with_plain_pitch(pitch.cents, pitch.law))
+                .map_err(|_| AudioStorageError::SourceMismatch)?;
+            if streams.insert(metadata.key(), metadata).is_none() {
+                derived_count = derived_count
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(crate::AudioSourceBinding::VerifiedFile(file)) =
+                self.sources.get(&clip.asset())
+            else {
+                continue;
+            };
+            let Some(metadata) =
+                crate::audio_sources::repitch_source_metadata(project, clip, file, 1)
+                    .map_err(|_| AudioStorageError::SourceMismatch)?
+            else {
+                continue;
+            };
+            if streams.insert(metadata.key(), metadata).is_none() {
+                derived_count = derived_count
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        let sources = self
+            .required_sources()
+            .count()
+            .checked_add(derived_count)
+            .ok_or(AudioStorageError::Overflow)?;
+        let streams: Vec<_> = streams.into_values().collect();
+        hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            project, sources, &streams,
         )
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -317,6 +438,26 @@ mod tests {
                 cents: 500,
             })
             .unwrap();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(hex_project::Command::MoveClip {
+                clip,
+                track,
+                start: 10_000,
+            })
+            .unwrap();
+        let hex_project::Created::Clip(repeated) = editor
+            .execute(hex_project::Command::DuplicateClip(clip))
+            .unwrap()
+        else {
+            panic!("duplicate")
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipPitch {
+                clip: repeated,
+                cents: 700,
+            })
+            .unwrap();
         let snapshot = CanonicalAudioSourceSnapshot {
             project: Arc::new(editor.project().clone()),
             context: hex_engine::AudioSourceContext {
@@ -338,13 +479,21 @@ mod tests {
             .required_plain_pitch_sources()
             .map(|(id, _, cents, law)| (id, cents, law))
             .collect::<Vec<_>>();
+        assert_eq!(requirements.len(), 3);
         requirements.sort_by_key(|(_, cents, _)| *cents);
+        requirements.dedup();
         assert_eq!(
             requirements,
             vec![
                 (asset, -300, hex_project::WarpResampler::V2),
                 (asset, 700, hex_project::WarpResampler::V2)
             ]
+        );
+        let quote = snapshot.candidate_reservation_quote().unwrap();
+        assert_eq!(quote.source_capacity, 4);
+        assert!(
+            quote.prepared_pcm_frames >= 32,
+            "resident and partial transforms still reserve pcm"
         );
     }
     fn next(service: &Service) -> Event {

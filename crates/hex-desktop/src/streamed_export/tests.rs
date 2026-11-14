@@ -135,8 +135,15 @@ fn pitched_and_raw_file_pages_case() {
     );
     let config = StreamConfig::with_pool_pages(4);
     assert!(
-        VerifiedPages::capture_files(&revision, |_| Ok(&file), Some(&path), config, &cancelled)
-            .is_err()
+        VerifiedPages::capture_files(
+            &revision,
+            |_| Ok(&file),
+            &[],
+            Some(&path),
+            config,
+            &cancelled
+        )
+        .is_err()
     );
     assert!(
         VerifiedPages::capture_files(
@@ -146,6 +153,7 @@ fn pitched_and_raw_file_pages_case() {
             } else {
                 Ok(&file)
             },
+            &[],
             None,
             config,
             &cancelled
@@ -153,7 +161,8 @@ fn pitched_and_raw_file_pages_case() {
         .is_err()
     );
     let mut pages =
-        VerifiedPages::capture_files(&revision, |_| Ok(&file), None, config, &cancelled).unwrap();
+        VerifiedPages::capture_files(&revision, |_| Ok(&file), &[], None, config, &cancelled)
+            .unwrap();
     assert_eq!(pages.files.len(), 2);
     for start in [0, FRAMES as u64] {
         let mut actual =
@@ -189,6 +198,118 @@ fn pitched_and_raw_file_pages_case() {
         }
     }
     pages.finish_pages(&cancelled).unwrap();
+    let mut repitch_editor = Editor::new(editor.project().clone(), 8).unwrap();
+    let warp = hex_project::default_audio_warp(
+        repitch_editor.project().clip(clip).unwrap(),
+        repitch_editor.project().tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    repitch_editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    let requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        repitch_editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap(),
+        repitch_editor.project().tempo_map(),
+        &cancelled,
+    )
+    .unwrap();
+    let derived = requirement.metadata_for(&raw).unwrap();
+    let mut derived_catalog = catalog.clone();
+    derived_catalog.insert(derived.key(), Arc::new(derived.clone()));
+    let repitched =
+        hex_engine::PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+            repitch_editor.project(),
+            &sources,
+            &derived_catalog,
+            7,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancelled,
+        )
+        .unwrap();
+    let requirements = [requirement];
+    assert!(
+        VerifiedPages::capture_files(&repitched, |_| Ok(&file), &[], None, config, &cancelled)
+            .is_err()
+    );
+    assert!(
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&other),
+            &requirements,
+            None,
+            config,
+            &cancelled
+        )
+        .is_err()
+    );
+    let mut changed = Editor::new(repitch_editor.project().clone(), 8).unwrap();
+    changed
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+    let changed_requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        changed.project().clip(clip).unwrap().audio_edit().unwrap(),
+        changed.project().tempo_map(),
+        &cancelled,
+    )
+    .unwrap();
+    assert!(
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&file),
+            &[changed_requirement],
+            None,
+            config,
+            &cancelled
+        )
+        .is_err()
+    );
+    let mut no_map_budget = config;
+    no_map_budget.max_kernel_table_bytes = 0;
+    assert!(
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&file),
+            &requirements,
+            None,
+            no_map_budget,
+            &cancelled
+        )
+        .is_err()
+    );
+    let repitch_pages = VerifiedPages::capture_files(
+        &repitched,
+        |_| Ok(&file),
+        &requirements,
+        None,
+        config,
+        &cancelled,
+    )
+    .unwrap();
+    assert!(
+        repitch_pages
+            .definitions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|definition| definition.key == derived.key())
+    );
     std::fs::write(&path, b"changed source").unwrap();
     assert!(pages.finish_pages(&cancelled).is_err());
 }
@@ -258,6 +379,7 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
             reads.set(reads.get() + 1);
             Err(ExportError::Invalid("unexpected source resolution"))
         },
+        &[],
         None,
         StreamConfig::with_pool_pages(3),
         &AtomicBool::new(false),
@@ -479,6 +601,7 @@ fn history_seek_case() {
                 editor_revision: 17,
             },
             |_| Ok(&file),
+            &[],
             &cancelled,
         )
         .unwrap();
@@ -490,6 +613,7 @@ fn history_seek_case() {
         let mut pages = VerifiedPages::capture_files(
             &revision,
             |_| Ok(&file),
+            &[],
             None,
             StreamConfig::with_pool_pages(3),
             &cancelled,
@@ -535,6 +659,7 @@ fn history_seek_case() {
                 resolutions.set(resolutions.get() + 1);
                 Ok(&file)
             },
+            &[],
             &cancelled
         )
         .is_err()
@@ -546,6 +671,7 @@ fn history_seek_case() {
             &resources,
             context,
             |_| Ok(&file),
+            &[],
             &AtomicBool::new(true)
         ),
         Err(hex_engine::ArrangementPrerollError::Cancelled)
@@ -556,6 +682,7 @@ fn history_seek_case() {
             &resources,
             context,
             |_| Err(ExportError::Invalid("fixture binding unavailable")),
+            &[],
             &cancelled
         )
         .is_err()
@@ -564,6 +691,7 @@ fn history_seek_case() {
     // and the private page owner joins during control-side error unwinding.
     std::fs::write(&path, b"changed fixture").unwrap();
     assert!(
-        prepare_file_seek_runtime(&spec, &resources, context, |_| Ok(&file), &cancelled).is_err()
+        prepare_file_seek_runtime(&spec, &resources, context, |_| Ok(&file), &[], &cancelled)
+            .is_err()
     );
 }

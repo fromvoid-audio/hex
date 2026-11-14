@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
-    for lfo in [false, true] {
+fn retarget_accepts_live_native_and_legacy_feedback_and_lfo_history() {
+    for (lfo, native) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut settings = crate::operator_state::tests::legacy_settings();
         settings.feedback[0] = 0.2;
         if lfo {
@@ -11,7 +11,11 @@ fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
         }
         let configuration = settings.prepare_configuration(48_000).unwrap();
         let table = crate::shared_sine_table();
-        let mut source = if lfo {
+        let mut source = if native {
+            Factory::new(settings, configuration.clone(), table, 48_000)
+                .unwrap()
+                .create_runtime()
+        } else if lfo {
             super::super::lfo_runtime::prepare_factory(
                 &settings,
                 configuration.clone(),
@@ -77,6 +81,11 @@ fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
             );
         }
         assert_eq!(expected.len(), 2);
+        let mut source_audio = [[0.0; 2]; 64];
+        let mut target_audio = [[0.0; 2]; 64];
+        source.process_block(&[], &mut source_audio, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        next.process_block(&[], &mut target_audio, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(source_audio, target_audio);
     }
 }
 #[test]
@@ -617,4 +626,52 @@ fn builtin_and_custom_spectra_transition_matches_independent_weighted_output() {
             }
         }
     }
+}
+
+#[test]
+fn quality_phase_advance_preserves_odd_steps_and_wrap_across_partitions() {
+    let mut settings = super::super::tests::legacy_settings();
+    settings.global = global::Settings::default();
+    let configuration = settings.prepare_configuration(48_000).unwrap();
+    let factory =
+        Factory::new(settings, configuration, crate::shared_sine_table(), 48_000).unwrap();
+    let mut runtime = Runtime {
+        factory: factory.clone(),
+        voices: [Voice::default(); VOICES],
+        source: factory.target,
+        elapsed: 0,
+        frames: 1,
+        parameters: None,
+        filter: factory.filter,
+        phase: (0.0, 0),
+        local_frame: 0,
+        ledger: Ledger::default(),
+        expression: [0.0; 3],
+    };
+    let note = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 127,
+    };
+    runtime.process_block(
+        &[note],
+        &mut [[0.0; 2]; 1],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    let steps = [1, 2, 13, u64::MAX - 1];
+    let initial = [u64::MAX, u64::MAX - 2, 5, u64::MAX - 5];
+    runtime.voices[0].pitch_steps = steps;
+    runtime.voices[0].phases = initial;
+    for count in [1, 17, 111] {
+        runtime.process_block(
+            &[],
+            &mut vec![[0.0; 2]; count],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+    }
+    assert_eq!(
+        runtime.voices[0].phases,
+        std::array::from_fn(|i| { initial[i].wrapping_add(steps[i].wrapping_mul(129)) })
+    );
 }

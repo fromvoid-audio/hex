@@ -29,10 +29,17 @@ fn source(index: usize) -> [f32; 2] {
     [VALUES[index % 4], VALUES[(index / 4) % 4]]
 }
 
-fn expected(index: usize) -> [i16; 2] {
-    // Explicit independent PCM16 oracle for the four exact binary amplitudes.
-    const PCM: [i16; 4] = [0, 8192, -16384, 24575];
-    [PCM[index % 4], PCM[(index / 4) % 4]]
+fn matches_expected(index: usize, actual: [i16; 2]) -> bool {
+    // Independent bounds for each fixture amplitude: scale by 32767, add
+    // TPDF noise strictly between -1 and +1 LSB, then round. Silence is exact.
+    const PCM_BOUNDS: [(i16, i16); 4] = [(0, 0), (8191, 8193), (-16385, -16383), (24574, 24576)];
+    [index % 4, (index / 4) % 4]
+        .into_iter()
+        .zip(actual)
+        .all(|(amplitude, sample)| {
+            let (min, max) = PCM_BOUNDS[amplitude];
+            (min..=max).contains(&sample)
+        })
 }
 
 fn verify(path: &std::path::Path) -> Result<u64, Box<dyn Error>> {
@@ -64,7 +71,7 @@ fn verify(path: &std::path::Path) -> Result<u64, Box<dyn Error>> {
                 i16::from_le_bytes([bytes[0], bytes[1]]),
                 i16::from_le_bytes([bytes[2], bytes[3]]),
             ];
-            if actual != expected(frame) {
+            if !matches_expected(frame, actual) {
                 return Err(format!("PCM mismatch at frame {frame}: {actual:?}").into());
             }
             for byte in bytes {
@@ -74,6 +81,21 @@ fn verify(path: &std::path::Path) -> Result<u64, Box<dyn Error>> {
         }
     }
     Ok(digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_expected;
+
+    #[test]
+    fn oracle_accepts_dither_and_rejects_corrupt_frames() {
+        assert!(matches_expected(7, [24576, 8192]));
+        assert!(matches_expected(7, [24574, 8191]));
+        assert!(!matches_expected(7, [24577, 8192]));
+        assert!(!matches_expected(7, [8192, 24575]));
+        assert!(!matches_expected(0, [1, 0]));
+        assert!(!matches_expected(2, [-16382, 0]));
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

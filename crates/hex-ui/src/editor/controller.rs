@@ -4407,13 +4407,23 @@ impl EditorView {
         frame: u64,
         source: hex_audio::prepared::AppliedAudioSource,
     ) {
+        self.queue_applied_source_play(frame, source, false);
+    }
+
+    pub(super) fn queue_applied_source_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+        allow_playing: bool,
+    ) {
         self.wake_poll();
         let playing = self
             .audio
             .as_ref()
             .and_then(|audio| audio.control.status())
             .is_some_and(|status| status.playing.load(Acquire));
-        if self.desired_playing(playing)
+        if (!allow_playing && self.desired_playing(playing))
+            || (allow_playing && self.desired_playing(playing) != playing)
             || !self.pending_audio_commands.is_empty()
             || self.stopped_playback_restore.is_some()
         {
@@ -4465,6 +4475,42 @@ impl EditorView {
         #[cfg(test)]
         {
             self.last_transport_command = Some(command);
+        }
+    }
+
+    /// Seek only if the callback still owns the observed source. Never place a
+    /// rejected fenced action on the ordinary, generation-only UI queue.
+    pub(super) fn queue_applied_source_seek(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.wake_poll();
+        if !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+            || self.seek_pending()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .seek_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(PlaybackCommand::Seek(frame));
         }
     }
 

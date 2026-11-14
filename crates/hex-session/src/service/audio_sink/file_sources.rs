@@ -15,6 +15,7 @@ pub struct ResidentFileInput<'a> {
     pub semantic_source_epoch: u64,
     pub files: &'a [(hex_project::AssetId, &'a crate::VerifiedAudioFile)],
     pub pitches: &'a [ResidentFilePitch],
+    pub repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
 }
 /// Immutable compiler metadata returned by the native host. Final publication
 /// must independently match its actual retained catalog and exact page loan.
@@ -22,7 +23,7 @@ pub struct ResidentFileInput<'a> {
 pub struct ResidentFileMetadata {
     catalog_generation: u64,
     sources: BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
-    pitched: BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>>,
+    derived: BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>>,
 }
 impl ResidentFileMetadata {
     pub fn new(
@@ -38,19 +39,34 @@ impl ResidentFileMetadata {
         sources: BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
         pitched: BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>>,
     ) -> Result<Self, String> {
+        if pitched.keys().any(|key| key.pitch().is_none()) {
+            return Err("ordinary file catalog metadata differs".into());
+        }
+        Self::new_with_derived(catalog_generation, sources, pitched)
+    }
+    /// Derived entries must match the exact raw source facts in this catalog.
+    /// The compiler separately checks each Re-Pitch map against the project.
+    pub fn new_with_derived(
+        catalog_generation: u64,
+        sources: BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
+        derived: BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>>,
+    ) -> Result<Self, String> {
         if catalog_generation == 0
-            || pitched.len() > hex_project::MAX_CLIPS
+            || derived.len() > hex_project::MAX_CLIPS
             || sources.iter().any(|(id, metadata)| {
                 metadata.key() != hex_engine::StreamSourceKey::new(catalog_generation, *id)
             })
-            || pitched.iter().any(|(key, metadata)| {
-                let Some((cents, law)) = key.pitch().filter(|(cents, _)| *cents != 0) else {
-                    return true;
-                };
+            || derived.iter().any(|(key, metadata)| {
                 metadata.key() != *key
                     || sources.get(&key.asset()).is_none_or(|raw| {
-                        !raw.with_plain_pitch(cents, law)
-                            .is_ok_and(|expected| expected == **metadata)
+                        if let Some((cents, law)) = key.pitch() {
+                            cents == 0
+                                || !raw
+                                    .with_plain_pitch(cents, law)
+                                    .is_ok_and(|expected| expected == **metadata)
+                        } else {
+                            !metadata.is_repitch_of(raw)
+                        }
                     })
             })
         {
@@ -59,7 +75,7 @@ impl ResidentFileMetadata {
         Ok(Self {
             catalog_generation,
             sources,
-            pitched,
+            derived,
         })
     }
     pub fn catalog_generation(&self) -> u64 {
@@ -70,16 +86,16 @@ impl ResidentFileMetadata {
     ) -> &BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>> {
         &self.sources
     }
-    pub fn pitched_sources(
+    pub fn derived_sources(
         &self,
     ) -> &BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>> {
-        &self.pitched
+        &self.derived
     }
     pub fn matches_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
-        let found = if source.key().pitch().is_some() {
-            self.pitched.get(&source.key())
-        } else {
+        let found = if source.key().is_raw() {
             self.sources.get(&source.key().asset())
+        } else {
+            self.derived.get(&source.key())
         };
         found.is_some_and(|actual| actual.as_ref() == source)
     }
@@ -87,7 +103,14 @@ impl ResidentFileMetadata {
     /// No file is opened and no authority is minted by this check.
     pub(crate) fn validate_for(&self, input: &ResidentFileInput<'_>) -> Result<(), SessionError> {
         if self.sources.len() != input.files.len()
-            || self.pitched.len() != input.pitches.len()
+            || self.derived.len()
+                != input
+                    .pitches
+                    .len()
+                    .checked_add(input.repitches.len())
+                    .ok_or(SessionError::Invalid(
+                        "ordinary derived source count overflow",
+                    ))?
             || input.semantic_source_epoch == 0
             || input.pitches.len() > hex_project::MAX_CLIPS
         {
@@ -117,9 +140,36 @@ impl ResidentFileMetadata {
                 pitch.cents,
                 pitch.law,
             )?;
-            if !self.pitched.contains_key(&key) {
+            if !self.derived.contains_key(&key) {
                 return Err(SessionError::Invalid(
                     "ordinary pitched source metadata missing",
+                ));
+            }
+        }
+        let mut repitch_keys = Vec::new();
+        repitch_keys
+            .try_reserve_exact(input.repitches.len())
+            .map_err(|_| SessionError::Invalid("repitch validation reservation failed"))?;
+        for requirement in input.repitches {
+            let file = input
+                .files
+                .iter()
+                .find(|(asset, _)| *asset == requirement.asset())
+                .map(|(_, file)| *file)
+                .ok_or(SessionError::Invalid("ordinary repitch file missing"))?;
+            let raw = file.source_metadata(requirement.asset(), self.catalog_generation)?;
+            let expected = requirement.metadata_for(&raw)?;
+            match repitch_keys.binary_search(&expected.key()) {
+                Ok(_) => return Err(SessionError::Invalid("duplicate ordinary repitch source")),
+                Err(index) => repitch_keys.insert(index, expected.key()),
+            }
+            if self
+                .derived
+                .get(&expected.key())
+                .is_none_or(|actual| actual.as_ref() != &expected)
+            {
+                return Err(SessionError::Invalid(
+                    "ordinary repitch source metadata differs",
                 ));
             }
         }
@@ -142,6 +192,7 @@ struct FileSetFacts {
     semantic_source_epoch: u64,
     files: Vec<(hex_project::AssetId, crate::VerifiedAudioFile)>,
     pitches: Vec<ResidentFilePitch>,
+    repitches: hex_engine::audio_transform::StreamedRepitchRequirements,
     metadata: ResidentFileMetadata,
 }
 impl ResidentFileSet {
@@ -163,12 +214,19 @@ impl ResidentFileSet {
             .try_reserve_exact(input.pitches.len())
             .map_err(|_| SessionError::Invalid("ordinary pitch reservation failed"))?;
         pitches.extend_from_slice(input.pitches);
+        let mut repitches = Vec::new();
+        repitches
+            .try_reserve_exact(input.repitches.len())
+            .map_err(|_| SessionError::Invalid("ordinary repitch reservation failed"))?;
+        repitches.extend_from_slice(input.repitches);
+        let repitches = hex_engine::audio_transform::StreamedRepitchRequirements::new(repitches)?;
         Ok(Self {
             inner: Arc::new(FileSetFacts {
                 context: input.context,
                 semantic_source_epoch: input.semantic_source_epoch,
                 files,
                 pitches,
+                repitches,
                 metadata,
             }),
         })
@@ -184,6 +242,9 @@ impl ResidentFileSet {
     }
     pub fn metadata(&self) -> &ResidentFileMetadata {
         &self.inner.metadata
+    }
+    pub fn repitches(&self) -> &hex_engine::audio_transform::StreamedRepitchRequirements {
+        &self.inner.repitches
     }
     pub fn pitches(&self) -> &[ResidentFilePitch] {
         &self.inner.pitches

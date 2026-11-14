@@ -62,6 +62,12 @@ pub(crate) enum SourceKind {
     Resident(Audio),
     Streamed(OwnedShared<StreamedSourceMetadata>),
 }
+enum StreamIngress {
+    Raw,
+    Pitch,
+    Repitch,
+}
+
 impl OwnedAudioSource {
     /// All reported refusals precede the Arc wrapper allocation; original pointer/capacity survive.
     /// Process-fatal allocator OOM/abort is outside API-reported recovery.
@@ -110,7 +116,7 @@ impl OwnedAudioSource {
     pub fn try_streamed(
         metadata: StreamedSourceMetadata,
     ) -> Result<Self, Box<StreamedSourceRefusal>> {
-        Self::streamed_with_kind(metadata, false)
+        Self::streamed_with_kind(metadata, StreamIngress::Raw)
     }
     /// Construct an owned pitch identity for the explicit pitch-aware bank.
     /// That bank still requires the matching raw source before this entry and
@@ -118,15 +124,25 @@ impl OwnedAudioSource {
     pub fn try_pitched_streamed(
         metadata: StreamedSourceMetadata,
     ) -> Result<Self, Box<StreamedSourceRefusal>> {
-        Self::streamed_with_kind(metadata, true)
+        Self::streamed_with_kind(metadata, StreamIngress::Pitch)
+    }
+    /// Construct an owned Re-Pitch identity. A derived bank must still match it to raw source facts.
+    pub fn try_repitch_streamed(
+        metadata: StreamedSourceMetadata,
+    ) -> Result<Self, Box<StreamedSourceRefusal>> {
+        Self::streamed_with_kind(metadata, StreamIngress::Repitch)
     }
     fn streamed_with_kind(
         metadata: StreamedSourceMetadata,
-        pitched: bool,
+        kind: StreamIngress,
     ) -> Result<Self, Box<StreamedSourceRefusal>> {
         let result = (|| {
             let pitch = metadata.key().pitch();
-            if pitch.is_some() != pitched || pitch.is_some_and(|(cents, _)| cents == 0) {
+            if match kind {
+                StreamIngress::Raw => !metadata.key().is_raw(),
+                StreamIngress::Pitch => pitch.is_none_or(|(cents, _)| cents == 0),
+                StreamIngress::Repitch => metadata.key().repitch_identity().is_none(),
+            } {
                 return Err(AudioStorageError::SourceMismatch);
             }
             if !crate::pcm_arc::native_layout_known() {
@@ -211,6 +227,13 @@ pub struct AudioInputsRefusal {
     pub reservation: AudioStorageReservation,
     pub capacity: AudioPreparationCapacity,
 }
+#[derive(Clone, Copy)]
+enum BankMode {
+    Raw,
+    Pitch,
+    Derived,
+}
+
 impl OwnedAudioInputs {
     /// Scalar conservation observation only; no source/vector/owner escapes.
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -226,7 +249,7 @@ impl OwnedAudioInputs {
         sources: Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,
     ) -> Result<Self, Box<AudioInputsRefusal>> {
-        Self::try_new_with_mode(sources, reservation, false)
+        Self::try_new_with_mode(sources, reservation, BankMode::Raw)
     }
     /// Explicit bank supporting multiple derived pitches after each raw source.
     /// Entries are accounted independently; ordinary asset lookup stays raw.
@@ -234,18 +257,25 @@ impl OwnedAudioInputs {
         sources: Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,
     ) -> Result<Self, Box<AudioInputsRefusal>> {
-        Self::try_new_with_mode(sources, reservation, true)
+        Self::try_new_with_mode(sources, reservation, BankMode::Pitch)
+    }
+    /// Bank of raw sources and exact supported derived pitch/Re-Pitch identities.
+    pub fn try_new_with_derived(
+        sources: Vec<(AssetId, OwnedAudioSource)>,
+        reservation: AudioStorageReservation,
+    ) -> Result<Self, Box<AudioInputsRefusal>> {
+        Self::try_new_with_mode(sources, reservation, BankMode::Derived)
     }
     fn try_new_with_mode(
         sources: Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,
-        allow_pitch: bool,
+        mode: BankMode,
     ) -> Result<Self, Box<AudioInputsRefusal>> {
         let mut capacity = AudioPreparationCapacity {
             original_source_capacity: sources.capacity(),
             ..AudioPreparationCapacity::default()
         };
-        match Self::prepare_sources(&sources, reservation, &mut capacity, allow_pitch) {
+        match Self::prepare_sources(&sources, reservation, &mut capacity, mode) {
             Ok((aliases, bank)) => Ok(Self {
                 sources,
                 capacity,
@@ -271,7 +301,7 @@ impl OwnedAudioInputs {
         reservation: AudioStorageReservation,
         destination: &mut Option<Self>,
     ) -> Result<(), AudioStorageError> {
-        Self::try_new_in_place_with_mode(sources, reservation, destination, false)
+        Self::try_new_in_place_with_mode(sources, reservation, destination, BankMode::Raw)
     }
     /// In-place variant of the explicit pitch-aware bank. Refusal leaves all
     /// original source owners and their vector in the caller's custody.
@@ -280,13 +310,21 @@ impl OwnedAudioInputs {
         reservation: AudioStorageReservation,
         destination: &mut Option<Self>,
     ) -> Result<(), AudioStorageError> {
-        Self::try_new_in_place_with_mode(sources, reservation, destination, true)
+        Self::try_new_in_place_with_mode(sources, reservation, destination, BankMode::Pitch)
+    }
+    /// Transfer a derived-capable bank without losing owners on refusal.
+    pub fn try_new_with_derived_in_place(
+        sources: &mut Vec<(AssetId, OwnedAudioSource)>,
+        reservation: AudioStorageReservation,
+        destination: &mut Option<Self>,
+    ) -> Result<(), AudioStorageError> {
+        Self::try_new_in_place_with_mode(sources, reservation, destination, BankMode::Derived)
     }
     fn try_new_in_place_with_mode(
         sources: &mut Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,
         destination: &mut Option<Self>,
-        allow_pitch: bool,
+        mode: BankMode,
     ) -> Result<(), AudioStorageError> {
         if destination.is_some() {
             return Err(AudioStorageError::SourceMismatch);
@@ -295,8 +333,7 @@ impl OwnedAudioInputs {
             original_source_capacity: sources.capacity(),
             ..AudioPreparationCapacity::default()
         };
-        let (aliases, bank) =
-            Self::prepare_sources(sources, reservation, &mut capacity, allow_pitch)?;
+        let (aliases, bank) = Self::prepare_sources(sources, reservation, &mut capacity, mode)?;
         *destination = Some(Self {
             sources: std::mem::take(sources),
             capacity,
@@ -311,7 +348,7 @@ impl OwnedAudioInputs {
         sources: &[(AssetId, OwnedAudioSource)],
         reservation: AudioStorageReservation,
         capacity: &mut AudioPreparationCapacity,
-        allow_pitch: bool,
+        mode: BankMode,
     ) -> Result<(Vec<AliasRow>, u64), AudioStorageError> {
         let mut aliases = Vec::new();
         capacity.source_container_bytes = capacity
@@ -382,14 +419,12 @@ impl OwnedAudioInputs {
             return Err(AudioStorageError::Capacity);
         }
         for (index, (id, source)) in sources.iter().enumerate() {
-            let pitched = match &source.kind {
-                SourceKind::Streamed(metadata) => {
-                    metadata.key().pitch().map(|pitch| (metadata, pitch))
-                }
-                SourceKind::Resident(_) => None,
+            let derived = match &source.kind {
+                SourceKind::Streamed(metadata) if !metadata.key().is_raw() => Some(metadata),
+                _ => None,
             };
-            if let Some((metadata, (cents, law))) = pitched {
-                if !allow_pitch || metadata.key().asset() != *id || cents == 0 {
+            if let Some(metadata) = derived {
+                if metadata.key().asset() != *id {
                     return Err(AudioStorageError::SourceMismatch);
                 }
                 let raw = sources[..index]
@@ -399,23 +434,26 @@ impl OwnedAudioInputs {
                             return None;
                         }
                         match &source.kind {
-                            SourceKind::Streamed(raw) if raw.key().pitch().is_none() => Some(raw),
+                            SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
                             _ => None,
                         }
                     })
                     .ok_or(AudioStorageError::SourceMismatch)?;
-                if raw.key().asset() != *id
-                    || !raw
-                        .with_plain_pitch(cents, law)
-                        .is_ok_and(|expected| &expected == metadata.arc().as_ref())
-                {
+                let matches = if let Some((cents, law)) = metadata.key().pitch() {
+                    !matches!(mode, BankMode::Raw)
+                        && cents != 0
+                        && raw
+                            .with_plain_pitch(cents, law)
+                            .is_ok_and(|expected| &expected == metadata.arc().as_ref())
+                } else {
+                    matches!(mode, BankMode::Derived) && metadata.is_repitch_of(raw)
+                };
+                if !matches {
                     return Err(AudioStorageError::SourceMismatch);
                 }
                 if sources[..index].iter().any(|(previous, source)| {
                     previous == id && matches!(&source.kind, SourceKind::Streamed(old) if old.key() == metadata.key())
-                }) {
-                    return Err(AudioStorageError::DuplicateAsset);
-                }
+                }) { return Err(AudioStorageError::DuplicateAsset); }
             } else if sources[..index].iter().any(|(previous, _)| previous == id) {
                 return Err(AudioStorageError::DuplicateAsset);
             }
@@ -457,6 +495,25 @@ impl OwnedAudioInputs {
         let index = self.sources.iter().position(|(asset, source)| {
             *asset == key.asset() && matches!(&source.kind, SourceKind::Streamed(metadata) if metadata.key() == key)
         }).ok_or(AudioStorageError::SourceMismatch)?;
+        Ok(AudioSourceToken {
+            bank: self.bank,
+            custodian: self.custodian,
+            source: index,
+            source_handle: self.sources[index].1.handle,
+            alias: None,
+        })
+    }
+    /// Nonowning token for an exact Re-Pitch source; never falls back to raw PCM.
+    pub fn repitch_source_token(
+        &self,
+        key: crate::StreamSourceKey,
+    ) -> Result<AudioSourceToken, AudioStorageError> {
+        if key.repitch_identity().is_none() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let index = self.sources.iter().position(|(asset, source)| *asset == key.asset()
+            && matches!(&source.kind, SourceKind::Streamed(metadata) if metadata.key() == key))
+            .ok_or(AudioStorageError::SourceMismatch)?;
         Ok(AudioSourceToken {
             bank: self.bank,
             custodian: self.custodian,
@@ -767,6 +824,108 @@ mod tests {
             handles
         );
     }
+    #[test]
+    fn repitch_bank_refuses_wrong_raw_without_moving_owners() {
+        if !constructor_supported("repitch_source_bank") {
+            return;
+        }
+        let asset = ids()[0];
+        let raw = StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(7, asset),
+            48_000,
+            48_000,
+            8,
+            8,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let other = StreamedSourceMetadata::new(
+            raw.key(),
+            48_000,
+            48_000,
+            8,
+            8,
+            hex_project::IDENTITY_CONVERSION,
+            [8; 32],
+        )
+        .unwrap();
+        let map = hex_warp::TimeMap::new(
+            vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: 8,
+                source_start_q32: 0,
+                source_end_q32: 8_i128 << 32,
+            }],
+            8,
+        )
+        .unwrap();
+        let derived = raw.with_repitch(&map, hex_warp::Resampler::V2).unwrap();
+        assert!(OwnedAudioSource::try_streamed(derived.clone()).is_err());
+        assert!(OwnedAudioSource::try_pitched_streamed(derived.clone()).is_err());
+        let mut sources = vec![
+            (asset, OwnedAudioSource::try_streamed(other).ok().unwrap()),
+            (
+                asset,
+                OwnedAudioSource::try_repitch_streamed(derived.clone())
+                    .ok()
+                    .unwrap(),
+            ),
+        ];
+        let backing = (sources.as_ptr(), sources.capacity());
+        let handles: Vec<_> = sources.iter().map(|(_, owner)| owner.handle).collect();
+        let mut destination = None;
+        assert_eq!(
+            OwnedAudioInputs::try_new_with_derived_in_place(
+                &mut sources,
+                reservation(),
+                &mut destination
+            ),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert!(destination.is_none());
+        assert_eq!((sources.as_ptr(), sources.capacity()), backing);
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(_, owner)| owner.handle)
+                .collect::<Vec<_>>(),
+            handles
+        );
+        let pitch_only = vec![
+            (
+                asset,
+                OwnedAudioSource::try_streamed(raw.clone()).ok().unwrap(),
+            ),
+            (
+                asset,
+                OwnedAudioSource::try_repitch_streamed(derived.clone())
+                    .ok()
+                    .unwrap(),
+            ),
+        ];
+        assert!(OwnedAudioInputs::try_new_with_pitched(pitch_only, reservation()).is_err());
+        let bank = OwnedAudioInputs::try_new_with_derived(
+            vec![
+                (asset, OwnedAudioSource::try_streamed(raw).ok().unwrap()),
+                (
+                    asset,
+                    OwnedAudioSource::try_repitch_streamed(derived.clone())
+                        .ok()
+                        .unwrap(),
+                ),
+            ],
+            reservation(),
+        )
+        .ok()
+        .unwrap();
+        let token = bank.repitch_source_token(derived.key()).unwrap();
+        assert_eq!(
+            bank.source_view(&token).unwrap().streamed_metadata(),
+            Some(&derived)
+        );
+    }
+
     #[test]
     fn raw_asset_ingress_refuses_derived_pitch_and_returns_metadata() {
         let raw = StreamedSourceMetadata::new(

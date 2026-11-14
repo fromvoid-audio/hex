@@ -26,8 +26,8 @@ impl AudioCandidateReservationQuote {
         crate::audio_preparation::validate_constructor_project(project)?;
         Self::for_project_counts(project, sources, false, &[])
     }
-    /// Quote an explicitly streamed candidate using matching raw and pitched
-    /// metadata. The constructor independently validates the actual source bank.
+    /// Quote a streamed candidate using matching raw and derived source metadata.
+    /// The constructor independently validates the actual source bank.
     pub fn for_project_with_pitched_streams(
         project: &hex_project::Project,
         sources: usize,
@@ -124,13 +124,15 @@ impl AudioCandidateReservationQuote {
             project.return_tracks().len(),
             sources,
         )?;
-        let streamed_pitch = |clip: &hex_project::Clip| {
+        let streamed_derived = |clip: &hex_project::Clip| {
             streams
                 .iter()
-                .find(|raw| raw.key().asset() == clip.asset() && raw.key().pitch().is_none())
+                .find(|raw| raw.key().asset() == clip.asset() && raw.key().is_raw())
                 .is_some_and(|raw| {
                     streams.iter().any(|pitch| {
                         crate::audio_preparation::transformed::matching_streamed_pitch(
+                            project, clip, raw, pitch,
+                        ) || crate::audio_preparation::transformed::matching_streamed_repitch(
                             project, clip, raw, pitch,
                         )
                     })
@@ -141,7 +143,7 @@ impl AudioCandidateReservationQuote {
         } else {
             crate::audio_preparation::transformed::prepared_pcm_frames_for(
                 project,
-                &streamed_pitch,
+                &streamed_derived,
             )?
         };
         let pcm_bytes = usize::try_from(quote.prepared_pcm_frames)
@@ -153,7 +155,7 @@ impl AudioCandidateReservationQuote {
         } else {
             crate::audio_preparation::transformed::transformed_audio_quote_for(
                 project,
-                &streamed_pitch,
+                &streamed_derived,
             )?
         };
         quote.metadata_data_bytes = quote

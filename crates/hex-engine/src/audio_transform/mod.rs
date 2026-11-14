@@ -106,6 +106,173 @@ pub fn validate_clip_warp_preview(
         .map_err(warp_error)
 }
 
+/// Project a validated canonical Re-Pitch root for a bounded streaming worker.
+/// The returned map covers the full processed root; view cropping is applied by
+/// the consumer. It owns no audio and does not establish file or page custody.
+/// Unsupported source processing is refused rather than silently omitted.
+pub fn streamed_repitch_map(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    source_frames: u64,
+    cancel: &AtomicBool,
+) -> Result<(hex_warp::TimeMap, hex_warp::Resampler), Invalid> {
+    let domain = &edit.domain;
+    if !edit.is_streamed_repitch_root() || domain.source_length != source_frames {
+        return Err(Invalid(
+            "streamed repitch requires an unlooped neutral full-source warp root",
+        ));
+    }
+    let (map, attacks) = mapping::prepare_streamed_map(edit, tempo, cancel)?;
+    if !attacks.is_empty() {
+        return Err(Invalid("streamed repitch cannot use beat attacks"));
+    }
+    map.validate_stretch(hex_warp::Mode::RePitch, 0)
+        .map_err(warp_error)?;
+    Ok((map, render_resampler(domain)))
+}
+
+/// Immutable control-side file facts and canonical map for one streamed
+/// Re-Pitch source. This is not a worker, page lease or publication authority.
+#[derive(Clone)]
+pub struct StreamedRepitchRequirement {
+    inner: Arc<StreamedRepitchRequirementInner>,
+}
+struct StreamedRepitchRequirementInner {
+    raw: crate::StreamedSourceMetadata,
+    map: hex_warp::TimeMap,
+    law: hex_warp::Resampler,
+}
+impl StreamedRepitchRequirement {
+    pub fn new(
+        raw: &crate::StreamedSourceMetadata,
+        edit: &AudioClipEdit,
+        tempo: &hex_project::TempoMap,
+        cancel: &AtomicBool,
+    ) -> Result<Self, Invalid> {
+        if !raw.key().is_raw() || raw.project_rate() != tempo.sample_rate() {
+            return Err(Invalid(
+                "repitch requirement needs a raw source at the project rate",
+            ));
+        }
+        let (map, law) = streamed_repitch_map(edit, tempo, raw.playback_frames(), cancel)?;
+        Ok(Self {
+            inner: Arc::new(StreamedRepitchRequirementInner {
+                raw: raw.clone(),
+                map,
+                law,
+            }),
+        })
+    }
+    /// Derive a catalog-specific key only for the same verified file facts.
+    pub fn metadata_for(
+        &self,
+        raw: &crate::StreamedSourceMetadata,
+    ) -> Result<crate::StreamedSourceMetadata, Invalid> {
+        let expected = &self.inner.raw;
+        if !raw.key().is_raw()
+            || raw.key().asset() != expected.key().asset()
+            || raw.source_rate() != expected.source_rate()
+            || raw.project_rate() != expected.project_rate()
+            || raw.source_frames() != expected.source_frames()
+            || raw.playback_frames() != expected.playback_frames()
+            || raw.conversion_version() != expected.conversion_version()
+            || raw.fingerprint() != expected.fingerprint()
+        {
+            return Err(Invalid("repitch requirement source facts differ"));
+        }
+        raw.with_repitch(&self.inner.map, self.inner.law)
+    }
+    pub fn asset(&self) -> hex_project::AssetId {
+        self.inner.raw.key().asset()
+    }
+    pub fn map(&self) -> &hex_warp::TimeMap {
+        &self.inner.map
+    }
+    /// Copy the bounded map for an independent worker without infallible allocation.
+    pub fn try_owned_map(&self) -> Result<hex_warp::TimeMap, Invalid> {
+        let source = self.inner.map.segments();
+        let end = source
+            .last()
+            .ok_or(Invalid("empty repitch map"))?
+            .output_end;
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(source.len())
+            .map_err(|_| Invalid("repitch map reservation failed"))?;
+        segments.extend_from_slice(source);
+        hex_warp::TimeMap::new_streamed(segments, end).map_err(warp_error)
+    }
+    pub fn law(&self) -> hex_warp::Resampler {
+        self.inner.law
+    }
+    /// Bytes retained by the shared map owner, excluding the caller's handle/vector.
+    pub fn retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<StreamedRepitchRequirementInner>()
+            .checked_add(2 * std::mem::size_of::<usize>())?
+            .checked_add(self.inner.map.backing_bytes()?)
+    }
+}
+
+/// Immutable control-owned handles to Re-Pitch source requirements.
+/// The set is factual metadata, not a worker, page lease or publication owner.
+#[derive(Clone, Default)]
+pub struct StreamedRepitchRequirements {
+    requirements: Vec<StreamedRepitchRequirement>,
+}
+impl StreamedRepitchRequirements {
+    pub fn new(requirements: Vec<StreamedRepitchRequirement>) -> Result<Self, Invalid> {
+        if requirements.len() > hex_project::MAX_CLIPS
+            || requirements.capacity() > hex_project::MAX_CLIPS
+        {
+            return Err(Invalid("repitch requirement count exceeded"));
+        }
+        Ok(Self { requirements })
+    }
+    pub fn try_push(&mut self, requirement: StreamedRepitchRequirement) -> Result<(), Invalid> {
+        if self.requirements.len() >= hex_project::MAX_CLIPS {
+            return Err(Invalid("repitch requirement count exceeded"));
+        }
+        self.requirements
+            .try_reserve_exact(1)
+            .map_err(|_| Invalid("repitch requirement reservation failed"))?;
+        if self.requirements.capacity() > hex_project::MAX_CLIPS {
+            return Err(Invalid("repitch requirement capacity exceeded"));
+        }
+        self.requirements.push(requirement);
+        Ok(())
+    }
+    pub fn handle_capacity_bytes(&self) -> Option<usize> {
+        self.requirements
+            .capacity()
+            .checked_mul(std::mem::size_of::<StreamedRepitchRequirement>())
+    }
+    pub fn requirements(&self) -> &[StreamedRepitchRequirement] {
+        &self.requirements
+    }
+    pub(crate) fn visit<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("repitch-requirement-set", 0),
+            std::mem::size_of::<Self>(),
+        )?;
+        ledger.vec(&self.requirements)?;
+        for requirement in &self.requirements {
+            ledger.bytes(
+                Owner::shared(&requirement.inner),
+                Location("repitch-requirement-map", 0),
+                requirement
+                    .retained_bytes()
+                    .ok_or(crate::AudioStorageError::Overflow)?,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
 /// Maximum unique source PCM capacity retained by committed and pending cache entries.
@@ -781,6 +948,26 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok((map, law)) =
+                streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)
+        {
+            let expected = raw.with_repitch(&map, law)?;
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == &expected)
+                .ok_or(Invalid("matching repitch stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, pitched) = source
             && edit.is_plain_pitch_capture(clip)
             && clip.source_length() == asset.playback_frames()
@@ -972,7 +1159,7 @@ mod tests;
 /// Bounded growable map boundaries, two maps, attack/gain points, group bindings
 /// and identities, tempo/projection copies and fixed wrappers are independent of
 /// PCM and of the warp library's separate scratch ceiling.
-pub(crate) fn native_metadata_workspace_bytes() -> Option<usize> {
+pub fn native_metadata_workspace_bytes() -> Option<usize> {
     use std::mem::size_of;
     let maps = hex_warp::MAX_MAP_SEGMENTS.checked_mul(
         4usize

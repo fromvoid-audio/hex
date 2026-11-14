@@ -815,7 +815,7 @@ impl SessionPlayback {
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
-        let mut premixed = [false; MAX_TRACKS];
+        let mut passthrough = [compensated::ResidentRoute::Scalar; MAX_TRACKS];
         let mut stamps = [None; 256];
         let mut projected_history = None;
 
@@ -914,9 +914,8 @@ impl SessionPlayback {
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
-                premixed.fill(false);
+                passthrough.fill(compensated::ResidentRoute::Scalar);
                 if observer.is_none()
-                    && capture.is_none()
                     && scalar.is_none()
                     && self
                         .native_parameter_state
@@ -930,12 +929,12 @@ impl SessionPlayback {
                         .flatten()
                         .any(|tail| tail.output_active)
                 {
-                    self.premix_resident_return_tracks(
-                        count,
+                    self.classify_resident_return_tracks(
                         &resident_source_eligible,
-                        &mut premixed,
+                        &mut passthrough,
                     );
                 }
+                self.prepare_unity_faders(count, &mut passthrough, &aligned);
                 resident_source_index = 0;
                 resident_source_end = count;
             }
@@ -1033,7 +1032,7 @@ impl SessionPlayback {
                         analytic: &resident_analytic_eligible,
                         stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
-                        premixed: &premixed,
+                        passthrough: &passthrough,
                     }),
                 )?;
                 if use_resident_sources {
@@ -1218,6 +1217,8 @@ impl SessionPlayback {
         self.arrangement_frame = arrangement_frame;
         self.arrangement_loop_pass = arrangement_loop_pass;
         self.interactive_start_frame = None;
+        self.pending_shared_chase = None;
+        self.pending_shared_live = None;
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -1630,6 +1631,7 @@ impl SessionPlayback {
                             &timing,
                             true,
                             None,
+                            self.pending_shared_live,
                         )?;
                     }
                     render_mutable_instrument_chunk(
@@ -1651,6 +1653,7 @@ impl SessionPlayback {
                             arrangement_loop_pass,
                             transient: None,
                             chase_at_start: self.interactive_start_frame == Some(performance_frame),
+                            pending_shared_chase: self.pending_shared_chase,
                             loop_region: if self.linear_arrangement_export {
                                 None
                             } else {
@@ -2667,6 +2670,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     arrangement_loop_pass: u64,
     transient: Option<hex_lattice::NativeTransientInput>,
     chase_at_start: bool,
+    pending_shared_chase: Option<super::PendingSharedChase>,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
 }
@@ -2715,6 +2719,7 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
                 pitch: span.pitch,
                 channel: span.channel,
                 velocity: span.velocity,
+                contributor_fade_in: false,
             })
             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
     }
@@ -2779,6 +2784,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         arrangement_loop_pass,
         transient,
         chase_at_start,
+        pending_shared_chase: _,
         loop_region,
         timing,
     } = context;
@@ -2855,6 +2861,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: false,
                             })
                             .is_err();
                     },

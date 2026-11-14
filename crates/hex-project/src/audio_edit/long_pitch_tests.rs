@@ -134,3 +134,49 @@ fn long_pitch_refuses_a_partial_asset_even_when_the_clip_region_is_complete() {
     );
     assert_eq!(editor.project().snapshot(), before);
 }
+
+#[test]
+fn long_repitch_refuses_a_partial_source() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: 20_000_000,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 20_000_000,
+            duration: 19_000_000,
+            source_offset: 0,
+            source_length: 19_000_000,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("clip fixture")
+    };
+    let warp = crate::default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        crate::WarpMode::RePitch,
+    )
+    .unwrap();
+    let before = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp)
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+}
