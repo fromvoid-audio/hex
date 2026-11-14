@@ -1,6 +1,7 @@
 //! Measure real-worker page turnover during a finite 100-track headless render.
 //! `--sustained` renders 128 pages per source, excluding the first four pages
 //! from the render distribution; page requests remain serial at each boundary.
+//! `--sustained-long` uses the same span at a distant offset in long sparse files.
 //! Headless timings do not establish physical audio-device deadlines.
 use hex_engine::{
     Clip, MediaPages, Project as EngineProject, Renderer, StreamSourceKey, StreamedSourceMetadata,
@@ -14,6 +15,7 @@ use hex_stream::{
 use std::{
     error::Error,
     fs,
+    io::{Seek, SeekFrom, Write},
     path::PathBuf,
     sync::Arc,
     thread,
@@ -24,6 +26,8 @@ const SOURCES: usize = 100;
 const DEFAULT_PAGES: usize = 4;
 const SUSTAINED_PAGES: usize = 128;
 const SUSTAINED_WARMUP_PAGES: usize = 4;
+const LONG_SOURCE_FRAMES: usize = 17_000_000;
+const LONG_FIRST_PAGE: usize = 2048;
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 const PAGE: usize = hex_engine::STREAM_PAGE_FRAMES;
@@ -39,13 +43,14 @@ fn percentile(sorted: &[u128], percent: usize) -> u128 {
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = std::env::args_os().skip(1);
-    let pages_count = match arguments.next().as_deref() {
-        None => DEFAULT_PAGES,
-        Some(argument) if argument == "--sustained" => SUSTAINED_PAGES,
-        _ => return Err("usage: profile_active_turnover [--sustained]".into()),
+    let (pages_count, long_source) = match arguments.next().as_deref() {
+        None => (DEFAULT_PAGES, false),
+        Some(argument) if argument == "--sustained" => (SUSTAINED_PAGES, false),
+        Some(argument) if argument == "--sustained-long" => (SUSTAINED_PAGES, true),
+        _ => return Err("usage: profile_active_turnover [--sustained|--sustained-long]".into()),
     };
     if arguments.next().is_some() {
-        return Err("usage: profile_active_turnover [--sustained]".into());
+        return Err("usage: profile_active_turnover [--sustained|--sustained-long]".into());
     }
     let warmup_pages = if pages_count == SUSTAINED_PAGES {
         SUSTAINED_WARMUP_PAGES
@@ -61,9 +66,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir(&root)?;
     let fixture = Fixture(root);
     let frames = pages_count * PAGE;
+    let source_frames = if long_source {
+        LONG_SOURCE_FRAMES
+    } else {
+        frames
+    };
+    let first_page = if long_source { LONG_FIRST_PAGE } else { 0 };
+    let source_offset = first_page * PAGE;
+    let source_bytes = source_frames * 4;
     let mut wav = Vec::with_capacity(44 + frames * 4);
     wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&u32::try_from(36 + frames * 4)?.to_le_bytes());
+    wav.extend_from_slice(&u32::try_from(36 + source_bytes)?.to_le_bytes());
     wav.extend_from_slice(b"WAVEfmt ");
     wav.extend_from_slice(&16_u32.to_le_bytes());
     wav.extend_from_slice(&1_u16.to_le_bytes());
@@ -73,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     wav.extend_from_slice(&4_u16.to_le_bytes());
     wav.extend_from_slice(&16_u16.to_le_bytes());
     wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&u32::try_from(frames * 4)?.to_le_bytes());
+    wav.extend_from_slice(&u32::try_from(source_bytes)?.to_le_bytes());
     let mut oracle = Vec::with_capacity(frames);
     for i in 0..frames {
         let left = ((i % 101) as i16 - 50) * 400;
@@ -90,8 +103,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let limits = VerifiedWavReaderLimits::new(
         WavReaderLimits::new(
-            (1024 * 1024).max(u64::try_from(wav.len())?),
-            frames as u64,
+            (1024 * 1024).max(u64::try_from(44 + source_bytes)?),
+            source_frames as u64,
             128,
             8192,
         ),
@@ -102,12 +115,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut assets = Vec::with_capacity(SOURCES);
     for index in 0..SOURCES {
         let path = fixture.0.join(format!("source-{index:03}.wav"));
-        fs::write(&path, &wav)?;
+        if long_source {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(&wav[..44])?;
+            file.set_len(u64::try_from(44 + source_bytes)?)?;
+            file.seek(SeekFrom::Start(u64::try_from(44 + source_offset * 4)?))?;
+            file.write_all(&wav[44..])?;
+        } else {
+            fs::write(&path, &wav)?;
+        }
         let Created::Imported { asset, .. } = editor.execute(Command::ImportAudioTrack {
             name: format!("source {index:03}"),
             path: path.clone(),
             sample_rate: RATE,
-            frames: frames as u64,
+            frames: source_frames as u64,
         })?
         else {
             return Err("unexpected import result".into());
@@ -125,8 +149,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             key,
             RATE,
             RATE,
-            frames as u64,
-            frames as u64,
+            source_frames as u64,
+            source_frames as u64,
             hex_project::IDENTITY_CONVERSION,
             fingerprint,
         )?;
@@ -139,7 +163,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Arc::new(metadata),
             0,
             frames as u64,
-            0,
+            source_offset as u64,
             frames as u64,
             false,
         )?;
@@ -157,7 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         keys.iter()
             .map(|source| PageKey {
                 source: *source,
-                page_index: page as u64,
+                page_index: (first_page + page) as u64,
             })
             .collect()
     };
@@ -230,21 +254,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("full rendered PCM differed from independent oracle".into());
     }
     let stats = runtime.stats();
+    // Every direct request (including retries) and accepted prefetch is either
+    // queued or coalesced. A long source can also prefetch beyond the measured
+    // clip's final page, unlike a source that ends at that boundary.
+    let expected_attempts = u64::try_from(SOURCES * pages_count + capacity_retries)?
+        .checked_add(stats.prefetched_requests)
+        .ok_or("request attempt count overflow")?;
+    let observed_attempts = stats
+        .queued_requests
+        .checked_add(stats.coalesced_requests)
+        .ok_or("observed request count overflow")?;
     if stats.misses != 0
         || stats.rejected_requests != 0
-        || stats.queued_requests != (SOURCES * pages_count + capacity_retries) as u64
+        || stats.stale_pages != 0
+        || observed_attempts != expected_attempts
     {
         return Err(format!("unexpected page demand statistics: {stats:?}").into());
     }
     render_times.sort_unstable();
     println!(
-        "sources={SOURCES} pages_each={pages_count} frames={frames} rate={RATE} block={BLOCK} warmup_pages={warmup_pages} measured_blocks={} request_policy=serial_page_boundary pool_pages={} cache_capacity={} full_pcm=exact",
+        "sources={SOURCES} source_frames={source_frames} first_page={first_page} pages_each={pages_count} frames={frames} rate={RATE} block={BLOCK} warmup_pages={warmup_pages} measured_blocks={} request_policy=serial_page_boundary pool_pages={} cache_capacity={} full_pcm=exact",
         render_times.len(),
         config.page_buffers,
         runtime.page_capacity()
     );
     println!(
-        "fixture_ms={:.3} catalog_ms={:.3} turnover_ms={:.3} request_and_wake_ms={:.3} page_wait_ms={:.3} render_block_ns_p50={} p95={} p99={} max={} misses={} rejected={} queued={} capacity_retries={}",
+        "fixture_ms={:.3} catalog_ms={:.3} turnover_ms={:.3} request_and_wake_ms={:.3} page_wait_ms={:.3} render_block_ns_p50={} p95={} p99={} max={} misses={} rejected={} stale={} queued={} prefetched={} coalesced={} capacity_retries={}",
         setup_time.as_secs_f64() * 1000.0,
         catalog_time.as_secs_f64() * 1000.0,
         turnover_time.as_secs_f64() * 1000.0,
@@ -256,7 +291,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         render_times[render_times.len() - 1],
         stats.misses,
         stats.rejected_requests,
+        stats.stale_pages,
         stats.queued_requests,
+        stats.prefetched_requests,
+        stats.coalesced_requests,
         capacity_retries
     );
     let report = runtime.shutdown()?;
