@@ -4824,6 +4824,270 @@ mod tests {
             assert_eq!(count(&mut stopped), 0, "stop clears the muted input proof");
         });
     }
+
+    #[test]
+    fn live_key_started_while_muted_resumes_on_unmute() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            old.apply(PlaybackCommand::Play);
+            let mut before = [[0.0; 2]; 7];
+            old.render(&mut before).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut next, _) = live_playback(&f, &input);
+            next.try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let mut output = [[0.0; 2]; 128];
+            next.render(&mut output).unwrap();
+            for (index, frame) in output.iter().enumerate() {
+                for channel in 0..2 {
+                    let fade = index.min(40) as f32 / 40.0;
+                    let expected =
+                        PCM[(7 + index) % 4][channel] * 0.25 + PCM[index % 4][channel] * 0.5 * fade;
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "frame {index}: {frame:?}, expected {expected}"
+                    );
+                }
+            }
+            input.set_key(0, None).unwrap();
+            next.render(&mut [[0.0; 2]; 64]).unwrap();
+            let mut after_release = [[0.0; 2]; 16];
+            next.render(&mut after_release).unwrap();
+            for (index, frame) in after_release.iter().enumerate() {
+                for channel in 0..2 {
+                    let expected =
+                        0.25 * (PCM[(199 + index) % 4][channel] + PCM[(192 + index) % 4][channel]);
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "key-up frame {index}: {frame:?}, expected {expected}"
+                    );
+                }
+            }
+        });
+    }
+    #[test]
+    fn muted_live_key_continuation_refuses_source_replacement_and_multiple_keys() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            for multiple in [false, true] {
+                let mut f = fixture();
+                f.editor
+                    .execute(Command::Mute {
+                        track: f.contributor,
+                        muted: true,
+                    })
+                    .unwrap();
+                let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+                input.set_key(0, Some((60, 127, 1))).unwrap();
+                if multiple {
+                    input.set_key(1, Some((62, 127, 2))).unwrap();
+                }
+                let (mut old, _) = live_playback(&f, &input);
+                old.apply(PlaybackCommand::Play);
+                old.render(&mut [[0.0; 2]; 7]).unwrap();
+                assert!(
+                    old.session_runtime_mut_for_stream_action()
+                        .unwrap()
+                        .computer_keyboard
+                        .as_ref()
+                        .unwrap()
+                        .has_muted_source_onset(),
+                    "missing marker, multiple={multiple}"
+                );
+                if multiple {
+                    f.editor
+                        .execute(Command::Mute {
+                            track: f.contributor,
+                            muted: false,
+                        })
+                        .unwrap();
+                } else {
+                    let device = f
+                        .editor
+                        .project()
+                        .track(f.receiver)
+                        .unwrap()
+                        .instrument()
+                        .unwrap();
+                    let mut state =
+                        hex_devices::sampler::state::SamplerState::from_native(device.state())
+                            .unwrap();
+                    state.reverse = !state.reverse;
+                    let replacement = state
+                        .to_native()
+                        .unwrap()
+                        .with_asset_references(device.state().asset_references().to_vec())
+                        .unwrap();
+                    f.editor
+                        .execute(Command::ReplaceDeviceState {
+                            device: device.id(),
+                            state: replacement,
+                        })
+                        .unwrap();
+                }
+                let (mut candidate, _) = live_playback(&f, &input);
+                assert!(
+                    candidate
+                        .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                        .is_err(),
+                    "multiple={multiple}"
+                );
+                old.render(&mut [[0.0; 2]; 8]).unwrap();
+                assert!(!input.is_cancelled());
+            }
+        });
+    }
+
+    #[test]
+    fn muted_live_key_released_before_first_render_is_not_replayed() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut next, _) = live_playback(&f, &input);
+            next.try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            input.set_key(0, None).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            next.render(&mut output).unwrap();
+            for (i, frame) in output.iter().enumerate() {
+                let fade = i.min(40) as f32 / 40.0;
+                for channel in 0..2 {
+                    let expected = 0.25 * (PCM[(7 + i) % 4][channel] + PCM[i % 4][channel] * fade);
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "frame {i} channel {channel}: {frame:?}, expected {expected}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn muted_live_key_keeps_peer_phase_through_unchanged_handoff() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            let (mut next, _) = live_playback(&f, &input);
+            next.try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            let mut output = [[0.0; 2]; 8];
+            next.render(&mut output).unwrap();
+            for (i, frame) in output.iter().enumerate() {
+                for channel in 0..2 {
+                    let expected = PCM[(7 + i) % 4][channel] * 0.25;
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "frame {i}: {frame:?}, expected {expected}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn resumed_live_key_rolls_back_when_later_route_fails() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            let reference_input =
+                Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            reference_input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            let (mut reference_old, _) = live_playback(&f, &reference_input);
+            for playback in [&mut old, &mut reference_old] {
+                playback.apply(PlaybackCommand::Play);
+                playback.render(&mut [[0.0; 2]; 7]).unwrap();
+            }
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut failed, _) = live_playback(&f, &input);
+            let (mut reference, _) = live_playback(&f, &reference_input);
+            failed
+                .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            reference
+                .try_inherit_runtime_in_control_context(&mut reference_old, Some(19), Some(19))
+                .unwrap();
+            let runtime = failed.session_runtime_mut_for_stream_action().unwrap();
+            let route = runtime
+                .routes
+                .iter()
+                .position(|route| route.id == f.contributor)
+                .unwrap();
+            let incarnation = runtime.routes[route].current_incarnation;
+            runtime.routes[route].current_incarnation = u64::MAX;
+            runtime.routes[route].pending = Some(crate::session_playback::PendingRoute {
+                frame: 39,
+                beat: BeatTime::ZERO,
+                target: crate::session_playback::RouteTarget::Silence,
+                current_reservation: None,
+            });
+            assert!(failed.render(&mut [[0.0; 2]; 64]).is_err());
+            let runtime = failed.session_runtime_mut_for_stream_action().unwrap();
+            runtime.routes[route].pending = None;
+            runtime.routes[route].current_incarnation = incarnation;
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = [[0.0; 2]; 64];
+            failed.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+        });
+    }
     #[test]
     fn live_contributor_fade_advances_during_stopped_monitoring() {
         on_control(|| {

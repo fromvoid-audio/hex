@@ -494,6 +494,12 @@ struct PendingSharedChase {
     signature: crate::mutable_instrument::MutableOccurrenceSignature,
     frame: u64,
 }
+#[derive(Clone, Copy)]
+struct PendingSharedLive {
+    input: crate::mutable_instrument::LiveInputId,
+    token: u64,
+    frame: u64,
+}
 
 pub struct SessionPlayback {
     pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
@@ -524,6 +530,7 @@ pub struct SessionPlayback {
     interactive_start_frame: Option<u64>,
     // One exact muted-onset chase, retained until a successful render.
     pending_shared_chase: Option<PendingSharedChase>,
+    pending_shared_live: Option<PendingSharedLive>,
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     source_voice_envelopes: [u16; MAX_TRACKS],
@@ -965,6 +972,7 @@ impl SessionPlayback {
             anchor: _,
             interactive_start_frame: _,
             pending_shared_chase: _,
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             stream_miss_fades: _,
@@ -2193,6 +2201,7 @@ impl SessionPlayback {
             anchor: None,
             interactive_start_frame: None,
             pending_shared_chase: None,
+            pending_shared_live: None,
             historical_floor: None,
             route_historical_floors: [None; MAX_TRACKS],
             source_voice_envelopes,

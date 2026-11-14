@@ -261,6 +261,7 @@ impl SessionPlayback {
                         parameter_block
                             .as_ref()
                             .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
+                        None,
                     )?;
                 } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
