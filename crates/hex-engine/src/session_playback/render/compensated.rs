@@ -740,39 +740,46 @@ impl SessionPlayback {
                                 None,
                             )?;
                         }
-                        render_mutable_instrument_chunk(
-                            MutableInstrumentChunkContext {
-                                revision: &self.revision,
-                                midi: crate::session_inventory::EffectiveSessionMidi::new(
-                                    self.revision.session(),
-                                    self.midi_admission.as_ref(),
-                                ),
-                                sources,
-                                routes: &self.route_scratch,
-                                runtimes: &mut self.mutable_instruments,
-                                onsets: &mut self.mutable_onsets,
-                                suppressions: &self.suppression_scratch,
-                                events: &mut self.mutable_events,
-                                spans: &mut self.spans,
-                                performance_frame,
-                                arrangement_frame,
-                                arrangement_loop_pass: loop_pass,
-                                transient: None,
-                                chase_at_start: self.interactive_start_frame
-                                    == Some(performance_frame),
-                                loop_region: if self.linear_arrangement_export {
-                                    None
-                                } else {
-                                    region.filter(|region| region.enabled())
+                        if self
+                            .mutable_instruments
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            .is_some()
+                        {
+                            render_mutable_instrument_chunk(
+                                MutableInstrumentChunkContext {
+                                    revision: &self.revision,
+                                    midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                        self.revision.session(),
+                                        self.midi_admission.as_ref(),
+                                    ),
+                                    sources,
+                                    routes: &self.route_scratch,
+                                    runtimes: &mut self.mutable_instruments,
+                                    onsets: &mut self.mutable_onsets,
+                                    suppressions: &self.suppression_scratch,
+                                    events: &mut self.mutable_events,
+                                    spans: &mut self.spans,
+                                    performance_frame,
+                                    arrangement_frame,
+                                    arrangement_loop_pass: loop_pass,
+                                    transient: None,
+                                    chase_at_start: self.interactive_start_frame
+                                        == Some(performance_frame),
+                                    loop_region: if self.linear_arrangement_export {
+                                        None
+                                    } else {
+                                        region.filter(|region| region.enabled())
+                                    },
+                                    timing: &timing,
                                 },
-                                timing: &timing,
-                            },
-                            index,
-                            &mut generator,
-                            self.native_parameter_state
-                                .as_deref_mut()
-                                .and_then(|state| state.processing.as_mut()),
-                        )?;
+                                index,
+                                &mut generator,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                            )?;
+                        }
                     }
                     for release in &self.release_scratch {
                         if release.location.track_index() == index
