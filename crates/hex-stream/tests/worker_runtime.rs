@@ -860,6 +860,81 @@ fn real_worker_keeps_simultaneous_generations_of_an_asset_separate() {
     assert_eq!(report.page_buffers, 3);
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn late_old_generation_page_does_not_satisfy_new_generation() {
+    let frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (old_wav, old_pcm) = TestWav::stereo_pcm16(48_000, frames);
+    let (new_wav, mut new_pcm) = TestWav::stereo_pcm16(48_000, frames);
+    let mut file = OpenOptions::new().write(true).open(new_wav.path()).unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&16_384_i16.to_le_bytes()).unwrap();
+    file.sync_all().unwrap();
+    new_pcm[0][0] = 0.5;
+    assert_ne!(old_pcm, new_pcm);
+
+    let asset = asset_id(frames, 48_000);
+    let [old_key, new_key] = [41, 42].map(|generation| StreamSourceKey::new(generation, asset));
+    let definitions = [(&old_wav, old_key), (&new_wav, new_key)]
+        .into_iter()
+        .map(|(wav, key)| {
+            let reader = VerifiedWavReader::open(wav.path(), reader_limits(frames)).unwrap();
+            let metadata = StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                frames as u64,
+                frames as u64,
+                hex_project::IDENTITY_CONVERSION,
+                *reader.fingerprint(),
+            )
+            .unwrap();
+            SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(frames))
+        })
+        .collect();
+    let old_page = PageKey {
+        source: old_key,
+        page_index: 0,
+    };
+    let new_page = PageKey {
+        source: new_key,
+        page_index: 0,
+    };
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(old_page);
+    let mut runtime =
+        StreamRuntime::new_with_page_gate(StreamConfig::with_pool_pages(3), definitions, gate)
+            .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let (control, mut endpoint) = runtime.split().ok().unwrap();
+    endpoint.request_page(old_key, 0);
+    control.wake_worker();
+    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    endpoint.request_page(new_key, 0);
+    control.wake_worker();
+    assert!(endpoint.page(new_key, 0).is_none());
+
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        endpoint.pump_ready(1);
+        if let Some(page) = endpoint.page(old_key, 0) {
+            assert_eq!(page.frames, old_pcm);
+            assert!(
+                endpoint.page(new_key, 0).is_none(),
+                "old completion cannot satisfy the new key"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "old completion did not arrive");
+        thread::yield_now();
+    }
+    assert!(wait_for_split_page(&mut endpoint, new_page));
+    assert_eq!(endpoint.page(new_key, 0).unwrap().frames, new_pcm);
+    let report = control.shutdown(endpoint).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
 #[test]
 fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_page() {
     let (wav, expected) = TestWav::stereo_pcm16(48_000, 4096);
