@@ -10,6 +10,8 @@
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
 //! formats. Unsupported/malformed input refuses without rewriting the original file.
+//! Interrupted-save temporaries remain for deliberate inspection: their names and ages do not
+//! establish ownership or authorize deletion.
 pub mod automation_draft;
 mod files;
 mod journal;
@@ -29,6 +31,7 @@ mod audio_edit;
 mod extended_attributes;
 mod replacement;
 mod schema;
+#[cfg(test)]
 mod temporaries;
 pub use extended_attributes::MetadataWarning;
 pub use files::{
