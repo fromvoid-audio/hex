@@ -1102,3 +1102,24 @@ fn sparse_history_copy_matches_full_copy_after_voice_reuse() {
         }
     }
 }
+
+#[test]
+fn zero_occurrence_noteoff_history_is_preserved_on_copy() {
+    let mut s = settings();
+    s.global.active = false;
+    let mut source = runtime(s);
+    process(&mut source, &[off(0)], 1);
+    let mut target = runtime(s);
+    target.copy_history_from(&source);
+    let next = &[off(0)];
+    assert_eq!(
+        target.preflight_events(next, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        source.preflight_events(next, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    );
+    let clean = runtime(s);
+    target.copy_history_from(&clean);
+    assert_eq!(
+        target.preflight_events(next, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        clean.preflight_events(next, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    );
+}

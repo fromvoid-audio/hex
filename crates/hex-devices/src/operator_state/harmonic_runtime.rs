@@ -1338,12 +1338,15 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(p) = previous.as_any().downcast_ref::<Self>()
             && self.can_copy_history_from(p)
         {
-            // Empty slots are always Voice::default(): construction, expiry,
-            // compaction and reset replace the entire slot, and processing only
-            // mutates live slots. Preserve sparse positions and clear a formerly
-            // active destination; two empty slots already have identical state.
+            // Empty slots are reset wholesale on construction, expiry and
+            // compaction. The legacy note-off path can still set the gate of an
+            // ID-zero slot, so copy those slots too to preserve its history.
             for (target, source) in self.voices.iter_mut().zip(&p.voices) {
-                if target.id != 0 || source.id != 0 {
+                if target.id != 0
+                    || source.id != 0
+                    || target.gate.is_some()
+                    || source.gate.is_some()
+                {
                     *target = *source;
                 }
             }
