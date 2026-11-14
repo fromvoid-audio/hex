@@ -114,12 +114,10 @@ impl Lane {
         self.rejected.is_some() || self.active.iter().any(Option::is_some)
     }
     pub(super) fn views(&self) -> impl Iterator<Item = DeviceResourceAdmission<'_>> {
-        self.active.iter().flatten().map(|job| {
-            DeviceResourceAdmission::prepared_on_control(
-                &job.snapshot.resources,
-                &job.snapshot.prepared,
-            )
-        })
+        self.active
+            .iter()
+            .flatten()
+            .map(|job| job.snapshot.admission())
     }
     pub(super) fn new(
         worker: ArrangementSeekWorker,
@@ -289,9 +287,11 @@ impl Lane {
             )
             .and_then(|bytes| bytes.checked_add(input_capture))
             .ok_or("seek storage allowance overflow")?;
-        let views = self.views().chain(std::iter::once(
-            DeviceResourceAdmission::prepared_on_control(&anchor, &selected.prepared),
-        ));
+        let views = self
+            .views()
+            .chain(std::iter::once(selected.include_file_sources(
+                DeviceResourceAdmission::prepared_on_control(&anchor, &selected.prepared),
+            )));
         let registered = admission
             .registered
             .iter()

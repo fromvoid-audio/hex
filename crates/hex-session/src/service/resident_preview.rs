@@ -47,10 +47,7 @@ impl Preview {
         self.clip_target()?.move_identity()
     }
     pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
-        DeviceResourceAdmission::prepared_on_control(
-            &self.snapshot.resources,
-            &self.snapshot.prepared,
-        )
+        self.snapshot.admission()
     }
     /// Native accounting covers the resource/factory union and conservative
     /// input/control capture, including a retained clip selection. The shared
@@ -372,9 +369,7 @@ pub(super) fn publish_inputs(
         .registered
         .iter()
         .copied()
-        .chain(std::iter::once(
-            DeviceResourceAdmission::prepared_on_control(&canonical.resources, &canonical.prepared),
-        ))
+        .chain(std::iter::once(canonical.admission()))
         .collect::<Vec<_>>();
     let runtime_bytes = admission
         .runtime_bytes

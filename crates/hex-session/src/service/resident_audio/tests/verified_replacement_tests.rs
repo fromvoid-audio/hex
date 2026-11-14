@@ -341,6 +341,7 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
         semantic_source_epoch: 1,
         files: &rows,
         pitches: &pitches,
+        repitches: &[],
     };
     catalog.validate_for(&input).unwrap();
     assert!(missing.validate_for(&input).is_err());
@@ -358,6 +359,7 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
             semantic_source_epoch: input.semantic_source_epoch,
             files: input.files,
             pitches: input.pitches,
+            repitches: input.repitches,
         })
         .unwrap()
         .unwrap();
@@ -461,7 +463,14 @@ impl WorkerAudioSink for CatalogSink {
                 .map_err(|e| e.to_string())?;
             pitched.insert(metadata.key(), Arc::new(metadata));
         }
-        ResidentFileMetadata::new_with_pitched(7, sources, pitched).map(Some)
+        for requirement in input.repitches {
+            let raw = sources
+                .get(&requirement.asset())
+                .ok_or("repitch file missing")?;
+            let derived = requirement.metadata_for(raw).map_err(|e| e.to_string())?;
+            pitched.insert(derived.key(), Arc::new(derived));
+        }
+        ResidentFileMetadata::new_with_derived(7, sources, pitched).map(Some)
     }
     fn poll(&mut self) {}
     fn close(&mut self) {}
@@ -648,6 +657,197 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
             .next()
             .unwrap(),
         &expected
+    );
+    let mut repitched_editor = hex_project::Editor::new(project.clone(), 8).unwrap();
+    repitched_editor
+        .execute(hex_project::Command::SetClipFades {
+            clip: clip_id,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let warp = hex_project::default_audio_warp(
+        repitched_editor.project().clip(clip_id).unwrap(),
+        repitched_editor.project().tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    repitched_editor
+        .execute(hex_project::Command::SetAudioClipWarp {
+            clip: clip_id,
+            settings: Some(warp),
+        })
+        .unwrap();
+    assert!(matches!(
+        repitched_editor
+            .execute(hex_project::Command::DuplicateClip(clip_id))
+            .unwrap(),
+        hex_project::Created::Clip(_)
+    ));
+    let repitched = inputs
+        .prepare(
+            repitched_editor.project(),
+            &mut sink,
+            &candidate.media_bank(),
+            candidate.sine_table(),
+            &candidate.audio_transforms,
+            &candidate.audio_clip_waveforms,
+            context,
+        )
+        .unwrap();
+    assert!(
+        repitched
+            .prepared
+            .arrangement_stream_sources()
+            .next()
+            .unwrap()
+            .key()
+            .repitch_identity()
+            .is_some()
+    );
+    let captured = repitched.file_sources.as_ref().unwrap();
+    assert_eq!(captured.repitches().requirements().len(), 1);
+    let req = &captured.repitches().requirements()[0];
+    let derived = req
+        .metadata_for(&source.source_metadata(*id, 7).unwrap())
+        .unwrap();
+    assert!(captured.metadata().matches_source(&derived));
+    let refs = [(*id, source)];
+    let input = ResidentFileInput {
+        context,
+        semantic_source_epoch: captured.semantic_source_epoch(),
+        files: &refs,
+        pitches: &[],
+        repitches: captured.repitches().requirements(),
+    };
+    captured.metadata().validate_for(&input).unwrap();
+    let foreign_path = clip_files.wav("foreign.wav", 16_000, 16, 2048);
+    let foreign =
+        crate::VerifiedAudioFile::inspect(foreign_path, 16_000, file_reservation(2).reader, || {
+            false
+        })
+        .unwrap();
+    let foreign_refs = [(*id, &foreign)];
+    assert!(
+        captured
+            .metadata()
+            .validate_for(&ResidentFileInput {
+                files: &foreign_refs,
+                ..input
+            })
+            .is_err()
+    );
+    let mut refusing = CatalogSink { reject: true };
+    assert!(
+        inputs
+            .prepare(
+                repitched_editor.project(),
+                &mut refusing,
+                &candidate.media_bank(),
+                candidate.sine_table(),
+                &candidate.audio_transforms,
+                &candidate.audio_clip_waveforms,
+                context,
+            )
+            .is_err()
+    );
+    assert!(
+        ResidentFileMetadata::new(7, captured.metadata().sources().clone())
+            .unwrap()
+            .validate_for(&input)
+            .is_err()
+    );
+    let mut changed = hex_project::Editor::new(repitched_editor.project().clone(), 8).unwrap();
+    changed
+        .execute(hex_project::Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+    let raw = source.source_metadata(*id, 7).unwrap();
+    let changed_requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        changed
+            .project()
+            .clip(clip_id)
+            .unwrap()
+            .audio_edit()
+            .unwrap(),
+        changed.project().tempo_map(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let changed_metadata = changed_requirement.metadata_for(&raw).unwrap();
+    assert_ne!(changed_metadata.key(), derived.key());
+    let changed_only = [changed_requirement];
+    assert!(
+        captured
+            .metadata()
+            .validate_for(&ResidentFileInput {
+                repitches: &changed_only,
+                ..input
+            })
+            .is_err()
+    );
+    let two_maps = ResidentFileMetadata::new_with_derived(
+        7,
+        captured.metadata().sources().clone(),
+        BTreeMap::from([
+            (derived.key(), Arc::new(derived.clone())),
+            (changed_metadata.key(), Arc::new(changed_metadata)),
+        ]),
+    )
+    .unwrap();
+    let duplicates = [req.clone(), req.clone()];
+    assert!(
+        two_maps
+            .validate_for(&ResidentFileInput {
+                repitches: &duplicates,
+                ..input
+            })
+            .is_err()
+    );
+    let full = [repitched.admission()];
+    let bare = [DeviceResourceAdmission::prepared_on_control(
+        &repitched.resources,
+        &repitched.prepared,
+    )];
+    let phase = |registered| DeviceResourcePhase {
+        stores: &[],
+        registered,
+        selections: &[],
+        outbound: &[],
+        legacy: &[],
+        checked_runtime_bytes: 0,
+        construction_bytes: 0,
+    };
+    let full_phase = phase(&full);
+    let bare_phase = phase(&bare);
+    let full_bytes = hex_engine::native_device_resources::inspect_device_resource_union(
+        &full_phase,
+        &full_phase,
+        limits.storage,
+    )
+    .unwrap()
+    .retained
+    .retained_bytes;
+    let bare_bytes = hex_engine::native_device_resources::inspect_device_resource_union(
+        &bare_phase,
+        &bare_phase,
+        limits.storage,
+    )
+    .unwrap()
+    .retained
+    .retained_bytes;
+    assert!(full_bytes >= bare_bytes + req.retained_bytes().unwrap());
+    let mut too_small = limits.storage;
+    too_small.max_retained_bytes = full_bytes - 1;
+    assert!(
+        hex_engine::native_device_resources::inspect_device_resource_union(
+            &full_phase,
+            &full_phase,
+            too_small
+        )
+        .is_err()
     );
     assert_eq!(candidate.project(), &project);
     assert_eq!(old.project().snapshot(), before);
