@@ -1669,6 +1669,44 @@ pub(crate) struct SignalRuntime {
     key_taps: Vec<Frame>,
 }
 impl SignalRuntime {
+    /// With no graph-fed input or delay at this track, its resident source can
+    /// pass straight to the fader. Main and sends still advance in graph order.
+    pub(crate) fn resident_return_track_is_passthrough(&self, index: usize) -> bool {
+        if self.graph.returns.is_empty()
+            || self.graph.has_group_outputs
+            || !self.graph.key_stages.is_empty()
+            || self
+                .graph
+                .tracks
+                .iter()
+                .any(|track| !track.audio_feeds.is_empty())
+            || self
+                .graph
+                .returns
+                .iter()
+                .any(|bus| !bus.audio_feeds.is_empty())
+        {
+            return false;
+        }
+        let Some(track) = self.graph.tracks.get(index) else {
+            return false;
+        };
+        let zero_edge = |edge: usize| {
+            self.delay_graph
+                .pre_main_edges
+                .get(edge)
+                .and_then(|&mapped| self.delay_graph.plan.edges().get(mapped))
+                .is_some_and(|edge| edge.delay_frames == 0)
+        };
+        matches!(track.output, TrackOutput::Main { .. })
+            && track.devices.is_empty()
+            && track.generator.is_none()
+            && track.printed_merge.is_none()
+            && track.group_output_mutes.is_empty()
+            && self.graph.plan.nodes()[track.fader].output_arrival_frames == 0
+            && zero_edge(track.source_input)
+            && zero_edge(track.audio_merge)
+    }
     pub(crate) fn new(graph: Arc<SignalGraph>) -> Result<Self, Invalid> {
         let scratch_bytes = graph
             .tracks
