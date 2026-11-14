@@ -247,7 +247,49 @@ pub(crate) struct MediaBank {
     pub(crate) resident: BTreeMap<AssetId, Audio>,
     pub(crate) verified: BTreeMap<AssetId, VerifiedAudioFile>,
 }
+pub(crate) fn plain_pitch_requirement(
+    project: &Project,
+    clip: &hex_project::Clip,
+) -> Option<crate::service::ResidentFilePitch> {
+    let edit = clip.audio_edit()?;
+    let asset = project.asset(clip.asset())?;
+    (edit.is_plain_pitch_capture(clip) && clip.source_length() == asset.playback_frames())
+        .then_some(crate::service::ResidentFilePitch {
+            asset: clip.asset(),
+            cents: edit.domain.pitch_cents,
+            law: edit.domain.warp_resampler,
+        })
+}
 impl MediaBank {
+    pub(crate) fn required_verified_pitches(
+        &self,
+        project: &Project,
+    ) -> Result<Vec<crate::service::ResidentFilePitch>, hex_engine::Invalid> {
+        let mut pitches = Vec::new();
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let Some(pitch) = plain_pitch_requirement(project, clip) else {
+                continue;
+            };
+            if self.verified.contains_key(&pitch.asset) {
+                if pitches.len() >= hex_project::MAX_CLIPS {
+                    return Err(hex_engine::Invalid("ordinary pitch source count exceeded"));
+                }
+                pitches
+                    .try_reserve(1)
+                    .map_err(|_| hex_engine::Invalid("ordinary pitch source reservation failed"))?;
+                pitches.push(pitch);
+            }
+        }
+        pitches.sort_unstable_by_key(|pitch| {
+            (
+                pitch.asset,
+                pitch.cents,
+                matches!(pitch.law, hex_project::WarpResampler::V2),
+            )
+        });
+        pitches.dedup();
+        Ok(pitches)
+    }
     pub(crate) fn validate_clip_sources(
         &self,
         project: &Project,

@@ -5,8 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,

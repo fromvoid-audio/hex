@@ -103,21 +103,13 @@ impl CanonicalAudioSourceSnapshot {
             .iter()
             .flat_map(|track| track.clips())
             .filter_map(move |clip| {
-                let edit = clip.audio_edit()?;
-                let asset = self.project.asset(clip.asset())?;
+                let pitch = crate::audio_sources::plain_pitch_requirement(&self.project, clip)?;
                 let crate::AudioSourceBinding::VerifiedFile(file) =
                     self.sources.get(&clip.asset())?
                 else {
                     return None;
                 };
-                (edit.is_plain_pitch_capture(clip)
-                    && clip.source_length() == asset.playback_frames())
-                .then_some((
-                    clip.asset(),
-                    file,
-                    edit.domain.pitch_cents,
-                    edit.domain.warp_resampler,
-                ))
+                Some((pitch.asset, file, pitch.cents, pitch.law))
             })
     }
     pub fn sample_rate(&self) -> u32 {

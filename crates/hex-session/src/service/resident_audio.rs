@@ -239,6 +239,7 @@ impl Inputs<'_> {
         )?;
         let work = resources.compiler_scan_work_on_control(project)?;
         let file_refs = media.required_verified_sources(project);
+        let pitches = media.required_verified_pitches(project)?;
         let file_sources = if file_refs.is_empty() {
             None
         } else {
@@ -246,12 +247,14 @@ impl Inputs<'_> {
                 context,
                 semantic_source_epoch: media.epoch,
                 files: &file_refs,
+                pitches: &pitches,
             };
             let metadata = sink
                 .prepare_resident_file_metadata(ResidentFileInput {
                     context,
                     semantic_source_epoch: media.epoch,
                     files: &file_refs,
+                    pitches: &pitches,
                 })
                 .map_err(SessionError::NativeAudio)?
                 .ok_or(SessionError::Invalid(

@@ -36,6 +36,10 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
     editor
         .execute(Command::SetAudioClipPitch { clip, cents: 700 })
         .unwrap();
+    assert!(matches!(
+        editor.execute(Command::DuplicateClip(clip)).unwrap(),
+        Created::Clip(_)
+    ));
     let raw = file.source_metadata(asset, 7).unwrap();
     let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
     let sources = BTreeMap::from([(asset, Arc::new(raw.clone()))]);
@@ -77,6 +81,11 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
     )
     .unwrap();
     let rows = [(asset, &file)];
+    let pitches = [ResidentFilePitch {
+        asset,
+        cents: 700,
+        law: WarpResampler::V2,
+    }];
     let input = ResidentFileInput {
         context: hex_engine::AudioSourceContext {
             project_generation: 1,
@@ -84,8 +93,28 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
         },
         semantic_source_epoch: 1,
         files: &rows,
+        pitches: &pitches,
     };
     catalog.validate_for(&input).unwrap();
+    assert!(missing.validate_for(&input).is_err());
+    assert!(
+        catalog
+            .validate_for(&ResidentFileInput {
+                pitches: &[],
+                ..input
+            })
+            .is_err()
+    );
+    let supplied = CatalogSink { reject: false }
+        .prepare_resident_file_metadata(ResidentFileInput {
+            context: input.context,
+            semantic_source_epoch: input.semantic_source_epoch,
+            files: input.files,
+            pitches: input.pitches,
+        })
+        .unwrap()
+        .unwrap();
+    supplied.validate_for(&input).unwrap();
     let wrong_rows = [(asset, &other)];
     assert!(
         catalog
@@ -101,6 +130,10 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
         resident: BTreeMap::new(),
         verified: BTreeMap::from([(asset, file)]),
     };
+    assert_eq!(
+        media.required_verified_pitches(editor.project()).unwrap(),
+        pitches
+    );
     let cancel = AtomicBool::new(false);
     let resources = PreparedDeviceResources::prepare_on_control(
         &ResidentDeviceAssets::default(),
@@ -173,7 +206,15 @@ impl WorkerAudioSink for CatalogSink {
                 Arc::new(file.source_metadata(*id, 7).map_err(|e| e.to_string())?),
             );
         }
-        ResidentFileMetadata::new(7, sources).map(Some)
+        let mut pitched = BTreeMap::new();
+        for pitch in input.pitches {
+            let raw = sources.get(&pitch.asset).ok_or("pitch file missing")?;
+            let metadata = raw
+                .with_plain_pitch(pitch.cents, pitch.law)
+                .map_err(|e| e.to_string())?;
+            pitched.insert(metadata.key(), Arc::new(metadata));
+        }
+        ResidentFileMetadata::new_with_pitched(7, sources, pitched).map(Some)
     }
     fn poll(&mut self) {}
     fn close(&mut self) {}
@@ -312,6 +353,54 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
     assert_eq!(
         files.metadata().sources()[id].as_ref(),
         &source.source_metadata(*id, 7).unwrap()
+    );
+    let clip_id = project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .find(|clip| clip.asset() == *id)
+        .unwrap()
+        .id();
+    let mut editor = hex_project::Editor::new(project.clone(), 8).unwrap();
+    editor
+        .execute(hex_project::Command::SetClipFades {
+            clip: clip_id,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(hex_project::Command::SetAudioClipPitch {
+            clip: clip_id,
+            cents: 700,
+        })
+        .unwrap();
+    let pitched = inputs
+        .prepare(
+            editor.project(),
+            &mut sink,
+            &candidate.media_bank(),
+            candidate.sine_table(),
+            &candidate.audio_transforms,
+            &candidate.audio_clip_waveforms,
+            context,
+        )
+        .unwrap();
+    let pitched_files = pitched.file_sources.as_ref().unwrap();
+    assert_eq!(pitched_files.pitches().len(), 1);
+    let expected = source
+        .source_metadata(*id, 7)
+        .unwrap()
+        .with_plain_pitch(700, hex_project::WarpResampler::V2)
+        .unwrap();
+    assert!(pitched_files.metadata().matches_source(&expected));
+    assert_eq!(
+        pitched
+            .prepared
+            .arrangement_stream_sources()
+            .next()
+            .unwrap(),
+        &expected
     );
     assert_eq!(candidate.project(), &project);
     assert_eq!(old.project().snapshot(), before);
