@@ -188,6 +188,20 @@ impl StreamedRepitchRequirement {
     pub fn map(&self) -> &hex_warp::TimeMap {
         &self.inner.map
     }
+    /// Copy the bounded map for an independent worker without infallible allocation.
+    pub fn try_owned_map(&self) -> Result<hex_warp::TimeMap, Invalid> {
+        let source = self.inner.map.segments();
+        let end = source
+            .last()
+            .ok_or(Invalid("empty repitch map"))?
+            .output_end;
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(source.len())
+            .map_err(|_| Invalid("repitch map reservation failed"))?;
+        segments.extend_from_slice(source);
+        hex_warp::TimeMap::new_streamed(segments, end).map_err(warp_error)
+    }
     pub fn law(&self) -> hex_warp::Resampler {
         self.inner.law
     }

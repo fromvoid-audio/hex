@@ -132,7 +132,8 @@ impl NativeAudioSink {
                 let token = control
                     .begin_audio_candidate_domain_preparation(
                         policy.stream,
-                        sources.definitions()?,
+                        sources
+                            .definitions_for_files(&input, policy.stream.max_kernel_table_bytes)?,
                         policy.readiness,
                     )
                     .map_err(|error| format!("ordinary source preparation refused: {error:?}"))?;

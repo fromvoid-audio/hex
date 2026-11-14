@@ -2265,6 +2265,12 @@ fn streamed_repitch_projects_canonical_map_and_refuses_other_processing() {
     .unwrap();
     let requirement = StreamedRepitchRequirement::new(&raw, &edit, tempo, &cancel).unwrap();
     assert_eq!(requirement.map(), &streamed);
+    let worker_map = requirement.try_owned_map().unwrap();
+    assert_eq!(worker_map, streamed);
+    assert_ne!(
+        worker_map.segments().as_ptr(),
+        requirement.map().segments().as_ptr()
+    );
     assert_eq!(requirement.law(), law);
     assert_eq!(
         requirement.metadata_for(&raw).unwrap(),

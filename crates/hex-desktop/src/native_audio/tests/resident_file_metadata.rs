@@ -328,8 +328,83 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         repitches: &repitches,
     };
     assert!(!pitch_domain.matches_files(&repitch_input));
-    assert!(crate::native_sources::DomainSources::capture_files(&repitch_input, 19).is_err());
-    assert!(sink.prepare_resident_file_metadata(repitch_input).is_err());
+    let repitch_domain =
+        crate::native_sources::DomainSources::capture_files(&repitch_input, 19).unwrap();
+    assert!(repitch_domain.matches_files(&repitch_input));
+    assert!(
+        repitch_domain
+            .definitions_for_files(&repitch_input, 0)
+            .is_err()
+    );
+    let definitions = repitch_domain
+        .definitions_for_files(&repitch_input, 32 * 1024 * 1024)
+        .unwrap();
+    assert_eq!(definitions.len(), 2);
+    assert!(
+        definitions
+            .iter()
+            .any(|definition| definition.key.repitch_identity().is_some())
+    );
+    let foreign_path = files.constant_wav("foreign-repitch.wav", 48_000, 128, &[4096]);
+    let foreign =
+        hex_session::VerifiedAudioFile::inspect(foreign_path, 48_000, file.reader_limits(), || {
+            false
+        })
+        .unwrap();
+    let foreign_rows = [(asset, &foreign)];
+    let foreign_input = ResidentFileInput {
+        context: source.context(),
+        semantic_source_epoch: 1,
+        files: &foreign_rows,
+        pitches: &[],
+        repitches: &repitches,
+    };
+    assert!(!repitch_domain.matches_files(&foreign_input));
+    assert!(crate::native_sources::DomainSources::capture_files(&foreign_input, 19).is_err());
+    assert!(
+        repitch_domain
+            .definitions_for_files(&raw_input, 32 * 1024 * 1024)
+            .is_err()
+    );
+    let mut changed = hex_project::Editor::new(editor.project().clone(), 8).unwrap();
+    changed
+        .execute(hex_project::Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+    let changed_requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        changed.project().clip(clip).unwrap().audio_edit().unwrap(),
+        changed.project().tempo_map(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let changed_repitches = [changed_requirement];
+    let changed_input = ResidentFileInput {
+        context: source.context(),
+        semantic_source_epoch: 1,
+        files: &rows,
+        pitches: &[],
+        repitches: &changed_repitches,
+    };
+    assert!(!repitch_domain.matches_files(&changed_input));
+    assert!(
+        repitch_domain
+            .definitions_for_files(&changed_input, 32 * 1024 * 1024)
+            .is_err()
+    );
+    let metadata = sink
+        .prepare_resident_file_metadata(repitch_input)
+        .unwrap()
+        .unwrap();
+    let expected_repitch = repitches[0]
+        .metadata_for(
+            &file
+                .source_metadata(asset, metadata.catalog_generation())
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(metadata.matches_source(&expected_repitch));
     assert_eq!(
         source.context(),
         event
