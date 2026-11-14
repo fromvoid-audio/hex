@@ -288,6 +288,17 @@ fn verified_reader_handles_page_crossing_frames_and_resample_halos() {
     )
     .expect("direct conversion oracle");
     assert_eq!(converted, direct);
+    let mut tracked = reader.track_complete_verification(1024).unwrap();
+    converted.fill([0.0; 2]);
+    plan.render_verified_coverage_window(
+        &mut tracked,
+        output_start,
+        &mut converted,
+        &mut source_scratch,
+    )
+    .unwrap();
+    assert_eq!(converted, direct);
+    tracked.finish(|| false).unwrap();
 }
 
 #[test]

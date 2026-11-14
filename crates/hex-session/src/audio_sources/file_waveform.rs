@@ -20,8 +20,22 @@ impl VerifiedAudioFile {
         if self.waveform.is_some() {
             return Ok(());
         }
-        let mut reader =
-            VerifiedWavReader::open_with_cancel(self.path(), self.reader_limits(), &mut cancelled)?;
+        let mut reader = match VerifiedWavReader::open_verified_with_cancel(
+            self.path(),
+            self.reader_limits(),
+            self.verified_manifest().clone(),
+            &mut cancelled,
+        ) {
+            Ok(reader) => reader,
+            // An unchanged file may have a new mtime. Preserve the existing
+            // complete fingerprint check before accepting it.
+            Err(hex_media::ImportError::SourceChanged) => VerifiedWavReader::open_with_cancel(
+                self.path(),
+                self.reader_limits(),
+                &mut cancelled,
+            )?,
+            Err(error) => return Err(error.into()),
+        };
         if reader.fingerprint() != self.fingerprint()
             || reader.sample_rate() != self.source_rate()
             || reader.source_frames() != self.source_frames()
@@ -49,6 +63,8 @@ impl VerifiedAudioFile {
             WINDOW,
         )?;
         let scratch_count = reader.max_window_frames().min(MAX_SCRATCH);
+        let mut coverage =
+            reader.track_complete_verification(self.reader_limits().max_manifest_bytes)?;
         let mut scratch = Vec::new();
         scratch
             .try_reserve_exact(scratch_count)
@@ -88,8 +104,8 @@ impl VerifiedAudioFile {
                 }
                 take /= 2;
             }
-            plan.render_verified_wav_window(
-                &mut reader,
+            plan.render_verified_coverage_window(
+                &mut coverage,
                 cursor as u64,
                 &mut output[..take],
                 &mut scratch,
@@ -129,6 +145,7 @@ impl VerifiedAudioFile {
                 "file waveform preparation cancelled or incomplete",
             ));
         }
+        coverage.finish(&mut cancelled)?;
         let waveform = Waveform::from_peaks(frames, bins)?;
         let waveform = if identical_channels {
             waveform.with_identical_channels()?
