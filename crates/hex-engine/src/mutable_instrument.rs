@@ -87,6 +87,23 @@ pub(crate) struct MutableNoteOnset {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    /// An explicitly admitted source-bound onset requiring a 5 ms fade-in.
+    pub(crate) contributor_fade_in: bool,
+}
+
+/// A bounded 5 ms fade for a source-owned onset, derived from its project rate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContributorFadeIn(std::num::NonZeroU16);
+impl ContributorFadeIn {
+    pub(crate) fn new(sample_rate: u32) -> Option<Self> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return None;
+        }
+        std::num::NonZeroU16::new(u16::try_from(sample_rate.div_ceil(200)).ok()?).map(Self)
+    }
+    fn frames(self) -> u64 {
+        u64::from(self.0.get())
+    }
 }
 
 /// Owned proof that this exact authored occurrence was dispatched by a
@@ -259,6 +276,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    sample_rate: u32,
     frozen_parameters: frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
     output_trim: Option<output_trim::OutputTrim>,
@@ -327,6 +345,7 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
+            sample_rate: _,
             frozen_parameters,
             modulation,
             output_trim,
@@ -439,6 +458,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            sample_rate,
             frozen_parameters,
             modulation: None,
             output_trim: None,
@@ -1133,6 +1153,10 @@ impl MutableInstrumentTrackRuntime {
             source_start,
             width,
             source_age,
+            contributor_fade_rate: self
+                .pair
+                .supports_occurrence_gain()
+                .then_some(self.sample_rate),
             tail_frames: self.max_release_tail_frames(),
             max_active: self.max_active_occurrences(),
             steals_releasing: self.steals_releasing_voices(),
