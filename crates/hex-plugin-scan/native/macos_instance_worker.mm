@@ -1399,7 +1399,7 @@ int main(int argc,char** argv) {
             ::close(channel);
             std::_Exit(sent?0:ProtocolFailure);
         }
-        try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
+        try { if(editor.close()) closing=instance.close_for_retirement(normal_stop && !failure); } catch(...) {}
     }
     @autoreleasepool {
         bool unloaded=false;
