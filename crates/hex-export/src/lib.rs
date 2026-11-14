@@ -160,7 +160,7 @@ impl fmt::Display for ExportError {
             ),
             Self::IncompleteDestination { path, source } => write!(
                 f,
-                "could not complete the wav copy: {source}; inspect the destination path at {} before removing anything",
+                "could not complete the wav copy: {source}; the destination path at {} may contain a partial export or another file; inspect it before removing anything",
                 path.display()
             ),
             Self::Cancelled => write!(f, "export cancelled"),

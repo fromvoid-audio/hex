@@ -9,7 +9,7 @@ pub fn export_error_text(error: &hex_export::ExportError) -> String {
             hex_storage::text::verbatim(path.display())
         ),
         hex_export::ExportError::IncompleteDestination { path, source } => format!(
-            "could not complete the wav copy: {source}; inspect the destination path at {} before removing anything",
+            "could not complete the wav copy: {source}; the destination path at {} may contain a partial export or another file; inspect it before removing anything",
             hex_storage::text::verbatim(path.display())
         ),
         _ => error.to_string(),
@@ -36,5 +36,6 @@ mod tests {
         assert!(text.contains("/MixedCase/Stage.wav"));
         assert!(text.contains("/MixedCase/Output.wav"));
         assert!(text.contains("write failed"));
+        assert!(text.contains("may contain a partial export or another file"));
     }
 }
