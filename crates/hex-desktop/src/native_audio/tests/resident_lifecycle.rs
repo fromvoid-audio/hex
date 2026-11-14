@@ -1447,16 +1447,36 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         settings: Some(warp),
     }));
     (applied, _) = h.applied(applied);
-    let undone = h.run(Request::Undo);
+    let stretched = h.run(Request::Edit(Command::SetProjectTempo {
+        tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
     assert_eq!(
-        undone.state.project.snapshot(),
+        stretched.state.project.clip(clip).unwrap().duration(),
+        10_000_000
+    );
+    let undo_tempo = h.run(Request::Undo);
+    assert_eq!(
+        undo_tempo.state.project.snapshot(),
+        warped.state.project.snapshot()
+    );
+    (applied, _) = h.applied(applied);
+    let undo_warp = h.run(Request::Undo);
+    assert_eq!(
+        undo_warp.state.project.snapshot(),
         neutral.state.project.snapshot()
     );
     (applied, _) = h.applied(applied);
-    let redone = h.run(Request::Redo);
+    let redo_warp = h.run(Request::Redo);
     assert_eq!(
-        redone.state.project.snapshot(),
+        redo_warp.state.project.snapshot(),
         warped.state.project.snapshot()
+    );
+    (applied, _) = h.applied(applied);
+    let redo_tempo = h.run(Request::Redo);
+    assert_eq!(
+        redo_tempo.state.project.snapshot(),
+        stretched.state.project.snapshot()
     );
     h.applied(applied);
     fn audible(h: &mut ResidentHarness, frame: u64) {
@@ -1481,7 +1501,7 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         }
     }
     audible(&mut h, 0);
-    audible(&mut h, 19_000_000);
+    audible(&mut h, 9_500_000);
     let saved_path = files.0.join("repitch.hex");
     assert!(h.run(Request::SaveNew(saved_path.clone())).save_complete);
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
@@ -1489,8 +1509,8 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
     assert!(reopened.open_complete);
     assert_eq!(
         reopened.state.project.snapshot(),
-        warped.state.project.snapshot()
+        stretched.state.project.snapshot()
     );
     finish_replacement(&mut h, &reopened, output);
-    audible(&mut h, 19_000_000);
+    audible(&mut h, 9_500_000);
 }
