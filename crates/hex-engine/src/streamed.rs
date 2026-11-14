@@ -171,6 +171,70 @@ impl StreamedSourceMetadata {
     }
 }
 
+/// Control-side identity for Re-Pitch output derived from a verified raw file.
+/// This is not a page key, worker lease, or authority to publish audio. The
+/// full digest covers the versioned algorithm and complete ordered time map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RepitchStreamIdentity {
+    raw_key: StreamSourceKey,
+    digest: [u8; 32],
+}
+
+impl RepitchStreamIdentity {
+    /// Hash bounded canonical map and source facts on the control side.
+    pub fn new(
+        raw: &StreamedSourceMetadata,
+        map: &hex_warp::TimeMap,
+        law: hex_warp::Resampler,
+    ) -> Result<Self, Invalid> {
+        use sha2::{Digest, Sha256};
+
+        if raw.key().pitch().is_some()
+            || raw.playback_frames() > hex_warp::MAX_STREAMED_OUTPUT_FRAMES
+            || map
+                .segments()
+                .last()
+                .is_none_or(|segment| segment.output_end > hex_warp::MAX_STREAMED_OUTPUT_FRAMES)
+        {
+            return Err(Invalid("invalid repitch source identity"));
+        }
+        map.validate_stretch(hex_warp::Mode::RePitch, 0)
+            .map_err(|_| Invalid("invalid repitch source map"))?;
+        let mut hash = Sha256::new();
+        hash.update(b"hex.repitch-stream.identity.v1\0");
+        hash.update(hex_warp::ALGORITHM_VERSION.to_le_bytes());
+        hash.update([match law {
+            hex_warp::Resampler::V1 => 1,
+            hex_warp::Resampler::V2 => 2,
+        }]);
+        hash.update(raw.key().generation().to_le_bytes());
+        hash.update(raw.key().asset().value().to_le_bytes());
+        hash.update(raw.source_rate().to_le_bytes());
+        hash.update(raw.project_rate().to_le_bytes());
+        hash.update(raw.source_frames().to_le_bytes());
+        hash.update(raw.playback_frames().to_le_bytes());
+        hash.update(raw.conversion_version().to_le_bytes());
+        hash.update(raw.fingerprint());
+        hash.update((map.segments().len() as u64).to_le_bytes());
+        for segment in map.segments() {
+            hash.update(segment.output_start.to_le_bytes());
+            hash.update(segment.output_end.to_le_bytes());
+            hash.update(segment.source_start_q32.to_le_bytes());
+            hash.update(segment.source_end_q32.to_le_bytes());
+        }
+        Ok(Self {
+            raw_key: raw.key(),
+            digest: hash.finalize().into(),
+        })
+    }
+    pub const fn raw_key(self) -> StreamSourceKey {
+        self.raw_key
+    }
+    pub const fn digest(self) -> [u8; 32] {
+        self.digest
+    }
+}
+
 /// A borrowed page. `page_index * STREAM_PAGE_FRAMES` is its global first frame.
 #[derive(Clone, Copy, Debug)]
 pub struct BorrowedMediaPage<'a> {
