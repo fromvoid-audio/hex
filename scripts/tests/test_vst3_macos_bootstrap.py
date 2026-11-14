@@ -309,6 +309,12 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(value["before_value"], 0.25)
         return value
 
+    def test_actual_sdk_sealed_editor_keeps_accepted_fifo_and_refuses_late_input(self):
+        value = self.host_control(15)
+        self.assertEqual((value["edit_count"], value["edit_order"], value["edit_backpressure"], value["enqueued"]), (16, 1, 1, 16))
+        self.assertEqual((value["known"], value["unknown"], value["message"], value["refusals"]), (1, 1, 16, 0))
+        self.assertTrue(value["closed"] and value["unloaded"])
+
     def test_actual_sdk_edit_fifo_preserves_boundaries_values_and_backpressure(self):
         value=self.host_control(13)
         self.assertEqual((value["edit_count"],value["edit_order"],value["edit_backpressure"],value["enqueued"]),(16,1,1,16))

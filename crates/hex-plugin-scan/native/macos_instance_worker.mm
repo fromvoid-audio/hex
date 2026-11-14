@@ -402,6 +402,7 @@ int main(int argc,char** argv) {
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
+            bool editor_edits_sealed=false;
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
             std::thread worker([&] {
@@ -673,7 +674,9 @@ int main(int argc,char** argv) {
                         const bool complete=poll && state==PageComplete;
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,page_operation,8);
-                        if(complete && hex_instance::editor_request(page_query.kind)) {
+                        if(complete && page_query.kind==hex_instance::SEAL_EDITOR_EDITS) {
+                            wire::number(body,5,1);wire::number(body,editor_edits_sealed?1:0,1);
+                        } else if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
                             if(detached_editor_position) {
                                 wire::number(body,3,1);
@@ -1179,7 +1182,9 @@ int main(int argc,char** argv) {
                                     const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
                                         std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
                                         std::nullopt;
-                                    if(kind==hex_instance::REOPEN_EDITOR && was_open)
+                                    if(kind==hex_instance::SEAL_EDITOR_EDITS)
+                                        editor_edits_sealed=instance.seal_editor_edits_on_control();
+                                    else if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
                                     else if(kind==hex_instance::DETACH_EDITOR)
