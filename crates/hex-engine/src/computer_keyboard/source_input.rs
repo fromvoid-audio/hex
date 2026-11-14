@@ -210,6 +210,35 @@ impl ComputerKeyboardRuntime {
             .as_ref()
             .map_or(&[], |source| &source.events[..source.len])
     }
+    /// Retain only a physical press the muted source actually suppressed.
+    /// The speculative voice pool commits or rolls back with keyboard input;
+    /// this is not proof that a later source owns the same live runtime.
+    pub(crate) fn mark_muted_source_onset(&mut self, id: u64) {
+        if let Some(voice) = self.scratch.iter_mut().flatten().find(|voice| {
+            voice.id == id
+                && voice.source == VoiceSource::Physical
+                && voice.gate.is_none()
+                && !voice.muted_source_onset
+        }) {
+            voice.muted_source_onset = true;
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn muted_source_held_count(&self) -> usize {
+        self.primary
+            .iter()
+            .flatten()
+            .filter(|voice| voice.muted_source_onset && voice.gate.is_none())
+            .count()
+    }
+    #[cfg(test)]
+    pub(crate) fn held_physical_id(&self) -> Option<u64> {
+        self.primary
+            .iter()
+            .flatten()
+            .find(|voice| voice.source == VoiceSource::Physical && voice.gate.is_none())
+            .map(|voice| voice.id)
+    }
     pub(crate) fn take_source_input_release(&mut self) -> bool {
         self.source_input
             .as_mut()

@@ -67,12 +67,14 @@ pub(super) fn render_source_live_input(
                 .stage_live_events(input, keyboard.source_input_events(), None)
                 .map_err(|error| error.render_error())?;
         } else {
-            for event in keyboard.source_input_events() {
-                if matches!(event, hex_lattice::NativeInstrumentEvent::NoteOn { .. }) {
+            for index in 0..keyboard.source_input_events().len() {
+                let event = keyboard.source_input_events()[index];
+                if let hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } = event {
+                    keyboard.mark_muted_source_onset(occurrence_id);
                     continue;
                 }
                 source
-                    .stage_live_events(input, std::slice::from_ref(event), None)
+                    .stage_live_events(input, std::slice::from_ref(&event), None)
                     .map_err(|error| error.render_error())?;
             }
         }

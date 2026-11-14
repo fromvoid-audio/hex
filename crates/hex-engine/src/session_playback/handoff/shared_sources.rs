@@ -2779,8 +2779,12 @@ mod tests {
             }
             let input = Arc::new(ComputerKeyboardInput::default());
             let (mut old, _) = live_playback_on(&f, &input, f.receiver);
+            let muted_input = Arc::new(ComputerKeyboardInput::default());
+            let (mut old_muted_input, _) = live_playback(&f, &muted_input);
             old.apply(PlaybackCommand::Play);
+            old_muted_input.apply(PlaybackCommand::Play);
             old.render(&mut [[0.0; 2]; 7]).unwrap();
+            old_muted_input.render(&mut [[0.0; 2]; 7]).unwrap();
             f.editor
                 .execute(Command::Mute {
                     track: f.contributor,
@@ -2788,15 +2792,44 @@ mod tests {
                 })
                 .unwrap();
             let (mut muted, _) = live_playback_on(&f, &input, f.receiver);
+            let (mut muted_selected, _) = live_playback(&f, &muted_input);
             muted
                 .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
                 .unwrap();
+            muted_selected
+                .try_inherit_runtime_in_control_context(&mut old_muted_input, Some(19), Some(19))
+                .unwrap();
+            muted_input.set_key(0, Some((60, 100, 1))).unwrap();
+            muted_selected.render(&mut [[0.0; 2]; 64]).unwrap();
+            assert!(muted_input.rejected());
+            assert_eq!(
+                muted_selected
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .computer_keyboard
+                    .as_ref()
+                    .unwrap()
+                    .muted_source_held_count(),
+                0,
+                "a rejected press on a muted track must not become eligible"
+            );
             input.set_key(0, Some((60, 100, 1))).unwrap();
             let mut output = [[0.0; 2]; 64];
             muted.render(&mut output).unwrap();
             assert!(
                 input.rejected(),
                 "a full source must report the refused press"
+            );
+            assert_eq!(
+                muted
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .computer_keyboard
+                    .as_ref()
+                    .unwrap()
+                    .muted_source_held_count(),
+                0,
+                "a capacity-rejected press is not mute-suppressed"
             );
             assert!(
                 !input.is_cancelled(),
@@ -4712,6 +4745,84 @@ mod tests {
                 assert!(input.is_cancelled());
             });
         }
+    }
+
+    #[test]
+    fn keyboard_tracks_only_a_held_press_suppressed_by_source_mute() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut old, _) = live_playback(&f, &input);
+            old.apply(PlaybackCommand::Play);
+            old.render(&mut [[0.0; 2]; 7]).unwrap();
+            let count = |playback: &mut crate::playback::Playback| {
+                playback
+                    .session_runtime_mut_for_stream_action()
+                    .unwrap()
+                    .computer_keyboard
+                    .as_ref()
+                    .unwrap()
+                    .muted_source_held_count()
+            };
+            assert_eq!(count(&mut old), 1);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let (mut next, _) = live_playback(&f, &input);
+            next.try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
+                .unwrap();
+            assert_eq!(count(&mut next), 1);
+            input.set_key(0, None).unwrap();
+            next.render(&mut [[0.0; 2]; 8]).unwrap();
+            assert_eq!(count(&mut next), 0);
+            input.set_key(0, Some((60, 127, 2))).unwrap();
+            next.render(&mut [[0.0; 2]; 8]).unwrap();
+            assert_eq!(count(&mut next), 0, "an audible press was not suppressed");
+            let keyboard = next
+                .session_runtime_mut_for_stream_action()
+                .unwrap()
+                .computer_keyboard
+                .as_mut()
+                .unwrap();
+            let id = keyboard.held_physical_id().unwrap();
+            keyboard.begin_block();
+            keyboard.mark_muted_source_onset(id);
+            keyboard.rollback();
+            assert_eq!(
+                keyboard.muted_source_held_count(),
+                0,
+                "a failed block cannot commit the marker"
+            );
+            input.cancel();
+            next.render(&mut [[0.0; 2]; 8]).unwrap();
+            assert_eq!(count(&mut next), 0);
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut stopped, _) = live_playback(&f, &input);
+            stopped.apply(PlaybackCommand::Play);
+            stopped.render(&mut [[0.0; 2]; 7]).unwrap();
+            assert_eq!(count(&mut stopped), 1);
+            stopped.apply(PlaybackCommand::Stop);
+            stopped.render(&mut [[0.0; 2]; 8]).unwrap();
+            assert_eq!(count(&mut stopped), 0, "stop clears the muted input proof");
+        });
     }
     #[test]
     fn live_contributor_fade_advances_during_stopped_monitoring() {
