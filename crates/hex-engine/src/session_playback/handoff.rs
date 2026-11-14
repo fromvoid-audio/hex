@@ -1298,7 +1298,9 @@ impl SessionPlayback {
                     .position(|new| new.id == bus.id)
                     .and_then(|index| self.return_chains.get(index))
                     .is_some_and(|new| {
-                        old.len() == new.len() && old.configuration_matches_range(new, 0..old.len())
+                        old.len() == new.len()
+                            && old.configuration_matches_range(new, 0..old.len())
+                            && new.can_inherit_from(old)
                     });
                 if !unchanged {
                     return Err(SessionPlaybackError::LatencyLayoutChanged);

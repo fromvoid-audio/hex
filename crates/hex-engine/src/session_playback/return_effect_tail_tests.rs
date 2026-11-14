@@ -1888,3 +1888,24 @@ fn positive_latency_rejects_detaching_a_real_return_reverb() {
         .try_inherit_state_fenced_restart_from(&mut reference)
         .unwrap();
 }
+
+#[test]
+fn restart_refuses_incompatible_return_history_with_matching_configuration() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let mut previous = playback(&project);
+    previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+    let mut candidate = playback(&project);
+    let mut instances = processor_instances(return_id, StereoMatrix::identity());
+    instances[0].definition = Some(Arc::new(ScaleDefinition(0.5)));
+    candidate.return_chains[0] = NativeRuntimeChain::new(instances).unwrap();
+    assert!(
+        previous.return_chains[0].configuration_matches_range(&candidate.return_chains[0], 0..2)
+    );
+    assert!(!candidate.return_chains[0].can_inherit_from(&previous.return_chains[0]));
+    candidate.request_live_restart();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+}
