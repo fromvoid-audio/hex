@@ -1191,6 +1191,13 @@ impl SessionPlayback {
                     .is_some_and(|runtime| runtime.delays.history_ready())
                 && self.revision.arrangement().main_latency_frames()
                     == previous.revision.arrangement().main_latency_frames()
+                && previous
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .filter(|tail| tail.output_active)
+                    .all(|tail| tail.return_id().is_some())
                 && compensation_pair.is_some_and(|(candidate, old)| {
                     direct_return_tail_graph(&candidate.graph)
                         && direct_return_tail_graph(&old.graph)
