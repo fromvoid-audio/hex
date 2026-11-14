@@ -474,6 +474,12 @@ mod tests {
         let (project, _, _, _) = audio_project();
         let (window, editor) = editor_window(cx, project, Default::default());
         let mut visual = VisualTestContext::from_window(window, cx);
+        struct TestRoot(PathBuf);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
         let root = std::env::temp_dir().join(format!(
             "Hex-Recovery-{}-{}",
             std::process::id(),
@@ -482,6 +488,7 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ));
+        let _cleanup = TestRoot(root.clone());
         let directory = root.join("Take-ABC");
         let result = write_sample_take(Ok(root.clone()), "Take-ABC", |path| {
             std::fs::create_dir(path)?;
@@ -558,7 +565,6 @@ mod tests {
             std::fs::read(directory.join("Partial.WAV")).unwrap(),
             b"recoverable bytes"
         );
-        std::fs::remove_dir_all(&root).unwrap();
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(sender);
         editor.update(&mut visual, |view, _| {
